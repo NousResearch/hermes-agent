@@ -21,11 +21,14 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _extract_hindsight_routing_context,
+    _generate_hindsight_bank_candidates,
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
+    _resolve_hindsight_routes,
     _sanitize_bank_segment,
 )
 
@@ -855,6 +858,94 @@ class TestPrefetch:
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
 
+    def test_queue_prefetch_fans_out_to_routed_recall_banks(self, provider_with_config):
+        p = provider_with_config(
+            bank_id="global-user",
+            recall_max_tokens=1024,
+            bank_routing={
+                "recall": {
+                    "include_global": True,
+                    "global_bank_id": "global-user",
+                    "global_types": ["observation"],
+                },
+                "rules": [
+                    {
+                        "name": "infra",
+                        "workspace_path_prefix": "/work/acme/project-alpha",
+                        "bank_id": "infra",
+                        "retain": True,
+                        "recall": True,
+                        "recall_tags": ["project:alpha", "domain:infra"],
+                        "recall_tags_match": "all_strict",
+                        "recall_types": ["observation"],
+                    }
+                ],
+            },
+        )
+        p.initialize(
+            session_id="test-session",
+            hermes_home="unused",
+            platform="cli",
+            agent_workspace="project-alpha",
+            agent_workspace_path="/work/acme/project-alpha",
+        )
+        p._client = _make_mock_client()
+
+        async def _arecall(**kwargs):
+            bank_id = kwargs["bank_id"]
+            return SimpleNamespace(results=[SimpleNamespace(text=f"{bank_id} memory")])
+
+        p._client.arecall = AsyncMock(side_effect=_arecall)
+
+        p.queue_prefetch("deployment context")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        calls = [call.kwargs for call in p._client.arecall.call_args_list]
+        assert [call["bank_id"] for call in calls] == ["infra", "global-user"]
+        assert calls[0]["tags"] == ["project:alpha", "domain:infra"]
+        assert calls[0]["tags_match"] == "all_strict"
+        assert calls[0]["types"] == ["observation"]
+        assert calls[1]["types"] == ["observation"]
+        assert "tags" not in calls[1]
+        assert all(call["budget"] == "mid" for call in calls)
+        assert all(call["max_tokens"] == 1024 for call in calls)
+        assert "## Hindsight Memory: infra (infra)" in p._prefetch_result
+        assert "## Hindsight Memory: global (global-user)" in p._prefetch_result
+        assert "- infra memory" in p._prefetch_result
+        assert "- global-user memory" in p._prefetch_result
+
+    def test_queue_prefetch_skips_when_routing_resolves_no_recall_routes(self, provider_with_config):
+        p = provider_with_config(
+            bank_id="global-user",
+            bank_routing={
+                "include_fallback": False,
+                "rules": [
+                    {
+                        "name": "other-project",
+                        "workspace_path_prefix": "/repo/other",
+                        "bank_id": "other-bank",
+                    }
+                ],
+            },
+        )
+        p.initialize(
+            session_id="test-session",
+            hermes_home="unused",
+            platform="cli",
+            agent_workspace="project",
+            agent_workspace_path="/repo/project",
+        )
+        p._client = _make_mock_client()
+
+        assert p._hindsight_routes == []
+
+        p.queue_prefetch("project context")
+
+        assert p._prefetch_thread is None
+        p._client.arecall.assert_not_called()
+        assert p.prefetch("project context") == ""
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests
@@ -995,8 +1086,8 @@ class TestSyncTurn:
     def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
         """On append-capable APIs each retain ships only the new turns, not the whole session."""
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.5.6"},
         )
         from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
         # Clear before AND after: the capability cache is module-global and keyed
@@ -1122,6 +1213,111 @@ class TestSyncTurn:
         assert "你好" in raw_json
         assert "👨‍👩‍👧‍👦" in raw_json
 
+    def test_sync_turn_retains_to_each_routed_retain_bank(self, provider_with_config):
+        p = provider_with_config(
+            bank_id="global-user",
+            retain_tags=["source:hermes"],
+            bank_routing={
+                "recall": {"include_global": True, "global_bank_id": "global-user"},
+                "rules": [
+                    {
+                        "name": "infra",
+                        "workspace_path_prefix": "/work/acme/project-alpha",
+                        "bank_id": "infra",
+                        "retain": True,
+                        "recall": True,
+                        "retain_tags": ["project:alpha", "domain:infra"],
+                    },
+                    {
+                        "name": "skip-retain",
+                        "workspace": "project-alpha",
+                        "bank_id": "scratch",
+                        "retain": False,
+                        "recall": True,
+                    },
+                ],
+                "strategy": "all_matches",
+            },
+        )
+        p.initialize(
+            session_id="session-1",
+            hermes_home="unused",
+            platform="cli",
+            agent_workspace="project-alpha",
+            agent_workspace_path="/work/acme/project-alpha",
+            parent_session_id="parent-1",
+        )
+        p._client = _make_mock_client()
+
+        p.sync_turn("hello", "hi")
+        p._retain_queue.join()
+
+        calls = [call.kwargs for call in p._client.aretain_batch.call_args_list]
+        assert [call["bank_id"] for call in calls] == ["infra"]
+        assert calls[0]["document_id"] == p._document_id
+        assert calls[0]["retain_async"] is True
+        item = calls[0]["items"][0]
+        assert item["tags"] == [
+            "source:hermes",
+            "project:alpha",
+            "domain:infra",
+            "session:session-1",
+            "parent:parent-1",
+        ]
+        content = json.loads(item["content"])
+        assert content[0][0]["content"] == "User: hello"
+        assert content[0][1]["content"] == "Assistant: hi"
+
+    def test_sync_turn_continues_when_one_routed_retain_bank_fails(self, provider_with_config):
+        p = provider_with_config(
+            bank_routing={
+                "rules": [
+                    {"name": "infra", "bank_id": "infra"},
+                    {"name": "docs", "bank_id": "docs"},
+                ],
+                "strategy": "all_matches",
+            },
+        )
+        p._client = _make_mock_client()
+
+        async def _aretain_batch(**kwargs):
+            if kwargs["bank_id"] == "infra":
+                raise RuntimeError("infra unavailable")
+            return SimpleNamespace(ok=True)
+
+        p._client.aretain_batch = AsyncMock(side_effect=_aretain_batch)
+
+        p.sync_turn("hello", "hi")
+        p._retain_queue.join()
+
+        calls = [call.kwargs for call in p._client.aretain_batch.call_args_list]
+        assert [call["bank_id"] for call in calls] == ["infra", "docs"]
+
+    def test_multibank_on_session_switch_flushes_old_session_for_all_retain_routes(self, provider_with_config):
+        p = provider_with_config(
+            retain_every_n_turns=3,
+            bank_routing={
+                "rules": [
+                    {"name": "infra", "bank_id": "infra"},
+                    {"name": "docs", "bank_id": "docs"},
+                ],
+                "strategy": "all_matches",
+            },
+        )
+        p._client = _make_mock_client()
+
+        p.sync_turn("old user", "old assistant")
+        p.on_session_switch("new-session", parent_session_id="old-session")
+        p._retain_queue.join()
+
+        calls = [call.kwargs for call in p._client.aretain_batch.call_args_list]
+        assert [call["bank_id"] for call in calls] == ["infra", "docs"]
+        assert all(call["document_id"].startswith("test-session-") for call in calls)
+        for call in calls:
+            item = call["items"][0]
+            assert "old user" in item["content"]
+            assert "session:test-session" in item["tags"]
+
 
 # ---------------------------------------------------------------------------
 # Shutdown / writer tests
@@ -1241,6 +1437,40 @@ class TestSessionSwitchBufferFlush:
         provider._client.aretain_batch.assert_not_called()
         assert provider._session_id == "new-sid"
 
+    def test_switch_flush_skips_when_routing_resolves_no_retain_routes(self, provider_with_config):
+        p = provider_with_config(
+            retain_every_n_turns=3,
+            bank_routing={
+                "include_fallback": False,
+                "rules": [
+                    {
+                        "name": "other-project",
+                        "workspace_path_prefix": "/repo/other",
+                        "bank_id": "other-bank",
+                    }
+                ],
+            },
+        )
+        p.initialize(
+            session_id="old-sid",
+            hermes_home="unused",
+            platform="cli",
+            agent_workspace="project",
+            agent_workspace_path="/repo/project",
+        )
+        p._client = _make_mock_client()
+
+        assert p._hindsight_routes == []
+        p.sync_turn("buffered user", "buffered assistant")
+        p._client.aretain_batch.assert_not_called()
+
+        p.on_session_switch("new-sid")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_not_called()
+        assert p._session_id == "new-sid"
+        assert p._session_turns == []
+
     def test_prefetch_result_cleared_on_switch(self, provider):
         """Stale recall text from the old session must not leak into the
         next session's first prefetch read."""
@@ -1348,7 +1578,7 @@ class TestUpdateModeAppendCapability:
         per-process unique doc_id and NOT pass update_mode."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
             lambda *a, **kw: None,
         )
         old_doc = provider._document_id
@@ -1365,8 +1595,8 @@ class TestUpdateModeAppendCapability:
         """API on >=0.5.0 — retain uses stable session_id and sets update_mode='append'."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.5.6"},
         )
         provider.sync_turn("hello", "hi")
         provider._retain_queue.join()
@@ -1384,10 +1614,10 @@ class TestUpdateModeAppendCapability:
 
         def _spy(*a, **kw):
             calls["n"] += 1
-            return "0.5.6"
+            return {"version": "0.5.6"}
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version", _spy
+            "plugins.memory.hindsight._fetch_hindsight_version_info", _spy
         )
         provider.sync_turn("a", "b")
         provider._retain_queue.join()
@@ -1400,8 +1630,8 @@ class TestUpdateModeAppendCapability:
         import logging
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.4.22",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.4.22"},
         )
         with caplog.at_level(logging.WARNING, logger="plugins.memory.hindsight"):
             provider.sync_turn("a", "b")
@@ -1421,8 +1651,8 @@ class TestUpdateModeAppendCapability:
         in the OLD session's stable document, not a per-process id."""
         self._clear_capability_cache()
         monkeypatch.setattr(
-            "plugins.memory.hindsight._fetch_hindsight_api_version",
-            lambda *a, **kw: "0.5.6",
+            "plugins.memory.hindsight._fetch_hindsight_version_info",
+            lambda *a, **kw: {"version": "0.5.6"},
         )
         p = provider_with_config(retain_every_n_turns=3, retain_async=False)
         p.sync_turn("turn1-user", "turn1-asst")
@@ -1627,6 +1857,543 @@ class TestBankIdTemplate:
         # No agent_identity passed — template renders to "hermes-" which collapses to "hermes"
         p.initialize(session_id="s1", hermes_home=str(tmp_path), platform="cli")
         assert p._bank_id == "hermes"
+
+
+# ---------------------------------------------------------------------------
+# bank_routing tests
+# ---------------------------------------------------------------------------
+
+
+class TestBankRouting:
+    def test_route_resolution_falls_back_to_static_bank_without_routing(self):
+        routes = _resolve_hindsight_routes(
+            {},
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/work/acme/unknown",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert [route.bank_id for route in routes] == ["global-user"]
+        assert routes[0].name == "fallback"
+        assert routes[0].recall is True
+        assert routes[0].retain is True
+
+    def test_route_resolution_matches_longest_workspace_path_prefix(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "projects",
+                        "workspace_path_prefix": "/work/acme",
+                        "bank_id": "all-projects",
+                    },
+                    {
+                        "name": "docs-suite",
+                        "workspace_path_prefix": "/work/acme/docs-suite",
+                        "bank_id": "infra",
+                    },
+                ]
+            }
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/work/acme/docs-suite/server",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert [route.bank_id for route in routes] == ["infra"]
+        assert routes[0].name == "docs-suite"
+
+    def test_route_resolution_matches_portable_workspace_globs(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {"name": "workspace", "workspace_glob": "project-*", "bank_id": "workspace-bank"},
+                    {"name": "repo", "repo_name_glob": "project-*", "bank_id": "repo-bank"},
+                    {
+                        "name": "path",
+                        "workspace_path_glob": "/work/*/project-*",
+                        "bank_id": "path-bank",
+                    },
+                ],
+                "strategy": "all_matches",
+            }
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="project-alpha-desktop",
+            workspace_path="/work/alice/project-alpha",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert [route.bank_id for route in routes] == ["path-bank", "workspace-bank", "repo-bank"]
+
+    def test_route_resolution_matches_git_remote_glob(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "project-alpha-git",
+                        "git_remote_glob": "*github.com*acme/project-*",
+                        "bank_id": "project-alpha-bank",
+                    }
+                ]
+            }
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/some/host/path/project-alpha",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="git@github.com:acme/project-alpha.git",
+        )
+
+        assert [route.bank_id for route in routes] == ["project-alpha-bank"]
+
+    def test_route_resolution_matches_normalized_git_repo_glob(self):
+        config = {
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "project-alpha-repo",
+                        "git_repo_glob": "acme/project-*",
+                        "bank_id": "project-alpha-bank",
+                    }
+                ]
+            }
+        }
+
+        for remote in (
+            "git@github.com:acme/project-alpha.git",
+            "https://github.com/acme/project-alpha.git",
+            "ssh://git@github.com/acme/project-alpha.git",
+        ):
+            routes = _resolve_hindsight_routes(
+                config,
+                fallback_bank_id="global-user",
+                bank_id_template="",
+                profile="default",
+                workspace="hermes",
+                workspace_path="/some/host/path/project-alpha",
+                platform="cli",
+                user="",
+                session="s1",
+                git_remote=remote,
+            )
+
+            assert [route.bank_id for route in routes] == ["project-alpha-bank"]
+
+    def test_provider_initialize_stores_resolved_routes(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id": "global-user",
+            "retain_tags": ["source:hermes"],
+            "bank_routing": {
+                "recall": {"include_global": True, "global_bank_id": "global-user"},
+                "rules": [
+                    {
+                        "name": "project-alpha",
+                        "workspace_path_prefix": "/work/acme/project-alpha",
+                        "bank_id": "infra",
+                        "retain_tags": ["project:alpha"],
+                    }
+                ],
+            },
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(
+            session_id="s1",
+            hermes_home=str(tmp_path),
+            platform="cli",
+            agent_identity="default",
+            agent_workspace="project-alpha",
+            agent_workspace_path="/work/acme/project-alpha",
+        )
+
+        assert [route.bank_id for route in p._hindsight_routes] == ["infra", "global-user"]
+        assert p._hindsight_routes[0].name == "project-alpha"
+        assert p._hindsight_routes[0].retain_tags == ["source:hermes", "project:alpha"]
+        assert p._hindsight_routes[1].retain is False
+        assert p._bank_id == "infra"
+
+    def test_route_resolution_uses_top_level_recall_defaults_for_routes(self):
+        config = {
+            "recall_tags": ["source:hermes"],
+            "recall_tags_match": "all_strict",
+            "recall_types": ["observation"],
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "project",
+                        "workspace_path_prefix": "/repo/project",
+                        "bank_id": "project-bank",
+                    }
+                ]
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert routes[0].recall_tags == ["source:hermes"]
+        assert routes[0].recall_tags_match == "all_strict"
+        assert routes[0].recall_types == ["observation"]
+
+    def test_route_resolution_normalizes_route_string_recall_types_and_bool_strings(self):
+        config = {
+            "recall_types": "observation",
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "project",
+                        "bank_id": "project-bank",
+                        "recall": "false",
+                        "retain": "false",
+                        "recall_types": "world, experience",
+                    }
+                ]
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert routes[0].recall is False
+        assert routes[0].retain is False
+        assert routes[0].recall_types == ["world", "experience"]
+
+    def test_route_resolution_supports_global_recall_tags_and_bool_strings(self):
+        config = {
+            "recall_types": "observation",
+            "bank_routing": {
+                "recall": {
+                    "include_global": True,
+                    "global_bank_id": "global-user",
+                    "global_retain": "false",
+                    "global_tags": "scope:global,source:hermes",
+                    "global_tags_match": "all_strict",
+                    "global_types": "observation,world",
+                },
+                "rules": [{"name": "project", "bank_id": "project-bank"}],
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="fallback-bank",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        global_route = routes[1]
+        assert global_route.bank_id == "global-user"
+        assert global_route.retain is False
+        assert global_route.recall_tags == ["scope:global", "source:hermes"]
+        assert global_route.recall_tags_match == "all_strict"
+        assert global_route.recall_types == ["observation", "world"]
+
+    def test_route_resolution_treats_include_global_false_string_as_false(self):
+        config = {
+            "bank_routing": {
+                "recall": {
+                    "include_global": "false",
+                    "global_bank_id": "global-user",
+                },
+                "rules": [{"name": "project", "bank_id": "project-bank"}],
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="fallback-bank",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert [route.bank_id for route in routes] == ["project-bank"]
+
+    def test_route_resolution_treats_include_fallback_false_string_as_false(self):
+        config = {
+            "bank_routing": {
+                "include_fallback": "false",
+                "rules": [
+                    {
+                        "name": "other-project",
+                        "workspace_path_prefix": "/repo/other",
+                        "bank_id": "other-bank",
+                    }
+                ],
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="fallback-bank",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert routes == []
+
+    def test_extract_routing_context_caches_git_identity(self, tmp_path):
+        workspace = tmp_path / "project-alpha"
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text("# project marker\n")
+        os.system(f"git -C {workspace} init -q")
+        os.system(f"git -C {workspace} remote add origin git@github.com:acme/project-alpha.git")
+        os.system(f"git -C {workspace} checkout -b feature/test >/dev/null 2>&1")
+
+        cache_root = tmp_path / "profile" / "cache"
+        first = _extract_hindsight_routing_context(
+            workspace="project-alpha",
+            workspace_path=str(workspace),
+            profile="support",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert first.repo_name == "project-alpha"
+        assert first.git_remote == "git@github.com:acme/project-alpha.git"
+        assert first.git_repo == "acme/project-alpha"
+        assert first.git_branch == "feature/test"
+        assert first.cache_hit is False
+
+        os.system(f"git -C {workspace} checkout -b feature/changed >/dev/null 2>&1")
+        second = _extract_hindsight_routing_context(
+            workspace="project-alpha",
+            workspace_path=str(workspace),
+            profile="support",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert second.cache_hit is False
+        assert second.git_branch == "feature/changed"
+
+        # Removing .git proves the third call is served from the profile cache
+        # when the safe invalidation fields still match and live git signals
+        # are unavailable.
+        os.system(f"rm -rf {workspace / '.git'}")
+        third = _extract_hindsight_routing_context(
+            workspace="project-alpha",
+            workspace_path=str(workspace),
+            profile="support",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert third.cache_hit is True
+        assert third.git_repo == "acme/project-alpha"
+
+        (workspace / "AGENTS.md").write_text("# changed marker\n")
+        fourth = _extract_hindsight_routing_context(
+            workspace="project-alpha",
+            workspace_path=str(workspace),
+            profile="support",
+            platform="cli",
+            user="",
+            session="s1",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+        assert fourth.cache_hit is False
+        assert fourth.git_repo == ""
+
+    def test_extract_routing_context_strips_credentials_from_git_remote_cache(self, tmp_path):
+        workspace = tmp_path / "private"
+        workspace.mkdir()
+        cache_root = tmp_path / "profile" / "cache"
+
+        context = _extract_hindsight_routing_context(
+            workspace="private",
+            workspace_path=str(workspace),
+            profile="support",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="https://credential-user:ghp_secret123@github.com/acme/private.git",
+            cache_root=cache_root,
+            registry_version="v1",
+        )
+
+        assert context.git_remote == "https://github.com/acme/private.git"
+        assert context.git_repo == "acme/private"
+
+        cache_files = list((cache_root / "hindsight" / "project-context").glob("*.json"))
+        assert len(cache_files) == 1
+        cached = json.loads(cache_files[0].read_text(encoding="utf-8"))
+        cached_text = json.dumps(cached)
+        assert cached["git_remote"] == "https://github.com/acme/private.git"
+        assert cached["git_repo"] == "acme/private"
+        assert "credential-user" not in cached_text
+        assert "ghp_secret123" not in cached_text
+
+        candidates = _generate_hindsight_bank_candidates(
+            [
+                {
+                    "id": "private-bank",
+                    "match": {"git_repo_glob": "acme/*"},
+                    "retain_policy": {"enabled": True},
+                }
+            ],
+            context,
+        )
+
+        assert [candidate.bank_id for candidate in candidates] == ["private-bank"]
+
+    def test_bank_registry_generates_deterministic_candidates(self):
+        context = _extract_hindsight_routing_context(
+            workspace="project-alpha",
+            workspace_path="/work/project-alpha",
+            profile="support",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="git@github.com:acme/project-alpha.git",
+            registry_version="v1",
+        )
+        candidates = _generate_hindsight_bank_candidates(
+            [
+                {
+                    "id": "global-user",
+                    "display_name": "Global user",
+                    "recall_policy": {"enabled": True, "tags": ["scope:global"]},
+                    "retain_policy": {"enabled": False},
+                    "match": {"profile": "support"},
+                },
+                {
+                    "id": "team-product-memory",
+                    "display_name": "Team product",
+                    "recall_policy": {
+                        "enabled": True,
+                        "tags": ["project:alpha"],
+                        "tags_match": "all_strict",
+                    },
+                    "retain_policy": {"enabled": True, "tags": ["project:alpha"]},
+                    "match": {"git_repo_glob": "acme/project-*", "repo_name_glob": "project-*"},
+                    "allowed_profiles": ["support"],
+                    "allowed_platforms": ["cli"],
+                },
+                {
+                    "id": "scratch",
+                    "match": {"git_repo_glob": "other/*"},
+                    "retain_policy": {"enabled": True},
+                },
+            ],
+            context,
+        )
+
+        assert [candidate.bank_id for candidate in candidates] == [
+            "team-product-memory",
+            "global-user",
+        ]
+        assert candidates[0].retain is True
+        assert candidates[0].recall_tags == ["project:alpha"]
+        assert candidates[0].recall_tags_match == "all_strict"
+        assert candidates[1].recall is True
+        assert candidates[1].retain is False
+        assert any("git_repo_glob" in reason for reason in candidates[0].reasons)
+
+    def test_bank_registry_routes_apply_when_no_bank_routing_configured(self):
+        config = {
+            "bank_registry_version": "v1",
+            "bank_registry": [
+                {
+                    "id": "team-product-memory",
+                    "display_name": "Team product",
+                    "recall_policy": {"enabled": True, "types": ["observation"]},
+                    "retain_policy": {"enabled": True, "tags": ["project:alpha"]},
+                    "match": {"git_repo_glob": "acme/project-*"},
+                }
+            ],
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="support",
+            workspace="project-alpha",
+            workspace_path="/work/project-alpha",
+            platform="cli",
+            user="",
+            session="s1",
+            git_remote="https://github.com/acme/project-alpha.git",
+        )
+
+        assert [route.bank_id for route in routes] == ["team-product-memory"]
+        assert routes[0].retain_tags == ["project:alpha"]
+        assert routes[0].recall_types == ["observation"]
 
 
 # ---------------------------------------------------------------------------

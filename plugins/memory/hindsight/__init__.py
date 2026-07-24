@@ -32,16 +32,21 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import fnmatch
+import hashlib
 import importlib
 import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from urllib.parse import urlsplit, urlunsplit
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -173,9 +178,9 @@ def _meets_minimum_version(actual: str | None, required: str) -> bool:
         return False
 
 
-def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
-                                 timeout: float = 5.0) -> str | None:
-    """GET ``<api_url>/version`` and return the version string (or None on failure).
+def _fetch_hindsight_version_info(api_url: str, api_key: str | None = None,
+                                  timeout: float = 5.0) -> dict | None:
+    """GET ``<api_url>/version`` and return the parsed payload (or None on failure).
 
     Hindsight's `/version` endpoint returns ``{"version": "0.5.6", ...}``.
     Any failure (timeout, 404, malformed JSON, missing key) → None, which
@@ -196,6 +201,13 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
     except Exception as exc:
         logger.debug("Hindsight /version probe failed for %s: %s", url, exc)
         return None
+    return data if isinstance(data, dict) else None
+
+
+def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
+                                 timeout: float = 5.0) -> str | None:
+    """GET ``<api_url>/version`` and return the version string (or None on failure)."""
+    data = _fetch_hindsight_version_info(api_url, api_key, timeout)
     if not isinstance(data, dict):
         return None
     version = data.get("version") or data.get("api_version")
@@ -215,8 +227,21 @@ def _check_api_supports_update_mode_append(api_url: str,
     with _append_capability_lock:
         if api_url in _append_capability_cache:
             return _append_capability_cache[api_url]
-    version = _fetch_hindsight_api_version(api_url, api_key)
-    supported = _meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+    info = _fetch_hindsight_version_info(api_url, api_key) or {}
+    version = info.get("version") or info.get("api_version")
+    version = str(version) if version else None
+    # update_mode='append' additionally requires the server to keep raw
+    # document text: deployments with HINDSIGHT_API_STORE_DOCUMENT_TEXT
+    # disabled reject append retains outright (400), so treat append as
+    # unsupported there and use the per-process document_id fallback.
+    # Servers too old to report `features` predate the opt-out and are
+    # assumed to store text.
+    features = info.get("features")
+    store_text = True
+    if isinstance(features, dict):
+        store_text = bool(features.get("store_document_text", True))
+    supported = (_meets_minimum_version(version, _MIN_VERSION_FOR_UPDATE_MODE_APPEND)
+                 and store_text)
     with _append_capability_lock:
         # Re-check after acquiring the lock in case a concurrent probe filled it.
         cached = _append_capability_cache.get(api_url)
@@ -225,6 +250,16 @@ def _check_api_supports_update_mode_append(api_url: str,
         else:
             supported = cached
     if not supported:
+        if not store_text:
+            logger.warning(
+                "Hindsight API at %s (version %r) has store_document_text "
+                "disabled; update_mode='append' retains would be rejected. "
+                "Falling back to per-process document_id.",
+                api_url, version,
+            )
+            with _append_capability_lock:
+                _append_capability_cache.setdefault(api_url, supported)
+            return supported
         logger.warning(
             "Hindsight API at %s reports version %r, older than %s. "
             "Falling back to per-process document_id — retains across "
@@ -614,6 +649,609 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
     return rendered or fallback
 
 
+@dataclass(frozen=True)
+class HindsightBankRoute:
+    """Resolved Hindsight bank route for auto-recall / auto-retain."""
+
+    name: str
+    bank_id: str
+    recall: bool = True
+    retain: bool = True
+    retain_tags: list[str] = field(default_factory=list)
+    recall_tags: list[str] = field(default_factory=list)
+    recall_tags_match: str = "any"
+    recall_types: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class HindsightRoutingContext:
+    """Safe structured context used for deterministic bank routing."""
+
+    workspace: str = ""
+    workspace_path: str = ""
+    repo_name: str = ""
+    git_remote: str = ""
+    git_repo: str = ""
+    git_branch: str = ""
+    profile: str = ""
+    platform: str = ""
+    user: str = ""
+    session: str = ""
+    registry_version: str = ""
+    marker_fingerprint: str = ""
+    cache_hit: bool = False
+
+
+@dataclass(frozen=True)
+class HindsightBankCandidate:
+    """Registry-derived candidate bank before it becomes a route."""
+
+    name: str
+    bank_id: str
+    recall: bool = True
+    retain: bool = False
+    retain_tags: list[str] = field(default_factory=list)
+    recall_tags: list[str] = field(default_factory=list)
+    recall_tags_match: str = "any"
+    recall_types: list[str] | None = None
+    reasons: list[str] = field(default_factory=list)
+    specificity: int = 0
+
+
+_ROUTING_MARKER_FILES = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+)
+
+
+def _merge_tags(*values: Any) -> list[str]:
+    merged: list[str] = []
+    for value in values:
+        for tag in _normalize_retain_tags(value):
+            if tag not in merged:
+                merged.append(tag)
+    return merged
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _normalize_recall_types(value: Any, default: list[str] | None = None) -> list[str]:
+    fallback = list(default or ["observation"])
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        parsed = [t.strip() for t in value.split(",") if t.strip()]
+        return parsed or fallback
+    if isinstance(value, (list, tuple)):
+        parsed = [str(t).strip() for t in value if str(t).strip()]
+        return parsed or fallback
+    return fallback
+
+
+def _normalize_match_patterns(value: Any) -> list[str]:
+    """Normalize a route match field into non-empty glob patterns."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        return [p.strip() for p in text.split(",") if p.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(p).strip() for p in value if str(p).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _matches_any_glob(value: str, patterns: Any) -> bool:
+    normalized = _normalize_match_patterns(patterns)
+    if not normalized:
+        return True
+    candidate = str(value or "")
+    return any(fnmatch.fnmatchcase(candidate, pattern) for pattern in normalized)
+
+
+def _repo_name_from_workspace_path(workspace_path: str) -> str:
+    return os.path.basename(str(workspace_path or "").rstrip("/"))
+
+
+def _git_repo_from_remote(git_remote: str) -> str:
+    """Return a stable owner/repo string for common GitHub remote URL forms."""
+    remote = str(git_remote or "").strip()
+    if not remote or "github.com" not in remote:
+        return ""
+    tail = remote.split("github.com", 1)[1].lstrip(":/")
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    parts = [part for part in tail.split("/") if part]
+    if len(parts) < 2:
+        return ""
+    return "/".join(parts[:2])
+
+
+def _sanitize_git_remote_for_routing(git_remote: str) -> str:
+    """Remove URL userinfo while preserving host/path signals for routing."""
+    remote = str(git_remote or "").strip()
+    if not remote:
+        return ""
+    try:
+        parsed = urlsplit(remote)
+    except ValueError:
+        return remote
+    if not parsed.scheme or not parsed.netloc or "@" not in parsed.netloc:
+        return remote
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return remote
+    netloc = hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
+def _safe_git_output(workspace_path: str, *args: str) -> str:
+    if not workspace_path:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", workspace_path, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _routing_marker_fingerprint(workspace_path: str) -> str:
+    """Hash non-secret project identity markers for cache invalidation."""
+    from pathlib import Path
+
+    if not workspace_path:
+        return ""
+    root = Path(workspace_path)
+    parts: list[str] = []
+    for name in _ROUTING_MARKER_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        except Exception:
+            continue
+        parts.append(f"{name}:{stat.st_size}:{stat.st_mtime_ns}:{digest}")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest() if parts else ""
+
+
+def _routing_context_cache_path(cache_root: Any, *, profile: str, workspace_path: str):
+    from pathlib import Path
+
+    if not cache_root:
+        return None
+    key = hashlib.sha256(
+        f"{profile}\0{workspace_path}".encode("utf-8", errors="replace")
+    ).hexdigest()
+    return Path(cache_root) / "hindsight" / "project-context" / f"{key}.json"
+
+
+def _context_from_cache(path: Any, *, registry_version: str, workspace_path: str,
+                        marker_fingerprint: str, git_remote: str = "",
+                        git_branch: str = "") -> HindsightRoutingContext | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if data.get("registry_version") != registry_version:
+        return None
+    if data.get("workspace_path") != workspace_path:
+        return None
+    if data.get("marker_fingerprint") != marker_fingerprint:
+        return None
+    if git_remote and data.get("git_remote") != git_remote:
+        return None
+    if git_branch and data.get("git_branch") != git_branch:
+        return None
+    allowed = set(HindsightRoutingContext.__dataclass_fields__)
+    filtered = {key: value for key, value in data.items() if key in allowed}
+    filtered["cache_hit"] = True
+    try:
+        return HindsightRoutingContext(**filtered)
+    except TypeError:
+        return None
+
+
+def _write_context_cache(path: Any, context: HindsightRoutingContext) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = asdict(context)
+        data["cache_hit"] = False
+        path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Failed to write Hindsight routing context cache: %s", exc)
+
+
+def _extract_hindsight_routing_context(
+    *,
+    workspace: str = "",
+    workspace_path: str = "",
+    profile: str = "",
+    platform: str = "",
+    user: str = "",
+    session: str = "",
+    git_remote: str = "",
+    git_branch: str = "",
+    cache_root: Any = None,
+    registry_version: str = "",
+) -> HindsightRoutingContext:
+    """Extract and optionally cache non-secret project identity signals."""
+    workspace_path = str(workspace_path or "").rstrip("/")
+    repo_name = _repo_name_from_workspace_path(workspace_path) or str(workspace or "")
+    marker_fingerprint = _routing_marker_fingerprint(workspace_path)
+    resolved_remote = str(git_remote or "").strip() or _safe_git_output(
+        workspace_path, "remote", "get-url", "origin"
+    )
+    resolved_remote = _sanitize_git_remote_for_routing(resolved_remote)
+    resolved_branch = str(git_branch or "").strip() or _safe_git_output(
+        workspace_path, "branch", "--show-current"
+    )
+    cache_path = _routing_context_cache_path(
+        cache_root, profile=str(profile or ""), workspace_path=workspace_path
+    )
+    cached = _context_from_cache(
+        cache_path,
+        registry_version=str(registry_version or ""),
+        workspace_path=workspace_path,
+        marker_fingerprint=marker_fingerprint,
+        git_remote=resolved_remote,
+        git_branch=resolved_branch,
+    )
+    if cached is not None:
+        return cached
+    context = HindsightRoutingContext(
+        workspace=str(workspace or ""),
+        workspace_path=workspace_path,
+        repo_name=repo_name,
+        git_remote=resolved_remote,
+        git_repo=_git_repo_from_remote(resolved_remote),
+        git_branch=resolved_branch,
+        profile=str(profile or ""),
+        platform=str(platform or ""),
+        user=str(user or ""),
+        session=str(session or ""),
+        registry_version=str(registry_version or ""),
+        marker_fingerprint=marker_fingerprint,
+        cache_hit=False,
+    )
+    _write_context_cache(cache_path, context)
+    return context
+
+
+def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
+                   workspace_path: str, platform: str, user: str,
+                   git_remote: str = "") -> bool:
+    prefix = str(rule.get("workspace_path_prefix") or "").rstrip("/")
+    if prefix:
+        current = str(workspace_path or "").rstrip("/")
+        if not (current == prefix or current.startswith(prefix + "/")):
+            return False
+    if "workspace_path_glob" in rule and not _matches_any_glob(
+        str(workspace_path or ""), rule.get("workspace_path_glob")
+    ):
+        return False
+    if "workspace_glob" in rule and not _matches_any_glob(
+        str(workspace or ""), rule.get("workspace_glob")
+    ):
+        return False
+    if "repo_name_glob" in rule and not _matches_any_glob(
+        _repo_name_from_workspace_path(workspace_path) or workspace,
+        rule.get("repo_name_glob"),
+    ):
+        return False
+    if "git_remote_glob" in rule and not _matches_any_glob(
+        str(git_remote or ""), rule.get("git_remote_glob")
+    ):
+        return False
+    if "git_repo_glob" in rule and not _matches_any_glob(
+        _git_repo_from_remote(git_remote), rule.get("git_repo_glob")
+    ):
+        return False
+    for key, actual in {
+        "profile": profile,
+        "workspace": workspace,
+        "platform": platform,
+        "user": user,
+    }.items():
+        if key in rule and str(rule.get(key) or "") != str(actual or ""):
+            return False
+    return True
+
+
+def _route_specificity(rule: dict[str, Any]) -> int:
+    """Return a stable specificity score for first-match route ordering."""
+    candidates = [str(rule.get("workspace_path_prefix") or "")]
+    for key in (
+        "workspace_path_glob",
+        "repo_name_glob",
+        "workspace_glob",
+        "git_remote_glob",
+        "git_repo_glob",
+    ):
+        candidates.extend(_normalize_match_patterns(rule.get(key)))
+    return max((len(candidate) for candidate in candidates), default=0)
+
+
+def _policy_enabled(policy: Any, default: bool) -> bool:
+    if isinstance(policy, dict):
+        return _config_bool(policy.get("enabled"), default)
+    return default
+
+
+def _allowed_by_registry_scope(entry: dict[str, Any], context: HindsightRoutingContext) -> bool:
+    for key, actual in (
+        ("allowed_profiles", context.profile),
+        ("allowed_workspaces", context.workspace),
+        ("allowed_platforms", context.platform),
+        ("allowed_users", context.user),
+    ):
+        values = _normalize_match_patterns(entry.get(key))
+        if values and not _matches_any_glob(actual, values):
+            return False
+    return True
+
+
+def _candidate_reasons(match: dict[str, Any], context: HindsightRoutingContext) -> list[str]:
+    reasons: list[str] = []
+    values = {
+        "workspace_path_prefix": context.workspace_path,
+        "workspace_path_glob": context.workspace_path,
+        "workspace": context.workspace,
+        "workspace_glob": context.workspace,
+        "repo_name_glob": context.repo_name,
+        "git_remote_glob": context.git_remote,
+        "git_repo_glob": context.git_repo,
+        "profile": context.profile,
+        "platform": context.platform,
+        "user": context.user,
+    }
+    for key, actual in values.items():
+        if key in match:
+            reasons.append(f"{key} matched {actual!r}")
+    return reasons
+
+
+def _generate_hindsight_bank_candidates(
+    registry: Any,
+    context: HindsightRoutingContext,
+    *,
+    default_recall_types: list[str] | None = None,
+) -> list[HindsightBankCandidate]:
+    """Generate deterministic bank candidates from registry entries."""
+    if isinstance(registry, dict):
+        entries = list(registry.values())
+    elif isinstance(registry, list):
+        entries = registry
+    else:
+        return []
+
+    candidates: list[tuple[int, int, HindsightBankCandidate]] = []
+    for index, raw in enumerate(entries):
+        if not isinstance(raw, dict):
+            continue
+        bank_id = str(raw.get("id") or raw.get("bank_id") or "").strip()
+        if not bank_id:
+            continue
+        raw_match = raw.get("match")
+        match: dict[str, Any] = raw_match if isinstance(raw_match, dict) else {}
+        if not _allowed_by_registry_scope(raw, context):
+            continue
+        if not _route_matches(
+            match,
+            profile=context.profile,
+            workspace=context.workspace,
+            workspace_path=context.workspace_path,
+            platform=context.platform,
+            user=context.user,
+            git_remote=context.git_remote,
+        ):
+            continue
+        raw_recall_policy = raw.get("recall_policy")
+        recall_policy: dict[str, Any] = (
+            raw_recall_policy if isinstance(raw_recall_policy, dict) else {}
+        )
+        raw_retain_policy = raw.get("retain_policy")
+        retain_policy: dict[str, Any] = (
+            raw_retain_policy if isinstance(raw_retain_policy, dict) else {}
+        )
+        recall = _policy_enabled(recall_policy, True)
+        retain = _policy_enabled(retain_policy, False)
+        if not recall and not retain:
+            continue
+        recall_types = None
+        if recall:
+            recall_types = _normalize_recall_types(
+                recall_policy.get("types") or recall_policy.get("recall_types"),
+                default_recall_types,
+            )
+        specificity = _route_specificity(match)
+        candidates.append((
+            -specificity,
+            index,
+            HindsightBankCandidate(
+                name=str(raw.get("display_name") or raw.get("name") or bank_id),
+                bank_id=_sanitize_bank_segment(bank_id),
+                recall=recall,
+                retain=retain,
+                retain_tags=_normalize_retain_tags(retain_policy.get("tags")),
+                recall_tags=_normalize_retain_tags(recall_policy.get("tags")),
+                recall_tags_match=str(recall_policy.get("tags_match") or "any"),
+                recall_types=recall_types,
+                reasons=_candidate_reasons(match, context),
+                specificity=specificity,
+            ),
+        ))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return [candidate for _, _, candidate in candidates]
+
+
+def _resolve_hindsight_routes(
+    config: dict[str, Any],
+    *,
+    fallback_bank_id: str,
+    bank_id_template: str,
+    profile: str,
+    workspace: str,
+    workspace_path: str,
+    platform: str,
+    user: str,
+    session: str,
+    git_remote: str = "",
+) -> list[HindsightBankRoute]:
+    """Resolve configured Hindsight bank routes for this runtime context."""
+    fallback_bank = _resolve_bank_id_template(
+        bank_id_template,
+        fallback=fallback_bank_id,
+        profile=profile,
+        workspace=workspace,
+        platform=platform,
+        user=user,
+        session=session,
+    )
+    default_retain_tags = _normalize_retain_tags(config.get("retain_tags"))
+    default_recall_tags = _normalize_retain_tags(config.get("recall_tags"))
+    default_recall_tags_match = str(config.get("recall_tags_match") or "any")
+    default_recall_types = _normalize_recall_types(config.get("recall_types"))
+    routing = config.get("bank_routing")
+    if not isinstance(routing, dict):
+        registry = config.get("bank_registry")
+        if isinstance(registry, (dict, list)):
+            registry_context = _extract_hindsight_routing_context(
+                workspace=workspace,
+                workspace_path=workspace_path,
+                profile=profile,
+                platform=platform,
+                user=user,
+                session=session,
+                git_remote=git_remote,
+                registry_version=str(config.get("bank_registry_version") or ""),
+            )
+            candidates = _generate_hindsight_bank_candidates(
+                registry,
+                registry_context,
+                default_recall_types=default_recall_types,
+            )
+            if candidates:
+                return [
+                    HindsightBankRoute(
+                        name=candidate.name,
+                        bank_id=candidate.bank_id,
+                        recall=candidate.recall,
+                        retain=candidate.retain,
+                        retain_tags=_merge_tags(default_retain_tags, candidate.retain_tags),
+                        recall_tags=_merge_tags(default_recall_tags, candidate.recall_tags),
+                        recall_tags_match=candidate.recall_tags_match or default_recall_tags_match,
+                        recall_types=candidate.recall_types or default_recall_types,
+                    )
+                    for candidate in candidates
+                ]
+        return [
+            HindsightBankRoute(
+                name="fallback",
+                bank_id=fallback_bank,
+                retain_tags=default_retain_tags,
+                recall_tags=default_recall_tags,
+                recall_tags_match=default_recall_tags_match,
+                recall_types=default_recall_types,
+            )
+        ]
+
+    rules = [rule for rule in list(routing.get("rules") or []) if isinstance(rule, dict)]
+    matches = [
+        rule for rule in rules
+        if _route_matches(rule, profile=profile, workspace=workspace,
+                          workspace_path=workspace_path, platform=platform, user=user,
+                          git_remote=git_remote)
+    ]
+    matches.sort(key=_route_specificity, reverse=True)
+    selected = matches[:1] if str(routing.get("strategy", "first_match")) == "first_match" else matches
+
+    routes: list[HindsightBankRoute] = []
+    for rule in selected:
+        bank_id = str(rule.get("bank_id") or "").strip()
+        if not bank_id:
+            continue
+        recall_types = rule.get("recall_types")
+        routes.append(HindsightBankRoute(
+            name=str(rule.get("name") or bank_id),
+            bank_id=_sanitize_bank_segment(bank_id),
+            recall=_config_bool(rule.get("recall"), True),
+            retain=_config_bool(rule.get("retain"), True),
+            retain_tags=_merge_tags(default_retain_tags, rule.get("retain_tags")),
+            recall_tags=_merge_tags(default_recall_tags, rule.get("recall_tags")),
+            recall_tags_match=str(rule.get("recall_tags_match") or default_recall_tags_match),
+            recall_types=_normalize_recall_types(recall_types, default_recall_types),
+        ))
+
+    if not routes and _config_bool(routing.get("include_fallback"), True):
+        routes.append(HindsightBankRoute(
+            name="fallback",
+            bank_id=fallback_bank,
+            retain_tags=default_retain_tags,
+            recall_tags=default_recall_tags,
+            recall_tags_match=default_recall_tags_match,
+            recall_types=default_recall_types,
+        ))
+
+    raw_recall_cfg = routing.get("recall")
+    recall_cfg: dict[str, Any] = raw_recall_cfg if isinstance(raw_recall_cfg, dict) else {}
+    if _config_bool(recall_cfg.get("include_global"), False):
+        global_bank = str(recall_cfg.get("global_bank_id") or fallback_bank).strip()
+        if global_bank and all(route.bank_id != _sanitize_bank_segment(global_bank) for route in routes):
+            global_types = recall_cfg.get("global_types")
+            routes.append(HindsightBankRoute(
+                name=str(recall_cfg.get("global_name") or "global"),
+                bank_id=_sanitize_bank_segment(global_bank),
+                recall=True,
+                retain=_config_bool(recall_cfg.get("global_retain"), False),
+                recall_tags=_normalize_retain_tags(recall_cfg.get("global_tags")),
+                recall_tags_match=str(recall_cfg.get("global_tags_match") or "any"),
+                recall_types=_normalize_recall_types(global_types, default_recall_types),
+            ))
+    return routes
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -654,6 +1292,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = ""
         self._agent_identity = ""
         self._agent_workspace = ""
+        self._agent_workspace_path = ""
+        self._agent_git_remote = ""
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
@@ -712,6 +1352,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
+        self._hindsight_routes: list[HindsightBankRoute] = [
+            HindsightBankRoute(name="fallback", bank_id=self._bank_id)
+        ]
 
     @property
     def name(self) -> str:
@@ -1250,6 +1893,23 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
+        self._agent_workspace_path = str(kwargs.get("agent_workspace_path") or kwargs.get("workspace_path") or "").strip()
+        self._agent_git_remote = _sanitize_git_remote_for_routing(
+            kwargs.get("agent_git_remote") or kwargs.get("git_remote") or ""
+        )
+        if self._agent_workspace_path:
+            routing_context = _extract_hindsight_routing_context(
+                workspace=self._agent_workspace,
+                workspace_path=self._agent_workspace_path,
+                profile=self._agent_identity,
+                platform=self._platform,
+                user=self._user_id,
+                session=self._session_id,
+                git_remote=self._agent_git_remote,
+                cache_root=get_hermes_home() / "cache",
+                registry_version=str(self._config.get("bank_registry_version") or ""),
+            )
+            self._agent_git_remote = routing_context.git_remote
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0
@@ -1352,6 +2012,22 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+
+        self._hindsight_routes = _resolve_hindsight_routes(
+            self._config,
+            fallback_bank_id=static_bank_id,
+            bank_id_template=self._bank_id_template,
+            profile=self._agent_identity,
+            workspace=self._agent_workspace,
+            workspace_path=self._agent_workspace_path,
+            platform=self._platform,
+            user=self._user_id,
+            session=self._session_id,
+            git_remote=self._agent_git_remote,
+        )
+        primary_routes = [route for route in self._hindsight_routes if route.retain or route.recall]
+        if primary_routes:
+            self._bank_id = primary_routes[0].bank_id
 
         _client_version = "unknown"
         try:
@@ -1495,29 +2171,51 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
+        recall_routes = [route for route in self._hindsight_routes if route.recall]
+        if not recall_routes:
+            logger.debug("Prefetch: skipped (no recall routes)")
+            return
+
         def _run():
             try:
-                if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
-                else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
-                if text:
+                sections: list[str] = []
+                for route in recall_routes:
+                    try:
+                        if self._prefetch_method == "reflect":
+                            logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", route.bank_id, len(query))
+                            resp = self._run_hindsight_operation(lambda client, route=route: client.areflect(bank_id=route.bank_id, query=query, budget=self._budget))
+                            text = resp.text or ""
+                        else:
+                            recall_kwargs: dict = {
+                                "bank_id": route.bank_id, "query": query,
+                                "budget": self._budget, "max_tokens": self._recall_max_tokens,
+                            }
+                            using_provider_recall_tags = route.name == "fallback" and not route.recall_tags
+                            route_tags = route.recall_tags or (self._recall_tags if using_provider_recall_tags else None)
+                            if route_tags:
+                                recall_kwargs["tags"] = route_tags
+                                recall_kwargs["tags_match"] = self._recall_tags_match if using_provider_recall_tags else route.recall_tags_match
+                            route_types = route.recall_types if route.recall_types is not None else self._recall_types
+                            if route_types:
+                                recall_kwargs["types"] = route_types
+                            logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
+                                         route.bank_id, len(query), self._budget)
+                            resp = self._run_hindsight_operation(lambda client, recall_kwargs=recall_kwargs: client.arecall(**recall_kwargs))
+                            num_results = len(resp.results) if resp.results else 0
+                            logger.debug("Prefetch: recall returned %d results", num_results)
+                            text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                        if text:
+                            if len(recall_routes) == 1 and route.name == "fallback":
+                                sections.append(text)
+                            else:
+                                sections.append(f"## Hindsight Memory: {route.name} ({route.bank_id})\n{text}")
+                    except Exception as route_exc:
+                        logger.debug(
+                            "Hindsight prefetch failed for bank %s: %s",
+                            route.bank_id, route_exc, exc_info=True,
+                        )
+                if sections:
+                    text = "\n\n".join(sections)
                     with self._prefetch_lock:
                         self._prefetch_result = text
             except Exception as e:
@@ -1660,31 +2358,41 @@ class HindsightMemoryProvider(MemoryProvider):
             turn_index=self._turn_index,
         )
         num_turns = len(turns_to_retain)
-        bank_id = self._bank_id
+        retain_routes = [route for route in self._hindsight_routes if route.retain]
+        if not retain_routes:
+            logger.debug("sync_turn: no retain-enabled routes")
+            return
         retain_async_flag = self._retain_async
         retain_context = self._retain_context
 
         def _do_retain() -> None:
-            item = self._build_retain_kwargs(
-                content,
-                context=retain_context,
-                metadata=metadata_snapshot,
-                tags=lineage_tags or None,
-            )
-            item.pop("bank_id", None)
-            item.pop("retain_async", None)
-            if update_mode is not None:
-                item["update_mode"] = update_mode
-            logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
-            self._run_hindsight_operation(
-                lambda client: client.aretain_batch(
-                    bank_id=bank_id,
-                    items=[item],
-                    document_id=document_id,
-                    retain_async=retain_async_flag,
-                )
-            )
+            for route in retain_routes:
+                try:
+                    item = self._build_retain_kwargs(
+                        content,
+                        context=retain_context,
+                        metadata=metadata_snapshot,
+                        tags=_merge_tags(route.retain_tags, lineage_tags),
+                    )
+                    item.pop("bank_id", None)
+                    item.pop("retain_async", None)
+                    if update_mode is not None:
+                        item["update_mode"] = update_mode
+                    logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
+                                 route.bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
+                    self._run_hindsight_operation(
+                        lambda client, route=route, item=item: client.aretain_batch(
+                            bank_id=route.bank_id,
+                            items=[item],
+                            document_id=document_id,
+                            retain_async=retain_async_flag,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Hindsight retain failed for routed bank %s: %s",
+                        route.bank_id, e, exc_info=True,
+                    )
             logger.debug("Hindsight retain succeeded")
 
         self._ensure_writer()
@@ -1820,10 +2528,25 @@ class HindsightMemoryProvider(MemoryProvider):
         # everything before mutating self._* so metadata + tags + doc_id
         # all reference the old session consistently.
         if self._session_turns:
-            old_turns = list(self._session_turns)
             old_session_id = self._session_id
             old_parent_session_id = self._parent_session_id
             old_turn_index = self._turn_index
+            # Resolve doc_id + update_mode against the OLD session BEFORE
+            # we rotate _session_id, so the flush lands in the old
+            # session's document either way (legacy: per-process unique;
+            # ≥0.5.0: stable session-scoped + append).
+            old_document_id, old_update_mode = self._resolve_retain_target(
+                self._document_id
+            )
+            if old_update_mode == "append":
+                old_turns = self._session_turns[self._last_retained_turn_count:]
+            else:
+                old_turns = list(self._session_turns)
+            if not old_turns:
+                logger.debug("Hindsight flush-on-switch skipped; no unretained turns")
+            old_retain_routes = [
+                route for route in getattr(self, "_hindsight_routes", []) if route.retain
+            ]
             old_metadata = self._build_metadata(
                 message_count=len(old_turns) * 2,
                 turn_index=old_turn_index,
@@ -1834,40 +2557,37 @@ class HindsightMemoryProvider(MemoryProvider):
             if old_parent_session_id:
                 old_lineage_tags.append(f"parent:{old_parent_session_id}")
             old_content = "[" + ",".join(old_turns) + "]"
-            # Resolve doc_id + update_mode against the OLD session BEFORE
-            # we rotate _session_id, so the flush lands in the old
-            # session's document either way (legacy: per-process unique;
-            # ≥0.5.0: stable session-scoped + append).
-            old_document_id, old_update_mode = self._resolve_retain_target(
-                self._document_id
-            )
 
             def _flush():
-                try:
-                    item = self._build_retain_kwargs(
-                        old_content,
-                        context=self._retain_context,
-                        metadata=old_metadata,
-                        tags=old_lineage_tags or None,
-                    )
-                    item.pop("bank_id", None)
-                    item.pop("retain_async", None)
-                    if old_update_mode is not None:
-                        item["update_mode"] = old_update_mode
-                    logger.debug(
-                        "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
-                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
-                    )
-                    self._run_hindsight_operation(
-                        lambda client: client.aretain_batch(
-                            bank_id=self._bank_id,
-                            items=[item],
-                            document_id=old_document_id,
-                            retain_async=self._retain_async,
+                for route in old_retain_routes:
+                    try:
+                        item = self._build_retain_kwargs(
+                            old_content,
+                            context=self._retain_context,
+                            metadata=old_metadata,
+                            tags=_merge_tags(route.retain_tags, old_lineage_tags),
                         )
-                    )
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
+                        item.pop("bank_id", None)
+                        item.pop("retain_async", None)
+                        if old_update_mode is not None:
+                            item["update_mode"] = old_update_mode
+                        logger.debug(
+                            "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
+                            route.bank_id, old_document_id, old_update_mode, len(old_turns),
+                        )
+                        self._run_hindsight_operation(
+                            lambda client, route=route, item=item: client.aretain_batch(
+                                bank_id=route.bank_id,
+                                items=[item],
+                                document_id=old_document_id,
+                                retain_async=self._retain_async,
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Hindsight flush-on-switch failed for routed bank %s: %s",
+                            route.bank_id, e, exc_info=True,
+                        )
 
             # Route the flush through the same writer queue sync_turn
             # uses. That serializes it behind any still-queued retains
@@ -1875,7 +2595,7 @@ class HindsightMemoryProvider(MemoryProvider):
             # two threads on aretain_batch against the same document, and
             # keeps shutdown's drain semantics intact. Skip enqueue if
             # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
+            if old_turns and old_retain_routes and not self._shutting_down.is_set():
                 self._ensure_writer()
                 self._register_atexit()
                 self._retain_queue.put(_flush)
@@ -1888,8 +2608,11 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_result = ""
 
         # 3. Now rotate to the new session.
-        if parent_session_id:
-            self._parent_session_id = str(parent_session_id).strip()
+        parent_id = str(parent_session_id or "").strip()
+        if parent_id and parent_id != new_id:
+            self._parent_session_id = parent_id
+        elif parent_id == new_id:
+            self._parent_session_id = ""
         self._session_id = new_id
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"

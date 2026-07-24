@@ -821,7 +821,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // No selection → fall through so the TUI receives Ctrl+C / Ctrl+Shift+C.
       }
 
-      if (pasteModifier && ev.key.toLowerCase() === "v") {
+      if (pasteModifier && isPasteKey) {
         // preventDefault suppresses the DOM paste event, so image paste must
         // be handled here via clipboard.read() — readText() alone misses
         // image-only clipboards (the Discord / #24860 failure mode).
@@ -1262,7 +1262,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // traffic during reconnect/closed states.
         if (SGR_MOUSE_RE.test(data)) {
           if (!isSgrWheelReport(data) || ws.readyState !== WebSocket.OPEN) {
-          return;
+            return;
+          }
         }
 
         if (
@@ -1683,7 +1684,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   "h-10 min-w-14 rounded border border-current/40 px-3 text-base font-bold",
                   "bg-black/55 backdrop-blur-sm text-white opacity-90",
                 )}
-                style={{ color: TERMINAL_THEME_STATIC.foreground }}
+                style={{ color: terminalFg }}
                 aria-label="Scroll older output"
                 title="Scroll older output"
               >
@@ -1701,7 +1702,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   "h-10 min-w-14 rounded border border-current/40 px-3 text-base font-bold",
                   "bg-black/55 backdrop-blur-sm text-white opacity-90",
                 )}
-                style={{ color: TERMINAL_THEME_STATIC.foreground }}
+                style={{ color: terminalFg }}
                 aria-label="Scroll newer output"
                 title="Scroll newer output"
               >
@@ -1725,7 +1726,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bottom-10 right-2 px-2 py-1 text-xs sm:bottom-12 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-14 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            style={{ color: terminalFg }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />

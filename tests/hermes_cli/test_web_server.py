@@ -7444,9 +7444,11 @@ class TestNewEndpoints:
 
     def test_terminal_ssh_probe_reports_missing_keys(self, monkeypatch):
         """SSH without host/user config lists the missing terminal.* keys."""
+        import hermes_cli.config as hermes_config
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(web_server.shutil, "which", lambda name: None)
+        monkeypatch.setattr(hermes_config, "get_env_value", lambda name, default=None: default)
 
         body = self.client.get("/api/tools/terminal/backends").json()
         ssh = next(r for r in body["backends"] if r["name"] == "ssh")

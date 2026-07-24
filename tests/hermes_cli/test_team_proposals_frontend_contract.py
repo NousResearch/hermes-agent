@@ -81,11 +81,13 @@ def test_team_command_center_clean_restart_is_kanban_first_and_archives_legacy()
     assert 'Sviluppa' in source
     assert 'Scarta' in source
     assert 'reviewTeamProposalAsChief' in source
-    assert 'convertTeamProposalToPlan(editingProposal.id, preview.preview_hash, config.board)' in source
+    assert 'setPendingPlanConfirmation({ proposal: updated.proposal ?? editingProposal, preview })' in source
+    assert 'convertTeamProposalToPlan(proposal.id, preview.preview_hash, config.board)' in source
     assert 'Standby — interessano, non ora' in source
     assert 'non bloccano nuove proposte' in source
     assert 'Modifica prima di sviluppare' in source
-    assert 'Salva e lancia piano ready' in source
+    assert 'Salva e mostra preview piano' in source
+    assert 'Conferma e prepara piano Kanban' in source
     assert 'updateTeamProposal(editingProposal.id' in source
     assert '| "standby"' in api_ts
     assert 'formulated_at?: string;' in api_ts

@@ -74,10 +74,10 @@ changes.
 
 ## Milestone 6 — Completion
 
-- [ ] Run the complete repository verification matrix.
+- [x] Run the complete repository verification matrix.
 - [x] Reconcile documentation with observed behavior.
 - [x] Produce a concise operator guide for this machine.
-- [ ] Confirm the worktree is intentional and all changes are committed.
+- [x] Confirm the worktree is intentional and all changes are committed.
 - [x] Record remaining items that truly require credentials, external services,
       hardware, or user decisions.
 
@@ -139,6 +139,13 @@ changes.
   audit reports zero vulnerabilities. Hermes OSV reports zero high/critical
   findings; setuptools 81 retains one moderate macOS-only finding because the
   fixed 83.x line conflicts with the documented Torch `<82` constraint.
+- 2026-07-24: Final post-upgrade verification completed. The full Python run
+  exercised every test file; its only two assertion failures were metadata-pin
+  drift corrected during the run, while the context-compressor file exceeded
+  the per-file runner timeout under concurrent model load. An isolated rerun
+  of those three files then passed all 230 tests in 386.05 seconds. Root Node
+  checks, all four production builds, Ruff, CLI/ACP diagnostics, Docker Compose
+  validation, npm audit, and the high-severity OSV gate also passed.
 - 2026-07-24: Tracked-file secret-pattern scan found no candidates outside
   explicit examples, documentation, redaction fixtures, skills, and tests.
 - 2026-07-24: Clean-start, setup, non-interactive CLI, installer divergence,

@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -830,23 +831,272 @@ def load_on_disk_store() -> "MemoryStore":
     return store
 
 
+def _pending_entries_sha256(entries: List[str]) -> str:
+    canonical = json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _project_pending_entries(
+    payload: Dict[str, Any], entries: List[str], limit: int,
+) -> List[str]:
+    action = payload.get("action")
+    operations = payload.get("operations") if action == "batch" else [payload]
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("invalid pending memory operations")
+    working = list(entries)
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise ValueError("invalid pending memory operation")
+        current_action = operation.get("action")
+        content = (operation.get("content") or "").strip()
+        old_text = (operation.get("old_text") or "").strip()
+        if current_action in {"add", "replace"}:
+            if not content or _scan_memory_content(content):
+                raise ValueError("invalid pending memory content")
+        if current_action == "add":
+            if content not in working:
+                working.append(content)
+            continue
+        if current_action not in {"replace", "remove"} or not old_text:
+            raise ValueError("invalid pending memory operation")
+        matches = [index for index, entry in enumerate(working) if old_text in entry]
+        if not matches or len({working[index] for index in matches}) > 1:
+            raise ValueError("stale pending memory operation")
+        index = matches[0]
+        if current_action == "replace":
+            working[index] = content
+        else:
+            working.pop(index)
+    if len(ENTRY_DELIMITER.join(working)) > limit:
+        raise ValueError("pending memory result exceeds limit")
+    return working
+
+
+def prepare_memory_pending_replay(
+    payload: Dict[str, Any], store: "MemoryStore",
+) -> Dict[str, Any]:
+    """Persistable precondition/result state for crash-convergent replay."""
+    if payload.get("action") == "fact_store" or "_replay_state" in payload:
+        return payload
+    target = payload.get("target", "memory")
+    if target not in {"memory", "user"}:
+        raise ValueError("invalid pending memory target")
+    with store._file_lock(store._path_for(target)):
+        if store._reload_target(target):
+            raise ValueError("pending memory target has external drift")
+        current = list(store._entries_for(target))
+        desired = _project_pending_entries(payload, current, store._char_limit(target))
+    prepared = dict(payload)
+    prepared["_replay_state"] = {
+        "schema": "hermes-memory-replay-state/v1",
+        "target": target,
+        "expected_sha256": _pending_entries_sha256(current),
+        "result_sha256": _pending_entries_sha256(desired),
+        "result_entries": desired,
+    }
+    return prepared
+
+
+def classify_memory_write_tier(
+    *,
+    target: Optional[str] = "memory",
+    action: Optional[str] = None,
+    content: Optional[str] = None,
+    old_text: Optional[str] = None,
+    operations: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Public content-free mapping API for pending-memory drain tooling."""
+    from tools import write_approval as wa
+
+    operation_shape = "batch" if operations is not None or action == "batch" else (action or "unknown")
+    if operations is not None:
+        decision = wa.classify_memory_batch(
+            target=target or "memory",
+            operations=operations,
+        )
+    else:
+        decision = wa.classify_memory_write(
+            target=target or "memory",
+            content=content,
+            old_text=old_text,
+        )
+    return {
+        "tier": decision.tier.value.lower(),
+        "operation_shape": operation_shape,
+        "reason_codes": list(decision.reason_codes),
+    }
+
+
+_MEMORY_WRITE_GATE_UNAVAILABLE = {
+    "success": False,
+    "marker": "MEMORY_WRITE_GATE_UNAVAILABLE",
+    "error": "Memory write approval is configured but unavailable.",
+}
+
+_MEMORY_FLEET_DRAIN_ACTIVE = {
+    "success": False,
+    "marker": "MEMORY_FLEET_DRAIN_ACTIVE",
+    "error": "MEMORY_FLEET_DRAIN_ACTIVE",
+}
+
+
+def _normalize_enabled(value: Any) -> bool:
+    """Normalize the gate flag without importing the write-approval module."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
+    return False
+
+
+def _normalize_enabled_string(value: str) -> bool:
+    return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
+
+
+def _memory_write_approval_configured() -> bool:
+    """Read the native gate flag without depending on the gate module."""
+    try:
+        from hermes_cli.config import load_config
+
+        memory_config = (load_config() or {}).get("memory", {}) or {}
+        if not isinstance(memory_config, dict):
+            return True
+        return _normalize_enabled(memory_config.get("write_approval", False))
+    except Exception:
+        # A broken config path cannot establish that the gate is disabled.
+        return True
+
+
+def _write_approval_import_failure() -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    if not _memory_write_approval_configured():
+        return None, None
+    return json.dumps(_MEMORY_WRITE_GATE_UNAVAILABLE), None
+
+
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
-    """Evaluate the memory write gate. Returns a JSON tool-result string when
-    the write should NOT proceed normally (blocked or staged), or None when the
-    caller should perform the real write.
+                      old_text: Optional[str]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Return an optional gate response and direct-apply audit context.
 
     Only the mutating actions (add/replace/remove) are gated.
     """
     if action not in {"add", "replace", "remove"}:
-        return None
+        return None, None
 
     try:
         from tools import write_approval as wa
     except Exception:
-        # If the gate module can't load, fail open (current behaviour) rather
-        # than blocking all memory writes.
-        return None
+        return _write_approval_import_failure()
+
+    try:
+        gate_active = wa.memory_write_gate_active()
+    except wa.MemoryWriteConfigError:
+        # Config unreadable/malformed: fail CLOSED — refuse rather than perform
+        # an ungated direct write.
+        return json.dumps(_MEMORY_WRITE_GATE_UNAVAILABLE), None
+    if gate_active:
+        try:
+            tiered = wa.classify_memory_write(
+                target=target,
+                content=content,
+                old_text=old_text,
+            )
+            audit = wa._audit_memory_decision_fail_safe(
+                tiered,
+                action=action,
+                target=target,
+                store="builtin",
+                content=content,
+                old_text=old_text,
+            )
+            audit_context = wa.memory_audit_context(audit)
+            remediation = False
+            if tiered.tier is wa.MemoryWriteTier.TIER2 and action in {"replace", "remove"}:
+                replacement = wa.classify_memory_write(target=target, content=content)
+                remediation = replacement.tier is not wa.MemoryWriteTier.TIER2
+                if remediation:
+                    if audit.get("_durable"):
+                        return None, audit_context
+                    wa._audit_memory_lifecycle_fail_safe(
+                        "failed", audit_context, failure_code="audit_sink_unavailable",
+                    )
+                    return json.dumps({
+                        "success": False,
+                        "tier": tiered.tier.value,
+                        "marker": wa.MEMORY_SECRET_REJECT,
+                        "reason_codes": list(tiered.reason_codes),
+                        "content_sha256": audit["content_sha256"],
+                        "error": "Secret remediation was not applied because the durable audit was unavailable.",
+                    }), None
+            if tiered.tier is wa.MemoryWriteTier.TIER0:
+                if audit.get("_durable"):
+                    return None, audit_context
+                payload = {
+                    "action": action,
+                    "target": target,
+                    "content": content,
+                    "old_text": old_text,
+                    "_memory_audit": audit_context,
+                }
+                record = wa.stage_write(
+                    wa.MEMORY,
+                    payload,
+                    summary=(
+                        f"Tier0 {target} {action} (audit unavailable; redacted; "
+                        f"sha256:{audit['content_sha256'][:12]})"
+                    ),
+                    origin=wa.current_origin(),
+                )
+                return json.dumps({
+                    "success": True,
+                    "staged": True,
+                    "tier": tiered.tier.value,
+                    "reason_codes": list(tiered.reason_codes),
+                    "content_sha256": audit["content_sha256"],
+                    "pending_id": record["id"],
+                    "message": "Staged because the durable memory audit was unavailable.",
+                }), None
+            if tiered.tier is wa.MemoryWriteTier.TIER2:
+                wa._audit_memory_lifecycle_fail_safe("rejected", audit_context)
+                return json.dumps({
+                    "success": False,
+                    "tier": tiered.tier.value,
+                    "marker": wa.MEMORY_SECRET_REJECT,
+                    "reason_codes": list(tiered.reason_codes),
+                    "content_sha256": audit["content_sha256"],
+                    "error": "Memory write rejected because it matched a secret signature.",
+                }), None
+
+            payload = {
+                "action": action,
+                "target": target,
+                "content": content,
+                "old_text": old_text,
+                "_memory_audit": audit_context,
+            }
+            record = wa.stage_write(
+                wa.MEMORY,
+                payload,
+                summary=(
+                    f"Tier1 {target} {action} (redacted; "
+                    f"sha256:{audit['content_sha256'][:12]})"
+                ),
+                origin=wa.current_origin(),
+            )
+            return json.dumps({
+                "success": True,
+                "staged": True,
+                "tier": tiered.tier.value,
+                "reason_codes": list(tiered.reason_codes),
+                "content_sha256": audit["content_sha256"],
+                "pending_id": record["id"],
+                "message": "Staged for approval. Not yet saved; review with /memory pending.",
+            }), None
+        except wa.PendingWriteError as exc:
+            logger.error("Tiered memory staging failed: %s", exc)
+            return tool_error(str(exc), success=False), None
+        except Exception as exc:
+            # Classification/audit failures never bypass the native gate.
+            logger.error("Tiered memory classification failed; using ordinary write gate: %s", exc)
 
     # Build a small inline summary/detail for the foreground approval prompt.
     label = "user profile" if target == "user" else "memory"
@@ -863,10 +1113,10 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
 
     if decision.allow:
-        return None
+        return None, None
 
     if decision.blocked:
-        return tool_error(decision.message, success=False)
+        return tool_error(decision.message, success=False), None
 
     # stage
     payload = {
@@ -875,19 +1125,24 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except wa.PendingWriteError as exc:
+        return tool_error(str(exc), success=False), None
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
         ensure_ascii=False,
-    )
+    ), None
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(
+    target: str, operations: List[Dict[str, Any]],
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -897,7 +1152,92 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     try:
         from tools import write_approval as wa
     except Exception:
-        return None
+        return _write_approval_import_failure()
+
+    try:
+        gate_active = wa.memory_write_gate_active()
+    except wa.MemoryWriteConfigError:
+        # Config unreadable/malformed: fail CLOSED — refuse rather than perform
+        # an ungated direct write.
+        return json.dumps(_MEMORY_WRITE_GATE_UNAVAILABLE), None
+    if gate_active:
+        try:
+            tiered = wa.classify_memory_batch(target=target, operations=operations)
+            audit = wa._audit_memory_decision_fail_safe(
+                tiered,
+                action="batch",
+                target=target,
+                store="builtin",
+                content=operations,
+            )
+            audit_context = wa.memory_audit_context(audit)
+            if tiered.tier is wa.MemoryWriteTier.TIER0:
+                if audit.get("_durable"):
+                    return None, audit_context
+                payload = {
+                    "action": "batch",
+                    "target": target,
+                    "operations": operations,
+                    "_memory_audit": audit_context,
+                }
+                record = wa.stage_write(
+                    wa.MEMORY,
+                    payload,
+                    summary=(
+                        f"Tier0 {target} batch (audit unavailable; redacted; "
+                        f"sha256:{audit['content_sha256'][:12]})"
+                    ),
+                    origin=wa.current_origin(),
+                )
+                return json.dumps({
+                    "success": True,
+                    "staged": True,
+                    "tier": tiered.tier.value,
+                    "reason_codes": list(tiered.reason_codes),
+                    "content_sha256": audit["content_sha256"],
+                    "pending_id": record["id"],
+                    "message": "Atomic batch staged because the durable memory audit was unavailable.",
+                }), None
+            if tiered.tier is wa.MemoryWriteTier.TIER2:
+                wa._audit_memory_lifecycle_fail_safe("rejected", audit_context)
+                return json.dumps({
+                    "success": False,
+                    "tier": tiered.tier.value,
+                    "marker": wa.MEMORY_SECRET_REJECT,
+                    "reason_codes": list(tiered.reason_codes),
+                    "content_sha256": audit["content_sha256"],
+                    "error": "Atomic memory batch rejected because it matched a secret signature.",
+                }), None
+
+            payload = {
+                "action": "batch",
+                "target": target,
+                "operations": operations,
+                "_memory_audit": audit_context,
+            }
+            record = wa.stage_write(
+                wa.MEMORY,
+                payload,
+                summary=(
+                    f"Tier1 {target} batch ({len(operations)} operations; redacted; "
+                    f"sha256:{audit['content_sha256'][:12]})"
+                ),
+                origin=wa.current_origin(),
+            )
+            return json.dumps({
+                "success": True,
+                "staged": True,
+                "tier": tiered.tier.value,
+                "reason_codes": list(tiered.reason_codes),
+                "content_sha256": audit["content_sha256"],
+                "pending_id": record["id"],
+                "message": "Atomic batch staged for approval. No operations were applied.",
+            }), None
+        except wa.PendingWriteError as exc:
+            logger.error("Tiered memory batch staging failed: %s", exc)
+            return tool_error(str(exc), success=False), None
+        except Exception as exc:
+            logger.error("Tiered memory batch classification failed; using ordinary write gate: %s", exc)
 
     label = "user profile" if target == "user" else "memory"
     summary = f"apply {len(operations)} op(s) to {label}"
@@ -916,22 +1256,25 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
 
     if decision.allow:
-        return None
+        return None, None
 
     if decision.blocked:
-        return tool_error(decision.message, success=False)
+        return tool_error(decision.message, success=False), None
 
     payload = {"action": "batch", "target": target, "operations": operations}
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
-    )
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"{summary}: {detail[:120]}",
+            origin=wa.current_origin(),
+        )
+    except wa.PendingWriteError as exc:
+        return tool_error(str(exc), success=False), None
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
         ensure_ascii=False,
-    )
+    ), None
 
 
 def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> str:
@@ -966,7 +1309,7 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
     )
 
 
-def memory_tool(
+def _memory_tool_uncoordinated(
     action: str = None,
     target: str = "memory",
     content: str = None,
@@ -1000,10 +1343,25 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result, audit_context = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
-        result = store.apply_batch(target, operations)
+        try:
+            result = store.apply_batch(target, operations)
+        except Exception:
+            if audit_context:
+                from tools import write_approval as wa
+                wa._audit_memory_lifecycle_fail_safe(
+                    "failed", audit_context, failure_code="direct_apply_exception",
+                )
+            raise
+        if audit_context:
+            from tools import write_approval as wa
+            wa._audit_memory_lifecycle_fail_safe(
+                "applied" if result.get("success") else "failed",
+                audit_context,
+                failure_code=None if result.get("success") else "direct_apply_failed",
+            )
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
@@ -1025,23 +1383,78 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result, audit_context = _apply_write_gate(action, target, content, old_text)
     if gate_result is not None:
         return gate_result
 
-    if action == "add":
-        result = store.add(target, content)
+    try:
+        if action == "add":
+            result = store.add(target, content)
 
-    elif action == "replace":
-        result = store.replace(target, old_text, content)
+        elif action == "replace":
+            result = store.replace(target, old_text, content)
 
-    elif action == "remove":
-        result = store.remove(target, old_text)
+        elif action == "remove":
+            result = store.remove(target, old_text)
 
-    else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        else:
+            return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+    except Exception:
+        if audit_context:
+            from tools import write_approval as wa
+            wa._audit_memory_lifecycle_fail_safe(
+                "failed", audit_context, failure_code="direct_apply_exception",
+            )
+        raise
 
+    if audit_context:
+        from tools import write_approval as wa
+        wa._audit_memory_lifecycle_fail_safe(
+            "applied" if result.get("success") else "failed",
+            audit_context,
+            failure_code=None if result.get("success") else "direct_apply_failed",
+        )
     return json.dumps(result, ensure_ascii=False)
+
+
+def memory_tool(
+    action: str = None,
+    target: str = "memory",
+    content: str = None,
+    old_text: str = None,
+    operations: Optional[List[Dict[str, Any]]] = None,
+    store: Optional[MemoryStore] = None,
+) -> str:
+    """Dispatch a memory operation under fleet-drain coordination when enabled."""
+    arguments = (action, target, content, old_text, operations, store)
+    if action not in {"add", "replace", "remove"} and not operations:
+        return _memory_tool_uncoordinated(*arguments)
+
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        return _memory_tool_uncoordinated(*arguments)
+
+    try:
+        gate_active = wa.memory_write_gate_active()
+    except wa.MemoryWriteConfigError:
+        # Config unreadable/malformed: fail CLOSED — refuse rather than perform
+        # an ungated direct write.
+        return json.dumps(_MEMORY_WRITE_GATE_UNAVAILABLE)
+    if not gate_active:
+        return _memory_tool_uncoordinated(*arguments)
+
+    if operations:
+        try:
+            with wa.memory_write_coordination():
+                return _memory_tool_uncoordinated(*arguments)
+        except wa.MemoryFleetDrainActiveError:
+            return json.dumps(_MEMORY_FLEET_DRAIN_ACTIVE)
+    try:
+        with wa.memory_write_coordination():
+            return _memory_tool_uncoordinated(*arguments)
+    except wa.MemoryFleetDrainActiveError:
+        return json.dumps(_MEMORY_FLEET_DRAIN_ACTIVE)
 
 
 def check_memory_requirements() -> bool:
@@ -1049,7 +1462,13 @@ def check_memory_requirements() -> bool:
     return True
 
 
-def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+def apply_memory_pending(
+    payload: Dict[str, Any],
+    store: "MemoryStore",
+    *,
+    replay_key: str | None = None,
+    replay_payload_sha256: str | None = None,
+) -> Dict[str, Any]:
     """Replay a staged memory write directly against the store, bypassing the
     write gate. Called by the /memory approve handler.
 
@@ -1059,15 +1478,58 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target = payload.get("target", "memory")
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
-    if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
-    if action == "add":
-        return store.add(target, content)
-    if action == "replace":
-        return store.replace(target, old_text, content)
-    if action == "remove":
-        return store.remove(target, old_text)
-    return {"success": False, "error": f"Unknown staged action '{action}'."}
+    replay_state = payload.get("_replay_state")
+    if isinstance(replay_state, dict):
+        desired = replay_state.get("result_entries")
+        if (
+            replay_state.get("schema") != "hermes-memory-replay-state/v1"
+            or replay_state.get("target") != target
+            or not isinstance(desired, list)
+            or any(not isinstance(entry, str) for entry in desired)
+            or _pending_entries_sha256(desired) != replay_state.get("result_sha256")
+        ):
+            return {"success": False, "error": "Invalid pending replay state."}
+        with store._file_lock(store._path_for(target)):
+            if store._reload_target(target):
+                return {"success": False, "error": "Memory target has external drift."}
+            current_hash = _pending_entries_sha256(store._entries_for(target))
+            if current_hash == replay_state["result_sha256"]:
+                result = store._success_response(target, "Pending write was already applied.")
+            elif current_hash != replay_state.get("expected_sha256"):
+                result = {"success": False, "error": "Pending memory target changed since staging."}
+            else:
+                store._set_entries(target, list(desired))
+                store.save_to_disk(target)
+                result = store._success_response(target, "Pending write applied.")
+    elif action == "fact_store" and payload.get("store") == "holographic":
+        from plugins.memory.holographic import apply_holographic_pending
+        result = apply_holographic_pending(
+            payload.get("args") or {},
+            config=payload.get("provider_config") or None,
+            expected_fact_sha256=payload.get("expected_fact_sha256"),
+            replay_key=replay_key,
+            replay_payload_sha256=replay_payload_sha256,
+        )
+    elif action == "batch":
+        result = store.apply_batch(target, payload.get("operations") or [])
+    elif action == "add":
+        result = store.add(target, content)
+    elif action == "replace":
+        result = store.replace(target, old_text, content)
+    elif action == "remove":
+        result = store.remove(target, old_text)
+    else:
+        result = {"success": False, "error": f"Unknown staged action '{action}'."}
+
+    audit_context = payload.get("_memory_audit")
+    if isinstance(audit_context, dict):
+        from tools import write_approval as wa
+        wa._audit_memory_lifecycle_fail_safe(
+            "applied" if result.get("success") else "failed",
+            audit_context,
+            failure_code=None if result.get("success") else "pending_apply_failed",
+        )
+    return result
 # OpenAI Function-Calling Schema
 # =============================================================================
 
@@ -1156,7 +1618,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

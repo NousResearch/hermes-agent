@@ -6,6 +6,7 @@ Single-user Hermes memory store plugin.
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -150,7 +151,13 @@ class MemoryStore:
                     isolation_level=None,
                 )
                 conn.row_factory = sqlite3.Row
-                entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                entry = {
+                    "conn": conn,
+                    "lock": threading.RLock(),
+                    "refs": 0,
+                    "ready": False,
+                    "transaction_depth": 0,
+                }
                 MemoryStore._shared[self._key] = entry
             entry["refs"] += 1
             self._entry = entry
@@ -162,6 +169,30 @@ class MemoryStore:
             if not self._entry["ready"]:
                 self._init_db()
                 self._entry["ready"] = True
+
+    def _commit(self) -> None:
+        if self._entry["transaction_depth"] == 0:
+            self._conn.commit()
+
+    @contextmanager
+    def transaction(self):
+        """Run store mutation and secondary maintenance as one SQLite unit."""
+        with self._lock:
+            outermost = self._entry["transaction_depth"] == 0
+            if outermost:
+                self._conn.execute("BEGIN IMMEDIATE")
+            self._entry["transaction_depth"] += 1
+            try:
+                yield
+            except Exception:
+                self._entry["transaction_depth"] -= 1
+                if outermost:
+                    self._conn.rollback()
+                raise
+            else:
+                self._entry["transaction_depth"] -= 1
+                if outermost:
+                    self._conn.commit()
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -179,7 +210,7 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
-        self._conn.commit()
+        self._commit()
 
     # ------------------------------------------------------------------
     # Public API
@@ -210,14 +241,26 @@ class MemoryStore:
                     """,
                     (content, category, tags, self.default_trust),
                 )
-                self._conn.commit()
+                self._commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
             except sqlite3.IntegrityError:
                 # Duplicate content — return existing id
                 row = self._conn.execute(
                     "SELECT fact_id FROM facts WHERE content = ?", (content,)
                 ).fetchone()
-                return int(row["fact_id"])
+                fact_id = int(row["fact_id"])
+                # A prior attempt committed this primary row but may have crashed
+                # before secondary maintenance (entity links, HRR vector, bank
+                # rebuild) completed. Re-run it idempotently so a retried add
+                # never reports success on a partially-applied fact; if secondary
+                # maintenance fails the exception propagates and the caller does
+                # NOT report success.
+                for name in self._extract_entities(content):
+                    entity_id = self._resolve_entity(name)
+                    self._link_fact_entity(fact_id, entity_id)
+                self._compute_hrr_vector(fact_id, content)
+                self._rebuild_bank(category)
+                return int(fact_id)
 
             # Entity extraction and linking
             for name in self._extract_entities(content):
@@ -284,7 +327,7 @@ class MemoryStore:
                     f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
                     ids,
                 )
-                self._conn.commit()
+                self._commit()
 
             return results
 
@@ -329,7 +372,7 @@ class MemoryStore:
                 f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
                 params,
             )
-            self._conn.commit()
+            self._commit()
 
             # If content changed, re-extract entities
             if content is not None:
@@ -339,7 +382,7 @@ class MemoryStore:
                 for name in self._extract_entities(content):
                     entity_id = self._resolve_entity(name)
                     self._link_fact_entity(fact_id, entity_id)
-                self._conn.commit()
+                self._commit()
 
             # Recompute HRR vector if content changed
             if content is not None:
@@ -365,7 +408,7 @@ class MemoryStore:
                 "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
             )
             self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
-            self._conn.commit()
+            self._commit()
             self._rebuild_bank(row["category"])
             return True
 
@@ -431,7 +474,7 @@ class MemoryStore:
                 """,
                 (new_trust, helpful_increment, fact_id),
             )
-            self._conn.commit()
+            self._commit()
 
             return {
                 "fact_id":      fact_id,
@@ -506,7 +549,7 @@ class MemoryStore:
         cur = self._conn.execute(
             "INSERT INTO entities (name) VALUES (?)", (name,)
         )
-        self._conn.commit()
+        self._commit()
         return int(cur.lastrowid)  # type: ignore[return-value]
 
     def _link_fact_entity(self, fact_id: int, entity_id: int) -> None:
@@ -518,7 +561,7 @@ class MemoryStore:
             """,
             (fact_id, entity_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def _compute_hrr_vector(self, fact_id: int, content: str) -> None:
         """Compute and store HRR vector for a fact. No-op if numpy unavailable."""
@@ -542,7 +585,7 @@ class MemoryStore:
                 "UPDATE facts SET hrr_vector = ? WHERE fact_id = ?",
                 (hrr.phases_to_bytes(vector), fact_id),
             )
-            self._conn.commit()
+            self._commit()
 
     def _rebuild_bank(self, category: str) -> None:
         """Full rebuild of a category's memory bank from all its fact vectors."""
@@ -558,7 +601,7 @@ class MemoryStore:
 
             if not rows:
                 self._conn.execute("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
-                self._conn.commit()
+                self._commit()
                 return
 
             vectors = [hrr.bytes_to_phases(row["hrr_vector"]) for row in rows]
@@ -580,7 +623,7 @@ class MemoryStore:
                 """,
                 (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, fact_count),
             )
-            self._conn.commit()
+            self._commit()
 
     def rebuild_all_vectors(self, dim: int | None = None) -> int:
         """Recompute all HRR vectors + banks from text. For recovery/migration.

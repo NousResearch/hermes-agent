@@ -622,6 +622,34 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
+    """Refuse writes to org-mirror skills (M2, contract §11.11 / design §7.1).
+
+    The ``_org/`` mirror is materialized FROM the org HEAD and overwritten on
+    every pull — a local edit would be silently lost AND would misrepresent
+    admin-approved shared content. The change path is: fork into a personal
+    skill, edit, then ``hermes skills propose``.
+    """
+    try:
+        from agent.skill_utils import is_org_mirror_path
+
+        if is_org_mirror_path(skill_path, _skills_dir()):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing {action} for '{name}': it is an ORG-SHARED "
+                    "skill (read-only mirror of your org's approved set; "
+                    "local edits are overwritten on every org pull). To "
+                    "change it: copy it to a personal skill, edit that, then "
+                    "`hermes skills propose <name>` so an org admin can "
+                    "review and approve."
+                ),
+            }
+    except Exception:
+        logger.debug("org mirror guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     """Look for ``name`` under SKILL.md across OTHER Hermes profiles.
 
@@ -891,6 +919,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    org_guard = _org_mirror_write_guard(name, existing["path"], "edit")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, existing["path"], "edit")
     if guard:
         return guard
@@ -953,6 +984,9 @@ def _patch_skill(
         return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
+    org_guard = _org_mirror_write_guard(name, skill_dir, "patch")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, skill_dir, "patch")
     if guard:
         return guard
@@ -1059,6 +1093,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    org_guard = _org_mirror_write_guard(name, existing["path"], "delete")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, existing["path"], "delete")
     if guard:
         return guard
@@ -1176,6 +1213,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
+    org_guard = _org_mirror_write_guard(name, existing["path"], "write_file")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, existing["path"], "write_file")
     if guard:
         return guard

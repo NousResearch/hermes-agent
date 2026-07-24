@@ -815,8 +815,13 @@ class SimplexAdapter(BasePlatformAdapter):
         because the bracket chat-command syntax (``#[<id>] text``) is
         parsed by the daemon as a display-name lookup, which silently
         drops when the group's display name isn't the literal ID. DMs
-        use the simple ``@<id> text`` form which has always worked in
-        production.
+        use the structured ``/_send @<id> json [...]`` form for the
+        same reason: the bare ``@<id> text`` chat-command form parses
+        ``@<n>`` as a *display-name* lookup, so a numeric ``contactId``
+        (e.g. ``6``) yields ``chatCmdError { contactNotFound }`` and the
+        reply silently drops (see ``test_send_dm``). Addressing by
+        numeric ID via ``/_send`` and escaping via ``json.dumps`` makes
+        the DM text path consistent with every other send path.
 
         The call is fire-and-forget at the WebSocket level: the daemon
         doesn't always return a corrId reply for chat commands, and
@@ -838,7 +843,13 @@ class SimplexAdapter(BasePlatformAdapter):
                 )
                 cmd_str = f"/_send #{chat_id[6:]} json {composed}"
             else:
-                cmd_str = f"@{chat_id} {content}"
+                # Structured form: address DMs by numeric contactId. The
+                # bare "@<id> text" form is parsed as a display-name lookup
+                # and silently drops for numeric contactIds.
+                composed = json.dumps(
+                    [{"msgContent": {"type": "text", "text": content}}]
+                )
+                cmd_str = f"/_send @{chat_id} json {composed}"
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 
@@ -1198,8 +1209,13 @@ async def _standalone_send(
             )
             cmd_str = f"/_send #{group_id} json {composed}"
         else:
-            # Direct contacts are addressed by display name without brackets.
-            cmd_str = f"@{chat_id} {message}"
+            # Direct contacts addressed by numeric contactId via the structured
+            # form (same as send()); the bare "@<id> text" form is parsed as a
+            # display-name lookup and silently drops for numeric contactIds.
+            composed = json.dumps(
+                [{"msgContent": {"type": "text", "text": message}}]
+            )
+            cmd_str = f"/_send @{chat_id} json {composed}"
 
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",

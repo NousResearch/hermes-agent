@@ -355,17 +355,28 @@ class TestSendRouting:
         assert not result.success
         assert "network" in result.error
 
-    def test_send_pending_button_caches_response(self, adapter):
+    def test_send_pending_button_auto_pushes_and_marks_delivered(self, adapter):
         # Simulate that the slow-LLM postback button has fired.
         rid = adapter._cache.register_pending("Uchat")
         adapter._pending_buttons["Uchat"] = rid
         result = asyncio.run(adapter.send("Uchat", "the answer"))
         assert result.success
-        # Response must have been cached, not pushed/replied.
+        # The answer remains cached for the old button, but it is also
+        # pushed automatically so the chat does not appear stuck.
         adapter._client.reply.assert_not_called()
-        adapter._client.push.assert_not_called()
-        assert adapter._cache.get(rid).state is State.READY
+        adapter._client.push.assert_called_once()
+        assert adapter._cache.get(rid).state is State.DELIVERED
         assert adapter._cache.get(rid).payload == "the answer"
+        assert "Uchat" not in adapter._pending_buttons
+
+    def test_force_push_does_not_consume_reply_token(self, adapter):
+        import time as _time
+        adapter._reply_tokens["Uchat"] = ("rt-token", _time.time() + 30)
+        result = asyncio.run(adapter._send_text_chunks("Uchat", "hello", force_push=True))
+        assert result.success
+        adapter._client.reply.assert_not_called()
+        adapter._client.push.assert_called_once()
+        assert adapter._reply_tokens["Uchat"][0] == "rt-token"
 
     def test_send_system_bypass_skips_postback_cache(self, adapter):
         # Even with a pending button, system busy-acks must surface visibly.

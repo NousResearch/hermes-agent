@@ -373,6 +373,47 @@ def test_pricing_can_force_fresh_nous_tier():
     mock_free.assert_called_once_with(force_fresh=True)
 
 
+def test_pricing_free_tier_keeps_portal_free_models_selectable():
+    """Free-tier Nous gating must mirror the CLI picker.
+
+    The Portal advertises free models that may not yet be in the live
+    pricing map; ``union_with_portal_free_recommendations`` carries synthetic
+    ``0`` pricing for them. ``_apply_pricing`` must partition on that
+    augmented pricing — otherwise a genuinely-free Portal model gets gated as
+    paid (``unavailable``) and grayed out for free-tier users, diverging from
+    the ``hermes model`` CLI flow.
+    """
+    row = _nous_row(model="paid/model")
+    row["models"] = ["paid/model", "free/portal-model"]
+    row["total_models"] = 2
+    ctx = _empty_ctx(provider="nous", model="paid/model")
+    with (
+        _list_auth_returning([row]),
+        patch(
+            "hermes_cli.models.get_pricing_for_provider",
+            return_value={
+                # Live pricing only knows the paid model; the Portal-free
+                # model is absent — exactly the gap synthetic pricing fills.
+                "paid/model": {"prompt": "0.000003", "completion": "0.000006"},
+            },
+        ),
+        patch("hermes_cli.models.check_nous_free_tier", return_value=True),
+        patch(
+            "hermes_cli.models.fetch_nous_recommended_models",
+            return_value={
+                "freeRecommendedModels": [{"modelName": "free/portal-model"}],
+            },
+        ),
+        patch("hermes_cli.auth.get_provider_auth_state", return_value={}),
+    ):
+        payload = build_models_payload(ctx, pricing=True)
+
+    nous = next(r for r in payload["providers"] if r["slug"] == "nous")
+    assert nous["free_tier"] is True
+    assert "free/portal-model" not in nous["unavailable_models"]
+    assert "paid/model" in nous["unavailable_models"]
+
+
 def test_include_unconfigured_appends_canonical_skeletons():
     """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
     list_authenticated_providers didn't emit. Skeleton rows have empty

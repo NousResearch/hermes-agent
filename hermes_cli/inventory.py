@@ -544,6 +544,22 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
+def _nous_portal_base_url() -> str:
+    """Best-effort Nous Portal base URL for recommended-model lookups.
+
+    Mirrors ``list_authenticated_providers`` so staging vs prod accounts
+    resolve the same Portal the CLI picker uses. Empty string falls back to
+    the public default inside ``fetch_nous_recommended_models``.
+    """
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        state = get_provider_auth_state("nous") or {}
+        return state.get("portal_base_url", "") or ""
+    except Exception:
+        return ""
+
+
 def _apply_pricing(
     rows: list[dict],
     *,
@@ -572,6 +588,7 @@ def _apply_pricing(
         compute_sale_discount,
         get_pricing_for_provider,
         partition_nous_models_by_tier,
+        union_with_portal_free_recommendations,
     )
 
     # Resolve Nous free-tier once (cached in models.py for the TTL window).
@@ -640,8 +657,20 @@ def _apply_pricing(
                     )
                 row["free_tier"] = bool(nous_free_tier)
                 if nous_free_tier:
+                    # Mirror the CLI picker (``_model_flow_nous``): Portal free
+                    # recommendations carry synthetic ``0`` pricing that the
+                    # live pricing map lacks. Partition on that augmented
+                    # pricing, otherwise a Portal-recommended free model that
+                    # isn't in live pricing is mis-gated as paid (unavailable)
+                    # and grayed out for free-tier users in the GUI picker.
+                    aug_ids, aug_pricing = union_with_portal_free_recommendations(
+                        list(models),
+                        raw_pricing,
+                        _nous_portal_base_url(),
+                        force_refresh=force_fresh_nous_tier,
+                    )
                     _selectable, unavailable = partition_nous_models_by_tier(
-                        list(models), raw_pricing, free_tier=True
+                        aug_ids, aug_pricing, free_tier=True
                     )
                     row["unavailable_models"] = unavailable
                 else:

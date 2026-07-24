@@ -1552,7 +1552,29 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
+        # Determine whether the provider_key came from the ``providers:`` dict
+        # (where the key IS the slug — e.g. ``ocg``) or from a legacy
+        # ``custom_providers:`` list entry (where provider_key is an optional
+        # explicit field). For ``providers:`` entries, use the raw key name so
+        # the model picker matches it against the correct provider section's
+        # slug.  However, when the key shadows a built-in provider (e.g.
+        # ``minimax-cn`` is both a ``providers:`` entry key and a built-in
+        # provider slug), KEEP the ``custom:`` prefix to prevent the runtime
+        # from resolving to the built-in instead of the user's endpoint.
+        # Fixes #66329.
+        _pk_clean = provider_key.strip().lower().replace(" ", "-")
+        _live_providers = cfg.get("providers") or {}
+        if _pk_clean in {k.strip().lower() for k in _live_providers}:
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_pk
+                _resolve_pk(_pk_clean)
+                # Built-in provider with this slug → use "custom:" prefix
+                model["provider"] = "custom:" + _pk_clean
+            except Exception:
+                # Not a built-in → use raw key so picker matches correctly
+                model["provider"] = _pk_clean
+        else:
+            model["provider"] = "custom:" + _pk_clean
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:

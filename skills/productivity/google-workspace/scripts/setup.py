@@ -56,10 +56,9 @@ SCOPES = [
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
-# OAuth redirect for "out of band" manual code copy flow.
-# Google deprecated OOB, so we use a localhost redirect and tell the user to
-# copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+# OAuth redirect for the manual code-copy flow. Prefer the URI registered in
+# the OAuth client because Google rejects even harmless port differences.
+DEFAULT_REDIRECT_URI = "http://localhost"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -91,6 +90,17 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
         f"{bullets}\n"
         "Run the Google Workspace setup again from this same Hermes profile to refresh consent."
     )
+
+
+def _redirect_uri() -> str:
+    """Return the OAuth redirect URI registered in the client secret."""
+    try:
+        payload = json.loads(CLIENT_SECRET_PATH.read_text())
+    except Exception:
+        return DEFAULT_REDIRECT_URI
+    client_config = payload.get("installed") or payload.get("web") or {}
+    redirect_uris = client_config.get("redirect_uris") or []
+    return redirect_uris[0] if redirect_uris else DEFAULT_REDIRECT_URI
 
 
 def install_deps():
@@ -274,14 +284,14 @@ def store_client_secret(path: str):
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
-def _save_pending_auth(*, state: str, code_verifier: str):
+def _save_pending_auth(*, state: str, code_verifier: str, redirect_uri: str):
     """Persist the OAuth session bits needed for a later token exchange."""
     PENDING_AUTH_PATH.write_text(
         json.dumps(
             {
                 "state": state,
                 "code_verifier": code_verifier,
-                "redirect_uri": REDIRECT_URI,
+                "redirect_uri": redirect_uri,
             },
             indent=2,
         )
@@ -334,18 +344,19 @@ def get_auth_url():
 
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
+    redirect_uri = _redirect_uri()
 
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
         scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
+        redirect_uri=redirect_uri,
         autogenerate_code_verifier=True,
     )
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
     )
-    _save_pending_auth(state=state, code_verifier=flow.code_verifier)
+    _save_pending_auth(state=state, code_verifier=flow.code_verifier, redirect_uri=redirect_uri)
     # Print just the URL so the agent can extract it cleanly
     print(auth_url)
 
@@ -378,7 +389,7 @@ def exchange_auth_code(code: str):
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
         scopes=granted_scopes,
-        redirect_uri=pending_auth.get("redirect_uri", REDIRECT_URI),
+        redirect_uri=pending_auth.get("redirect_uri", _redirect_uri()),
         state=pending_auth["state"],
         code_verifier=pending_auth["code_verifier"],
     )

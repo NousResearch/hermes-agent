@@ -257,8 +257,11 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     success, doc, final_response, error = run_job(job)
     assert success is False
     assert error is not None
-    assert "oops" in final_response or "exited with code 3" in final_response
-    assert "Cron watchdog" in final_response  # alert header
+    # User-facing failure alerts are sanitized; raw stderr stays in doc/error.
+    assert "technickou chybou" in final_response
+    assert "oops" not in final_response
+    assert "oops" in doc
+    assert "oops" in error
 
 
 def test_run_job_no_agent_never_invokes_aiagent(hermes_env):

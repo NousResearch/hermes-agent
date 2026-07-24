@@ -12,10 +12,10 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Entry Points                                  │
-│                                                                      │
+│                        Entry Points                                 │
+│                                                                     │
 │  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
-│  Batch Runner    API Server                  Python Library          │
+│  Batch Runner    API Server                  Python Library         │
 └──────────┬──────────────┬───────────────────────┬───────────────────┘
            │              │                       │
            ▼              ▼                       ▼
@@ -38,14 +38,14 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 └─────────┴─────────────────┴─────────────────┴───────────────────────┘
            │                                    │
            ▼                                    ▼
-┌───────────────────┐              ┌──────────────────────┐
+┌───────────────────┐              ┌───────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
 │ (SQLite + FTS5)   │              │ Terminal (6 backends) │
 │ hermes_state.py   │              │ Browser (5 backends)  │
 │ gateway/session.py│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
-                                   └──────────────────────┘
+                                   └───────────────────────┘
 ```
 
 ## Directory Structure
@@ -71,8 +71,8 @@ hermes-agent/
 │   ├── anthropic_adapter.py  # Anthropic Messages API format conversion
 │   ├── display.py            # KawaiiSpinner, tool preview formatting
 │   ├── skill_commands.py     # Skill slash commands
-│   ├── memory_manager.py    # Memory manager orchestration
-│   ├── memory_provider.py   # Memory provider ABC
+│   ├── memory_manager.py     # Memory manager orchestration
+│   ├── memory_provider.py    # Memory provider ABC
 │   └── trajectory.py         # Trajectory saving helpers
 │
 ├── hermes_cli/               # CLI subcommands and setup
@@ -92,21 +92,21 @@ hermes-agent/
 │   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
 │   └── gateway.py            # hermes gateway start/stop
 │
-├── tools/                    # Tool implementations (one file per tool)
-│   ├── registry.py           # Central tool registry
-│   ├── approval.py           # Dangerous command detection
-│   ├── terminal_tool.py      # Terminal orchestration
-│   ├── process_registry.py   # Background process management
-│   ├── file_tools.py         # read_file, write_file, patch, search_files
-│   ├── web_tools.py          # web_search, web_extract
-│   ├── browser_tool.py       # 10 browser automation tools
+├── tools/                     # Tool implementations (one file per tool)
+│   ├── registry.py            # Central tool registry
+│   ├── approval.py            # Dangerous command detection
+│   ├── terminal_tool.py       # Terminal orchestration
+│   ├── process_registry.py    # Background process management
+│   ├── file_tools.py          # read_file, write_file, patch, search_files
+│   ├── web_tools.py           # web_search, web_extract
+│   ├── browser_tool.py        # 10 browser automation tools
 │   ├── code_execution_tool.py # execute_code sandbox
-│   ├── delegate_tool.py      # Subagent delegation
-│   ├── mcp_tool.py           # MCP client (large file)
-│   ├── credential_files.py   # File-based credential passthrough
-│   ├── env_passthrough.py    # Env var passthrough for sandboxes
-│   ├── ansi_strip.py         # ANSI escape stripping
-│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+│   ├── delegate_tool.py       # Subagent delegation
+│   ├── mcp_tool.py            # MCP client (large file)
+│   ├── credential_files.py    # File-based credential passthrough
+│   ├── env_passthrough.py     # Env var passthrough for sandboxes
+│   ├── ansi_strip.py          # ANSI escape stripping
+│   └── environments/          # Terminal backends (local, docker, ssh, modal, daytona, singularity)
 │
 ├── gateway/                  # Messaging platform gateway
 │   ├── run.py                # GatewayRunner — message dispatch (large file)

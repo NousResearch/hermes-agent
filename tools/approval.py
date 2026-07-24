@@ -307,6 +307,12 @@ _USER_SENSITIVE_WRITE_TARGET = (
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
+_WINDOWS_SENSITIVE_WRITE_TARGET = (
+    r'(?:[a-z]:/users/[^/\s"\'`]+/\.ssh(?:/|$)|'
+    r'[a-z]:/users/[^/\s"\'`]+/appdata/local/hermes/\.env\b|'
+    r'[a-z]:/windows(?:/|$)|'
+    r'//[^/\s"\'`]+/[^/\s"\'`]+)'
+)
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # Anchor for the cp/mv/install rule, where the sensitive path is only a write
 # target when it is the LAST argument (the destination). Requiring end-of-line
@@ -618,7 +624,15 @@ DANGEROUS_PATTERNS = [
     # so bare invocations are caught while a benign path arg containing
     # "del"/"rm" (e.g. `-File c:\del-logs\run.ps1`) is not.
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
+    # Native Windows shells may run these commands without an explicit
+    # `powershell`/`cmd` prefix. Require either destructive flags or a sensitive
+    # Windows target so ordinary `rm tmp/file` and prose do not trip approval.
+    (rf'{_CMDPOS}(?:(?:remove-item|rmdir|erase|del|rd|ri)\b(?=[^;|&\n]*(?:-(?:recurse|r|force|f)\b|/[sqf]\b|{_WINDOWS_SENSITIVE_WRITE_TARGET}))|rm\b(?=[^;|&\n]*(?:-(?:recurse|r)\b|{_WINDOWS_SENSITIVE_WRITE_TARGET})))', "Windows destructive delete"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
+    (rf'{_CMDPOS}(?:iwr|invoke-webrequest|curl|wget)\b[^;\n]*\|\s*(?:iex|invoke-expression)\b', "PowerShell remote content execution"),
+    (rf'{_CMDPOS}(?:stop-process|taskkill)\b(?=[^;|&\n]*(?:-force\b|/f\b))', "Windows force-kill process"),
+    (rf'{_CMDPOS}(?:format-volume|diskpart)\b', "Windows disk formatting/partitioning"),
+    (r'\bicacls\b[^;|&\n]*(?:everyone|\*)\s*:\(f\)', "Windows world-writable permissions"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
@@ -863,6 +877,33 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+_WINDOWS_PATH_TOKEN_RE = re.compile(
+    r'(?i)(?:\b[a-z]:\\|\\\\[^\\\s]+\\[^\\\s]+)[^\s"\'`;&|<>]*'
+)
+
+
+def _normalize_windows_path_separators(command: str) -> str:
+    r"""Normalize backslashes inside Windows path tokens to forward slashes.
+
+    The generic backslash de-obfuscation pass below intentionally turns
+    ``r\m`` into ``rm``. Running that over native Windows paths first would
+    collapse ``C:\Users\alice\.ssh`` into ``C:Usersalice.ssh`` and hide the
+    sensitive target. Limit this rewrite to tokens that already look like a
+    Windows drive path or UNC path so POSIX shell escapes keep their existing
+    behavior.
+    """
+
+    def normalize_token(match: re.Match) -> str:
+        token = match.group(0).replace("\\", "/")
+        if re.match(r"(?i)^[a-z]:/", token):
+            return token[:2] + re.sub(r"/+", "/", token[2:])
+        if token.startswith("//"):
+            return "//" + re.sub(r"/+", "/", token[2:])
+        return token
+
+    return _WINDOWS_PATH_TOKEN_RE.sub(normalize_token, command)
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
 
@@ -888,6 +929,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # continuations carry no path separator, so this is a no-op on the Windows
     # home-prefix folds below (which match C:\Users\alice\... — no newline).
     command = re.sub(r'\\\r?\n', '', command)
+    command = _normalize_windows_path_separators(command)
     # Fold absolute home / active-profile-home prefixes into their canonical
     # ~/ and ~/.hermes/ forms so static user-sensitive patterns catch
     # /home/alice/.bashrc and C:\Users\alice\.bashrc the same way they catch

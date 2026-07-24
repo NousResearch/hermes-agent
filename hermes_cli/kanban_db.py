@@ -3141,6 +3141,20 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    # Treat explicit creation in ``blocked`` as an
+                    # operator-controlled hold, not as a transient
+                    # circuit-breaker block.  ``recompute_ready`` uses the
+                    # latest blocked/unblocked event to decide whether a
+                    # blocked task is sticky; without this event, dispatcher
+                    # dry-runs and promotion sweeps can silently flip the card
+                    # to ``ready`` before the operator approves release.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"source": "initial_status"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

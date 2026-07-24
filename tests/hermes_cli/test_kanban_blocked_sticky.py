@@ -49,6 +49,86 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Dispatcher dry-run must be read-only for blocked hold cards
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_sticky_for_operator_hold(kanban_home: Path) -> None:
+    """``initial_status='blocked'`` is an operator hold, not a transient
+    circuit-breaker block.  Recompute must leave it blocked until explicit
+    unblock.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="controlled pilot hold",
+            assignee="default",
+            initial_status="blocked",
+        )
+
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        event_kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (tid,),
+            )
+        ]
+        assert event_kinds == ["created", "blocked"]
+
+
+def test_dispatch_dry_run_does_not_promote_initially_blocked_hold_task(kanban_home: Path) -> None:
+    """A blocked card created as an operator-controlled hold must not be
+    mutated by ``dispatch_once(..., dry_run=True)``.
+
+    This protects first-real-pilot preflights: a dispatch dry-run is often
+    used immediately before a controlled unblock/dispatch window. If dry-run
+    emits a real ``promoted`` event or flips status to ``ready``, the live
+    gateway can claim the card before the operator finishes preflight.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="controlled pilot hold",
+            assignee="default",
+            initial_status="blocked",
+        )
+        before_events = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (tid,),
+            )
+        ]
+        before_task = kb.get_task(conn, tid)
+        assert before_task is not None
+        assert before_task.status == "blocked"
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: 12345,
+            dry_run=True,
+        )
+
+        assert result.spawned == []
+        assert result.promoted == 0
+        after_task = kb.get_task(conn, tid)
+        assert after_task is not None
+        assert after_task.status == "blocked"
+        after_events = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (tid,),
+            )
+        ]
+        assert after_events == before_events
+
+
+# ---------------------------------------------------------------------------
 # Worker-initiated kanban_block must be sticky
 # ---------------------------------------------------------------------------
 

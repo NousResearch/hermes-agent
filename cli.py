@@ -2239,7 +2239,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
+_STREAM_PAD = "  "  # 2-space indent for streamed response text (avoids Markdown code blocks)
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -2651,7 +2651,7 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
 def _terminal_width_for_streaming() -> int:
     """Display cells available inside the streamed response box.
 
-    The streaming path indents every line by ``_STREAM_PAD`` (4 cells)
+    The streaming path indents every line by ``_STREAM_PAD`` (2 cells)
     inside an open response panel.  The realigner uses this number as
     its budget when deciding whether to keep a horizontal table or
     fall back to vertical key-value rendering.  We subtract a small

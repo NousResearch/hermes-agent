@@ -1,8 +1,8 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 import type { BillingBlock } from '@hermes/shared'
 
-import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { extractImageRefs } from '@/lib/embedded-images'
+import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'

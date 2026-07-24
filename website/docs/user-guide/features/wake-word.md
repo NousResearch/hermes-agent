@@ -124,6 +124,15 @@ wake_word:
     model: ~/.hermes/wakewords/computer.onnx   # or a built-in name like hey_jarvis
 ```
 
+Or let Hermes train one for you. Install the **wake-word-training** skill and
+ask it to make a phrase (defaults to `hey <profile>`); it drives openWakeWord's
+trainer end-to-end — synthetic voices (OpenAI TTS or Piper), model export into
+your profile's `~/.hermes/wakewords/`, and the config wiring:
+
+```bash
+hermes skills install official/productivity/wake-word-training
+```
+
 Training references:
 
 - [openWakeWord](https://github.com/dscripka/openWakeWord)

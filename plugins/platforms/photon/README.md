@@ -23,7 +23,8 @@ talks to it over loopback.
 │  (iMessage line owner)  │   space.send()    │  (plugins/…/sidecar) │
 └─────────────────────────┘                   └──────────┬───────────┘
                                        GET /inbound (NDJSON) │  ▲ POST /send
-                                       inbound events        ▼  │ /typing
+                                       inbound events        ▼  │ /send-richlink
+                                                            │  │ /typing
                                               ┌──────────────────────┐
                                               │  PhotonAdapter        │
                                               │  (Python, in gateway) │
@@ -36,8 +37,9 @@ talks to it over loopback.
   a `MessageEvent` to the gateway. It reconnects automatically if the stream
   drops; the sidecar owns the gRPC reconnect to Photon.
 - **Outbound**: `send` / `send_typing` / reaction tapbacks are loopback POSTs
-  to the sidecar (`/send`, `/send-attachment`, `/typing`, `/react`,
-  `/unreact`), authenticated with a shared `X-Hermes-Sidecar-Token`.
+  to the sidecar (`/send`, `/send-richlink`, `/send-attachment`, `/typing`,
+  `/react`, `/unreact`), authenticated with a shared
+  `X-Hermes-Sidecar-Token`.
 
 ## First-time setup
 
@@ -137,15 +139,23 @@ All env vars are documented in `plugin.yaml`. The most important:
   Media larger than `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or
   any byte read that fails, falls back to a text marker (`[Photon attachment
   received: …]` or `[Photon voice received: …]`) so the agent still knows
-  something arrived.
+  something arrived. If Spectrum emits a `richlink` content object, Hermes
+  preserves its URL plus any title/summary metadata Spectrum already exposed;
+  current Spectrum versions may still deliver ordinary inbound links as plain
+  `text`. iMessage may also emit rich-link preview artwork as
+  `.pluginPayloadAttachment` images immediately after the URL; Hermes coalesces
+  those artifacts so the agent receives one link message instead of a follow-up
+  `(attachment)` prompt.
 - **Outbound attachments are supported.** Images, voice notes, video, and
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`
   endpoint; a caption is delivered as a separate text bubble after the media.
 - **Markdown is rendered.** Replies go out via spectrum-ts' `markdown()`
   builder; iMessage renders bold/italics/lists/code natively and other
-  Spectrum platforms degrade to readable plain text. `PHOTON_MARKDOWN=false`
-  reverts to stripped plain text.
+  Spectrum platforms degrade to readable plain text. URL-only replies go out
+  via spectrum-ts' `richlink()` builder so iMessage can render a native link
+  preview card. `PHOTON_MARKDOWN=false` reverts to stripped plain text and
+  disables rich-link routing.
 - **Reactions (tapbacks) are supported** behind `PHOTON_REACTIONS` (default
   off): the adapter tapbacks 👀 while processing and swaps it for 👍/👎 on
   completion, and a user tapback on a bot-sent message is routed to the agent
@@ -162,8 +172,8 @@ All env vars are documented in `plugin.yaml`. The most important:
 (no `^` range) and installed with `npm ci`, because the SDK ships breaking
 majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
 split it into `@spectrum-ts/*` packages, with `spectrum-ts` as the umbrella
-that re-exports them; v8 made `richlink` outbound-only, so inbound rich links
-now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
+that re-exports them; v8 made `richlink` primarily outbound, so many inbound
+links now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
 would let a breaking release take down fresh setups silently. Upgrades are
 deliberate:
 

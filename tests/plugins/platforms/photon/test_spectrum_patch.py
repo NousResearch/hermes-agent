@@ -26,6 +26,15 @@ def test_sidecar_healthz_reports_stream_health() -> None:
     assert "process.exit(75);" in index
 
 
+def test_sidecar_exposes_richlink_send_endpoint() -> None:
+    """The loopback endpoint should wrap spectrum-ts' richlink() builder."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "richlink: spectrumRichlink" in index
+    assert 'if (req.url === "/send-richlink")' in index
+    assert "isHttpUrl(url)" in index
+    assert "space.send(spectrumRichlink(url.trim()))" in index
+
+
 def test_sidecar_intercepts_both_console_channels() -> None:
     """spectrum-ts routes its stream telemetry through @photon-ai/otel, which
     sends severity >= ERROR to console.error and WARN/INFO to console.log.

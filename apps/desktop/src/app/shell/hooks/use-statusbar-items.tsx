@@ -9,7 +9,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Globe, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -43,7 +43,7 @@ import {
 } from '@/store/updates'
 import type { StatusResponse, UsageStats } from '@/types/hermes'
 
-import { CRON_ROUTE, SETTINGS_ROUTE } from '../../routes'
+import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
 const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
@@ -419,6 +419,14 @@ export function useStatusbarItems({
         label: copy.cron,
         title: copy.openCron,
         to: CRON_ROUTE,
+        variant: 'action'
+      },
+      {
+        icon: <Globe className="size-3" />,
+        id: 'webhooks',
+        label: copy.webhooks,
+        title: copy.openWebhooks,
+        to: WEBHOOKS_ROUTE,
         variant: 'action'
       }
     ],

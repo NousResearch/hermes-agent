@@ -173,5 +173,11 @@ apps/desktop/demo/
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+# infograficos/ (pt-BR spelling) is the same rule — it was previously
+# unignored by accident and accumulating PNGs directly in the repo; a given
+# PR may still `git add -f` a one-off image into its own branch/commit when
+# it needs a real git-hosted URL, but that stays scoped to that PR, not a
+# tracked default.
 infographic/
+infograficos/
 native/fts5_cjk/*.so

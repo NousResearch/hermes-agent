@@ -598,6 +598,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("prompt_prefix") is not None:
+        pp = job["prompt_prefix"]
+        if pp:
+            result["prompt_prefix_preview"] = pp[:100] + "..." if len(pp) > 100 else pp
+        else:
+            result["prompt_prefix"] = ""  # explicitly empty (suppressed preamble)
     return result
 
 
@@ -677,6 +683,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    prompt_prefix: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -750,6 +757,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                prompt_prefix=_normalize_optional_job_value(prompt_prefix),
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -927,6 +935,8 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if prompt_prefix is not None:
+                updates["prompt_prefix"] = _normalize_optional_job_value(prompt_prefix)
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -1040,6 +1050,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "script": {
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+            },
+            "prompt_prefix": {
+                "type": "string",
+                "description": "Optional override for the prefix injected before the user prompt on each run. When a non-empty string, that text replaces the default preamble (which includes the [SILENT] suppression instruction). When an empty string, NO prefix is injected — the user prompt runs bare. When omitted, the built-in preamble is used. Fixes #69495: models that interpret [SILENT] as 'bail without executing' can bypass it by setting prompt_prefix to suppress or customize the preamble."
             },
             "no_agent": {
                 "type": "boolean",

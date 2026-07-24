@@ -1087,6 +1087,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    prompt_prefix: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1131,6 +1132,14 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        prompt_prefix: Optional override for the prefix injected before the
+                user prompt on each run. When set to a non-empty string, that
+                text is used instead of the default preamble (which includes
+                the "[SILENT]" suppression instruction). When set to an empty
+                string, no prefix is injected at all — the user prompt runs
+                bare. When None (unset, the default), the built-in preamble
+                is used. Gives users full control when the default [SILENT]
+                instruction causes their agent to bail without executing.
 
     Returns:
         The created job dict
@@ -1163,6 +1172,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_prompt_prefix = _normalize_job_optional_text(prompt_prefix)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1252,6 +1262,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "prompt_prefix": normalized_prompt_prefix,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the

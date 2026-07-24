@@ -1573,6 +1573,21 @@ export interface Translations {
     dropSession: string
   }
 
+  runBoard: {
+    active: string
+    blockedNeedsYou: string
+    blockedTechnical: string
+    done: string
+    empty: string
+    progress: (done: number, total: number) => string
+    ready: string
+    supportNeeded: (answer: string) => string
+    supportNo: string
+    supportYes: string
+    title: string
+    waiting: string
+  }
+
   statusStack: {
     agents: string
     background: (count: number) => string

@@ -1842,6 +1842,21 @@ export const ja = defineLocale({
     }
   },
 
+  runBoard: {
+    active: '実行中',
+    blockedNeedsYou: 'ブロック中：あなたの対応が必要',
+    blockedTechnical: 'ブロック中：技術的問題',
+    done: '完了',
+    empty: 'タスクプランはまだありません',
+    progress: (done, total) => `${total} 件中 ${done} 件解決`,
+    ready: '準備完了',
+    supportNeeded: answer => `サポートが必要：${answer}`,
+    supportNo: 'いいえ',
+    supportYes: 'はい',
+    title: '実行ボード',
+    waiting: '待機中：プロセス'
+  },
+
   statusStack: {
     agents: 'エージェント',
     background: count => `バックグラウンド ${count} 件`,

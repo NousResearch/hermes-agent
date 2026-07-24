@@ -1787,6 +1787,21 @@ export const zhHant = defineLocale({
     }
   },
 
+  runBoard: {
+    active: '進行中',
+    blockedNeedsYou: '受阻：需要你的協助',
+    blockedTechnical: '受阻：技術問題',
+    done: '已完成',
+    empty: '尚無任務計畫',
+    progress: (done, total) => `已解決 ${done}/${total}`,
+    ready: '就緒',
+    supportNeeded: answer => `需要支援：${answer}`,
+    supportNo: '否',
+    supportYes: '是',
+    title: '執行面板',
+    waiting: '等待中：程序'
+  },
+
   statusStack: {
     agents: '代理',
     background: count => `${count} 個背景任務`,

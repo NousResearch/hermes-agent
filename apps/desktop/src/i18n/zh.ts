@@ -2098,6 +2098,21 @@ export const zh: Translations = {
     }
   },
 
+  runBoard: {
+    active: '进行中',
+    blockedNeedsYou: '受阻：需要你的帮助',
+    blockedTechnical: '受阻：技术问题',
+    done: '已完成',
+    empty: '尚无任务计划',
+    progress: (done, total) => `已解决 ${done}/${total}`,
+    ready: '就绪',
+    supportNeeded: answer => `需要支持：${answer}`,
+    supportNo: '否',
+    supportYes: '是',
+    title: '运行面板',
+    waiting: '等待中：进程'
+  },
+
   statusStack: {
     agents: '代理',
     background: count => `${count} 个后台任务`,

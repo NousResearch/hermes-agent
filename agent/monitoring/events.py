@@ -63,7 +63,24 @@ class GatewayDiagnosticEvent:
         return {"event": "gateway_diagnostic", **asdict(self)}
 
 
+@dataclass(slots=True)
+class CronExecutionEvent:
+    """Content-free durable cron execution lifecycle projection."""
+
+    status: str
+    job_key: str
+    source: str = "unknown"
+    duration_ms: Optional[int] = None
+    delivery_outcome: Optional[str] = None
+    error_class: Optional[str] = None
+    ts_ns: int = field(default_factory=_now_ns)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"event": "cron_execution", **asdict(self)}
+
+
 __all__ = [
     "GatewayHealthEvent",
     "GatewayDiagnosticEvent",
+    "CronExecutionEvent",
 ]

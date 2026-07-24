@@ -51,8 +51,32 @@ export function useSessionStateCache({
   setMessages
 }: SessionStateCacheOptions) {
   const busy = useStore($busy)
-  const activeSessionIdRef = useRef<string | null>(null)
-  const selectedStoredSessionIdRef = useRef<string | null>(null)
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
+  const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
+
+  // Mirror the latest prop into its ref synchronously during render — not via
+  // a passive useEffect, which only fires a frame after paint and left the
+  // ref pointing at the outgoing session for one commit (#59305). Guarded to
+  // fire only when the PROP itself changed since the last render (the same
+  // condition a `useEffect(..., [activeSessionId])` dependency array already
+  // enforced) rather than unconditionally: submit.ts and use-session-actions
+  // pin these refs imperatively mid-flight (e.g. to a just-resumed runtime id)
+  // without updating the source atom in lockstep, and wiring.tsx re-renders
+  // constantly during an active turn — an unconditional resync would silently
+  // clobber that pin on the next incidental render (#54527-class regression).
+  const activeSessionIdPropRef = useRef(activeSessionId)
+
+  if (activeSessionIdPropRef.current !== activeSessionId) {
+    activeSessionIdPropRef.current = activeSessionId
+    activeSessionIdRef.current = activeSessionId
+  }
+
+  const selectedStoredSessionIdPropRef = useRef(selectedStoredSessionId)
+
+  if (selectedStoredSessionIdPropRef.current !== selectedStoredSessionId) {
+    selectedStoredSessionIdPropRef.current = selectedStoredSessionId
+    selectedStoredSessionIdRef.current = selectedStoredSessionId
+  }
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
@@ -62,16 +86,8 @@ export function useSessionStateCache({
   const viewSessionIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    activeSessionIdRef.current = activeSessionId
-  }, [activeSessionId])
-
-  useEffect(() => {
     setMutableRef(busyRef, busy)
   }, [busy, busyRef])
-
-  useEffect(() => {
-    selectedStoredSessionIdRef.current = selectedStoredSessionId
-  }, [selectedStoredSessionId])
 
   const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
     const existing = sessionStateByRuntimeIdRef.current.get(sessionId)

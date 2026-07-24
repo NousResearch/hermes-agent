@@ -20,7 +20,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $sessions, resolveComposerSessionKey, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -210,7 +210,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               nowRouteToken: getRouteToken(),
               startSelectedStoredId: startingStoredSessionId,
               nowSelectedStoredId: selectedStoredSessionIdRef.current,
-              submitTargetStoredId: startingStoredSessionId
+              submitTargetStoredId: startingStoredSessionId,
+              composerScope: options?.composerScope,
+              // The composer keys drafts/attachments on the durable lineage
+              // root (survives auto-compression tip rotation), while
+              // startingStoredSessionId is the live tip — resolve the target
+              // into the same lineage-root domain before comparing, or every
+              // submit into a session that has ever compressed would
+              // false-positive-abort.
+              submitTargetComposerScope: resolveComposerSessionKey(startingStoredSessionId, $sessions.get())
             })
           : null
 

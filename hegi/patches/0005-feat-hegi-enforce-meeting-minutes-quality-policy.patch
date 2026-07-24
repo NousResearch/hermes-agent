@@ -1,0 +1,1516 @@
+From fe3531299bec43989b18f495c8e5cee2a0118faf Mon Sep 17 00:00:00 2001
+From: Yong Wook Lee <icerain@jj.ac.kr>
+Date: Fri, 24 Jul 2026 19:50:25 +0900
+Subject: [PATCH] feat(hegi): enforce meeting minutes quality policy
+
+---
+ hegi/CHANGELOG.md                    |  10 +
+ hegi/README.md                       |   7 +-
+ hegi/VERSION                         |   2 +-
+ hegi/__init__.py                     |   2 +-
+ hegi/analyzer.py                     | 135 ++++++++++--
+ hegi/approval.py                     |  31 +++
+ hegi/archive.py                      | 135 +++++++++---
+ hegi/bootstrap.py                    |   3 +
+ hegi/collector.py                    |  11 +-
+ hegi/config.py                       |   2 +-
+ hegi/config/default.yaml             |   2 +-
+ hegi/docs/minutes_policy.md          |  25 +++
+ hegi/llm.py                          |   3 +-
+ hegi/memory.py                       |  44 +++-
+ hegi/models.py                       |  25 +++
+ hegi/notify.py                       |  23 +-
+ hegi/pipeline.py                     |  41 +++-
+ hegi/plugin/plugin.yaml              |   2 +-
+ hegi/prompts/v2/chunk_summary.md     |   5 +-
+ hegi/prompts/v2/meeting_minutes.md   |  37 +++-
+ hegi/quality.py                      |  95 +++++++++
+ tests/hegi/test_bootstrap_install.py |   1 +
+ tests/hegi/test_minutes_policy.py    | 302 +++++++++++++++++++++++++++
+ 23 files changed, 867 insertions(+), 76 deletions(-)
+ create mode 100644 hegi/docs/minutes_policy.md
+ create mode 100644 tests/hegi/test_minutes_policy.py
+
+diff --git a/hegi/CHANGELOG.md b/hegi/CHANGELOG.md
+index fdc7f330a..324ba46cf 100644
+--- a/hegi/CHANGELOG.md
++++ b/hegi/CHANGELOG.md
+@@ -1,5 +1,15 @@
+ # Changelog
+ 
++## 2.0.2
++
++- 교수 메시지의 교차 DB 중복을 제거하고 화자를 `교수`로 정규화한다.
++- 연구회의·운영 장애·혼합·기타 meeting type 분류와 운영 장애 전용 템플릿을 추가한다.
++- 에이전트 행동 로그와 연구적 의견, 과거·현재 상태 충돌을 분리해 기록한다.
++- Memory Evaluation에 검색 결과·중복 대상·신규성 근거를 출력하고 `no_memory`에서
++  Draft 생성을 차단한다.
++- 최종 quality gate가 raw Python repr, 잘못된 화자명, Memory Forest 직접 쓰기
++  제안을 차단한다.
++
+ ## 2.0.1
+ 
+ - Memory Curator, Telegram chat/user ID와 agent DB를 자동 탐지하고 즉시 활성화한다.
+diff --git a/hegi/README.md b/hegi/README.md
+index fac7678e6..a83f95cdc 100644
+--- a/hegi/README.md
++++ b/hegi/README.md
+@@ -1,9 +1,14 @@
+-# HEGI v2.0.1 — AI Research Secretary
++# HEGI v2.0.2 — AI Research Secretary
+ 
+ HEGI는 여러 Hermes 프로필의 공진방 대화를 읽기 전용으로 수집해 연구회의 Episode,
+ 한국어 구조화 회의록, Action Item, Memory Evaluation, Markdown/JSON 아카이브와
+ Telegram 보고로 변환한다.
+ 
++회의록은 [작성·출력 정책](docs/minutes_policy.md)을 강제한다. 교수 발언은 교차 DB
++중복 제거 후 `교수`로 정규화하며, 연구회의와 운영 장애를 분류해 서로 다른 템플릿을
++사용한다. 출력 전 quality gate는 raw Python repr, 잘못된 화자명, Memory Forest 직접
++쓰기 제안을 차단한다.
++
+ HEGI는 Hermes 핵심 agent loop나 tool schema를 수정하지 않는 독립 패키지다. LLM,
+ Telegram, MCP는 Hermes의 기존 호출 경로를 재사용한다. Memory Forest 자동 쓰기와
+ Commit은 구현하지 않으며, STM Draft는 설정된 교수 계정의 명시적 승인 이후에만
+diff --git a/hegi/VERSION b/hegi/VERSION
+index 38f77a65b..e9307ca57 100644
+--- a/hegi/VERSION
++++ b/hegi/VERSION
+@@ -1 +1 @@
+-2.0.1
++2.0.2
+diff --git a/hegi/__init__.py b/hegi/__init__.py
+index 534f8017b..bf3a8c41a 100644
+--- a/hegi/__init__.py
++++ b/hegi/__init__.py
+@@ -16,4 +16,4 @@ __all__ = [
+     "SourceMessage",
+ ]
+ 
+-__version__ = "2.0.1"
++__version__ = "2.0.2"
+diff --git a/hegi/analyzer.py b/hegi/analyzer.py
+index d8efc4334..d58586304 100644
+--- a/hegi/analyzer.py
++++ b/hegi/analyzer.py
+@@ -3,23 +3,55 @@
+ from __future__ import annotations
+ 
+ import hashlib
++import re
+ from typing import Any
+ 
+ from .models import (
+     ActionItem,
++    AgentActivity,
+     AgentPosition,
+     ConceptDefinition,
+     DiscussionStage,
+     EvidenceItem,
+     MeetingEpisode,
+     MeetingMinutes,
++    TemporalConflict,
+ )
+ 
++MEETING_TYPES = {"research_meeting", "operational_incident", "mixed", "other"}
++PROFESSOR_NAMES = {"교수", "교수님", "professor", "user", "사용자"}
++UNSAFE_MEMORY_ACTION = re.compile(
++    r"(Memory\s*Forest|메모리\s*포레스트|기억\s*숲).{0,30}"
++    r"(직접\s*(쓰기|저장)|쓰기\s*활성화|자동\s*(커밋|승인)|auto[_ -]?commit)",
++    re.IGNORECASE,
++)
++INCIDENT_WORDS = (
++    "부팅 실패",
++    "장애",
++    "오류",
++    "에러",
++    "실패",
++    "복구",
++    "daemon",
++    "타임아웃",
++    "중단",
++)
++RESEARCH_WORDS = ("연구", "논문", "개념", "이론", "서지", "해석", "미학")
++
++
++def _text(value: Any) -> str:
++    """Return renderer-safe scalar text without coercing containers to repr."""
++    if isinstance(value, str):
++        return value.strip()
++    if isinstance(value, (int, float)) and not isinstance(value, bool):
++        return str(value)
++    return ""
++
+ 
+ def _strings(value: Any) -> list[str]:
+     if not isinstance(value, list):
+         return []
+-    return [str(item).strip() for item in value if str(item).strip()]
++    return [text for item in value if (text := _text(item))]
+ 
+ 
+ def _ids(value: Any, valid_ids: set[int]) -> list[int]:
+@@ -43,30 +75,85 @@ def _action_id(meeting_id: str, title: str, source_ids: list[int]) -> str:
+     return f"act-{digest[:14]}"
+ 
+ 
++def classify_meeting_type(payload: dict[str, Any], episode: MeetingEpisode) -> str:
++    explicit = _text(payload.get("meeting_type"))
++    if explicit in MEETING_TYPES:
++        return explicit
++    corpus = " ".join(message.content for message in episode.messages).lower()
++    incident = sum(word.lower() in corpus for word in INCIDENT_WORDS)
++    research = sum(word.lower() in corpus for word in RESEARCH_WORDS)
++    if incident and research:
++        return "mixed"
++    if incident:
++        return "operational_incident"
++    if research:
++        return "research_meeting"
++    return "other"
++
++
+ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMinutes:
+     valid_ids = {message.message_id for message in episode.messages}
+     warnings = _strings(payload.get("warnings"))
++    professor_positions = _strings(payload.get("professor_positions"))
+     discussion_flow: list[DiscussionStage] = []
+     for item in payload.get("discussion_flow", []):
+         if isinstance(item, dict):
+             discussion_flow.append(
+                 DiscussionStage(
+-                    heading=str(item.get("heading", "")).strip() or "논의",
+-                    summary=str(item.get("summary", "")).strip(),
++                    heading=_text(item.get("heading")) or "논의",
++                    summary=_text(item.get("summary")),
+                     source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
+                 )
+             )
+     agent_positions: list[AgentPosition] = []
+     for item in payload.get("agent_positions", []):
+         if isinstance(item, dict):
++            agent = _text(item.get("agent"))
++            position = _text(item.get("position"))
++            if agent.lower() in PROFESSOR_NAMES:
++                if position:
++                    professor_positions.append(position)
++                professor_positions.extend(_strings(item.get("contributions")))
++                continue
+             agent_positions.append(
+                 AgentPosition(
+-                    agent=str(item.get("agent", "")).strip(),
+-                    position=str(item.get("position", "")).strip(),
++                    agent=agent,
++                    position=position,
+                     contributions=_strings(item.get("contributions")),
+                     source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
+                 )
+             )
++    activity_log: list[AgentActivity] = []
++    for item in payload.get("agent_activity_log", []):
++        if not isinstance(item, dict):
++            continue
++        agent = _text(item.get("agent"))
++        if not agent or agent.lower() in PROFESSOR_NAMES:
++            continue
++        activity_log.append(
++            AgentActivity(
++                agent=agent,
++                activity=_text(item.get("activity")),
++                result=_text(item.get("result")) or "결과 미확인",
++                source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
++            )
++        )
++    temporal_conflicts: list[TemporalConflict] = []
++    for item in payload.get("temporal_conflicts", []):
++        if not isinstance(item, dict):
++            continue
++        status = _text(item.get("resolution_status")) or "uncertain"
++        if status not in {"resolved", "unresolved", "superseded", "uncertain"}:
++            status = "uncertain"
++        temporal_conflicts.append(
++            TemporalConflict(
++                subject=_text(item.get("subject")) or "상태 충돌",
++                earlier_state=_text(item.get("earlier_state")) or "이전 상태 미상",
++                current_state=_text(item.get("current_state")) or "현재 상태 미상",
++                resolution_status=status,  # type: ignore[arg-type]
++                source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
++            )
++        )
+     concepts: list[ConceptDefinition] = []
+     for item in payload.get("new_concepts", []):
+         if not isinstance(item, dict):
+@@ -76,8 +163,8 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
+             status = "uncertain"
+         concepts.append(
+             ConceptDefinition(
+-                name=str(item.get("name", "")).strip(),
+-                definition=str(item.get("definition", "")).strip(),
++                name=_text(item.get("name")),
++                definition=_text(item.get("definition")),
+                 status=status,  # type: ignore[arg-type]
+                 source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
+             )
+@@ -91,8 +178,8 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
+             verification = "추가 확인 필요"
+         evidence.append(
+             EvidenceItem(
+-                claim=str(item.get("claim", "")).strip(),
+-                source=str(item["source"]).strip() if item.get("source") else None,
++                claim=_text(item.get("claim")),
++                source=_text(item.get("source")) or None,
+                 verification=verification,  # type: ignore[arg-type]
+                 source_message_ids=_ids(item.get("source_message_ids"), valid_ids),
+             )
+@@ -101,11 +188,17 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
+     for item in payload.get("action_items", []):
+         if not isinstance(item, dict):
+             continue
+-        title = str(item.get("title", "")).strip()
++        title = _text(item.get("title"))
+         source_ids = _ids(item.get("source_message_ids"), valid_ids)
+         if not title or not source_ids:
+             warnings.append(f"근거가 없는 Action Item 제외: {title or '(제목 없음)'}")
+             continue
++        action_corpus = " ".join(
++            [title, _text(item.get("description")), _text(item.get("rationale"))]
++        )
++        if UNSAFE_MEMORY_ACTION.search(action_corpus):
++            warnings.append(f"안전정책 위반 Action Item 제외: {title}")
++            continue
+         priority = str(item.get("priority", "medium")).lower()
+         if priority not in {"critical", "high", "medium", "low"}:
+             priority = "medium"
+@@ -113,15 +206,15 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
+             ActionItem(
+                 action_id=_action_id(episode.meeting_id, title, source_ids),
+                 title=title,
+-                description=str(item.get("description", "")).strip(),
++                description=_text(item.get("description")),
+                 source_message_ids=source_ids,
+-                owner=str(item["owner"]).strip() if item.get("owner") else None,
++                owner=_text(item.get("owner")) or None,
+                 priority=priority,  # type: ignore[arg-type]
+-                deadline=str(item["deadline"]).strip() if item.get("deadline") else None,
++                deadline=_text(item.get("deadline")) or None,
+                 project_id=(
+-                    str(item["project_id"]).strip() if item.get("project_id") else None
++                    _text(item.get("project_id")) or None
+                 ),
+-                rationale=str(item.get("rationale", "")).strip(),
++                rationale=_text(item.get("rationale")),
+             )
+         )
+     try:
+@@ -131,12 +224,12 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
+     confidence = max(0.0, min(1.0, confidence))
+     return MeetingMinutes(
+         meeting_id=episode.meeting_id,
+-        title=str(payload.get("title", "")).strip() or f"연구회의 {episode.meeting_id}",
+-        background=str(payload.get("background", "")).strip() or "원문에서 배경이 명시되지 않음",
++        title=_text(payload.get("title")) or f"회의 {episode.meeting_id}",
++        background=_text(payload.get("background")) or "원문에서 배경이 명시되지 않음",
+         agenda=_strings(payload.get("agenda")),
+         discussion_flow=discussion_flow,
+         agent_positions=agent_positions,
+-        professor_positions=_strings(payload.get("professor_positions")),
++        professor_positions=professor_positions,
+         agreements=_strings(payload.get("agreements")),
+         disagreements=_strings(payload.get("disagreements")),
+         unresolved_questions=_strings(payload.get("unresolved_questions")),
+@@ -147,7 +240,10 @@ def build_minutes(payload: dict[str, Any], episode: MeetingEpisode) -> MeetingMi
+         memory_evaluation=None,
+         confidence=confidence,
+         warnings=warnings,
+-        recommendation=str(payload.get("recommendation", "")).strip(),
++        meeting_type=classify_meeting_type(payload, episode),  # type: ignore[arg-type]
++        agent_activity_log=activity_log,
++        temporal_conflicts=temporal_conflicts,
++        recommendation=_text(payload.get("recommendation")),
+     )
+ 
+ 
+@@ -186,5 +282,6 @@ def minimal_minutes(episode: MeetingEpisode, error: str) -> MeetingMinutes:
+         memory_evaluation=None,
+         confidence=0.0,
+         warnings=[f"LLM 분석 실패: {error}"],
++        meeting_type="other",
+         recommendation="자동 전송 전에 재분석할 것",
+     )
+diff --git a/hegi/approval.py b/hegi/approval.py
+index b477e76fc..7364f2eda 100644
+--- a/hegi/approval.py
++++ b/hegi/approval.py
+@@ -77,6 +77,37 @@ def process_pending_approvals(
+                 raise ValueError("승인 대상 회의록이 없습니다.")
+             minutes = minutes_from_dict(json.loads(row["minutes_json"]))
+             evaluation = MemoryEvaluator(memory_backend).evaluate(minutes)
++            if evaluation.recommendation == "no_memory":
++                result = {
++                    "meeting_id": meeting_id,
++                    "status": "no_memory",
++                    "project": str(job["project"]),
++                    "draft": None,
++                    "commit": "not_performed",
++                    "reasons": evaluation.reasons,
++                }
++                state.complete_approval_job(
++                    int(job["id"]), status="completed", result=result
++                )
++                results.append(result)
++                try:
++                    _send_status(
++                        config,
++                        "ℹ️ HEGI Memory 보류\n\n"
++                        f"회의: {meeting_id}\n"
++                        f"판정: no_memory\n"
++                        f"근거: {'; '.join(evaluation.reasons)}\n"
++                        "Draft와 Commit은 수행하지 않았습니다.",
++                        sender=sender,
++                    )
++                except Exception as notify_exc:
++                    state.add_dead_letter(
++                        "approval_notification",
++                        {"job_id": int(job["id"])},
++                        str(notify_exc),
++                        meeting_id,
++                    )
++                continue
+             draft = gate.create_draft_after_recheck(
+                 minutes,
+                 evaluation,
+diff --git a/hegi/archive.py b/hegi/archive.py
+index 094d885b2..ab49f3f30 100644
+--- a/hegi/archive.py
++++ b/hegi/archive.py
+@@ -12,6 +12,7 @@ from pathlib import Path
+ from typing import Any
+ 
+ from .models import MeetingEpisode, MeetingMinutes, as_jsonable
++from .quality import enforce_quality_gate
+ 
+ 
+ def _slug(text: str) -> str:
+@@ -39,41 +40,120 @@ def _atomic_write(path: Path, content: str) -> None:
+ 
+ def render_markdown(minutes: MeetingMinutes, episode: MeetingEpisode) -> str:
+     def bullets(values: list[str]) -> str:
+-        return "\n".join(f"- {value}" for value in values) if values else "- 없음 또는 미확정"
++        safe = [value.strip() for value in values if isinstance(value, str) and value.strip()]
++        return "\n".join(f"- {value}" for value in safe) if safe else "- 없음 또는 미확정"
++
++    def ids(values: list[int]) -> str:
++        return ", ".join(map(str, values)) or "미기재"
+ 
+     positions = "\n\n".join(
+         f"### {position.agent}\n{position.position}\n\n"
+-        f"근거: {', '.join(map(str, position.source_message_ids)) or '미기재'}"
++        f"연구적 기여:\n{bullets(position.contributions)}\n\n"
++        f"근거: {ids(position.source_message_ids)}"
+         for position in minutes.agent_positions
+     ) or "### 에이전트 기여\n- 분석 결과 없음"
++    activities = "\n".join(
++        f"- {item.agent}: {item.activity} → {item.result} "
++        f"(근거: {ids(item.source_message_ids)})"
++        for item in minutes.agent_activity_log
++    ) or "- 기록된 행동 없음"
+     flow = "\n\n".join(
+         f"### {stage.heading}\n{stage.summary}\n\n"
+-        f"근거: {', '.join(map(str, stage.source_message_ids)) or '미기재'}"
++        f"근거: {ids(stage.source_message_ids)}"
+         for stage in minutes.discussion_flow
+     ) or "- 구조화 분석 결과 없음"
+     actions = "\n".join(
+         f"- [{item.priority}] {item.title} (담당: {item.owner or '미정'}, "
+-        f"기한: {item.deadline or '미정'}, 근거: {item.source_message_ids})"
++        f"기한: {item.deadline or '미정'}, 근거: {ids(item.source_message_ids)})"
+         for item in minutes.action_items
+     ) or "- 없음"
++    conflicts = "\n".join(
++        f"- {item.subject}: 이전 `{item.earlier_state}` → 현재 `{item.current_state}` "
++        f"[{item.resolution_status}] (근거: {ids(item.source_message_ids)})"
++        for item in minutes.temporal_conflicts
++    ) or "- 확인된 시간상 상태 충돌 없음"
+     memory = minutes.memory_evaluation
+     memory_text = (
+         f"- 추천: {memory.recommendation}\n"
+-        f"- 검색 쿼리: {memory.searched_queries}\n"
+-        f"- 이유: {'; '.join(memory.reasons)}"
++        f"- 검색 쿼리:\n{bullets(memory.searched_queries)}\n"
++        f"- 검색 결과:\n{bullets(memory.search_findings)}\n"
++        f"- 중복 대상:\n{bullets(memory.duplicate_targets)}\n"
++        f"- 신규성 근거:\n{bullets(memory.novelty_basis)}\n"
++        f"- 판정 이유:\n{bullets(memory.reasons)}"
+         if memory
+         else "- Memory Evaluation 미실행"
+     )
+     started = datetime.fromtimestamp(episode.started_at).astimezone().isoformat()
+     ended = datetime.fromtimestamp(episode.ended_at).astimezone().isoformat()
+-    return f"""# 회의록
++    metadata = f"""---
++meeting_id: {episode.meeting_id}
++episode_hash: {episode.episode_hash}
++source_message_ids: {ids(episode.source_message_ids)}
++source_session_ids: {", ".join(episode.source_session_ids) or "없음"}
++model: {minutes.metadata.get("model", "")}
++prompt_version: {minutes.metadata.get("prompt_version", "")}
++generated_at: {minutes.metadata.get("generated_at", "")}
++hegi_version: {minutes.metadata.get("hegi_version", "2.0.2")}
++"""
++    if minutes.meeting_type == "operational_incident":
++        rendered = f"""# 운영 장애 기록
++
++## 장애 정보
++- 기록명: {minutes.title}
++- 유형: {minutes.meeting_type}
++- 일시: {started} ~ {ended}
++- 참석: {", ".join(episode.participants)}
++- 메시지 수: {len(episode.messages)}
++- 분석 범위: source message {ids(episode.source_message_ids)}
++- Meeting ID: {episode.meeting_id}
++
++## 1. 장애 개요와 영향
++{minutes.background}
++
++## 2. 증상·점검 항목
++{bullets(minutes.agenda)}
++
++## 3. 장애 전개와 복구 과정
++{flow}
++
++## 4. 교수의 운영 판단
++{bullets(minutes.professor_positions)}
++
++## 5. 에이전트 행동 로그
++{activities}
++
++## 6. 연구적 의견과 해석
++{positions}
++
++## 7. 시간 순서와 해결 상태
++{conflicts}
++
++## 8. 현재 해결 상태
++{bullets(minutes.agreements)}
++
++## 9. 미해결 장애·위험
++{bullets(minutes.unresolved_questions)}
++
++## 10. 복구·예방 Action Items
++{actions}
++
++## 11. Memory Evaluation
++{memory_text}
++
++## 12. 헤기 운영 권고
++{minutes.recommendation or "교수 검토 필요"}
++
++{metadata}"""
++    else:
++        rendered = f"""# 회의록
+ 
+ ## 회의 정보
+ - 회의명: {minutes.title}
++- 유형: {minutes.meeting_type}
+ - 일시: {started} ~ {ended}
+ - 참석: {", ".join(episode.participants)}
+ - 메시지 수: {len(episode.messages)}
+-- 분석 범위: source message {episode.source_message_ids}
++- 분석 범위: source message {ids(episode.source_message_ids)}
+ - Meeting ID: {episode.meeting_id}
+ 
+ ## 1. 논의 배경
+@@ -88,46 +168,45 @@ def render_markdown(minutes: MeetingMinutes, episode: MeetingEpisode) -> str:
+ ## 4. 교수의 핵심 판단
+ {bullets(minutes.professor_positions)}
+ 
+-## 5. 에이전트별 기여
++## 5. 에이전트별 연구적 의견
+ {positions}
+ 
+-## 6. 합의된 사항
++## 6. 에이전트 행동 로그
++{activities}
++
++## 7. 합의된 사항
+ {bullets(minutes.agreements)}
+ 
+-## 7. 논쟁 및 이견
++## 8. 논쟁 및 이견
+ {bullets(minutes.disagreements)}
+ 
+-## 8. 남은 문제
++## 9. 시간 순서와 해결 상태
++{conflicts}
++
++## 10. 남은 문제
+ {bullets(minutes.unresolved_questions)}
+ 
+-## 9. 새로 정의된 개념
++## 11. 새로 정의된 개념
+ {bullets([f"{item.name}: {item.definition} ({item.status})" for item in minutes.new_concepts])}
+ 
+-## 10. 근거·자료·서지 확인
++## 12. 근거·자료·서지 확인
+ {bullets([f"{item.claim} — {item.source or '출처 미기재'} [{item.verification}]" for item in minutes.evidence_and_sources])}
+ 
+-## 11. 연구 방향
++## 13. 연구 방향
+ {bullets(minutes.research_direction)}
+ 
+-## 12. Action Items
++## 14. Action Items
+ {actions}
+ 
+-## 13. Memory Evaluation
++## 15. Memory Evaluation
+ {memory_text}
+ 
+-## 14. 헤기 권고
++## 16. 헤기 권고
+ {minutes.recommendation or "교수 검토 필요"}
+ 
+----
+-meeting_id: {episode.meeting_id}
+-episode_hash: {episode.episode_hash}
+-source_message_ids: {episode.source_message_ids}
+-source_session_ids: {episode.source_session_ids}
+-model: {minutes.metadata.get("model", "")}
+-prompt_version: {minutes.metadata.get("prompt_version", "")}
+-generated_at: {minutes.metadata.get("generated_at", "")}
+-hegi_version: {minutes.metadata.get("hegi_version", "2.0.0")}
+-"""
++{metadata}"""
++    enforce_quality_gate(minutes, episode, rendered=rendered)
++    return rendered
+ 
+ 
+ class ArchiveManager:
+diff --git a/hegi/bootstrap.py b/hegi/bootstrap.py
+index 66c118111..be29c9cab 100644
+--- a/hegi/bootstrap.py
++++ b/hegi/bootstrap.py
+@@ -378,6 +378,9 @@ def install(
+             existing = loaded
+     config = _deep_merge(defaults, existing)
+     config["enabled"] = True
++    analysis = config.setdefault("analysis", {})
++    default_analysis = defaults.get("analysis", {})
++    analysis["prompt_version"] = default_analysis.get("prompt_version", "v2.0.2")
+     config["telegram"] = {
+         **config.get("telegram", {}),
+         "chat_id": discovery.chat_id,
+diff --git a/hegi/collector.py b/hegi/collector.py
+index ec49907eb..fb4124a82 100644
+--- a/hegi/collector.py
++++ b/hegi/collector.py
+@@ -6,7 +6,7 @@ import hashlib
+ import json
+ import re
+ import sqlite3
+-from dataclasses import asdict
++from dataclasses import asdict, replace
+ from pathlib import Path
+ from typing import Any, Iterable
+ 
+@@ -160,7 +160,7 @@ class HermesSQLiteCollector:
+                 continue
+             result.append(
+                 SourceMessage(
+-                    source_agent=source.name,
++                    source_agent="교수" if str(row["role"]).lower() == "user" else source.name,
+                     source_db=str(source.db_path),
+                     message_id=int(row["message_id"]),
+                     session_id=str(row["session_id"]),
+@@ -198,7 +198,12 @@ def deduplicate_messages(
+     messages: Iterable[SourceMessage], bucket_seconds: int = 3
+ ) -> list[SourceMessage]:
+     unique: dict[str, SourceMessage] = {}
+-    for message in messages:
++    for original in messages:
++        message = (
++            replace(original, source_agent="교수")
++            if original.role == "user" and original.source_agent != "교수"
++            else original
++        )
+         key = _dedup_key(message, bucket_seconds)
+         existing = unique.get(key)
+         if existing is None or (message.timestamp, message.message_id) < (
+diff --git a/hegi/config.py b/hegi/config.py
+index 41418f0d8..ecb3f5734 100644
+--- a/hegi/config.py
++++ b/hegi/config.py
+@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
+         "chunk_chars": 30000,
+         "max_output_tokens": 10000,
+         "timeout_seconds": 180,
+-        "prompt_version": "v2.0.0",
++        "prompt_version": "v2.0.2",
+     },
+     "archive": {
+         "local_spool": "",
+diff --git a/hegi/config/default.yaml b/hegi/config/default.yaml
+index e8c000c5f..26a84be3a 100644
+--- a/hegi/config/default.yaml
++++ b/hegi/config/default.yaml
+@@ -30,7 +30,7 @@ analysis:
+   chunk_chars: 30000
+   max_output_tokens: 10000
+   timeout_seconds: 180
+-  prompt_version: "v2.0.0"
++  prompt_version: "v2.0.2"
+ 
+ archive:
+   local_spool: "~/.hermes/hegi/archive"
+diff --git a/hegi/docs/minutes_policy.md b/hegi/docs/minutes_policy.md
+new file mode 100644
+index 000000000..0a1950fe4
+--- /dev/null
++++ b/hegi/docs/minutes_policy.md
+@@ -0,0 +1,25 @@
++# HEGI 회의록 작성·출력 정책
++
++이 정책은 프롬프트 권고가 아니라 collector, analyzer, renderer, Memory gate와 최종
++quality gate에서 강제된다.
++
++1. 모든 `user` 메시지는 교차 DB 중복 제거 후 화자를 `교수`로 정규화한다.
++2. dict/list를 문자열로 변환한 Python repr는 구조화 필드에 수용하거나 Markdown에
++   출력하지 않는다.
++3. 모든 episode를 `research_meeting`, `operational_incident`, `mixed`, `other` 중
++   하나로 분류한다.
++4. `operational_incident`는 연구회의가 아닌 장애 개요, 복구 과정, 해결 상태,
++   행동 로그 중심의 별도 템플릿을 사용한다.
++5. 명령 실행·파일 수정·재시작·테스트는 `agent_activity_log`, 개념적 판단과 연구
++   제안은 `agent_positions`에 기록한다.
++6. Memory Forest 직접 쓰기, 쓰기 활성화, 자동 승인 또는 자동 Commit은 Action Item
++   으로 생성하지 않는다.
++7. Memory Evaluation은 실행한 검색, 검색 결과 수, 중복 후보 ID·제목·관계,
++   신규성 근거와 최종 판정 이유를 출력한다.
++8. 연구적 지속성이 없거나 운영 장애인 episode는 `no_memory`로 판정하며, 교수 승인
++   메시지가 있어도 STM Draft를 만들지 않는다.
++9. 오래된 발언과 현재 상태가 충돌하면 `temporal_conflicts`에 이전 상태, 현재 상태,
++   해결 여부와 근거 message ID를 기록한다.
++10. Archive와 Telegram 출력 전 quality gate에서 raw Python repr, 허용되지 않은
++    화자명, Memory Forest 직접 쓰기 안전정책 위반 문구를 발견하면 해당 episode의
++    출력과 Action Item 저장을 차단하고 dead letter에 기록한다.
+diff --git a/hegi/llm.py b/hegi/llm.py
+index 0d2c2d985..daf627fc1 100644
+--- a/hegi/llm.py
++++ b/hegi/llm.py
+@@ -54,8 +54,9 @@ def chunk_messages(episode: MeetingEpisode, max_chars: int) -> list[str]:
+     chunks: list[list[str]] = [[]]
+     current_size = 0
+     for message in episode.messages:
++        speaker = "교수" if message.role == "user" else message.source_agent
+         line = (
+-            f"[message_id={message.message_id} agent={message.source_agent} "
++            f"[message_id={message.message_id} speaker={speaker} "
+             f"role={message.role} timestamp={message.timestamp:.3f}]\n{message.content}"
+         )
+         if chunks[-1] and current_size + len(line) + 2 > max_chars:
+diff --git a/hegi/memory.py b/hegi/memory.py
+index a210b86e5..7fd4a0b47 100644
+--- a/hegi/memory.py
++++ b/hegi/memory.py
+@@ -112,10 +112,17 @@ class MemoryEvaluator:
+     def evaluate(self, minutes: MeetingMinutes) -> MemoryEvaluation:
+         queries = memory_queries(minutes)
+         matches: list[MemoryMatch] = []
++        search_findings: list[str] = []
+         seen: set[str] = set()
+         for query in queries:
+             payload = self.backend.search(query)
+-            for row in _extract_result_rows(payload):
++            rows = _extract_result_rows(payload)
++            search_findings.append(
++                f"{query}: {len(rows)}개 후보 검색"
++                if rows
++                else f"{query}: 관련 기억 없음"
++            )
++            for row in rows:
+                 memory_id = str(
+                     row.get("id") or row.get("path") or row.get("memory_id") or row.get("title")
+                 )
+@@ -137,12 +144,36 @@ class MemoryEvaluator:
+         has_durable_content = bool(
+             minutes.new_concepts or minutes.agreements or minutes.research_direction
+         )
+-        if not has_durable_content:
++        duplicate_targets = [
++            f"{match.title} ({match.memory_id}, {match.relation})" for match in matches
++        ]
++        novelty_basis: list[str] = []
++        if minutes.new_concepts:
++            novelty_basis.append(
++                "새 개념: " + ", ".join(item.name for item in minutes.new_concepts)
++            )
++        if minutes.agreements:
++            novelty_basis.append("새 합의: " + "; ".join(minutes.agreements[:3]))
++        if minutes.research_direction:
++            novelty_basis.append(
++                "새 연구 방향: " + "; ".join(minutes.research_direction[:3])
++            )
++        if minutes.meeting_type == "operational_incident":
++            recommendation = "no_memory"
++            reasons = [
++                "운영 장애 기록은 연구 판단과 분리하며 Memory Forest 장기 기억으로 승격하지 않음"
++            ]
++            novelty_basis = ["운영 복구 상태는 회의록·Action Item에서만 추적"]
++        elif not has_durable_content:
+             recommendation = "no_memory"
+             reasons = ["새 개념·합의·연구 방향이 없어 장기 기억 가치가 낮음"]
++            novelty_basis = ["지속 가능한 연구 판단이 확인되지 않음"]
+         elif matches:
+             recommendation = "merge_existing"
+-            reasons = ["Memory Forest 검색에서 관련 기억이 발견되어 병합 검토가 필요함"]
++            reasons = [
++                "Memory Forest 검색에서 중복 후보가 발견됨: "
++                + ", ".join(match.title for match in matches[:5])
++            ]
+         elif minutes.confidence < 0.6 or minutes.disagreements:
+             recommendation = "needs_professor_review"
+             reasons = ["의미는 있으나 이견 또는 분석 불확실성이 있어 교수 검토가 필요함"]
+@@ -152,6 +183,8 @@ class MemoryEvaluator:
+         return MemoryEvaluation(
+             searched_queries=queries,
+             matched_memories=matches,
++            duplicate_score=1.0 if matches else 0.0,
++            novelty_score=0.0 if not has_durable_content else (0.4 if matches else 1.0),
+             recommendation=recommendation,  # type: ignore[arg-type]
+             candidate_memory_title=minutes.title if has_durable_content else None,
+             candidate_memory_summary=(
+@@ -159,6 +192,9 @@ class MemoryEvaluator:
+                 if has_durable_content
+                 else None
+             ),
++            search_findings=search_findings,
++            duplicate_targets=duplicate_targets,
++            novelty_basis=novelty_basis,
+             reasons=reasons,
+         )
+ 
+@@ -220,6 +256,8 @@ class DraftGate:
+     ) -> dict[str, Any]:
+         if not evaluation.searched_queries:
+             raise PermissionError("Draft 전에 Memory 중복 검색이 필요합니다.")
++        if evaluation.recommendation == "no_memory":
++            raise PermissionError("no_memory 판정 회의는 STM Draft를 생성하지 않습니다.")
+         row = self.state.episode_by_id(minutes.meeting_id)
+         if row is None:
+             raise ValueError("meeting_id를 찾을 수 없습니다.")
+diff --git a/hegi/models.py b/hegi/models.py
+index 95788dd2f..7f22ca818 100644
+--- a/hegi/models.py
++++ b/hegi/models.py
+@@ -63,6 +63,23 @@ class AgentPosition:
+     source_message_ids: list[int] = field(default_factory=list)
+ 
+ 
++@dataclass(slots=True)
++class AgentActivity:
++    agent: str
++    activity: str
++    result: str
++    source_message_ids: list[int] = field(default_factory=list)
++
++
++@dataclass(slots=True)
++class TemporalConflict:
++    subject: str
++    earlier_state: str
++    current_state: str
++    resolution_status: Literal["resolved", "unresolved", "superseded", "uncertain"]
++    source_message_ids: list[int] = field(default_factory=list)
++
++
+ @dataclass(slots=True)
+ class ConceptDefinition:
+     name: str
+@@ -115,6 +132,9 @@ class MemoryEvaluation:
+     ] = "needs_professor_review"
+     candidate_memory_title: str | None = None
+     candidate_memory_summary: str | None = None
++    search_findings: list[str] = field(default_factory=list)
++    duplicate_targets: list[str] = field(default_factory=list)
++    novelty_basis: list[str] = field(default_factory=list)
+     reasons: list[str] = field(default_factory=list)
+ 
+ 
+@@ -137,6 +157,11 @@ class MeetingMinutes:
+     memory_evaluation: MemoryEvaluation | None
+     confidence: float
+     warnings: list[str]
++    meeting_type: Literal[
++        "research_meeting", "operational_incident", "mixed", "other"
++    ] = "research_meeting"
++    agent_activity_log: list[AgentActivity] = field(default_factory=list)
++    temporal_conflicts: list[TemporalConflict] = field(default_factory=list)
+     recommendation: str = ""
+     metadata: dict[str, Any] = field(default_factory=dict)
+ 
+diff --git a/hegi/notify.py b/hegi/notify.py
+index 4773fda7d..bf57f0aae 100644
+--- a/hegi/notify.py
++++ b/hegi/notify.py
+@@ -32,26 +32,41 @@ def _bullets(items: list[str], limit: int = 8) -> str:
+ 
+ def telegram_parts(minutes: MeetingMinutes) -> list[str]:
+     meeting = minutes.meeting_id
++    report_kind = (
++        "운영 장애 기록"
++        if minutes.meeting_type == "operational_incident"
++        else "회의록"
++    )
+     positions = [
+         f"{item.agent}: {item.position}" for item in minutes.agent_positions
+     ]
++    activities = [
++        f"{item.agent}: {item.activity} → {item.result}"
++        for item in minutes.agent_activity_log
++    ]
+     actions = [
+         f"[{item.priority}] {item.title} · 담당 {item.owner or '미정'} · 기한 {item.deadline or '미정'}"
+         for item in minutes.action_items
+     ]
+     memory = minutes.memory_evaluation
+     memory_text = (
+-        f"추천: {memory.recommendation}\n이유: {'; '.join(memory.reasons)}"
++        f"추천: {memory.recommendation}\n"
++        f"검색 결과\n{_bullets(memory.search_findings, 6)}\n"
++        f"중복 대상\n{_bullets(memory.duplicate_targets, 6)}\n"
++        f"신규성 근거\n{_bullets(memory.novelty_basis, 6)}\n"
++        f"판정 이유\n{_bullets(memory.reasons, 6)}"
+         if memory
+         else "Memory Evaluation 미실행"
+     )
+     return [
+-        f"1/4 HEGI 회의 개요 · {meeting}\n\n{minutes.title}\n\n"
++        f"1/4 HEGI {report_kind} 개요 · {meeting}\n\n{minutes.title}\n"
++        f"유형: {minutes.meeting_type}\n\n"
+         f"핵심 의제\n{_bullets(minutes.agenda)}\n\n"
+         f"교수 판단\n{_bullets(minutes.professor_positions)}",
+-        f"2/4 논의 전개와 에이전트별 의견 · {meeting}\n\n"
++        f"2/4 논의 전개·연구적 의견·행동 로그 · {meeting}\n\n"
+         f"{_bullets([stage.summary for stage in minutes.discussion_flow])}\n\n"
+-        f"에이전트별 기여\n{_bullets(positions)}",
++        f"에이전트별 연구적 의견\n{_bullets(positions)}\n\n"
++        f"에이전트 행동 로그\n{_bullets(activities)}",
+         f"3/4 합의·이견·Action Items · {meeting}\n\n"
+         f"합의\n{_bullets(minutes.agreements)}\n\n"
+         f"이견\n{_bullets(minutes.disagreements)}\n\n"
+diff --git a/hegi/pipeline.py b/hegi/pipeline.py
+index 043eff614..c2ad311f6 100644
+--- a/hegi/pipeline.py
++++ b/hegi/pipeline.py
+@@ -18,6 +18,7 @@ from .episode import EpisodeDetector
+ from .llm import HermesLLMClient, HierarchicalMeetingAnalyzer
+ from .memory import MCPMemoryBackend, MemoryEvaluator
+ from .models import (
++    AgentActivity,
+     AgentPosition,
+     ConceptDefinition,
+     DiscussionStage,
+@@ -27,11 +28,12 @@ from .models import (
+     MemoryEvaluation,
+     MemoryMatch,
+     SourceMessage,
++    TemporalConflict,
+     as_jsonable,
+ )
+ from .notify import TelegramReporter, load_env_value
+ from .observability import RunLogger
+-from .quality import audit_minutes
++from .quality import QualityGateError, audit_minutes, enforce_quality_gate
+ from .state import StateStore
+ 
+ 
+@@ -65,6 +67,9 @@ def minutes_from_dict(payload: dict[str, Any]) -> MeetingMinutes:
+             recommendation=memory_payload.get("recommendation", "needs_professor_review"),
+             candidate_memory_title=memory_payload.get("candidate_memory_title"),
+             candidate_memory_summary=memory_payload.get("candidate_memory_summary"),
++            search_findings=list(memory_payload.get("search_findings", [])),
++            duplicate_targets=list(memory_payload.get("duplicate_targets", [])),
++            novelty_basis=list(memory_payload.get("novelty_basis", [])),
+             reasons=list(memory_payload.get("reasons", [])),
+         )
+     from .models import ActionItem
+@@ -95,6 +100,13 @@ def minutes_from_dict(payload: dict[str, Any]) -> MeetingMinutes:
+         memory_evaluation=memory,
+         confidence=float(payload.get("confidence", 0)),
+         warnings=list(payload.get("warnings", [])),
++        meeting_type=payload.get("meeting_type", "research_meeting"),
++        agent_activity_log=[
++            AgentActivity(**item) for item in payload.get("agent_activity_log", [])
++        ],
++        temporal_conflicts=[
++            TemporalConflict(**item) for item in payload.get("temporal_conflicts", [])
++        ],
+         recommendation=payload.get("recommendation", ""),
+         metadata=dict(payload.get("metadata", {})),
+     )
+@@ -222,9 +234,9 @@ class HegiPipeline:
+             "source_message_ids": episode.source_message_ids,
+             "source_session_ids": episode.source_session_ids,
+             "model": analysis.get("model", ""),
+-            "prompt_version": analysis.get("prompt_version", "v2.0.0"),
++            "prompt_version": analysis.get("prompt_version", "v2.0.2"),
+             "generated_at": datetime.now(timezone.utc).isoformat(),
+-            "hegi_version": "2.0.1",
++            "hegi_version": "2.0.2",
+         }
+         return minutes
+ 
+@@ -258,10 +270,31 @@ class HegiPipeline:
+                     reasons=[f"Memory Forest 검색 실패: {exc}"],
+                 )
+                 minutes.warnings.append("Memory Forest 검색 실패")
++        minutes.warnings.extend(audit_minutes(minutes, episode))
++        try:
++            enforce_quality_gate(minutes, episode)
++        except QualityGateError as exc:
++            minutes.warnings.append(f"최종 quality gate 차단: {exc}")
++            self.state.update_episode(
++                episode.meeting_id,
++                status="failed",
++                minutes=as_jsonable(minutes),
++                error=str(exc),
++            )
++            self.state.add_dead_letter(
++                "quality_gate",
++                {"minutes": as_jsonable(minutes)},
++                str(exc),
++                episode.meeting_id,
++            )
++            return {
++                "meeting_id": episode.meeting_id,
++                "status": "failed",
++                "warnings": minutes.warnings,
++            }
+         minutes.action_items = persist_new_actions(
+             self.state, episode.meeting_id, minutes.action_items
+         )
+-        minutes.warnings.extend(audit_minutes(minutes, episode))
+         archive = ArchiveManager(self.config.local_spool, self.config.nas_root).archive(
+             minutes, episode
+         )
+diff --git a/hegi/plugin/plugin.yaml b/hegi/plugin/plugin.yaml
+index dcda65d94..5e3a4769c 100644
+--- a/hegi/plugin/plugin.yaml
++++ b/hegi/plugin/plugin.yaml
+@@ -1,4 +1,4 @@
+ name: hegi-telegram
+-version: 2.0.1
++version: 2.0.2
+ description: Intercept professor HEGI approval replies before normal agent dispatch.
+ kind: standalone
+diff --git a/hegi/prompts/v2/chunk_summary.md b/hegi/prompts/v2/chunk_summary.md
+index 7c36e39e6..ef36634d4 100644
+--- a/hegi/prompts/v2/chunk_summary.md
++++ b/hegi/prompts/v2/chunk_summary.md
+@@ -1,6 +1,6 @@
+ ---
+ prompt_id: hegi.v2.chunk_summary
+-version: 2.0.0
++version: 2.0.2
+ input_schema: source_message_chunk
+ output_schema: grounded_argument_summary
+ language: ko
+@@ -10,3 +10,6 @@ language: ko
+ 주장과 근거, 반론과 수정, 확정된 정의, 연구 과제, 출처 확인 결과, 불확실성을
+ 보존하라. 각 진술 뒤에 실제 source message ID를 괄호로 기록한다.
+ 원문에 없는 합의나 서지 사실을 만들지 않는다.
++모든 user 발언은 source DB와 무관하게 화자를 "교수"로 정규화하고 교차 DB 중복은
++한 번만 반영한다. 에이전트 행동 로그와 연구적 의견을 분리한다. 오래된 상태와 현재
++상태가 충돌하면 시간 순서와 해결 여부를 명시한다.
+diff --git a/hegi/prompts/v2/meeting_minutes.md b/hegi/prompts/v2/meeting_minutes.md
+index d89822d1c..a8d397531 100644
+--- a/hegi/prompts/v2/meeting_minutes.md
++++ b/hegi/prompts/v2/meeting_minutes.md
+@@ -1,24 +1,47 @@
+ ---
+ prompt_id: hegi.v2.meeting_minutes
+-version: 2.0.0
++version: 2.0.2
+ input_schema: chronological_source_messages
+ output_schema: meeting_minutes_v2
+ language: ko
+ ---
+ 
+-너는 한국어 인문학 연구회의 서기다. 제공된 발언만 근거로 논의의 구조를 재구성한다.
+-원문에 없는 합의를 만들지 말고, 미확정 내용은 제안·검토 중·미확정으로 표시한다.
+-교수(user)와 AI(assistant) 발언을 구분한다. 서지 사실은 검증됨·추정·추가 확인 필요 중
+-하나로 표시한다. 모든 논의 단계, 에이전트 입장, 개념, 근거, Action Item에는 실제
+-source_message_ids를 연결한다. 담당자와 deadline은 원문에 없으면 null로 둔다.
++너는 한국어 인문학 연구회의 서기이자 운영 장애 기록자다. 제공된 발언만 근거로
++논의의 구조와 현재 해결 상태를 재구성한다. 원문에 없는 합의를 만들지 말고,
++미확정 내용은 제안·검토 중·미확정으로 표시한다.
++
++모든 user 발언의 화자는 source DB나 profile명과 무관하게 반드시 "교수"로 표기한다.
++동일한 교수 메시지가 여러 DB에 나타나더라도 한 발언으로만 해석한다. 교수의 판단을
++agent_positions에 넣지 말고 professor_positions에만 기록한다.
++
++meeting_type은 research_meeting, operational_incident, mixed, other 중 하나로 분류한다.
++운영 장애, 부팅 실패, daemon 복구, 설치 오류 중심 대화는 operational_incident이며
++연구회의와 동일한 서술 구조를 억지로 적용하지 않는다.
++
++에이전트가 실행한 명령·파일 수정·재시작·테스트 같은 행동은 agent_activity_log에,
++개념적 판단·해석·연구적 제안은 agent_positions에 분리한다. 오래된 실패 보고와 이후
++복구처럼 시간에 따라 상태가 충돌하면 temporal_conflicts에 이전 상태, 현재 상태,
++해결 여부와 source_message_ids를 기록한다.
++
++서지 사실은 검증됨·추정·추가 확인 필요 중 하나로 표시한다. 모든 논의 단계, 에이전트
++입장, 행동 로그, 시간상 충돌, 개념, 근거, Action Item에는 실제 source_message_ids를
++연결한다. 담당자와 deadline은 원문에 없으면 null로 둔다.
++
++Memory Forest 직접 쓰기, 쓰기 활성화, 자동 승인, 자동 Commit을 제안하는 Action Item은
++절대 만들지 않는다. Memory 관련 후속 조치는 검색·평가·교수 승인 요청까지만 제안한다.
++JSON 필드 안에 dict/list를 문자열로 변환한 Python repr를 넣지 않는다.
+ 
+ 설명이나 Markdown 없이 다음 키를 가진 JSON object만 출력한다:
+-title, background, agenda, discussion_flow, agent_positions, professor_positions,
++meeting_type, title, background, agenda, discussion_flow, agent_positions,
++agent_activity_log, professor_positions, temporal_conflicts,
+ agreements, disagreements, unresolved_questions, new_concepts, evidence_and_sources,
+ research_direction, action_items, confidence, warnings, recommendation.
+ 
+ discussion_flow 항목: heading, summary, source_message_ids.
+ agent_positions 항목: agent, position, contributions, source_message_ids.
++agent_activity_log 항목: agent, activity, result, source_message_ids.
++temporal_conflicts 항목: subject, earlier_state, current_state,
++resolution_status(resolved|unresolved|superseded|uncertain), source_message_ids.
+ new_concepts 항목: name, definition, status(proposed|agreed|uncertain), source_message_ids.
+ evidence_and_sources 항목: claim, source(null 가능),
+ verification(검증됨|추정|추가 확인 필요), source_message_ids.
+diff --git a/hegi/quality.py b/hegi/quality.py
+index b1b713e7e..3741e0a4d 100644
+--- a/hegi/quality.py
++++ b/hegi/quality.py
+@@ -3,11 +3,106 @@
+ from __future__ import annotations
+ 
+ import re
++from dataclasses import fields, is_dataclass
++from typing import Any
+ 
+ from .models import MeetingEpisode, MeetingMinutes
+ 
+ 
+ _OVERCONFIDENT = re.compile(r"(완벽히|확실히|명백히)\s+(합의|입증|검증)")
++_RAW_REPR = re.compile(
++    r"(?m)(?:^|[\s:])(?:\[\s*(?:\{['\"]|['\"]|[-+]?\d+\s*,)|"
++    r"\{\s*['\"][A-Za-z가-힣_][^}]*['\"]\s*:|"
++    r"<[A-Za-z_][\w.]* object at 0x[0-9a-f]+>)",
++    re.IGNORECASE,
++)
++_UNSAFE_MEMORY_WRITE = re.compile(
++    r"(Memory\s*Forest|메모리\s*포레스트|기억\s*숲).{0,40}"
++    r"(직접\s*(쓰기|저장)|쓰기\s*활성화|자동\s*(커밋|승인)|"
++    r"auto[_ -]?commit\s*[:=]\s*true)",
++    re.IGNORECASE,
++)
++_PROFESSOR_ALIASES = {"교수", "교수님", "professor", "user", "사용자"}
++
++
++class QualityGateError(ValueError):
++    """Raised when a final HEGI output violates a hard publication rule."""
++
++
++def _walk_text(value: Any) -> list[str]:
++    if isinstance(value, str):
++        return [value]
++    if is_dataclass(value):
++        result: list[str] = []
++        for item in fields(value):
++            if item.name == "raw":
++                continue
++            result.extend(_walk_text(getattr(value, item.name)))
++        return result
++    if isinstance(value, dict):
++        result = []
++        for item in value.values():
++            result.extend(_walk_text(item))
++        return result
++    if isinstance(value, (list, tuple)):
++        result = []
++        for item in value:
++            result.extend(_walk_text(item))
++        return result
++    return []
++
++
++def hard_quality_violations(
++    minutes: MeetingMinutes,
++    episode: MeetingEpisode,
++    *,
++    rendered: str = "",
++) -> list[str]:
++    violations: list[str] = []
++    if minutes.meeting_type not in {
++        "research_meeting",
++        "operational_incident",
++        "mixed",
++        "other",
++    }:
++        violations.append(f"잘못된 meeting_type: {minutes.meeting_type}")
++    if any(
++        message.role == "user" and message.source_agent != "교수"
++        for message in episode.messages
++    ):
++        violations.append("교수 메시지 화자 정규화 누락")
++    allowed_agents = {
++        message.source_agent
++        for message in episode.messages
++        if message.role == "assistant"
++    } | {name for name in episode.participants if name != "교수"}
++    for position in minutes.agent_positions:
++        if (
++            not position.agent
++            or position.agent.lower() in _PROFESSOR_ALIASES
++            or position.agent not in allowed_agents
++        ):
++            violations.append(f"잘못된 에이전트 화자명: {position.agent or '(빈 값)'}")
++    for activity in minutes.agent_activity_log:
++        if activity.agent not in allowed_agents:
++            violations.append(f"잘못된 행동 로그 화자명: {activity.agent or '(빈 값)'}")
++    corpus = "\n".join([*_walk_text(minutes), rendered])
++    if _RAW_REPR.search(corpus):
++        violations.append("raw Python repr 감지")
++    if _UNSAFE_MEMORY_WRITE.search(corpus):
++        violations.append("Memory Forest 직접 쓰기 안전정책 위반 문구 감지")
++    return list(dict.fromkeys(violations))
++
++
++def enforce_quality_gate(
++    minutes: MeetingMinutes,
++    episode: MeetingEpisode,
++    *,
++    rendered: str = "",
++) -> None:
++    violations = hard_quality_violations(minutes, episode, rendered=rendered)
++    if violations:
++        raise QualityGateError("; ".join(violations))
+ 
+ 
+ def audit_minutes(minutes: MeetingMinutes, episode: MeetingEpisode) -> list[str]:
+diff --git a/tests/hegi/test_bootstrap_install.py b/tests/hegi/test_bootstrap_install.py
+index a661d77a8..18ea0c912 100644
+--- a/tests/hegi/test_bootstrap_install.py
++++ b/tests/hegi/test_bootstrap_install.py
+@@ -113,6 +113,7 @@ def test_install_script_writes_enabled_config_and_gateway_plugin(tmp_path):
+     assert config["telegram"]["enabled"] is True
+     assert config["telegram"]["chat_id"] == "-10042"
+     assert config["memory"]["professor_user_ids"] == ["4242"]
++    assert config["analysis"]["prompt_version"] == "v2.0.2"
+     assert len(config["agents"]) == 3
+     assert (curator / "plugins" / "hegi-telegram" / "__init__.py").is_file()
+     hermes_config = yaml.safe_load((curator / "config.yaml").read_text())
+diff --git a/tests/hegi/test_minutes_policy.py b/tests/hegi/test_minutes_policy.py
+new file mode 100644
+index 000000000..2e016a31d
+--- /dev/null
++++ b/tests/hegi/test_minutes_policy.py
+@@ -0,0 +1,302 @@
++from __future__ import annotations
++
++from dataclasses import replace
++
++import pytest
++
++from hegi.analyzer import build_minutes
++from hegi.archive import render_markdown
++from hegi.collector import deduplicate_messages
++from hegi.memory import DraftGate, MemoryEvaluator
++from hegi.models import (
++    ActionItem,
++    AgentActivity,
++    AgentPosition,
++    MeetingEpisode,
++    MeetingMinutes,
++    MemoryEvaluation,
++    SourceMessage,
++    TemporalConflict,
++)
++from hegi.quality import QualityGateError, enforce_quality_gate
++from hegi.state import StateStore
++
++
++def _message(
++    message_id: int,
++    *,
++    role: str,
++    agent: str,
++    content: str,
++    platform_id: str,
++    timestamp: float,
++) -> SourceMessage:
++    return SourceMessage(
++        source_agent=agent,
++        source_db=f"/tmp/{agent}.db",
++        message_id=message_id,
++        session_id=f"s-{agent}",
++        platform_message_id=platform_id,
++        chat_id="-1",
++        chat_type="group",
++        role=role,  # type: ignore[arg-type]
++        content=content,
++        timestamp=timestamp,
++    )
++
++
++def _episode(*, operational: bool = False) -> MeetingEpisode:
++    messages = [
++        _message(
++            1,
++            role="user",
++            agent="교수",
++            content="daemon 부팅 실패를 점검해" if operational else "이 개념을 연구하자",
++            platform_id="professor-1",
++            timestamp=100,
++        ),
++        _message(
++            2,
++            role="assistant",
++            agent="헤헤",
++            content="설정을 점검했다" if operational else "새 개념을 제안한다",
++            platform_id="agent-1",
++            timestamp=101,
++        ),
++        _message(
++            3,
++            role="assistant",
++            agent="헤코",
++            content="daemon을 복구했다" if operational else "개념의 범위를 보완한다",
++            platform_id="agent-2",
++            timestamp=102,
++        ),
++    ]
++    return MeetingEpisode(
++        meeting_id="meeting-policy",
++        chat_id="-1",
++        started_at=100,
++        ended_at=200,
++        participants=["헤헤", "헤코"],
++        messages=messages,
++        episode_hash="hash",
++        status="quiet",
++    )
++
++
++def _minutes(episode: MeetingEpisode) -> MeetingMinutes:
++    return MeetingMinutes(
++        meeting_id=episode.meeting_id,
++        title="정책 검증",
++        background="현재 상태를 검증함",
++        agenda=["상태 확인"],
++        discussion_flow=[],
++        agent_positions=[
++            AgentPosition("헤헤", "연구적 판단", ["개념 의견"], [2])
++        ],
++        professor_positions=["점검 지시"],
++        agreements=["복구 완료"],
++        disagreements=[],
++        unresolved_questions=[],
++        new_concepts=[],
++        evidence_and_sources=[],
++        research_direction=[],
++        action_items=[],
++        memory_evaluation=MemoryEvaluation(
++            searched_queries=["정책 검증"],
++            recommendation="merge_existing",
++            search_findings=["정책 검증: 1개 후보 검색"],
++            duplicate_targets=["기존 정책 (memory-1, 높은 중복)"],
++            novelty_basis=["복구 절차만 새로 확인됨"],
++            reasons=["기존 기억과 중복됨"],
++        ),
++        confidence=0.9,
++        warnings=[],
++        meeting_type="operational_incident",
++        agent_activity_log=[
++            AgentActivity("헤헤", "설정 점검", "원인 확인", [2]),
++            AgentActivity("헤코", "daemon 재시작", "복구 완료", [3]),
++        ],
++        temporal_conflicts=[
++            TemporalConflict(
++                "daemon 상태",
++                "부팅 실패",
++                "정상 실행",
++                "resolved",
++                [1, 3],
++            )
++        ],
++    )
++
++
++def test_professor_cross_db_duplicate_is_single_and_normalized():
++    first = _message(
++        1,
++        role="user",
++        agent="헤헤",
++        content="같은 교수 발언",
++        platform_id="professor-1",
++        timestamp=100,
++    )
++    second = replace(first, source_agent="헤코", source_db="/tmp/heco.db", message_id=9)
++
++    merged = deduplicate_messages([first, second])
++
++    assert len(merged) == 1
++    assert merged[0].source_agent == "교수"
++
++
++def test_analyzer_separates_activity_normalizes_professor_and_filters_unsafe_action():
++    episode = _episode(operational=True)
++    payload = {
++        "title": "daemon 장애",
++        "background": {"raw": "dict must not render"},
++        "agenda": [{"raw": "list item must not render"}, "복구"],
++        "discussion_flow": [],
++        "agent_positions": [
++            {
++                "agent": "교수님",
++                "position": "복구를 지시함",
++                "source_message_ids": [1],
++            },
++            {
++                "agent": "헤헤",
++                "position": "원인을 설정 오류로 판단함",
++                "source_message_ids": [2],
++            },
++        ],
++        "agent_activity_log": [
++            {
++                "agent": "헤헤",
++                "activity": "설정 확인",
++                "result": "오류 발견",
++                "source_message_ids": [2],
++            }
++        ],
++        "professor_positions": [],
++        "temporal_conflicts": [
++            {
++                "subject": "daemon",
++                "earlier_state": "실패",
++                "current_state": "복구",
++                "resolution_status": "resolved",
++                "source_message_ids": [1, 3],
++            }
++        ],
++        "agreements": ["복구됨"],
++        "disagreements": [],
++        "unresolved_questions": [],
++        "new_concepts": [],
++        "evidence_and_sources": [],
++        "research_direction": [],
++        "action_items": [
++            {
++                "title": "Memory Forest 직접 쓰기 활성화",
++                "description": "자동 저장한다",
++                "source_message_ids": [2],
++                "priority": "high",
++                "rationale": "편의성",
++            }
++        ],
++        "confidence": 0.9,
++        "warnings": [],
++        "recommendation": "상태 관찰",
++    }
++
++    minutes = build_minutes(payload, episode)
++
++    assert minutes.meeting_type == "operational_incident"
++    assert minutes.background == "원문에서 배경이 명시되지 않음"
++    assert minutes.agenda == ["복구"]
++    assert [item.agent for item in minutes.agent_positions] == ["헤헤"]
++    assert minutes.professor_positions == ["복구를 지시함"]
++    assert minutes.agent_activity_log[0].activity == "설정 확인"
++    assert minutes.temporal_conflicts[0].resolution_status == "resolved"
++    assert minutes.action_items == []
++    assert any("안전정책 위반" in warning for warning in minutes.warnings)
++
++
++def test_operational_renderer_uses_distinct_template_and_no_python_repr():
++    episode = _episode(operational=True)
++
++    rendered = render_markdown(_minutes(episode), episode)
++
++    assert rendered.startswith("# 운영 장애 기록")
++    assert "## 5. 에이전트 행동 로그" in rendered
++    assert "## 6. 연구적 의견과 해석" in rendered
++    assert "이전 `부팅 실패` → 현재 `정상 실행` [resolved]" in rendered
++    assert "기존 정책 (memory-1, 높은 중복)" in rendered
++    assert "source_message_ids: 1, 2, 3" in rendered
++    assert "{'" not in rendered
++    assert "[1, 2" not in rendered
++
++
++def test_quality_gate_blocks_raw_repr_wrong_speaker_and_memory_write_policy():
++    episode = _episode()
++    minutes = _minutes(episode)
++    minutes.meeting_type = "research_meeting"
++    minutes.agent_positions = [
++        AgentPosition("알 수 없는 화자", "의견", [], [2])
++    ]
++    minutes.background = "{'unsafe': 'python repr'}"
++    minutes.action_items = [
++        ActionItem(
++            "act-1",
++            "Memory Forest 직접 쓰기 활성화",
++            "자동 Commit을 켠다",
++            [2],
++            None,
++            "high",
++        )
++    ]
++
++    with pytest.raises(QualityGateError) as error:
++        enforce_quality_gate(minutes, episode)
++
++    message = str(error.value)
++    assert "raw Python repr" in message
++    assert "잘못된 에이전트 화자명" in message
++    assert "Memory Forest 직접 쓰기" in message
++
++
++class _MemoryBackend:
++    def __init__(self):
++        self.drafts: list[dict] = []
++
++    def search(self, query: str, limit: int = 5):
++        return {"results": []}
++
++    def create_draft(self, arguments: dict):
++        self.drafts.append(arguments)
++        return {"state": "pending"}
++
++
++def test_operational_incident_uses_no_memory_and_cannot_create_draft(tmp_path):
++    episode = _episode(operational=True)
++    minutes = _minutes(episode)
++    backend = _MemoryBackend()
++    evaluation = MemoryEvaluator(backend).evaluate(minutes)
++    state = StateStore(tmp_path / "state.db")
++    state.save_episode(
++        minutes.meeting_id,
++        episode.episode_hash,
++        {"meeting_id": minutes.meeting_id},
++        "reported",
++    )
++    gate = DraftGate(state, backend, professor_user_ids=["42"])
++    gate.approve(
++        meeting_id=minutes.meeting_id,
++        text="기억해",
++        user_id="42",
++        platform_message_id="approval-1",
++    )
++
++    assert evaluation.recommendation == "no_memory"
++    assert evaluation.search_findings
++    with pytest.raises(PermissionError, match="no_memory"):
++        gate.create_draft_after_recheck(
++            minutes,
++            evaluation,
++            project="media_aesthetics",
++        )
++    assert backend.drafts == []
+-- 
+2.43.0
+

@@ -108,6 +108,129 @@ class TestSmsFormatAndTruncate:
         assert result == "a\n\nb"
 
 
+# ── Chunking capability flag (regression) ───────────────────────────
+
+class TestSmsChunkingCapabilityFlag:
+    """SmsAdapter.send() already chunks via truncate_message(), but the
+    class must also declare splits_long_messages=True or gateway.delivery
+    treats it as a non-chunking adapter and hard-truncates oversized
+    cron/agent output instead of letting send() split it into segments."""
+
+    def test_declares_splits_long_messages(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        assert SmsAdapter.splits_long_messages is True
+
+    @pytest.mark.asyncio
+    async def test_delivery_router_preserves_full_content_for_sms(self, tmp_path, monkeypatch):
+        """End-to-end: DeliveryRouter must hand send() the untruncated
+        content for SMS, exactly like the other chunking-capable adapters."""
+        from gateway.config import GatewayConfig
+        from gateway.delivery import DeliveryRouter, DeliveryTarget
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        with patch.dict(os.environ, env):
+            adapter = object.__new__(SmsAdapter)
+            adapter.config = PlatformConfig(enabled=True, api_key="tok")
+            adapter._platform = Platform.SMS
+            adapter._account_sid = "ACtest"
+            adapter._auth_token = "tok"
+            adapter._from_number = "+15550001111"
+
+        sent = {}
+
+        async def _fake_send(chat_id, content, reply_to=None, metadata=None):
+            sent["content"] = content
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True)
+
+        adapter.send = _fake_send
+
+        router = DeliveryRouter(GatewayConfig(), adapters={Platform.SMS: adapter})
+        target = DeliveryTarget.parse("sms:+15559998888")
+
+        long_content = "x" * 5000
+        await router._deliver_to_platform(target, long_content, metadata={"job_id": "job-sms"})
+
+        # Full content must reach send() untruncated — send() does its own
+        # chunking via truncate_message(MAX_SMS_LENGTH).
+        assert sent["content"] == long_content
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_bounded_by_max_sms_length(self, monkeypatch):
+        """send() must bound each Twilio body at MAX_SMS_LENGTH (1600), not
+        the generic truncate_message() default of 4096 — a bare
+        self.truncate_message(formatted) call silently picks up the base
+        default and can emit chunks Twilio's real segment limit rejects."""
+        from plugins.platforms.sms.adapter import SmsAdapter, MAX_SMS_LENGTH
+
+        class _FakeFormData:
+            def __init__(self):
+                self.fields = {}
+
+            def add_field(self, name, value):
+                self.fields[name] = value
+
+        class _FakeResponse:
+            def __init__(self):
+                self.status = 201
+
+            async def json(self):
+                return {"sid": "SMfake"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeSession:
+            def __init__(self):
+                self.posted_bodies = []
+
+            def post(self, url, data=None, headers=None):
+                self.posted_bodies.append(data.fields["Body"])
+                return _FakeResponse()
+
+            async def close(self):
+                pass
+
+        monkeypatch.setattr("aiohttp.FormData", _FakeFormData)
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        with patch.dict(os.environ, env):
+            adapter = object.__new__(SmsAdapter)
+            adapter.config = PlatformConfig(enabled=True, api_key="tok")
+            adapter._platform = Platform.SMS
+            adapter._account_sid = "ACtest"
+            adapter._auth_token = "tok"
+            adapter._from_number = "+15550001111"
+
+        fake_session = _FakeSession()
+        adapter._http_session = fake_session
+
+        # Bigger than MAX_SMS_LENGTH (1600) but smaller than the generic
+        # truncate_message() default (4096) — under the bug this stays in
+        # a single oversized chunk instead of being split at 1600.
+        long_content = "y" * 3000
+        result = await adapter.send("+15559998888", long_content)
+
+        assert result.success is True
+        assert len(fake_session.posted_bodies) >= 2
+        assert all(len(body) <= MAX_SMS_LENGTH for body in fake_session.posted_bodies)
+
+
 # ── Echo prevention ────────────────────────────────────────────────
 
 class TestSmsEchoPrevention:

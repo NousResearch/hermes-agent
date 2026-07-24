@@ -20,6 +20,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -210,7 +211,12 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
+
+
+def _is_valid_instance_identity(value: Any) -> bool:
+    text = str(value or "").strip()
+    return len(text) == 32 and not any(ch not in "0123456789abcdef" for ch in text)
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
 # state_meta key ``fts_storage_version``. The main schema version advances
@@ -1152,6 +1158,32 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+CREATE TABLE IF NOT EXISTS state_db_meta (
+    singleton             INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+    state_db_instance_id  TEXT NOT NULL UNIQUE
+        CHECK (
+            length(state_db_instance_id) = 32
+            AND state_db_instance_id NOT GLOB '*[^0-9a-f]*'
+        ),
+    profile_name_at_issue TEXT NOT NULL CHECK (profile_name_at_issue <> '')
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS worker_session_links (
+    board_instance_id    TEXT NOT NULL,
+    task_id              TEXT NOT NULL,
+    run_id               INTEGER NOT NULL,
+    profile_name         TEXT NOT NULL CHECK (profile_name <> ''),
+    state_db_instance_id TEXT NOT NULL,
+    session_id           TEXT NOT NULL PRIMARY KEY
+        REFERENCES sessions(id) ON DELETE CASCADE,
+    state                TEXT NOT NULL
+        CHECK (state IN ('allocated', 'attached', 'retired', 'orphaned')),
+
+    FOREIGN KEY (state_db_instance_id)
+        REFERENCES state_db_meta(state_db_instance_id)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -1669,6 +1701,7 @@ class SessionDB:
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
+                self._ensure_state_db_instance_id()
 
             try:
                 _connect_and_init()
@@ -2248,6 +2281,66 @@ class SessionDB:
                     logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
+
+    def get_state_db_instance_id(self) -> Optional[str]:
+        """Return the live state DB identity, or None when absent on read-only DBs."""
+        with self._lock:
+            if self._conn is None:
+                return None
+            try:
+                table = self._conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'state_db_meta' LIMIT 1"
+                ).fetchone()
+                if table is None:
+                    return None
+                row = self._conn.execute(
+                    "SELECT state_db_instance_id FROM state_db_meta WHERE singleton = 1"
+                ).fetchone()
+            except sqlite3.DatabaseError:
+                raise
+            except Exception:
+                return None
+        if row is None:
+            return None
+        value = row["state_db_instance_id"] if isinstance(row, sqlite3.Row) else row[0]
+        if not _is_valid_instance_identity(value):
+            raise RuntimeError("state DB identity is missing or malformed")
+        return str(value)
+
+    def _ensure_state_db_instance_id(self) -> str:
+        candidate = secrets.token_hex(16)
+
+        def _do(conn):
+            from hermes_cli.profiles import get_active_profile_name
+
+            active_profile_name = str(get_active_profile_name() or "default").strip() or "default"
+            conn.execute(
+                """
+                INSERT INTO state_db_meta (singleton, state_db_instance_id, profile_name_at_issue)
+                VALUES (1, ?, ?)
+                ON CONFLICT(singleton) DO NOTHING
+                """,
+                (candidate, active_profile_name),
+            )
+            row = conn.execute(
+                """
+                SELECT state_db_instance_id, profile_name_at_issue
+                  FROM state_db_meta
+                 WHERE singleton = 1
+                """
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("state DB identity row is missing")
+            state_db_instance_id = row["state_db_instance_id"]
+            profile_name_at_issue = row["profile_name_at_issue"]
+            if not _is_valid_instance_identity(state_db_instance_id):
+                raise RuntimeError("state DB identity is missing or malformed")
+            if not str(profile_name_at_issue or "").strip():
+                raise RuntimeError("state DB profile binding is missing")
+            return str(state_db_instance_id)
+
+        return str(self._execute_write(_do))
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #
@@ -3350,8 +3443,9 @@ class SessionDB:
     # Session lifecycle
     # =========================================================================
 
-    def _insert_session_row(
+    def _insert_session_row_txn(
         self,
+        conn: sqlite3.Connection,
         session_id: str,
         source: str,
         model: str = None,
@@ -3400,107 +3494,226 @@ class SessionDB:
         crash before the gateway re-records the peer can't strand the child
         without a recoverable routing mapping (#59527).
         """
-        def _do(conn):
-            conn.execute(
-                """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd,
-                   profile_name, git_repo_root, started_at
-                )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       model = COALESCE(sessions.model, excluded.model),
-                       model_config = COALESCE(sessions.model_config, excluded.model_config),
-                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
-                       session_key = COALESCE(sessions.session_key, excluded.session_key),
-                       chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
-                       chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
-                       thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
-                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd),
-                       profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
-                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
-                (
-                    session_id,
-                    source,
-                    user_id,
-                    session_key,
-                    chat_id,
-                    chat_type,
-                    thread_id,
-                    model,
-                    json.dumps(model_config) if model_config else None,
-                    system_prompt,
-                    parent_session_id,
-                    cwd,
-                    profile_name,
-                    git_repo_root,
-                    time.time(),
-                ),
+        conn.execute(
+            """INSERT INTO sessions (
+               id, source, user_id, session_key, chat_id, chat_type, thread_id,
+               model, model_config, system_prompt, parent_session_id, cwd,
+               profile_name, git_repo_root, started_at
             )
-            if parent_session_id:
-                conn.execute(
-                    """UPDATE sessions
-                       SET cwd = COALESCE(sessions.cwd,
-                                 (SELECT p.cwd FROM sessions p
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   model = COALESCE(sessions.model, excluded.model),
+                   model_config = COALESCE(sessions.model_config, excluded.model_config),
+                   system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                   session_key = COALESCE(sessions.session_key, excluded.session_key),
+                   chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                   chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                   thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                   parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+                   cwd = COALESCE(sessions.cwd, excluded.cwd),
+                   profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
+                   git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
+            (
+                session_id,
+                source,
+                user_id,
+                session_key,
+                chat_id,
+                chat_type,
+                thread_id,
+                model,
+                json.dumps(model_config) if model_config else None,
+                system_prompt,
+                parent_session_id,
+                cwd,
+                profile_name,
+                git_repo_root,
+                time.time(),
+            ),
+        )
+        if parent_session_id:
+            conn.execute(
+                """UPDATE sessions
+                   SET cwd = COALESCE(sessions.cwd,
+                             (SELECT p.cwd FROM sessions p
+                               WHERE p.id = sessions.parent_session_id)),
+                       git_repo_root = COALESCE(sessions.git_repo_root,
+                                       (SELECT p.git_repo_root FROM sessions p
+                                         WHERE p.id = sessions.parent_session_id)),
+                       git_branch = COALESCE(sessions.git_branch,
+                                    (SELECT p.git_branch FROM sessions p
+                                      WHERE p.id = sessions.parent_session_id))
+                 WHERE id = ? AND parent_session_id IS NOT NULL""",
+                (session_id,),
+            )
+            conn.execute(
+                """UPDATE sessions
+                   SET user_id = COALESCE(sessions.user_id,
+                                 (SELECT p.user_id FROM sessions p
                                    WHERE p.id = sessions.parent_session_id)),
-                           git_repo_root = COALESCE(sessions.git_repo_root,
-                                           (SELECT p.git_repo_root FROM sessions p
-                                             WHERE p.id = sessions.parent_session_id)),
-                           git_branch = COALESCE(sessions.git_branch,
-                                        (SELECT p.git_branch FROM sessions p
-                                          WHERE p.id = sessions.parent_session_id))
-                     WHERE id = ? AND parent_session_id IS NOT NULL""",
-                    (session_id,),
-                )
-                # Belt-and-suspenders for gateway routing metadata (#59527):
-                # the gateway re-records the peer on the child after rotation
-                # (d5b4879d4), but a hard crash between child creation and that
-                # write leaves the child row without origin columns, so
-                # ``find_latest_gateway_session_for_peer`` can't recover the
-                # mapping on restart. Inherit them from the parent at creation
-                # time — but ONLY for compression forks (parent already ended
-                # with end_reason='compression'). Delegate/subagent children
-                # are spawned while the parent is still live and must NOT
-                # inherit routing keys, or peer recovery could repoint gateway
-                # traffic into a subagent's session.
-                conn.execute(
-                    """UPDATE sessions
-                       SET user_id = COALESCE(sessions.user_id,
-                                     (SELECT p.user_id FROM sessions p
+                       session_key = COALESCE(sessions.session_key,
+                                     (SELECT p.session_key FROM sessions p
                                        WHERE p.id = sessions.parent_session_id)),
-                           session_key = COALESCE(sessions.session_key,
-                                         (SELECT p.session_key FROM sessions p
-                                           WHERE p.id = sessions.parent_session_id)),
-                           chat_id = COALESCE(sessions.chat_id,
-                                     (SELECT p.chat_id FROM sessions p
-                                       WHERE p.id = sessions.parent_session_id)),
-                           chat_type = COALESCE(sessions.chat_type,
-                                       (SELECT p.chat_type FROM sessions p
-                                         WHERE p.id = sessions.parent_session_id)),
-                           thread_id = COALESCE(sessions.thread_id,
-                                       (SELECT p.thread_id FROM sessions p
-                                         WHERE p.id = sessions.parent_session_id)),
-                           display_name = COALESCE(sessions.display_name,
-                                          (SELECT p.display_name FROM sessions p
-                                            WHERE p.id = sessions.parent_session_id)),
-                           origin_json = COALESCE(sessions.origin_json,
-                                         (SELECT p.origin_json FROM sessions p
-                                           WHERE p.id = sessions.parent_session_id))
-                     WHERE id = ? AND parent_session_id IS NOT NULL
-                       AND EXISTS (
-                           SELECT 1 FROM sessions p
-                           WHERE p.id = sessions.parent_session_id
-                             AND p.end_reason = 'compression'
-                       )""",
-                    (session_id,),
-                )
+                       chat_id = COALESCE(sessions.chat_id,
+                                 (SELECT p.chat_id FROM sessions p
+                                   WHERE p.id = sessions.parent_session_id)),
+                       chat_type = COALESCE(sessions.chat_type,
+                                   (SELECT p.chat_type FROM sessions p
+                                     WHERE p.id = sessions.parent_session_id)),
+                       thread_id = COALESCE(sessions.thread_id,
+                                   (SELECT p.thread_id FROM sessions p
+                                     WHERE p.id = sessions.parent_session_id)),
+                       display_name = COALESCE(sessions.display_name,
+                                      (SELECT p.display_name FROM sessions p
+                                        WHERE p.id = sessions.parent_session_id)),
+                       origin_json = COALESCE(sessions.origin_json,
+                                     (SELECT p.origin_json FROM sessions p
+                                       WHERE p.id = sessions.parent_session_id))
+                 WHERE id = ? AND parent_session_id IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1 FROM sessions p
+                       WHERE p.id = sessions.parent_session_id
+                         AND p.end_reason = 'compression'
+                   )""",
+                (session_id,),
+            )
+
+    def _insert_session_row(
+        self,
+        session_id: str,
+        source: str,
+        **kwargs,
+    ) -> None:
+        def _do(conn):
+            self._insert_session_row_txn(conn, session_id, source, **kwargs)
+
         self._execute_write(_do)
 
-    def create_session(self, session_id: str, source: str, **kwargs) -> str:
+    def create_session(
+        self,
+        session_id: str,
+        source: str,
+        *,
+        worker_session_link: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> str:
         """Create a new session record. Returns the session_id."""
-        self._insert_session_row(session_id, source, **kwargs)
+        if worker_session_link is None:
+            self._insert_session_row(session_id, source, **kwargs)
+            return session_id
+
+        link = dict(worker_session_link)
+        create_kwargs = dict(kwargs)
+
+        def _do(conn):
+            from hermes_cli.profiles import get_active_profile_name
+
+            row = conn.execute(
+                """
+                SELECT state_db_instance_id, profile_name_at_issue
+                  FROM state_db_meta
+                 WHERE singleton = 1
+                """
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("state DB identity row is missing")
+            live_state_db_instance_id = str(row["state_db_instance_id"] or "")
+            profile_name_at_issue = str(row["profile_name_at_issue"] or "")
+            active_profile_name = str(get_active_profile_name() or "default").strip() or "default"
+            expected_profile_name = str(link.get("profile_name") or "").strip()
+            expected_state_db_instance_id = str(link.get("state_db_instance_id") or "").strip()
+            if live_state_db_instance_id != expected_state_db_instance_id:
+                raise RuntimeError("state DB identity does not match Kanban allocation")
+            if (
+                not expected_profile_name
+                or expected_profile_name != active_profile_name
+                or expected_profile_name != profile_name_at_issue
+            ):
+                raise RuntimeError("active profile does not match Kanban allocation")
+
+            create_kwargs["profile_name"] = expected_profile_name
+            self._insert_session_row_txn(
+                conn,
+                session_id,
+                source,
+                **create_kwargs,
+            )
+
+            existing = conn.execute(
+                """
+                SELECT board_instance_id, task_id, run_id, profile_name,
+                       state_db_instance_id, session_id, state
+                  FROM worker_session_links
+                 WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            expected_tuple = (
+                str(link["board_instance_id"]),
+                str(link["task_id"]),
+                int(link["run_id"]),
+                expected_profile_name,
+                expected_state_db_instance_id,
+                session_id,
+                "attached",
+            )
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO worker_session_links (
+                        board_instance_id, task_id, run_id, profile_name,
+                        state_db_instance_id, session_id, state
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'attached')
+                    """,
+                    expected_tuple[:-1],
+                )
+            else:
+                existing_tuple = (
+                    str(existing["board_instance_id"]),
+                    str(existing["task_id"]),
+                    int(existing["run_id"]),
+                    str(existing["profile_name"]),
+                    str(existing["state_db_instance_id"]),
+                    str(existing["session_id"]),
+                    str(existing["state"]),
+                )
+                if existing_tuple != expected_tuple:
+                    raise RuntimeError(
+                        "existing worker session link does not match Kanban allocation"
+                    )
+
+        self._execute_write(_do)
         return session_id
+
+    def has_exact_worker_session_link(self, link: Dict[str, Any]) -> bool:
+        """Return whether the local attached reciprocal row exactly matches *link*."""
+        session_id = str(link.get("session_id") or "").strip()
+        if not session_id:
+            return False
+        with self._lock:
+            if self._conn is None:
+                return False
+            row = self._conn.execute(
+                """
+                SELECT w.board_instance_id, w.task_id, w.run_id, w.profile_name,
+                       w.state_db_instance_id, w.session_id, w.state
+                  FROM worker_session_links w
+                  JOIN sessions s ON s.id = w.session_id
+                 WHERE w.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        return (
+            str(row["board_instance_id"]) == str(link.get("board_instance_id"))
+            and str(row["task_id"]) == str(link.get("task_id"))
+            and int(row["run_id"]) == int(link.get("run_id"))
+            and str(row["profile_name"]) == str(link.get("profile_name"))
+            and str(row["state_db_instance_id"]) == str(link.get("state_db_instance_id"))
+            and str(row["session_id"]) == session_id
+            and str(row["state"]) == "attached"
+        )
 
     def record_gateway_session_peer(
         self,

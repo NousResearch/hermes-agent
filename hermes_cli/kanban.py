@@ -909,6 +909,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    p_repair_session_link = sub.add_parser(
+        "repair-session-link",
+        help="Explicitly finish a live allocated worker-session link",
+    )
+    p_repair_session_link.add_argument("task_id", nargs="?", default=None)
+    p_repair_session_link.add_argument("--session-id", default=None)
+    p_repair_session_link.add_argument("--run-id", type=int, default=None)
+    p_repair_session_link.add_argument("--claim-lock", default=None)
+    p_repair_session_link.add_argument("--json", action="store_true")
+
     # --- repair ---
     p_repair = sub.add_parser(
         "repair",
@@ -1062,6 +1072,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "repair-session-link": _cmd_repair_session_link,
         }
         handler = handlers.get(action)
         if not handler:
@@ -1120,6 +1131,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "specify",
     "decompose",
     "gc",
+    "repair-session-link",
 })
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
@@ -3034,6 +3046,74 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     )
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+def _cmd_repair_session_link(args: argparse.Namespace) -> int:
+    task_id = str(args.task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    session_id = str(args.session_id or os.environ.get("HERMES_KANBAN_SESSION_ID") or "").strip()
+    claim_lock = str(args.claim_lock or os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    run_id = args.run_id
+    if run_id is None:
+        raw_run_id = str(os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+        if raw_run_id:
+            try:
+                run_id = int(raw_run_id)
+            except ValueError:
+                run_id = None
+    if not task_id or not session_id or not claim_lock or run_id is None:
+        print(
+            "kanban repair-session-link requires task_id, session_id, run_id, and claim_lock "
+            "(args or pinned HERMES_KANBAN_* env).",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_state import SessionDB
+
+        profile_name = str(get_active_profile_name() or "default").strip() or "default"
+        with kb.connect_closing() as conn:
+            link = kb.read_allocated_worker_session_link(
+                conn,
+                task_id=task_id,
+                run_id=int(run_id),
+                session_id=session_id,
+                claim_lock=claim_lock,
+                profile_name=profile_name,
+            )
+        session_db = SessionDB()
+        try:
+            if not session_db.has_exact_worker_session_link(link):
+                raise RuntimeError(
+                    "local reciprocal worker_session_links row is missing or not exactly attached"
+                )
+        finally:
+            session_db.close()
+        with kb.connect_closing() as conn:
+            with kb.write_txn(conn):
+                kb.attach_worker_session_link(
+                    conn,
+                    task_id=task_id,
+                    run_id=int(run_id),
+                    session_id=session_id,
+                    claim_lock=claim_lock,
+                    profile_name=profile_name,
+                )
+    except Exception as exc:
+        print(f"kanban repair-session-link: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "task_id": task_id,
+            "run_id": int(run_id),
+            "session_id": session_id,
+            "state": "attached",
+        }, indent=2))
+    else:
+        print(f"Attached reciprocal worker session link for {task_id} run {int(run_id)}.")
     return 0
 
 

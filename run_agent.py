@@ -605,14 +605,66 @@ class AIAgent:
         if self._session_db_created or not self._session_db:
             return
         source = _session_source_for_agent(self.platform)
+        kanban_task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
         try:
             try:
                 from hermes_cli.profiles import get_active_profile_name
-                _profile_for_session = get_active_profile_name()
+                _active_profile_name = get_active_profile_name()
+                _profile_for_session = _active_profile_name
                 if _profile_for_session == "default":
                     _profile_for_session = None
             except Exception:
+                _active_profile_name = "default"
                 _profile_for_session = None
+            if kanban_task_id:
+                from hermes_cli import kanban_db as _kb
+
+                expected_session_id = (os.environ.get("HERMES_KANBAN_SESSION_ID") or "").strip()
+                if not expected_session_id:
+                    raise RuntimeError("Kanban worker is missing HERMES_KANBAN_SESSION_ID")
+                if str(getattr(self, "session_id", "") or "") != expected_session_id:
+                    raise RuntimeError("Kanban worker session_id is not the pinned dispatcher allocation")
+                run_id_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+                claim_lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+                if not run_id_raw or not claim_lock:
+                    raise RuntimeError("Kanban worker is missing run/claim provenance")
+                try:
+                    run_id = int(run_id_raw)
+                except ValueError as exc:
+                    raise RuntimeError("Kanban worker run id is invalid") from exc
+                active_profile_name = str(_active_profile_name or "default").strip() or "default"
+                with _kb.connect_closing() as conn:
+                    link = _kb.read_allocated_worker_session_link(
+                        conn,
+                        task_id=kanban_task_id,
+                        run_id=run_id,
+                        session_id=expected_session_id,
+                        claim_lock=claim_lock,
+                        profile_name=active_profile_name,
+                    )
+                self._session_db.create_session(
+                    session_id=self.session_id,
+                    source=source,
+                    model=self.model,
+                    model_config=self._session_init_model_config,
+                    system_prompt=self._cached_system_prompt,
+                    user_id=None,
+                    parent_session_id=self._parent_session_id,
+                    cwd=_launch_cwd_for_session(source),
+                    worker_session_link=link,
+                )
+                with _kb.connect_closing() as conn:
+                    with _kb.write_txn(conn):
+                        _kb.attach_worker_session_link(
+                            conn,
+                            task_id=kanban_task_id,
+                            run_id=run_id,
+                            session_id=expected_session_id,
+                            claim_lock=claim_lock,
+                            profile_name=active_profile_name,
+                        )
+                self._session_db_created = True
+                return
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
@@ -626,6 +678,8 @@ class AIAgent:
             )
             self._session_db_created = True
         except Exception as e:
+            if kanban_task_id:
+                raise
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.
             logger.warning(

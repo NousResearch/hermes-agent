@@ -1435,7 +1435,19 @@ def init_agent(
     
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()
-    if session_id:
+    kanban_task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    kanban_session_id = (os.environ.get("HERMES_KANBAN_SESSION_ID") or "").strip()
+    if kanban_task_id:
+        if not kanban_session_id:
+            raise ValueError(
+                "dispatcher-pinned Kanban worker is missing HERMES_KANBAN_SESSION_ID"
+            )
+        if session_id and session_id != kanban_session_id:
+            raise ValueError(
+                "dispatcher-pinned Kanban worker session_id does not match the allocation"
+            )
+        agent.session_id = kanban_session_id
+    elif session_id:
         # Use provided session ID (e.g., from CLI)
         agent.session_id = session_id
     else:

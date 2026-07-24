@@ -168,6 +168,23 @@ class TestThresholdGate:
         assert not should_activate(cfg, deferrable_tokens=10_000, context_length=0)
         assert should_activate(cfg, deferrable_tokens=25_000, context_length=0)
 
+    def test_defer_always_core_bypasses_auto_threshold(self):
+        """defer_always_core should force activation even when auto threshold is not met."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "auto", "threshold_pct": 90, "defer_always_core": True}
+        )
+        # Way below 90% of context, but should still activate in always mode.
+        assert should_activate(cfg, deferrable_tokens=1_000, context_length=200_000)
+
+    def test_defer_always_core_still_respects_enabled_off(self):
+        """Explicit off remains authoritative even with defer_always_core set."""
+        from tools.tool_search import ToolSearchConfig, should_activate
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "off", "defer_always_core": True}
+        )
+        assert not should_activate(cfg, deferrable_tokens=100_000, context_length=200_000)
+
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas
         small = [_td("a", "x")]
@@ -536,3 +553,320 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+# ---------------------------------------------------------------------------
+# defer_core=True paths
+# ---------------------------------------------------------------------------
+
+
+class TestDeferCoreTrue:
+    """Tests for the defer_core=True configuration paths.
+
+    When defer_core=True, tools listed in _HERMES_DEFERRABLE_CORE_TOOLS
+    become eligible for deferral, while tools in _HERMES_ALWAYS_CORE_TOOLS
+    remain permanently visible.
+    """
+
+    @staticmethod
+    def _defer_core_config():
+        from tools.tool_search import ToolSearchConfig
+        return ToolSearchConfig.from_raw({"enabled": "on", "defer_core": True})
+
+    def test_is_deferrable_with_defer_core_true_deferrable_core_tool(self):
+        """A tool in _HERMES_DEFERRABLE_CORE_TOOLS returns True when defer_core=True."""
+        from tools.tool_search import is_deferrable_tool_name
+        from toolsets import _HERMES_DEFERRABLE_CORE_TOOLS
+        cfg = self._defer_core_config()
+        # write_file is in _HERMES_DEFERRABLE_CORE_TOOLS (not in _HERMES_ALWAYS_CORE_TOOLS)
+        # Without a registry entry it won't be deferrable (registry returns False for unknowns),
+        # but register it first so the registry check passes.
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            import json
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+        assert is_deferrable_tool_name("write_file", config=cfg), (
+            "write_file (in _HERMES_DEFERRABLE_CORE_TOOLS) must be deferrable when defer_core=True"
+        )
+
+    def test_is_deferrable_with_defer_core_true_always_core_tool(self):
+        """A tool in _HERMES_ALWAYS_CORE_TOOLS returns False even when defer_core=True."""
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = self._defer_core_config()
+        # memory is in _HERMES_ALWAYS_CORE_TOOLS
+        assert not is_deferrable_tool_name("memory", config=cfg), (
+            "memory (in _HERMES_ALWAYS_CORE_TOOLS) must NEVER be deferrable"
+        )
+
+    def test_classify_tools_defer_core_true(self):
+        """With defer_core=True, deferrable-core tools appear in the deferrable bucket."""
+        from tools.tool_search import classify_tools
+        from tools.registry import registry
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        # Register write_file as a non-MCP tool (simulates deferrable-core tool)
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+
+        cfg = self._defer_core_config()
+        defs = [
+            _td("memory", "Persistent memory"),   # always-core → must stay visible
+            _td("write_file", "Write a file"),     # deferrable-core → deferrable with defer_core=True
+        ]
+        visible, deferrable = classify_tools(defs, config=cfg)
+
+        visible_names = {(t.get("function") or {}).get("name") for t in visible}
+        deferrable_names = {(t.get("function") or {}).get("name") for t in deferrable}
+
+        assert "memory" in visible_names, "always-core tool 'memory' must be in visible bucket"
+        assert "write_file" in deferrable_names, (
+            "deferrable-core tool 'write_file' must be in deferrable bucket when defer_core=True"
+        )
+
+    def test_resolve_underlying_call_allows_deferrable_core_tool_with_defer_core_true(self):
+        """With defer_core=True, resolve_underlying_call allows a deferrable-core tool through."""
+        from tools.tool_search import resolve_underlying_call
+        from tools.registry import registry
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+
+        cfg = self._defer_core_config()
+        name, args, err = resolve_underlying_call(
+            {"name": "write_file", "arguments": {"path": "/tmp/x", "content": "hi"}},
+            config=cfg,
+        )
+        assert err is None, (
+            f"resolve_underlying_call should NOT return an error for deferrable-core tool "
+            f"with defer_core=True, got: {err!r}"
+        )
+        assert name == "write_file"
+
+    def test_scoped_deferrable_names_defer_core_true(self):
+        """With defer_core=True, deferrable-core tools appear in the scoped set."""
+        from tools.tool_search import scoped_deferrable_names
+        from tools.registry import registry
+        import model_tools
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+
+        cfg = self._defer_core_config()
+        defs = [
+            _td("memory", "Persistent memory"),
+            _td("write_file", "Write a file"),
+        ]
+        names = scoped_deferrable_names(defs, config=cfg)
+        assert "write_file" in names, (
+            "deferrable-core tool 'write_file' must appear in scoped set when defer_core=True"
+        )
+        assert "memory" not in names, (
+            "always-core tool 'memory' must NOT appear in scoped set even with defer_core=True"
+        )
+
+    def test_tool_call_bridge_dispatches_deferrable_core_tool_end_to_end(self):
+        """E2E: with defer_core=True, tool_call dispatches a deferrable-core tool via
+        the full handle_function_call → resolve_underlying_call → registry dispatch path,
+        against a temp HERMES_HOME config with defer_core enabled.
+        """
+        import json
+        import os
+        import tempfile
+        import model_tools
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig
+
+        # Register a synthetic deferrable-core-shaped tool in the file toolset.
+        captured = {}
+
+        def _handler(args, task_id=None, **kw):
+            captured["called_with"] = args
+            return json.dumps({"ok": True, "wrote": args.get("path", "")})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file", {"path": {"type": "string"}, "content": {"type": "string"}}),
+            toolset="file",
+        )
+
+        # Patch load_config so the bridge uses a defer_core=True config for this call.
+        import tools.tool_search as _ts_mod
+        original_load = _ts_mod.load_config
+
+        def _patched_load():
+            return ToolSearchConfig.from_raw({"enabled": "on", "defer_core": True})
+
+        _ts_mod.load_config = _patched_load
+        try:
+            result = model_tools.handle_function_call(
+                function_name="tool_call",
+                function_args={"name": "write_file", "arguments": {"path": "/tmp/test.txt", "content": "hi"}},
+                enabled_toolsets=["file"],
+            )
+        finally:
+            _ts_mod.load_config = original_load
+
+        parsed = json.loads(result)
+        assert parsed.get("ok") is True, (
+            f"Expected deferrable-core tool to be dispatched successfully via bridge, got: {parsed!r}"
+        )
+        assert captured.get("called_with", {}).get("path") == "/tmp/test.txt", (
+            f"Handler was not called with the correct arguments: {captured!r}"
+        )
+
+
+class TestDeferAlwaysCoreTrue:
+    """Tests for defer_always_core=True — fully lazy mode where only bridge tools are visible."""
+
+    def test_config_parses_defer_always_core(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        assert cfg.defer_always_core is True
+        assert cfg.defer_core is True
+
+    def test_config_defer_always_core_defaults_false(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "on", "defer_core": True})
+        assert cfg.defer_always_core is False
+
+    def test_config_legacy_bool_shape_defer_always_core_false(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(True)
+        assert cfg.defer_always_core is False
+        cfg2 = ToolSearchConfig.from_raw(False)
+        assert cfg2.defer_always_core is False
+
+    def test_always_core_tools_are_deferrable(self):
+        """With defer_always_core=True, terminal/memory/delegate_task must be deferrable."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name
+        from toolsets import _HERMES_ALWAYS_CORE_TOOLS
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        for name in _HERMES_ALWAYS_CORE_TOOLS:
+            assert is_deferrable_tool_name(name, cfg), (
+                f"Expected {name!r} to be deferrable with defer_always_core=True"
+            )
+
+    def test_bridge_tools_never_deferrable_with_defer_always_core(self):
+        """Bridge tools must remain visible even with defer_always_core=True."""
+        from tools.tool_search import ToolSearchConfig, is_deferrable_tool_name, BRIDGE_TOOL_NAMES
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        for name in BRIDGE_TOOL_NAMES:
+            assert not is_deferrable_tool_name(name, cfg), (
+                f"Bridge tool {name!r} must never be deferrable"
+            )
+
+    def test_classify_tools_defer_always_core(self):
+        """With defer_always_core=True, all non-bridge tools move to deferred."""
+        from tools.tool_search import ToolSearchConfig, classify_tools, BRIDGE_TOOL_NAMES
+        from toolsets import _HERMES_ALWAYS_CORE_TOOLS
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        # Build fake schemas for always-core tools only (bridge tools are added
+        # after classification via bridge_tool_schemas(), not passed as input)
+        all_tools = [
+            {"type": "function", "function": {"name": n, "description": f"desc {n}", "parameters": {}}}
+            for n in _HERMES_ALWAYS_CORE_TOOLS
+        ]
+        visible, deferred = classify_tools(all_tools, cfg)
+        deferred_names = {t["function"]["name"] for t in deferred}
+
+        # All always-core tools must move to deferred
+        for name in _HERMES_ALWAYS_CORE_TOOLS:
+            assert name in deferred_names, f"{name} should be deferred with defer_always_core=True"
+
+        # visible should be empty (bridge tools are injected separately)
+        assert visible == [], f"Expected no visible tools, got: {[t['function']['name'] for t in visible]}"
+
+    def test_defer_always_core_implies_defer_core(self):
+        """Setting defer_always_core=True without defer_core=True must auto-promote defer_core."""
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "on", "defer_always_core": True})
+        assert cfg.defer_core is True, (
+            "defer_always_core=True must auto-promote defer_core=True in from_raw()"
+        )
+        assert cfg.defer_always_core is True
+
+    def test_assemble_tool_defs_defer_always_core_e2e(self):
+        """E2E: assemble_tool_defs with defer_always_core=True activates and leaves only bridges."""
+        from tools.tool_search import (
+            ToolSearchConfig, assemble_tool_defs, BRIDGE_TOOL_NAMES,
+        )
+        from toolsets import _HERMES_ALWAYS_CORE_TOOLS
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        tool_defs = [
+            {"type": "function", "function": {"name": n, "description": f"desc {n}", "parameters": {}}}
+            for n in _HERMES_ALWAYS_CORE_TOOLS
+        ]
+        result = assemble_tool_defs(tool_defs, config=cfg)
+        assert result.activated, "assemble_tool_defs should activate with defer_always_core=True"
+        visible_names = {t["function"]["name"] for t in result.tool_defs}
+        assert visible_names == BRIDGE_TOOL_NAMES, (
+            f"Only bridge tools should be visible, got: {visible_names}"
+        )
+
+    def test_scoped_deferrable_names_defer_always_core(self):
+        """With defer_always_core=True, always-core tools appear in the scoped deferrable set."""
+        from tools.tool_search import ToolSearchConfig, scoped_deferrable_names
+        from tools.registry import registry
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="memory",
+            handler=_handler,
+            schema={"type": "function", "function": {"name": "memory", "description": "memory", "parameters": {}}},
+            toolset="memory",
+        )
+
+        cfg = ToolSearchConfig.from_raw(
+            {"enabled": "on", "defer_core": True, "defer_always_core": True}
+        )
+        defs = [
+            {"type": "function", "function": {"name": "memory", "description": "Persistent memory", "parameters": {}}},
+        ]
+        names = scoped_deferrable_names(defs, config=cfg)
+        assert "memory" in names, (
+            "always-core tool 'memory' must appear in scoped deferrable set with defer_always_core=True"
+        )

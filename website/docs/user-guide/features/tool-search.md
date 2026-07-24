@@ -15,13 +15,18 @@ problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
-:::info Built-in Hermes tools never defer
-The tools that make up Hermes' core capability set (`terminal`,
-`read_file`, `write_file`, `patch`, `search_files`, `todo`, `memory`,
-`browser_*`, `web_search`, `web_extract`, `clarify`, `execute_code`,
-`delegate_task`, `session_search`, and the rest of
-`_HERMES_CORE_TOOLS`) are *always* loaded directly. Only MCP tools and
-non-core plugin tools are eligible for deferral.
+:::info Built-in Hermes tools and deferral
+By default, core Hermes tools (`terminal`, `read_file`, `write_file`,
+`patch`, `search_files`, `todo`, `memory`, `browser_*`, `web_search`,
+`web_extract`, `clarify`, `execute_code`, `delegate_task`,
+`session_search`, and the rest of `_HERMES_CORE_TOOLS`) are *always*
+loaded directly. Only MCP tools and non-core plugin tools are eligible
+for deferral.
+
+Set `tools.tool_search.defer_core: true` to also defer a subset of
+core tools via the bridge (see [Configuration](#configuration) below).
+A small always-needed set (`terminal`, `read_file`, `search_files`, and
+a few others) remains directly visible regardless.
 :::
 
 ## How it works
@@ -78,6 +83,7 @@ tools:
     threshold_pct: 10   # percentage of context — only used in auto mode
     search_default_limit: 5
     max_search_limit: 20
+    defer_core: false   # when true, deferrable core tools also go through the bridge
 ```
 
 | Key | Default | Meaning |
@@ -86,6 +92,7 @@ tools:
 | `threshold_pct` | `10` | Percentage of context length at which `auto` mode kicks in. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `defer_core` | `false` | When `true`, tools in `_HERMES_DEFERRABLE_CORE_TOOLS` are also eligible for deferral. A small always-needed set (`terminal`, `read_file`, `search_files`, and a few others) always remains directly visible. |
 
 You can also flip the legacy boolean shape:
 

@@ -1452,6 +1452,7 @@ DEFAULT_CONFIG = {
                                       # prompt-cache invalidation amortized: one big
                                       # episodic break instead of a tiny break every
                                       # tool iteration. 0 = commit any non-zero prune.
+        "max_tail_message_floor": 0,  # cap for the tail floor (0 = default 8; set higher to keep more recent messages verbatim)
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session

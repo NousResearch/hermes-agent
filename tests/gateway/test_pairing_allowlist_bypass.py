@@ -28,6 +28,7 @@ def _isolate_env(monkeypatch):
         "TELEGRAM_ALLOW_ALL_USERS",
         "TELEGRAM_GROUP_ALLOWED_USERS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "WHATSAPP_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -203,3 +204,65 @@ def test_revoke_removes_env_var_when_list_empties(store, monkeypatch):
 
     assert store.revoke("telegram", "newuser99") is True
     assert "TELEGRAM_ALLOWED_USERS" in removed
+
+
+def test_revoke_whatsapp_device_jid_removes_bare_allowlist_entry(store, monkeypatch):
+    """Revoke with a device-suffix JID must clear the normalized phone allowlist entry.
+
+    Approve persists/mirrors the bare phone; operators often revoke with the
+    bridge's JID form. Exact-string allowlist remove left the user authorized.
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "already,15551234567")
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    monkeypatch.setattr(cfg, "remove_env_value", lambda k: os.environ.pop(k, None))
+
+    store._approve_user("whatsapp", "15551234567@s.whatsapp.net", "")
+    assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is True
+
+    assert store.revoke("whatsapp", "15551234567:47@s.whatsapp.net") is True
+    assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is False
+    assert saved.get("WHATSAPP_ALLOWED_USERS") == "already"
+    assert os.environ.get("WHATSAPP_ALLOWED_USERS") == "already"
+
+
+def test_revoke_whatsapp_removes_all_alias_forms_from_allowlist(store, monkeypatch):
+    """Allowlist may hold both bare phone and JID; revoke must drop every alias."""
+    monkeypatch.setenv(
+        "WHATSAPP_ALLOWED_USERS",
+        "keeper,15551234567,15551234567@s.whatsapp.net",
+    )
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    store._approve_user("whatsapp", "15551234567", "")
+
+    assert store.revoke("whatsapp", "15551234567@s.whatsapp.net") is True
+    assert saved.get("WHATSAPP_ALLOWED_USERS") == "keeper"
+
+
+def test_revoke_whatsapp_preserves_wildcard_allowlist_entry(store, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*,15551234567")
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    store._approve_user("whatsapp", "15551234567", "")
+
+    assert store.revoke("whatsapp", "15551234567:47@s.whatsapp.net") is True
+    assert saved.get("WHATSAPP_ALLOWED_USERS") == "*"

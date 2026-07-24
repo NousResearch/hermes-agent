@@ -109,6 +109,34 @@ def _split_allowlist(raw: str) -> list:
     return [uid.strip() for uid in raw.split(",") if uid.strip()]
 
 
+def _normalize_user_id(platform: str, user_id: str) -> str:
+    """Normalize platform-specific user IDs before persisting / comparing them."""
+    raw_user_id = str(user_id or "").strip()
+    if platform == "whatsapp":
+        return normalize_whatsapp_identifier(raw_user_id) or raw_user_id
+    return raw_user_id
+
+
+def _user_id_aliases(platform: str, user_id: str) -> set[str]:
+    """Return all known equivalent user IDs for auth / allowlist matching."""
+    raw_user_id = str(user_id or "").strip()
+    if not raw_user_id:
+        return set()
+
+    aliases = {raw_user_id, _normalize_user_id(platform, raw_user_id)}
+    if platform == "whatsapp":
+        aliases.update(expand_whatsapp_aliases(raw_user_id))
+    aliases.discard("")
+    return aliases
+
+
+def _user_ids_match(platform: str, left: str, right: str) -> bool:
+    """Return True when two user IDs represent the same principal."""
+    left_aliases = _user_id_aliases(platform, left)
+    right_aliases = _user_id_aliases(platform, right)
+    return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
+
+
 def _sync_allowlist_add(platform: str, user_id: str) -> None:
     """Add ``user_id`` to the platform allowlist env var IF one is configured.
 
@@ -139,7 +167,13 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
 
 
 def _sync_allowlist_remove(platform: str, user_id: str) -> None:
-    """Remove ``user_id`` from the platform allowlist env var if present."""
+    """Remove ``user_id`` (and WhatsApp alias equivalents) from the allowlist.
+
+    Matching must mirror PairingStore / authz WhatsApp alias rules: approve
+    mirrors a normalized phone into ``WHATSAPP_ALLOWED_USERS``, while revoke
+    is often invoked with a JID or device-suffix form. Exact-string delete
+    would leave the allowlist entry and keep the sender authorized.
+    """
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
@@ -147,7 +181,11 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
     if not current:
         return
     ids = _split_allowlist(current)
-    remaining = [i for i in ids if i != str(user_id)]
+    # Never strip a wildcard grant; drop every entry that aliases-matches.
+    remaining = [
+        i for i in ids
+        if i == "*" or not _user_ids_match(platform, i, str(user_id))
+    ]
     if len(remaining) == len(ids):
         return  # Not present.
     try:
@@ -318,28 +356,15 @@ class PairingStore:
 
     def _normalize_user_id(self, platform: str, user_id: str) -> str:
         """Normalize platform-specific user IDs before persisting them."""
-        raw_user_id = str(user_id or "").strip()
-        if platform == "whatsapp":
-            return normalize_whatsapp_identifier(raw_user_id) or raw_user_id
-        return raw_user_id
+        return _normalize_user_id(platform, user_id)
 
     def _user_id_aliases(self, platform: str, user_id: str) -> set[str]:
         """Return all known equivalent user IDs for auth/rate-limit checks."""
-        raw_user_id = str(user_id or "").strip()
-        if not raw_user_id:
-            return set()
-
-        aliases = {raw_user_id, self._normalize_user_id(platform, raw_user_id)}
-        if platform == "whatsapp":
-            aliases.update(expand_whatsapp_aliases(raw_user_id))
-        aliases.discard("")
-        return aliases
+        return _user_id_aliases(platform, user_id)
 
     def _user_ids_match(self, platform: str, left: str, right: str) -> bool:
         """Return True when two user IDs represent the same principal."""
-        left_aliases = self._user_id_aliases(platform, left)
-        right_aliases = self._user_id_aliases(platform, right)
-        return bool(left_aliases and right_aliases and (left_aliases & right_aliases))
+        return _user_ids_match(platform, left, right)
 
     # ----- Approved users -----
 

@@ -351,8 +351,17 @@ def _make_world_traversable(path: Path) -> None:
 
 
 def _runtime_request(info: SQLiteRuntimeInfo) -> str:
-    """Pin the candidate to the current exact CPython patch."""
-    return ".".join(str(part) for part in info.python_version)
+    """Pin the candidate to the current CPython minor line (e.g. ``3.11``).
+
+    Requesting the exact patch can never repair some installs: for a given
+    patch, python-build-standalone may have no artifact with fixed SQLite at
+    all (e.g. every published 3.11.14 build links SQLite 3.50.4; the fix
+    only exists from 3.11.15).  A newer patch on the same minor is what
+    ``uv python install`` would resolve for a fresh install, stays inside
+    ``requires-python``, and the locked ``uv sync`` + import smoke tests gate
+    compatibility before any cutover.
+    """
+    return ".".join(str(part) for part in info.python_version[:2])
 
 
 def _install_safe_python_generation(
@@ -438,10 +447,12 @@ def _install_safe_python_generation(
         logger.warning("could not probe candidate Python runtime: %s", python)
         _remove_tree(generation, boundary=python_root)
         return None
-    if candidate.python_version != current.python_version:
+    if candidate.python_version[:2] != current.python_version[:2] or (
+        candidate.python_version < current.python_version
+    ):
         logger.warning(
-            "candidate Python patch drifted from %s to %s",
-            current.python_version,
+            "candidate Python drifted off the %s minor line or downgraded: %s",
+            ".".join(str(p) for p in current.python_version[:2]),
             candidate.python_version,
         )
         _remove_tree(generation, boundary=python_root)

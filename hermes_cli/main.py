@@ -8523,6 +8523,7 @@ def _detect_broken_lazy_refresh_imports(
         f"    ({mod!r}, {attr!r})," for mod, attr in _LAZY_REFRESH_IMPORT_PROBES
     )
     check_script = (
+        "import os\n"
         "import sys\n"
         "probes = [\n"
         f"{probe_lines}\n"
@@ -8533,6 +8534,13 @@ def _detect_broken_lazy_refresh_imports(
         "        imported = __import__(mod)\n"
         "        if not hasattr(imported, attr):\n"
         "            broken.append(mod)\n"
+        "        elif mod == 'certifi':\n"
+        "            # The module can import cleanly while cacert.pem is\n"
+        "            # missing/corrupt (brew Python upgrade, interrupted venv\n"
+        "            # rebuild) - every TLS call then fails (#29866).\n"
+        "            bundle = imported.where()\n"
+        "            if not os.path.isfile(bundle) or os.path.getsize(bundle) < 1024:\n"
+        "                broken.append(mod)\n"
         "    except Exception:\n"
         "        broken.append(mod)\n"
         "print('\\n'.join(broken))\n"

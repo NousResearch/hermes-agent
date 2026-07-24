@@ -92,12 +92,37 @@ def _pinned_specs(packages: list[str], project_root: Path) -> list[str]:
     return [name_to_spec.get(pkg.lower(), pkg) for pkg in packages]
 
 
+def _certifi_bundle_broken() -> bool:
+    """True when certifi imports but its ``cacert.pem`` is missing/corrupt.
+
+    A brew Python upgrade or an interrupted venv rebuild can leave certifi's
+    distribution metadata (and even the module) intact while the bundled
+    ``cacert.pem`` is gone or a dangling symlink — every TLS connection then
+    fails with an opaque ``Could not find a suitable TLS CA certificate
+    bundle`` from deep inside httpx/requests (#29866). An attribute probe
+    alone passes in that state, so validate the bundle path itself.
+    """
+    try:
+        import certifi
+
+        bundle = Path(certifi.where())
+        # <1 KiB cannot hold a single PEM certificate — treat as corrupt.
+        return not bundle.is_file() or bundle.stat().st_size < 1024
+    except Exception:
+        # Import failure is caught by the regular probe table; a failure to
+        # even stat is treated as broken.
+        return True
+
+
 def _probe_broken_packages() -> list[str]:
     """Import-probe the fragile core packages in THIS process.
 
     Returns repair package names (deduped, probe order) for modules that fail
     to import or lack their sentinel attribute.  Failed imports leave nothing
     in ``sys.modules``, so a post-repair retry in the same process works.
+
+    certifi additionally gets a bundle-file check: the module can import
+    cleanly while ``cacert.pem`` is missing (#29866).
     """
     broken: list[str] = []
     for mod_name, attr in LAZY_REFRESH_IMPORT_PROBES:
@@ -105,6 +130,8 @@ def _probe_broken_packages() -> list[str]:
             mod = importlib.import_module(mod_name)
             if not hasattr(mod, attr):
                 raise ImportError(f"{mod_name} missing {attr}")
+            if mod_name == "certifi" and _certifi_bundle_broken():
+                raise ImportError("certifi cacert.pem missing or corrupt")
         except Exception:
             pkg = LAZY_REFRESH_REPAIR_PACKAGES.get(mod_name)
             if pkg and pkg not in broken:

@@ -2770,6 +2770,86 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# ---------------------------------------------------------------------------
+# Assignee profile enforcement.
+#
+# A task assignee that does not correspond to an existing profile (a typo, or a
+# generic placeholder like "the reviewer") is accepted at write time but has no
+# profiles/<name>/ directory, so it silently stalls in 'ready' at dispatch
+# (spawn_ready_workers skips it via the profile_exists gate with no error
+# surfaced to the creator). WARN (the default) canonicalizes + logs so the stall
+# becomes a visible signal; REJECT raises at write so the caller must supply an
+# existing profile; OFF restores prior behavior.
+# Config: kanban.assignee_enforcement = off | warn | reject  (default 'warn').
+# ---------------------------------------------------------------------------
+
+_ASSIGNEE_ENFORCEMENT_MODES = ("off", "warn", "reject")
+
+
+def _assignee_enforcement_mode() -> str:
+    """Read kanban.assignee_enforcement (default 'warn'); unknown values -> 'warn'."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("kanban") or {}).get("assignee_enforcement")
+    except Exception:
+        raw = None
+    mode = str(raw or "warn").strip().lower()
+    return mode if mode in _ASSIGNEE_ENFORCEMENT_MODES else "warn"
+
+
+def _assignee_enforcement_action(
+    canon: Optional[str], mode: str, profile_known: bool
+) -> tuple[bool, Optional[str]]:
+    """Pure decision: return ``(should_raise, message)`` for a canonical assignee.
+
+    ``message`` is None when nothing should be surfaced. ``should_raise`` is only
+    True in ``reject`` mode for an assignee with no matching profile.
+    """
+    if mode == "off" or not canon or profile_known:
+        return (False, None)
+    msg = (
+        f"kanban assignee {canon!r} is not an existing profile "
+        f"(no profiles/{canon}/ directory); the task would stall at dispatch."
+    )
+    return (mode == "reject", msg)
+
+
+def _enforce_assignee_profile(assignee: Optional[str]) -> None:
+    """WARN/REJECT-mode profile check for an already-canonicalized assignee."""
+    if assignee is None:
+        return
+    mode = _assignee_enforcement_mode()
+    if mode == "off":
+        return
+    try:
+        from hermes_cli.profiles import profile_exists
+
+        known = profile_exists(assignee)
+    except Exception:
+        known = False
+    should_raise, msg = _assignee_enforcement_action(assignee, mode, known)
+    if not msg:
+        return
+    if should_raise:
+        raise ValueError(msg)
+    logging.getLogger(__name__).warning("kanban.assignee_enforcement: %s", msg)
+
+
+def _canonical_actor(actor: Optional[str]) -> Optional[str]:
+    """Lowercase-normalize a created_by/actor value for consistent attribution.
+
+    Unlike the assignee path this only canonicalizes case (so e.g. ``XO`` and
+    ``xo`` do not diverge in the tasks table); it does NOT enforce profile
+    existence — created_by may legitimately be a non-profile sentinel
+    (``worker``, ``user``, ``system``, automation).
+    """
+    if actor is None:
+        return None
+    s = str(actor).strip()
+    return s.lower() if s else None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2837,6 +2917,8 @@ def create_task(
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
+    _enforce_assignee_profile(assignee)
+    created_by = _canonical_actor(created_by)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:

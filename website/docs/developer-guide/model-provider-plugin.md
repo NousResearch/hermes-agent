@@ -6,7 +6,7 @@ description: "How to build a model provider (inference backend) plugin for Herme
 
 # Building a Model Provider Plugin
 
-Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, a Codex-style Responses API, or a Bedrock-native surface — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own by dropping a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
+Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, a Codex-style Responses API, or a Bedrock-native surface — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own from a Git repository, a Python package, or a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
 
 :::tip
 Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (cross-session knowledge) and [Context Engine Plugins](/developer-guide/context-engine-plugin) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
@@ -17,10 +17,11 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 `providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Discovery order:
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
-2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in any directory; no restart required for subsequent sessions
-3. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
+2. **Pip packages** — `hermes_agent.model_providers` entry points
+3. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — installed from Git or dropped in directly
+4. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
 
-**User plugins override bundled plugins of the same name** because `register_provider()` is last-writer-wins. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
+**User plugins override bundled and pip-installed plugins of the same name** because `register_provider()` is last-writer-wins and the explicit profile directory loads after those less-local sources. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in or packaged GMI profile without touching the repo.
 
 ## Directory structure
 
@@ -246,18 +247,48 @@ hermes -z "hello" --provider my-provider -m some-model
 
 The general `PluginManager` (the thing `hermes plugins` operates on) **sees** model-provider plugins but does not import them — `providers/__init__.py` owns their lifecycle. The manager records the manifest for introspection and categorizes by `kind: model-provider`. When you drop an unlabeled user plugin into `$HERMES_HOME/plugins/` that happens to call `register_provider` with a `ProviderProfile`, the manager auto-coerces it to `kind: model-provider` via a source-text heuristic — so the plugin still routes correctly even without `plugin.yaml`.
 
+## Distribute from Git
+
+A standalone repository whose root contains `__init__.py` and a manifest with
+`kind: model-provider` can use Hermes' native plugin lifecycle commands:
+
+```bash
+hermes plugins install owner/repository
+hermes plugins update model-providers/<manifest-name>
+hermes plugins remove model-providers/<manifest-name>
+```
+
+The installer places the checkout at
+`$HERMES_HOME/plugins/model-providers/<manifest-name>/`. Model providers skip
+the general plugin enable prompt: installation makes the profile available,
+while `hermes model` remains the explicit provider-selection step.
+
+For a complete community-maintained repository using this layout, see the
+[Apertis AI provider](https://github.com/apertis-ai/hermes-apertis-provider).
+Community plugins are maintained by their publishers rather than by the Hermes
+Agent project; review their source and release instructions before installing.
+
 ## Distribute via pip
 
-Like any Hermes plugin, model providers can ship as a pip package. Add an entry point to your `pyproject.toml`:
+Model providers use a dedicated entry-point group so provider discovery does
+not import unrelated general plugins. Add a zero-argument registration callable
+to your `pyproject.toml`:
 
 ```toml
-[project.entry-points."hermes_agent.plugins"]
+[project.entry-points."hermes_agent.model_providers"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 
-…where `acme_hermes_plugin:register` is a function that calls `register_provider(profile)`. The general PluginManager picks up entry-point plugins during `discover_and_load()`. For `kind: model-provider` pip plugins, you still need to declare the kind in your manifest (or rely on the source-text heuristic).
+…where `acme_hermes_plugin:register` takes no arguments and calls
+`register_provider(profile)`. Provider discovery invokes this entry point
+automatically; it does not use `plugins.enabled`. A package does not need a
+`plugin.yaml`, although repositories that also support Git or directory installs
+should keep the manifest at their plugin root.
 
-See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the full entry-points setup.
+The general `hermes_agent.plugins` group remains the correct surface for
+non-provider plugins whose `register(ctx)` function consumes a `PluginContext`.
+See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for
+that separate contract.
 
 ## Related pages
 

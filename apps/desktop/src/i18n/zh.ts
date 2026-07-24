@@ -1962,6 +1962,13 @@ export const zh: Translations = {
       ageDay: '天',
       ageHour: '时',
       ageMin: '分'
+    },
+    dateDivider: {
+      today: '今天早些时候',
+      yesterday: '昨天',
+      thisWeek: '本周',
+      lastWeek: '上周',
+      thisMonth: '本月'
     }
   },
 

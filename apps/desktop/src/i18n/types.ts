@@ -1486,6 +1486,13 @@ export interface Translations {
       ageHour: string
       ageMin: string
     }
+    dateDivider: {
+      today: string
+      yesterday: string
+      thisWeek: string
+      lastWeek: string
+      thisMonth: string
+    }
   }
 
   composer: {

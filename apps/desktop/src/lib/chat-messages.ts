@@ -303,6 +303,29 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
+function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
+  return displayKind === 'hidden' ? null : content
+}
+
+function timelineDisplayContent(message: SessionMessage, content: string): string {
+  if (message.display_kind === 'model_switch') {
+    return 'model changed'
+  }
+
+  if (message.display_kind === 'async_delegation_complete') {
+    const count =
+      message.display_metadata && 'task_count' in message.display_metadata
+        ? message.display_metadata.task_count
+        : undefined
+
+    return count === undefined
+      ? 'background agent work finished'
+      : `${count} background agent${count === 1 ? '' : 's'} finished`
+  }
+
+  return content
+}
+
 const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
   reasoning: reasoningPart,
   text: textPart
@@ -884,7 +907,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
-    const displayContent = displayContentForMessage(message.role, content)
+
+    const displayContent = transcriptContent(
+      message.display_kind,
+      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+    )
+
+    const displayRole =
+      message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
+        ? 'system'
+        : message.role
+
     const parts: ChatMessagePart[] = []
 
     const reasoning =
@@ -897,7 +930,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (displayContent) {
-      parts.push(message.role === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
+      parts.push(displayRole === 'assistant' ? assistantTextPart(displayContent) : textPart(displayContent))
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
@@ -951,8 +984,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
-      role: message.role,
+      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      role: displayRole,
       parts,
       timestamp: message.timestamp
     })

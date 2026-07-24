@@ -105,6 +105,14 @@ def _clean_slot(slot: Any) -> dict[str, Any] | None:
     effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
     if effort:
         clean["reasoning_effort"] = effort
+    # Optional per-slot max_tokens: overrides the preset-level
+    # reference_max_tokens for this specific reference model. None (the
+    # default) = no cap, so existing slots are unaffected. Allows tuning
+    # each advisor's output length independently — useful when one model
+    # is verbose and another is terse.
+    slot_mt = _coerce_int_or_none(slot.get("max_tokens"))
+    if slot_mt is not None:
+        clean["max_tokens"] = slot_mt
     return clean
 
 
@@ -199,6 +207,12 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         raw = {}
 
     raw_refs = raw.get("reference_models")
+    # reference_models may be a JSON string (hand-edited config.yaml) or a list.
+    if isinstance(raw_refs, str):
+        try:
+            raw_refs = json.loads(raw_refs)
+        except (json.JSONDecodeError, ValueError):
+            raw_refs = []
     if not isinstance(raw_refs, list):
         # A hand-edited scalar / single mapping (or a bad type) must degrade to
         # defaults instead of crashing the iteration, mirroring the tolerance

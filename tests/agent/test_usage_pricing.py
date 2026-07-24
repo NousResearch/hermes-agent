@@ -25,6 +25,27 @@ def test_normalize_usage_anthropic_keeps_cache_buckets_separate():
     assert normalized.prompt_tokens == 3400
 
 
+def test_normalize_usage_bedrock_converse_cache_point_round_trips():
+    """End-to-end contract for the Converse cachePoint feature: the usage
+    shape bedrock_adapter.normalize_converse_response() produces (prompt_tokens
+    folded from inputTokens + cacheRead + cacheWrite, cache fields under their
+    Anthropic names) must normalize back to the original cache_read/write
+    split and the original Converse inputTokens value."""
+    usage = SimpleNamespace(
+        prompt_tokens=50 + 900 + 300,
+        completion_tokens=20,
+        cache_read_input_tokens=900,
+        cache_creation_input_tokens=300,
+    )
+
+    normalized = normalize_usage(usage, provider="bedrock", api_mode="bedrock_converse")
+
+    assert normalized.cache_read_tokens == 900
+    assert normalized.cache_write_tokens == 300
+    assert normalized.input_tokens == 50
+    assert normalized.output_tokens == 20
+
+
 def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     usage = SimpleNamespace(
         prompt_tokens=3000,

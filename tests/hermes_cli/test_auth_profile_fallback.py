@@ -12,6 +12,7 @@ authenticated only at the global root.
 from __future__ import annotations
 
 import json
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -519,3 +520,119 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
             reset_hermes_home_override(token)
 
     assert getattr(holder_a, "depth", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# write_credential_pool — stale-snapshot cooldown merge
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def classic_env(tmp_path, monkeypatch):
+    """Classic single-root layout (HERMES_HOME != ~/.hermes, no profiles)."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    hermes_home = tmp_path / "classic"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    return hermes_home
+
+
+def _pool_entry(**overrides) -> dict:
+    entry = {
+        "id": "cred-x",
+        "label": "key-x",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual",
+        "access_token": "sk-x",
+    }
+    entry.update(overrides)
+    return entry
+
+
+@pytest.mark.parametrize(
+    "disk_status,error_code",
+    [("exhausted", 429), ("dead", 401)],
+)
+def test_write_pool_stale_snapshot_keeps_newer_disk_cooldown(
+    classic_env, disk_status, error_code,
+):
+    """A stale healthy snapshot must not erase a newer binding cooldown.
+
+    Process A benches a key (EXHAUSTED with an unexpired cooldown, or DEAD);
+    process B persists a snapshot taken *before* that.  The on-disk status is
+    strictly newer and still binding, so it must survive the rewrite instead
+    of the key being resurrected as healthy.
+    """
+    from hermes_cli.auth import write_credential_pool
+
+    benched_at = time.time() - 60  # newer than the snapshot, cooldown unexpired
+    _write(classic_env / "auth.json", _make_auth_store(pool={
+        "openrouter": [_pool_entry(
+            last_status=disk_status,
+            last_status_at=benched_at,
+            last_error_code=error_code,
+        )],
+    }))
+
+    # Stale in-memory snapshot: same entry, still healthy (no status fields).
+    write_credential_pool("openrouter", [_pool_entry()])
+
+    data = json.loads((classic_env / "auth.json").read_text())
+    persisted = data["credential_pool"]["openrouter"][0]
+    assert persisted["last_status"] == disk_status
+    assert persisted["last_status_at"] == benched_at
+    assert persisted["last_error_code"] == error_code
+
+
+def test_write_pool_expired_disk_cooldown_is_not_resurrected(classic_env):
+    """An expired on-disk cooldown is NOT re-adopted onto the snapshot.
+
+    The pool's own expiry-clear (and any caller that legitimately observed
+    the cooldown lapse) must win: only still-binding cooldowns are merged.
+    """
+    from hermes_cli.auth import write_credential_pool
+
+    _write(classic_env / "auth.json", _make_auth_store(pool={
+        "openrouter": [_pool_entry(
+            last_status="exhausted",
+            last_status_at=time.time() - 90_000,  # far past the 1h 429 TTL
+            last_error_code=429,
+        )],
+    }))
+
+    write_credential_pool("openrouter", [_pool_entry()])
+
+    data = json.loads((classic_env / "auth.json").read_text())
+    persisted = data["credential_pool"]["openrouter"][0]
+    assert persisted.get("last_status") != "exhausted"
+    assert persisted.get("last_error_code") is None
+
+
+def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
+    """A token change means re-auth: the old cooldown must never carry over.
+
+    A fresh login intentionally clears the entry's status; resurrecting the
+    stale cooldown onto the new credentials would bench a just-authorized key.
+    """
+    from hermes_cli.auth import write_credential_pool
+
+    _write(classic_env / "auth.json", _make_auth_store(pool={
+        "openrouter": [_pool_entry(
+            access_token="sk-old",
+            last_status="exhausted",
+            last_status_at=time.time() - 60,  # newer AND unexpired
+            last_error_code=429,
+        )],
+    }))
+
+    # Same entry id, freshly re-authed with a new token and cleared status.
+    write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
+
+    data = json.loads((classic_env / "auth.json").read_text())
+    persisted = data["credential_pool"]["openrouter"][0]
+    assert persisted["access_token"] == "sk-new"
+    assert persisted.get("last_status") != "exhausted"
+    assert persisted.get("last_error_code") is None

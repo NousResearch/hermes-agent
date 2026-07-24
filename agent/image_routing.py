@@ -181,6 +181,8 @@ def _supports_vision_override(
     cfg: Optional[Dict[str, Any]],
     provider: str,
     model: str,
+    *,
+    requested_provider: str = "",
 ) -> Optional[bool]:
     """Resolve user-declared vision capability from config.yaml.
 
@@ -188,9 +190,14 @@ def _supports_vision_override(
       1. ``model.supports_vision`` (top-level shortcut for the active model)
       2. ``providers.<provider>.models.<model>.supports_vision``
          (named custom providers — ``provider`` may be the runtime-resolved
-         value ``"custom"`` and/or the user-declared name under
-         ``model.provider``; both are tried. For ``custom:<name>`` syntax,
-         the stripped ``<name>`` is also tried as a provider key.)
+         value ``"custom"``, the runtime's originally requested provider,
+         and/or the user-declared name under ``model.provider``; all are
+         tried. For ``custom:<name>`` syntax, the stripped ``<name>`` is also
+         tried as a provider key.)
+      2b. ``custom_providers`` (legacy list form) ``.models.<model>``
+
+    Under (2) and (2b), the per-model capability key may be written as
+    either ``supports_vision`` or the shorter ``vision`` alias; both work.
 
     Returns None when no override is set, so the caller falls through to
     models.dev. Returns False explicitly only when the user wrote a
@@ -214,7 +221,7 @@ def _supports_vision_override(
     # "custom:<name>" form while providers: is keyed by bare <name>.
     config_provider = str(model_cfg.get("provider") or "").strip()
     provider_candidates: List[str] = []
-    for candidate in (provider, config_provider):
+    for candidate in (requested_provider, provider, config_provider):
         if not candidate:
             continue
         provider_candidates.append(candidate)
@@ -231,7 +238,9 @@ def _supports_vision_override(
         models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
         per_model_raw = models_cfg.get(model)
         per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
-        coerced = _coerce_capability_bool(per_model.get("supports_vision"))
+        coerced = _coerce_capability_bool(
+            per_model.get("supports_vision", per_model.get("vision"))
+        )
         if coerced is not None:
             return coerced
 
@@ -240,28 +249,26 @@ def _supports_vision_override(
     # may appear as the raw name or "custom:<name>" at runtime).
     custom_providers = cfg.get("custom_providers")
     if isinstance(custom_providers, list):
-        # Build candidate names: the provider value and the config provider
-        # value, both raw and with "custom:" prefix stripped/added.
-        candidate_names: set = set()
-        for p in filter(None, (provider, config_provider)):
-            candidate_names.add(p)
-            if p.startswith("custom:"):
-                candidate_names.add(p[len("custom:"):])
-            else:
-                candidate_names.add(f"custom:{p}")
-        for entry_raw in custom_providers:
-            if not isinstance(entry_raw, dict):
-                continue
-            entry_name = str(entry_raw.get("name") or "").strip()
-            if entry_name not in candidate_names:
-                continue
-            models_raw = entry_raw.get("models")
-            models_cfg = models_raw if isinstance(models_raw, dict) else {}
-            per_model_raw = models_cfg.get(model)
-            per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
-            coerced = _coerce_capability_bool(per_model.get("supports_vision"))
-            if coerced is not None:
-                return coerced
+        # Candidate priority matters when the CLI-selected provider differs
+        # from model.provider. Walk identities first, then config entries, so
+        # list order cannot let the persisted default shadow the live route.
+        for candidate in dict.fromkeys(provider_candidates):
+            candidate_name = candidate.strip().lower()
+            for entry_raw in custom_providers:
+                if not isinstance(entry_raw, dict):
+                    continue
+                entry_name = str(entry_raw.get("name") or "").strip().lower()
+                if entry_name != candidate_name:
+                    continue
+                models_raw = entry_raw.get("models")
+                models_cfg = models_raw if isinstance(models_raw, dict) else {}
+                per_model_raw = models_cfg.get(model)
+                per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
+                coerced = _coerce_capability_bool(
+                    per_model.get("supports_vision", per_model.get("vision"))
+                )
+                if coerced is not None:
+                    return coerced
 
     return None
 
@@ -381,6 +388,8 @@ def _lookup_supports_vision(
     provider: str,
     model: str,
     cfg: Optional[Dict[str, Any]] = None,
+    *,
+    requested_provider: str = "",
 ) -> Optional[bool]:
     """Return True/False if we can resolve caps, None if unknown.
 
@@ -388,7 +397,34 @@ def _lookup_supports_vision(
     (so custom/local models declared as vision-capable don't fall through to
     text routing in ``auto`` mode), then falls back to models.dev.
     """
-    override = _supports_vision_override(cfg, provider, model)
+    # Named custom providers are canonicalized to ``provider="custom"`` by
+    # runtime resolution.  The original CLI/config name is carried in the
+    # context-local main runtime so capability lookup can still select the
+    # exact custom_providers entry.  Require an exact provider+model match:
+    # background/auxiliary lookups must never borrow another turn's identity.
+    if not requested_provider:
+        try:
+            from agent.auxiliary_client import _runtime_main_value
+
+            runtime_provider = str(
+                _runtime_main_value("provider") or ""
+            ).strip().lower()
+            runtime_model = str(_runtime_main_value("model") or "").strip()
+            lookup_provider = str(provider or "").strip().lower()
+            lookup_model = str(model or "").strip()
+            if runtime_provider == lookup_provider and runtime_model == lookup_model:
+                requested_provider = str(
+                    _runtime_main_value("requested_provider") or ""
+                ).strip()
+        except Exception:
+            pass
+
+    override = _supports_vision_override(
+        cfg,
+        provider,
+        model,
+        requested_provider=requested_provider,
+    )
     if override is not None:
         return override
     if not provider or not model:
@@ -426,6 +462,8 @@ def decide_image_input_mode(
     provider: str,
     model: str,
     cfg: Optional[Dict[str, Any]],
+    *,
+    requested_provider: str = "",
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn.
 
@@ -433,6 +471,7 @@ def decide_image_input_mode(
       provider: active inference provider ID (e.g. ``"anthropic"``, ``"openrouter"``).
       model:    active model slug as it would be sent to the provider.
       cfg:      loaded config.yaml dict, or None. When None, behaves as auto.
+      requested_provider: provider identity before runtime canonicalization.
     """
     mode_cfg = "auto"
     if isinstance(cfg, dict):
@@ -449,7 +488,17 @@ def decide_image_input_mode(
     # explicit auxiliary.vision config acts as a *fallback* for text-only
     # main models — it should not preempt native vision on a model that
     # can natively inspect the pixels (issue #29135).
-    supports = _lookup_supports_vision(provider, model, cfg)
+    if requested_provider:
+        supports = _lookup_supports_vision(
+            provider,
+            model,
+            cfg,
+            requested_provider=requested_provider,
+        )
+    else:
+        # Keep the long-standing three-argument call contract for callers and
+        # tests that replace the capability lookup hook.
+        supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
     if _explicit_aux_vision_override(cfg):

@@ -1672,7 +1672,7 @@ def interactive_setup() -> None:
     static _PLATFORMS["whatsapp"] dict. CLI helpers are lazy-imported so the
     plugin's module-load surface stays minimal.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -1705,9 +1705,12 @@ def interactive_setup() -> None:
         save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("WhatsApp allowlist configured")
 
-    home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)")
+    home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)").strip()
     if home_channel:
-        save_env_value("WHATSAPP_HOME_CHANNEL", home_channel.strip())
+        save_env_value("WHATSAPP_HOME_CHANNEL", home_channel)
+    else:
+        if remove_env_value("WHATSAPP_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
 
 def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:

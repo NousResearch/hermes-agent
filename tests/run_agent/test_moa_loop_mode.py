@@ -81,6 +81,140 @@ def test_moa_runtime_provider_uses_virtual_endpoint():
     assert runtime["api_key"] == "moa-virtual-provider"
 
 
+def test_moa_primary_restore_rebuilds_virtual_facade(monkeypatch, tmp_path):
+    """MoA sessions must restore from fallback without constructing OpenAI().
+
+    Regression for a long-lived MoA session that failed over to a real provider:
+    the next turn restored provider/model to MoA but tried to rebuild the shared
+    client from MoA's empty client_kwargs, raising "api_key client option must be
+    set" and then "Failed to recreate closed OpenAI client".
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
+    )
+    primary_client = agent.client
+
+    def fail_openai_rebuild(*_args, **_kwargs):
+        raise AssertionError("MoA restore must not build a real OpenAI client")
+
+    monkeypatch.setattr(agent, "_create_openai_client", fail_openai_rebuild)
+    setattr(agent, "_fallback_activated", True)
+    setattr(agent, "provider", "zai")
+    setattr(agent, "model", "glm-5.2")
+    agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+    agent.api_key = "fallback-key"
+    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
+
+    assert agent._restore_primary_runtime() is True
+    assert getattr(agent, "provider") == "moa"
+    assert getattr(agent, "model") == "review"
+    assert agent.client is not primary_client
+    assert hasattr(agent.client.chat, "completions")
+    assert getattr(agent, "_fallback_activated") is False
+
+
+def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path):
+    """A restored MoA facade must keep the reference_callback relay wired.
+
+    Regression for the naive-rebuild flaw in the original #53802 approach:
+    ``MoAClient(preset)`` without ``reference_callback`` restores a *working*
+    facade that silently stops emitting ``moa.reference``/``moa.aggregating``
+    display events for the rest of the session. The shared ``build_moa_facade``
+    factory rewires the relay to ``agent.tool_progress_callback`` on restore.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=1,
+    )
+
+    # Simulate a fallback to a real provider, then restore.
+    setattr(agent, "_fallback_activated", True)
+    setattr(agent, "provider", "zai")
+    setattr(agent, "model", "glm-5.2")
+    agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+    agent.api_key = "fallback-key"
+    setattr(agent, "_client_kwargs", {"api_key": "fallback-key", "base_url": agent.base_url})
+    agent.client = SimpleNamespace(close=lambda: None, _client=SimpleNamespace(is_closed=True))
+    assert agent._restore_primary_runtime() is True
+
+    # The relay reads tool_progress_callback at emit time — attach a recorder
+    # and fire the facade's internal _emit exactly as the fan-out does.
+    events = []
+
+    def record_progress(event, *args, **kwargs):
+        events.append((event, args, kwargs))
+
+    agent.tool_progress_callback = record_progress
+    completions = agent.client.chat.completions
+    assert completions.reference_callback is not None, (
+        "restored MoA facade lost its reference_callback relay"
+    )
+    completions._emit(
+        "moa.reference", index=0, count=1, label="openai-codex/gpt-5.5", text="advice"
+    )
+    completions._emit("moa.aggregating", aggregator="openrouter", ref_count=1)
+
+    assert [e[0] for e in events] == ["moa.reference", "moa.aggregating"]
+    ref_event = events[0]
+    assert ref_event[1][0] == "openai-codex/gpt-5.5"
+    assert ref_event[1][1] == "advice"
+    assert ref_event[2] == {"moa_index": 0, "moa_count": 1}
+
+
 def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
     """MoA must not inject an output cap on reference or aggregator calls.
 
@@ -259,6 +393,313 @@ def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider)
     assert model == "test-model"
     assert base_url == f"https://{provider}.example/v1"
     assert api_key == f"token-for-{provider}"
+
+
+def test_moa_copilot_reference_forwards_user_initiator_header(monkeypatch):
+    """Copilot MoA advisors must carry the same user-turn attribution as main calls.
+
+    Copilot Pro/Pro+ gates some premium chat models on the ``x-initiator``
+    request header. MoA references are direct fan-out for the user's current
+    turn, so Copilot advisors need ``x-initiator: user`` rather than inheriting
+    the Copilot language-server default attribution.
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": "copilot",
+            "model": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("copilot advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": "copilot", "model": "claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "copilot advice"
+    assert calls[0]["task"] == "moa_reference"
+    assert calls[0]["extra_headers"] == {"x-initiator": "user"}
+
+
+def test_moa_non_copilot_reference_does_not_forward_initiator_header(monkeypatch):
+    """The Copilot attribution header must stay scoped to Copilot advisors."""
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "openrouter-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("openrouter advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "openrouter advice"
+    assert calls[0]["task"] == "moa_reference"
+    assert calls[0]["extra_headers"] is None
+
+
+@pytest.mark.parametrize(
+    "provider_spelling",
+    ["copilot", "github-copilot", "github", "github-models", "Copilot", "copilot-acp"],
+)
+def test_moa_copilot_alias_spellings_forward_initiator_header(
+    monkeypatch, provider_spelling
+):
+    """Every Copilot alias spelling must trigger the x-initiator header.
+
+    Slot configs spell the provider inconsistently (github, github-copilot,
+    github-models, copilot-acp, mixed case); the header gate goes through the
+    auxiliary client's canonical alias normalization so all of them get the
+    user-turn attribution, not just the literal string "copilot".
+    """
+    from agent import moa_loop
+
+    calls = []
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda _slot: {
+            "provider": provider_spelling,
+            "model": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        },
+    )
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("copilot advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    _label, text, _acct = moa_loop._run_reference(
+        {"provider": provider_spelling, "model": "claude-sonnet-4.6"},
+        [{"role": "user", "content": "solve this"}],
+    )
+
+    assert text == "copilot advice"
+    assert calls[0]["extra_headers"] == {"x-initiator": "user"}
+
+
+def test_call_llm_extra_headers_reach_transport_create(monkeypatch):
+    """extra_headers must reach the SDK client's create() kwargs.
+
+    Transport-boundary regression for #60293: mocking call_llm proves nothing
+    about delivery — this asserts the header survives call_llm's request
+    building and lands in the kwargs handed to chat.completions.create().
+    """
+    from types import SimpleNamespace
+
+    from agent import auxiliary_client as ac
+
+    captured = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _response("ok")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions()),
+        base_url="https://api.githubcopilot.com",
+    )
+    monkeypatch.setattr(
+        ac,
+        "_resolve_task_provider_model",
+        lambda *a, **k: (
+            "copilot",
+            "claude-sonnet-4.6",
+            "https://api.githubcopilot.com",
+            "copilot-token",
+            "chat_completions",
+        ),
+    )
+    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (fake_client, "claude-sonnet-4.6"))
+    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, task, **_kw: resp)
+
+    ac.call_llm(
+        provider="copilot",
+        model="claude-sonnet-4.6",
+        messages=[{"role": "user", "content": "hi"}],
+        extra_headers={"x-initiator": "user"},
+    )
+
+    assert captured.get("extra_headers") == {"x-initiator": "user"}
+    # And it must not leak into unrelated request fields.
+    assert "x-initiator" not in captured.get("extra_body", {}) if captured.get("extra_body") else True
+
+
+def test_retry_same_provider_sync_preserves_extra_headers(monkeypatch):
+    """The same-provider retry rebuild must carry extra_headers through.
+
+    Regression for #60293's follow-up: a credential-refresh/pool-rotation
+    retry rebuilds the request kwargs from scratch — without forwarding
+    extra_headers, the retried Copilot advisor call silently loses its
+    ``x-initiator: user`` attribution and can be rejected.
+    """
+    from types import SimpleNamespace
+
+    from agent import auxiliary_client as ac
+
+    captured = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _response("retried ok")
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_Completions()),
+        base_url="https://api.githubcopilot.com",
+    )
+    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (fake_client, "claude-sonnet-4.6"))
+    monkeypatch.setattr(ac, "_validate_llm_response", lambda resp, task, **_kw: resp)
+
+    ac._retry_same_provider_sync(
+        task=None,
+        resolved_provider="copilot",
+        resolved_model="claude-sonnet-4.6",
+        resolved_base_url="https://api.githubcopilot.com",
+        resolved_api_key="copilot-token",
+        resolved_api_mode="chat_completions",
+        main_runtime=None,
+        final_model="claude-sonnet-4.6",
+        messages=[{"role": "user", "content": "hi"}],
+        temperature=None,
+        max_tokens=None,
+        tools=None,
+        effective_timeout=30.0,
+        effective_extra_body={},
+        reasoning_config=None,
+        extra_headers={"x-initiator": "user"},
+    )
+
+    assert captured.get("extra_headers") == {"x-initiator": "user"}
+
+
+def test_moa_gemini_aggregator_sanitize_uses_real_model(monkeypatch, tmp_path):
+    """MoA turns must sanitize tool_calls against the AGGREGATOR model, not the preset.
+
+    Regression for #66212 / #65092: under MoA, ``agent.model`` holds the
+    virtual preset name (e.g. "review"), so passing it to
+    _sanitize_tool_calls_for_strict_api makes
+    _model_consumes_thought_signature() return False and strips
+    ``extra_content`` (Gemini thought_signature) from replayed tool_calls —
+    the Gemini aggregator then 400s with "Function call is missing a
+    thought_signature in functionCall parts."
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: gemini
+        model: gemini-3-pro-preview
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    sanitize_models = []
+
+    tool_call = SimpleNamespace(
+        id="call_1",
+        type="function",
+        function=SimpleNamespace(name="read_file", arguments='{"path": "x"}'),
+    )
+
+    responses = iter(
+        [
+            _response(None, tool_calls=[tool_call]),
+            _response("aggregator done"),
+        ]
+    )
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return next(responses)
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    agent = AIAgent(
+        api_key="moa-virtual-provider",
+        base_url="moa://local",
+        model="review",
+        provider="moa",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=["file"],
+        max_iterations=3,
+    )
+
+    real_sanitize = type(agent)._sanitize_tool_calls_for_strict_api
+
+    def spy_sanitize(api_msg, model=None):
+        sanitize_models.append(model)
+        return real_sanitize(api_msg, model=model)
+
+    monkeypatch.setattr(
+        type(agent), "_sanitize_tool_calls_for_strict_api", staticmethod(spy_sanitize)
+    )
+    monkeypatch.setattr(
+        agent, "execute_tool", lambda *_a, **_k: "file contents", raising=False
+    )
+
+    result = agent.run_conversation("read the file")
+
+    assert result["final_response"] == "aggregator done"
+    # Once the history contains an assistant tool_call turn, the sanitize
+    # pass must be asked about the REAL aggregator model — never the virtual
+    # preset name (which would strip Gemini's thought_signature). The very
+    # first API call may still see the preset (the facade hasn't resolved a
+    # slot yet), but no tool_calls exist in history at that point.
+    assert any(m == "gemini-3-pro-preview" for m in sanitize_models), sanitize_models
+    first_resolved = sanitize_models.index("gemini-3-pro-preview")
+    assert all(
+        m == "gemini-3-pro-preview" for m in sanitize_models[first_resolved:]
+    ), sanitize_models
 
 
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):

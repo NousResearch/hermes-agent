@@ -493,6 +493,14 @@ def _map_gemini_finish_reason(reason: str) -> str:
         "MAX_TOKENS": "length",
         "SAFETY": "content_filter",
         "RECITATION": "content_filter",
+        # Sibling content-policy block reasons: without these they fall through
+        # to "stop", so a blocked turn surfaces as a silent empty stop instead of
+        # the `finish_reason == "content_filter"` refusal branch in
+        # agent/conversation_loop.py.
+        "BLOCKLIST": "content_filter",
+        "PROHIBITED_CONTENT": "content_filter",
+        "SPII": "content_filter",
+        "IMAGE_SAFETY": "content_filter",
         "OTHER": "stop",
     }
     return mapping.get(str(reason or "").upper(), "stop")

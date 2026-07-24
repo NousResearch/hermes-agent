@@ -490,3 +490,200 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+# ---------------------------------------------------------------------------
+# session_context — issue #44944
+# ---------------------------------------------------------------------------
+
+def test_stage_write_cli_has_empty_session_context(hermes_home):
+    # CLI / cron origin: no gateway ContextVars set → session_context is {}.
+    # Explicitly clear any leftover ContextVars so this test is deterministic
+    # regardless of execution order.
+    from gateway.session_context import set_session_vars, clear_session_vars
+    tokens = set_session_vars()  # reset all to defaults (empty strings)
+    clear_session_vars(tokens)
+
+    from tools import write_approval as wa
+    rec = wa.stage_write(
+        "memory",
+        {"action": "add", "target": "user", "content": "x"},
+        summary="add x",
+        origin="foreground",
+    )
+    # Record always has the key; value is empty dict for non-gateway callers.
+    assert "session_context" in rec
+    assert rec["session_context"] == {}
+    # The persisted JSON also carries the field.
+    persisted = wa.get_pending("memory", rec["id"])
+    assert persisted is not None
+    assert "session_context" in persisted
+    assert persisted["session_context"] == {}
+
+
+def test_stage_write_gateway_captures_user_identity(hermes_home):
+    # Gateway origin: ContextVars set via set_session_vars → all five fields
+    # appear in session_context; empty fields are omitted (compact form).
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools import write_approval as wa
+
+    tokens = set_session_vars(
+        platform="telegram",
+        user_id="987654",
+        user_name="alice",
+        chat_id="111",
+        session_key="telegram:987654",
+    )
+    try:
+        rec = wa.stage_write(
+            "skills",
+            {"action": "create", "name": "team-skill"},
+            summary="create team-skill",
+            origin="foreground",
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    ctx = rec["session_context"]
+    assert ctx["platform"] == "telegram"
+    assert ctx["user_id"] == "987654"
+    assert ctx["user_name"] == "alice"
+    assert ctx["chat_id"] == "111"
+    assert ctx["session_key"] == "telegram:987654"
+
+    # Confirm the persisted JSON has the same values.
+    persisted = wa.get_pending("skills", rec["id"])
+    assert persisted is not None
+    assert persisted["session_context"]["user_id"] == "987654"
+
+
+def test_stage_write_partial_context_only_keeps_set_fields(hermes_home):
+    # When only some gateway fields are set (e.g. no user_name),
+    # only the non-empty ones appear in session_context.
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools import write_approval as wa
+
+    tokens = set_session_vars(
+        platform="discord",
+        user_id="42",
+        # user_name deliberately omitted → ""
+        chat_id="99",
+        session_key="discord:42",
+    )
+    try:
+        rec = wa.stage_write(
+            "memory",
+            {"action": "add", "target": "memory", "content": "y"},
+            summary="add y",
+            origin="foreground",
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    ctx = rec["session_context"]
+    assert "user_name" not in ctx          # empty → dropped
+    assert ctx["platform"] == "discord"
+    assert ctx["user_id"] == "42"
+
+
+def test_multiple_sequential_users_get_separate_contexts(hermes_home):
+    # Two writes from different users (simulated sequentially) must not mix
+    # session contexts — each write captures only the ContextVars active at
+    # the time stage_write() was called.
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools import write_approval as wa
+
+    results = []
+    for user_id, user_name in [("1", "alice"), ("2", "bob")]:
+        tokens = set_session_vars(
+            platform="slack",
+            user_id=user_id,
+            user_name=user_name,
+            session_key=f"slack:{user_id}",
+        )
+        try:
+            rec = wa.stage_write(
+                "memory",
+                {"action": "add", "target": "user", "content": user_name},
+                summary=f"add {user_name}",
+                origin="foreground",
+            )
+        finally:
+            clear_session_vars(tokens)
+        results.append(rec["session_context"])
+
+    assert results[0]["user_id"] == "1"
+    assert results[0]["user_name"] == "alice"
+    assert results[1]["user_id"] == "2"
+    assert results[1]["user_name"] == "bob"
+
+
+def test_collect_session_context_survives_import_failure(hermes_home, monkeypatch):
+    # If gateway.session_context can't be imported (minimal install without
+    # the gateway package), _collect_session_context() must return {} gracefully.
+    # Use monkeypatch on builtins.__import__ to deterministically block the
+    # import — removing from sys.modules alone is unreliable because Python
+    # can re-import from the filesystem.
+    import builtins
+    from tools import write_approval as wa_mod
+
+    _real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "gateway.session_context":
+            raise ImportError("simulated: gateway package not installed")
+        return _real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    ctx = wa_mod._collect_session_context()
+    assert ctx == {}
+
+
+
+def test_stage_write_ignores_legacy_env_without_bound_contextvars(
+    hermes_home, monkeypatch
+):
+    # Regression for the #45047 review: an unbound CLI/cron process may still
+    # carry stale legacy HERMES_SESSION_* *environment* values (e.g. exported
+    # by a previous run or a wrapper script). Those must NOT be recorded as the
+    # requester of a staged write -- audit attribution reads the ContextVar only
+    # and must never fall back to os.environ.
+    import threading
+    from gateway import session_context as sc
+    from tools import write_approval as wa
+
+    # Legacy environment values present, with NO bound session ContextVars.
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "legacy-user")
+    monkeypatch.setenv("HERMES_SESSION_USER_NAME", "legacy-name")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "legacy-platform")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "legacy-chat")
+    monkeypatch.setenv("HERMES_SESSION_KEY", "legacy-key")
+
+    result: dict = {}
+
+    def _run():
+        # A freshly-spawned thread starts with an empty contextvars.Context, so
+        # every session ContextVar reads its _UNSET default here -- precisely the
+        # state of an unbound CLI/cron process, independent of test ordering.
+        result["env_fallback"] = sc.get_session_env("HERMES_SESSION_USER_ID", "")
+        result["ctx_only"] = sc.get_session_var("HERMES_SESSION_USER_ID", "")
+        result["rec"] = wa.stage_write(
+            "memory",
+            {"action": "add", "target": "user", "content": "x"},
+            summary="add x",
+            origin="foreground",
+        )
+
+    tr = threading.Thread(target=_run)
+    tr.start()
+    tr.join()
+
+    # The env-falling accessor would still leak the stale identity ...
+    assert result["env_fallback"] == "legacy-user"
+    # ... but the ContextVar-only accessor used for audit metadata does not.
+    assert result["ctx_only"] == ""
+    # Therefore the staged record carries NO identity -- an empty dict.
+    assert result["rec"]["session_context"] == {}
+    persisted = wa.get_pending("memory", result["rec"]["id"])
+    assert persisted is not None
+    assert persisted["session_context"] == {}

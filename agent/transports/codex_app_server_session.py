@@ -36,6 +36,8 @@ from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import (
     CodexAppServerClient,
     CodexAppServerError,
+    CodexPluginMention,
+    CodexPluginSummary,
 )
 from agent.transports.codex_event_projector import CodexEventProjector
 
@@ -310,6 +312,36 @@ class CodexAppServerSession:
         self._pending_file_changes: dict[str, str] = {}
         self._closed = False
 
+    def list_plugins(self) -> list[CodexPluginSummary]:
+        try:
+            self.ensure_started()
+            return self._client.list_plugins() if self._client is not None else []
+        except (CodexAppServerError, OSError, RuntimeError, TimeoutError):
+            logger.debug("unable to list Codex plugins", exc_info=True)
+            return []
+
+    def _validated_plugin_mentions(self, requested: Any) -> list[CodexPluginMention]:
+        if not isinstance(requested, (list, tuple)) or not requested:
+            return []
+        inventory = {plugin.path: plugin for plugin in self.list_plugins()}
+        mentions: list[CodexPluginMention] = []
+        seen: set[str] = set()
+        for item in requested:
+            if isinstance(item, CodexPluginMention):
+                name, path = item.name, item.path
+            elif isinstance(item, dict):
+                name, path = item.get("name"), item.get("path")
+            else:
+                continue
+            if not isinstance(name, str) or not isinstance(path, str) or path in seen:
+                continue
+            plugin = inventory.get(path)
+            if plugin is None or name not in {plugin.name, plugin.display_name}:
+                continue
+            seen.add(path)
+            mentions.append(CodexPluginMention(plugin.display_name, plugin.path))
+        return mentions
+
     # ---------- lifecycle ----------
 
     def ensure_started(self) -> str:
@@ -471,6 +503,7 @@ class CodexAppServerSession:
         self,
         user_input: Any,
         *,
+        plugin_mentions: Any = None,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -523,7 +556,13 @@ class CodexAppServerSession:
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
+                    "input": [
+                        {"type": "text", "text": user_input_text},
+                        *[
+                            {"type": "mention", "name": mention.name, "path": mention.path}
+                            for mention in self._validated_plugin_mentions(plugin_mentions)
+                        ],
+                    ],
                 },
                 timeout=10,
             )

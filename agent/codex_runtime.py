@@ -20,12 +20,49 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
+
+
+def list_codex_plugins(agent=None, *, cwd: str | None = None) -> list:
+    """List usable Codex plugins without running a turn.
+
+    Reuse an AIAgent's live app-server session when available. Otherwise own
+    and close a short-lived session so inventory probes cannot leak a Codex
+    subprocess. Codex being absent or unavailable is represented by an empty
+    inventory.
+    """
+    session = getattr(agent, "_codex_session", None) if agent is not None else None
+    if session is not None:
+        try:
+            return session.list_plugins()
+        except Exception:
+            logger.debug("unable to list Codex plugins from live session", exc_info=True)
+            return []
+
+    from agent.transports.codex_app_server_session import CodexAppServerSession
+
+    owned_session = CodexAppServerSession(cwd=cwd)
+    try:
+        return owned_session.list_plugins()
+    except Exception:
+        logger.debug("unable to list Codex plugins", exc_info=True)
+        return []
+    finally:
+        owned_session.close()
+
+
+def _transport_plugin_mentions(original_user_message: Any) -> list | None:
+    """Return well-shaped transport plugin metadata, if present."""
+    if not isinstance(original_user_message, Mapping):
+        return None
+    plugin_mentions = original_user_message.get("plugin_mentions")
+    return plugin_mentions if isinstance(plugin_mentions, list) else None
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -692,7 +729,11 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        run_turn_kwargs: dict[str, Any] = {"user_input": user_message}
+        plugin_mentions = _transport_plugin_mentions(original_user_message)
+        if plugin_mentions:
+            run_turn_kwargs["plugin_mentions"] = plugin_mentions
+        turn = agent._codex_session.run_turn(**run_turn_kwargs)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn
@@ -1348,6 +1389,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
 
 
 __all__ = [
+    "list_codex_plugins",
     "run_codex_app_server_turn",
     "run_codex_stream",
     "run_codex_create_stream_fallback",

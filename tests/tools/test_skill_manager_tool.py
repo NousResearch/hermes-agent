@@ -373,6 +373,24 @@ word word
         assert result["success"] is False
         assert "match" in result["error"].lower()
 
+    def test_patch_missing_old_string_tells_the_model_how_to_recover(self, tmp_path):
+        """#33064 — a bare 'required' error is a dead end.
+
+        The model cannot tell whether it omitted old_string or supplied it wrongly,
+        so it retries blindly and escapes to action='write_file', clobbering the
+        whole skill file. The error must say how to obtain the exact text, and must
+        forbid the whole-file rewrite.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "", "replacement")
+
+        assert result["success"] is False
+        err = result["error"]
+        assert "read" in err.lower(), "must tell the model to read the file first"
+        assert "write_file" in err, "must name the escape hatch it is forbidding"
+        assert "exact" in err.lower()
+
     def test_patch_replace_all(self, tmp_path):
         content = """\
 ---
@@ -599,6 +617,27 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is False
 
+    @pytest.mark.parametrize("old_string", [None, ""])
+    def test_patch_missing_old_string_carries_recovery_guidance(self, tmp_path, old_string):
+        """#33064 — the actionable error must survive the public dispatch path.
+
+        The dispatcher used to return its own bare "old_string is required"
+        before ever reaching _patch_skill, so the guidance below was
+        unreachable through the tool the model actually calls. Assert on the
+        serialized public result, not the helper's dict.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            raw = skill_manage(action="patch", name="my-skill",
+                               old_string=old_string, new_string="replacement")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        err = result["error"]
+        assert "read" in err.lower(), "must tell the model to read the file first"
+        assert "write_file" in err, "must name the escape hatch it is forbidding"
+        assert "exact" in err.lower()
+
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 
@@ -683,6 +722,117 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "bundled" in result["error"].lower()
         assert (tmp_path / "bundled" / "SKILL.md").exists()
+
+
+class TestPatchRecoveryLoop:
+    """#33064 — the recovery guidance must be FOLLOWABLE, not just well-worded.
+
+    Asserting that an error string contains 'read' proves nothing about whether
+    a model obeying it reaches a working patch. These tests walk the loop end to
+    end through the public tool: bad call -> read the error -> do what it says ->
+    patch succeeds, without ever touching action='write_file'.
+    """
+
+    CONTENT = """\
+---
+name: test-skill
+description: A test skill.
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+Step 2: Do the other thing.
+"""
+
+    def test_recovery_loop_reaches_a_working_patch(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+
+            # The half-formed call that used to dead-end.
+            bad = json.loads(skill_manage(action="patch", name="my-skill",
+                                          new_string="Step 1: Do it better."))
+            assert bad["success"] is False
+            assert "read" in bad["error"].lower()
+
+            # Do exactly what the error says: read the file, copy verbatim, retry.
+            on_disk = (tmp_path / "my-skill" / "SKILL.md").read_text()
+            snippet = "Step 1: Do the thing."
+            assert snippet in on_disk
+            good = json.loads(skill_manage(action="patch", name="my-skill",
+                                           old_string=snippet,
+                                           new_string="Step 1: Do it better."))
+
+        assert good["success"] is True, f"guided retry must succeed, got {good}"
+        after = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Step 1: Do it better." in after
+        # The recovery must be surgical — that is the whole point of not
+        # falling back to a whole-file rewrite.
+        assert "Step 2: Do the other thing." in after, "unrelated content lost"
+        assert after.startswith("---"), "frontmatter destroyed"
+
+    def test_recovery_never_requires_write_file(self, tmp_path):
+        """The forbidden escape hatch must never be *necessary* to recover."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            bad = json.loads(skill_manage(action="patch", name="my-skill",
+                                          old_string="", new_string="x"))
+            assert "write_file" in bad["error"]
+
+            ok = json.loads(skill_manage(action="patch", name="my-skill",
+                                         old_string="Step 2: Do the other thing.",
+                                         new_string="Step 2: Done."))
+        assert ok["success"] is True, f"recovery required write_file? {ok}"
+
+    @pytest.mark.parametrize("kwargs", [
+        {"old_string": None, "new_string": "x"},
+        {"old_string": "", "new_string": "x"},
+    ])
+    def test_rejected_patch_leaves_file_byte_identical(self, tmp_path, kwargs):
+        """A rejected patch must not partially mutate the skill."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            before = (tmp_path / "my-skill" / "SKILL.md").read_text()
+            result = json.loads(skill_manage(action="patch", name="my-skill", **kwargs))
+            after = (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+        assert result["success"] is False
+        assert before == after, "rejected patch mutated the file"
+
+    def test_validation_precedes_skill_lookup(self, tmp_path):
+        """Centralizing validation must not reorder it behind the skill lookup.
+
+        A missing old_string on a nonexistent skill should still report the
+        argument error — reporting 'skill not found' first would send the model
+        chasing the wrong problem.
+        """
+        with _skill_dir(tmp_path):
+            result = json.loads(skill_manage(action="patch", name="does-not-exist",
+                                             new_string="x"))
+        assert result["success"] is False
+        assert "old_string" in result["error"].lower()
+        assert "not found" not in result["error"].lower()
+
+    def test_empty_new_string_still_deletes(self, tmp_path):
+        """new_string='' is legal (delete matched text) and must NOT be rejected."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            result = json.loads(skill_manage(action="patch", name="my-skill",
+                                             old_string="Step 2: Do the other thing.\n",
+                                             new_string=""))
+            after = (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+        assert result["success"] is True, f"empty new_string wrongly rejected: {result}"
+        assert "Step 2:" not in after
+
+    def test_missing_new_string_still_rejected(self, tmp_path):
+        """The dispatcher also guarded new_string; _patch_skill must still catch it."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", self.CONTENT)
+            result = json.loads(skill_manage(action="patch", name="my-skill",
+                                             old_string="Step 1: Do the thing."))
+        assert result["success"] is False
+        assert "new_string" in result["error"]
 
 
 class TestSecurityScanGate:

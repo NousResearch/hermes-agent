@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -37,6 +38,19 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
     "following exchange. The title should capture the main topic or intent. "
     "Write the title in {language}. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+)
+
+# Strip a leading <workspace_context .../> or <workspace_context ...>...</workspace_context>
+# block from the user message before title generation (#63478). The block is
+# machine-injected metadata that, if surfaced to the title LLM, produces
+# session titles like "<workspace_context active...>" instead of the user's
+# actual prompt. Strip only at the very start of the message (after leading
+# whitespace) so user-written text that happens to mention workspace_context
+# mid-message is preserved.
+_WORKSPACE_CONTEXT_RE = re.compile(
+    r"^\s*<workspace_context\b[^>]*/>\s*"           # self-closing at start
+    r"|^\s*<workspace_context\b[^>]*>.*?</workspace_context>\s*",  # paired tags at start
+    re.DOTALL,
 )
 
 
@@ -108,6 +122,11 @@ def generate_title(
         except Exception:
             # Fail open: a broken validator must not disable titling.
             logger.debug("Title runtime validator raised; proceeding", exc_info=True)
+
+    # Strip a leading <workspace_context> block before truncation so the
+    # title LLM never sees the machine-injected metadata (#63478).
+    if user_message:
+        user_message = _WORKSPACE_CONTEXT_RE.sub("", user_message, count=1)
 
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""

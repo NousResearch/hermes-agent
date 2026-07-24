@@ -363,30 +363,42 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
     # on which manager actually owns the unit.  Try user first since
     # that's the common case for hermes.
+    #
+    # `systemctl --user show <name>` returns built-in defaults (e.g.
+    # TimeoutStopUSec=1min 30s) with exit 0 even when the unit doesn't
+    # exist for that manager, so we must check LoadState=loaded before
+    # trusting the value — otherwise we'd warn about a phantom 90s
+    # timeout on system-managed units.
     timeout_us: Optional[int] = None
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                [
+                    "systemctl", *flag, "show", unit_name,
+                    "--property=LoadState",
+                    "--property=TimeoutStopUSec",
+                ],
                 capture_output=True, text=True, timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        load_state: Optional[str] = None
+        candidate_us: Optional[int] = None
         for line in result.stdout.splitlines():
-            if line.startswith("TimeoutStopUSec="):
+            if line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+            elif line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
-                # Try numeric microseconds first
                 if value.isdigit():
-                    timeout_us = int(value)
+                    candidate_us = int(value)
                 else:
-                    timeout_us = _parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    break
-        if timeout_us is not None:
-            break
+                    candidate_us = _parse_systemd_duration_to_us(value)
+        if load_state != "loaded" or candidate_us is None:
+            continue
+        timeout_us = candidate_us
+        break
 
     if timeout_us is None:
         return None

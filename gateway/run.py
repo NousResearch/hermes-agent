@@ -2129,6 +2129,7 @@ from gateway.platforms.base import (
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    arm_event_loop_health_watchdog,
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
     resolve_shutdown_watchdog_delay,
@@ -8333,6 +8334,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._loop_heartbeat_task.add_done_callback(_bg.discard)
         except Exception:
             logger.debug("Failed to start gateway loop heartbeat", exc_info=True)
+
+        # Loop-liveness health watchdog (#69089): runs as an OS thread
+        # (NOT an asyncio task) so it can detect a frozen event loop
+        # that the async heartbeat can't recover from. Checks the
+        # heartbeat file monotonic timestamp on a cadence and hard-exits
+        # if the timestamp goes stale — the service manager restarts
+        # the process.
+        try:
+            arm_event_loop_health_watchdog(
+                interval_s=DEFAULT_HEARTBEAT_INTERVAL_S,
+                start_time=getattr(self, "_gateway_started_at", 0.0),
+            )
+        except Exception:
+            logger.debug("Failed to arm event-loop health watchdog", exc_info=True)
 
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)

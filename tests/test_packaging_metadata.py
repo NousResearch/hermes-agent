@@ -64,6 +64,14 @@ def test_faster_whisper_is_not_a_base_dependency():
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
 _STARLETTE_CVE_FLOOR = (1, 0, 1)
+_UPDATE_DOWNGRADE_GUARD_FLOORS = {
+    # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
+    # reviewed CVE pins must not slide back to stale versions that downgrade
+    # already-patched user environments.
+    "cryptography": (49, 0, 0),
+    "starlette": (1, 3, 1),
+    "python-multipart": (0, 0, 32),
+}
 
 
 def _version_tuple(spec: str) -> tuple[int, ...]:
@@ -141,6 +149,40 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
         )
 
 
+def test_update_cve_pins_do_not_downgrade_reviewed_current_versions():
+    """`hermes update` must not reinstall stale reviewed CVE pins.
+
+    The project intentionally exact-pins reviewed dependency versions. When
+    security pins get stale, update reinstalls can downgrade environments that
+    already contain newer fixed versions. Guard the reviewed CVE packages
+    across pyproject, lazy_deps, and the committed lockfile.
+    """
+    pins = _pins_from_specs(_pyproject_pinned_specs() + _lazy_deps_pinned_specs())
+    for package, floor in _UPDATE_DOWNGRADE_GUARD_FLOORS.items():
+        versions = pins.get(package)
+        assert versions, f"{package} is no longer exact-pinned; update this guard"
+        below_floor = sorted(
+            version for version in versions
+            if _version_tuple(version) < floor
+        )
+        assert not below_floor, (
+            f"{package} exact pin(s) {below_floor} are below the reviewed "
+            f"anti-downgrade floor {'.'.join(map(str, floor))}; bump the pin "
+            "and regenerate uv.lock"
+        )
+        locked_versions = _locked_versions(package)
+        assert locked_versions, f"{package} is missing from uv.lock"
+        locked_below_floor = sorted(
+            version for version in locked_versions
+            if _version_tuple(version) < floor
+        )
+        assert not locked_below_floor, (
+            f"uv.lock resolves {package} version(s) {locked_below_floor} below "
+            f"the reviewed anti-downgrade floor {'.'.join(map(str, floor))}; "
+            "regenerate uv.lock after bumping the pin"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Dependency-pin consistency: pyproject extras <-> tools/lazy_deps.py
 #
@@ -180,6 +222,15 @@ def _pins_from_specs(specs):
             continue
         pins.setdefault(_canonical(m.group(1)), set()).add(m.group(2))
     return pins
+
+
+def _locked_versions(package: str) -> set[str]:
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    return {
+        pkg["version"]
+        for pkg in lock.get("package", [])
+        if _canonical(pkg["name"]) == _canonical(package)
+    }
 
 
 def _pyproject_pinned_specs():

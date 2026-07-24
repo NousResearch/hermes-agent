@@ -967,6 +967,31 @@ class HindsightMemoryProvider(MemoryProvider):
             print("  API keys saved to .env")
         print("\n  Start a new session to activate.\n")
 
+    def get_status_config(self, provider_config: dict) -> dict:
+        """Return the actual resolved Hindsight config for `hermes memory status`.
+
+        Hindsight keeps its native config in $HERMES_HOME/hindsight/config.json
+        (or ~/.hindsight/config.json legacy), NOT under config.yaml's
+        memory.hindsight key — so the `provider_config` passed in by cmd_status
+        is normally empty/stale. Load the real file/env-resolved config instead
+        so the status display (and the "when"-clause filtering of missing env
+        vars in cmd_status) reflects what's actually configured.
+        """
+        del provider_config
+        cfg = _load_config()
+        mode = cfg.get("mode", "cloud")
+        display: Dict[str, Any] = {"mode": mode}
+        if mode == "local_embedded":
+            display["llm_provider"] = cfg.get("llm_provider") or os.environ.get("HINDSIGHT_LLM_PROVIDER", "openai")
+            display["llm_model"] = cfg.get("llm_model", "")
+            if display["llm_provider"] == "openai_compatible":
+                display["llm_base_url"] = cfg.get("llm_base_url", "")
+        else:
+            display["api_url"] = cfg.get("api_url") or (_DEFAULT_API_URL if mode == "cloud" else _DEFAULT_LOCAL_URL)
+        banks = cfg.get("banks", {}).get("hermes", {})
+        display["bank_id"] = banks.get("bankId") or cfg.get("bank_id", "hermes")
+        return display
+
     def get_config_schema(self):
         return [
             {"key": "mode", "description": "Connection mode", "default": "cloud", "choices": ["cloud", "local_embedded", "local_external"]},

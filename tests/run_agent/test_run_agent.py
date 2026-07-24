@@ -4739,6 +4739,80 @@ class TestRunConversation:
         failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
         assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
 
+    def test_empty_response_retry_backoff_interrupted(self, agent, monkeypatch):
+        """If an interrupt is requested during the empty response retry wait, we abort."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
+
+        from agent import conversation_loop as _conv_loop
+
+        # Make backoff return 10.0 seconds
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 10.0)
+
+        # Trigger the interrupt on the first sleep call inside the wait loop
+        original_sleep = time.sleep
+        sleep_called = []
+
+        def _mock_sleep(seconds):
+            sleep_called.append(seconds)
+            if seconds == 0.2:
+                agent._interrupt_requested = True
+            else:
+                original_sleep(seconds)
+
+        monkeypatch.setattr(time, "sleep", _mock_sleep)
+
+        with (
+            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["interrupted"] is True
+        assert "Operation interrupted: retrying empty response from model" in result["final_response"]
+        assert agent._empty_content_retries == 1
+        assert 0.2 in sleep_called
+        assert mock_persist.call_count == 2
+
+    def test_empty_response_retry_backoff_status(self, agent, monkeypatch):
+        """Empty response retry wait updates the agent's status with wait time and sleeps."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+        # Two responses: first empty, second succeeds so it doesn't run forever
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        ok_resp = _mock_response(content="Final ok response.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, ok_resp]
+
+        from agent import conversation_loop as _conv_loop
+
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 7.5)
+
+        sleep_calls = []
+        monkeypatch.setattr(time, "sleep", lambda secs: sleep_calls.append(secs))
+
+        status_messages = []
+        monkeypatch.setattr(agent, "_buffer_status", lambda status: status_messages.append(status))
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Final ok response."
+
+        # 7.5s wait, slept in 0.2s increments -> 37.5 -> at least 37 calls
+        assert len([c for c in sleep_calls if c == 0.2]) >= 37
+
+        retry_status = [m for m in status_messages if "Empty response from model — retrying (1/3) in 8s" in m]
+        assert len(retry_status) == 1
+
     def test_partial_stream_recovery_uses_streamed_content(self, agent):
         """When streaming fails after partial delivery, recovered partial content becomes final response."""
         self._setup_agent(agent)

@@ -20364,10 +20364,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            # Terminal commands on markdown platforms get a single-line capped
-            # fenced block (built above) instead of the truncated preview.
-            if _code_block_short is not None:
-                msg = _code_block_short
+            # Terminal commands on markdown platforms get the full fenced
+            # block — code blocks are already visually compact (scrollable)
+            # so capping to a single line provides no UX benefit (#46941).
+            if _code_block_full is not None:
+                msg = _code_block_full
                 last_was_terminal_block[0] = True
             elif preview:
                 from agent.display import (

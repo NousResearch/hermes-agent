@@ -1660,8 +1660,8 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     """Terminal progress on a markdown-capable (supports_code_blocks) gateway
     renders a bare fenced code block — no language tag (Slack mrkdwn would print
     'bash' as a literal first code line).  In non-verbose ("all"/"new") mode the
-    command is collapsed to a single line capped at tool_preview_length so a long
-    or multi-line command doesn't render as a huge block (#42634)."""
+    full command is shown inside the fence since code blocks are already compact
+    on markdown platforms (#46941)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -1701,11 +1701,11 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     # Bare fenced block, no language tag (no '```bash').
     assert "```" in all_content
     assert "```bash" not in all_content
-    # Non-verbose collapses to the first line + truncation marker — the later
-    # command lines must NOT appear (this was the "huge block" regression).
+    # Non-verbose now shows the full command inside code blocks — fences are
+    # already visually compact on markdown platforms (#46941).
     assert "set -euo pipefail" in all_content
-    assert "npm install -g hyperframes@latest" not in all_content
-    assert "node --version" not in all_content
+    assert "npm install -g hyperframes@latest" in all_content
+    assert "node --version" in all_content
     # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
 

@@ -147,6 +147,14 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
+# Directory names pruned from _dir_file_count's walk, derived from the
+# directory entries in DEFAULT_EXCLUDES.  These are the same paths git
+# itself ignores via info/exclude (see _init_store), so the size guard
+# below reflects what would actually be checkpointed instead of every
+# file on disk, including huge dependency/build trees that never reach
+# the git index.
+_EXCLUDED_DIR_NAMES = {entry[:-1] for entry in DEFAULT_EXCLUDES if entry.endswith("/")}
+
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
 
@@ -546,15 +554,29 @@ def _list_projects(store: Path) -> List[Dict]:
 
 
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Quick file count estimate (stops early if over _MAX_FILES).
+
+    Skips descending into directories listed in _EXCLUDED_DIR_NAMES, so the
+    count reflects what a checkpoint would actually stage rather than every
+    file on disk.  Without this, a node_modules/ or .venv/ tree routinely
+    pushes a small, normally-sized project over _MAX_FILES, silently
+    disabling checkpoints for it even though git would exclude those paths
+    anyway.
+    """
     count = 0
-    try:
-        for _ in Path(path).rglob("*"):
-            count += 1
-            if count > _MAX_FILES:
-                return count
-    except (PermissionError, OSError):
-        pass
+    stack = [Path(path)]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for dirent in it:
+                    count += 1
+                    if count > _MAX_FILES:
+                        return count
+                    if dirent.is_dir(follow_symlinks=False) and dirent.name not in _EXCLUDED_DIR_NAMES:
+                        stack.append(Path(dirent.path))
+        except (PermissionError, OSError):
+            continue
     return count
 
 
@@ -816,8 +838,16 @@ class CheckpointManager:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
-        # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        # Take a pre-rollback snapshot so you can undo the undo.  This can
+        # come back False for a harmless reason (nothing changed since the
+        # last checkpoint, which already covers the current state) or for a
+        # real gap (e.g. the size guard skipped it) — either way, surface it
+        # instead of silently proceeding, since the checkout below is about
+        # to overwrite the working tree with no way to tell which case this
+        # was.
+        pre_rollback_taken = self._take(
+            abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})"
+        )
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
@@ -846,6 +876,13 @@ class CheckpointManager:
         }
         if file_path:
             result["file"] = file_path
+        if not pre_rollback_taken:
+            result["warning"] = (
+                "Could not take a pre-rollback snapshot before this restore. "
+                "If nothing had changed since the last checkpoint this is "
+                "harmless; otherwise this restore cannot be undone through "
+                "checkpoint recovery."
+            )
         return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:

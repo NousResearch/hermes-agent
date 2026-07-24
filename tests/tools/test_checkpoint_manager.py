@@ -375,6 +375,40 @@ class TestRestore:
         assert len(all_cps) >= 2
         assert "pre-rollback" in all_cps[0]["reason"]
 
+    def test_restore_no_warning_when_pre_rollback_snapshot_succeeds(self, mgr, work_dir):
+        (work_dir / "main.py").write_text("v1\n")
+        mgr.ensure_checkpoint(str(work_dir), "v1")
+        mgr.new_turn()
+
+        (work_dir / "main.py").write_text("v2\n")
+        cps = mgr.list_checkpoints(str(work_dir))
+
+        result = mgr.restore(str(work_dir), cps[0]["hash"])
+        assert result["success"] is True
+        assert "warning" not in result
+
+    def test_restore_warns_when_pre_rollback_snapshot_fails(self, mgr, work_dir):
+        (work_dir / "main.py").write_text("v1\n")
+        mgr.ensure_checkpoint(str(work_dir), "v1")
+        mgr.new_turn()
+
+        (work_dir / "main.py").write_text("v2\n")
+        cps = mgr.list_checkpoints(str(work_dir))
+
+        # Simulate the size-guard (or any other) failure path inside
+        # _take() without needing to create 50,000 real files.
+        with patch.object(CheckpointManager, "_take", return_value=False):
+            result = mgr.restore(str(work_dir), cps[0]["hash"])
+
+        # Fail-open: the restore still proceeds (consistent with the
+        # project's existing best-effort checkpoint philosophy)...
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "v1\n"
+        # ...but the caller is now told the safety net did not fire,
+        # instead of this being visible only via a debug-level log line.
+        assert "warning" in result
+        assert "pre-rollback" in result["warning"].lower()
+
     def test_tilde_path_supports_diff_and_restore_flow(
         self, checkpoint_base, fake_home, monkeypatch,
     ):
@@ -534,6 +568,26 @@ class TestDirFileCount:
 
     def test_nonexistent_dir(self, tmp_path):
         assert _dir_file_count(str(tmp_path / "nonexistent")) == 0
+
+    def test_excluded_dir_contents_not_counted(self, work_dir):
+        # A node_modules/ tree big enough to blow through a naive raw
+        # filesystem walk, but which git (and now _dir_file_count) never
+        # descends into.
+        node_modules = work_dir / "node_modules"
+        node_modules.mkdir()
+        for i in range(200):
+            (node_modules / f"pkg_{i}.js").write_text("x")
+
+        # The excluded subtree itself still counts as one entry (the
+        # directory), but its contents must not inflate the total.
+        count = _dir_file_count(str(work_dir))
+        assert count < 10
+
+    def test_non_excluded_files_still_counted(self, work_dir):
+        for i in range(5):
+            (work_dir / f"file_{i}.py").write_text("x")
+        count = _dir_file_count(str(work_dir))
+        assert count >= 7  # main.py + README.md + 5 new files
 
 
 # =========================================================================

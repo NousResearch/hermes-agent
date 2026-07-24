@@ -109,7 +109,11 @@ _KEY_ALIASES = {
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    # Split on both "+" and "-": the cua-driver backend's _parse_key_combo
+    # accepts hyphen-separated combos too, so "ctrl-alt-delete" executes as
+    # the real destructive shortcut. Mirror its separators here, otherwise the
+    # _BLOCKED_KEY_COMBOS gate is trivially bypassed with hyphen notation.
+    parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
 

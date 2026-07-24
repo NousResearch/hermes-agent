@@ -3048,13 +3048,8 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
-                        rows = conn.execute(
-                            "SELECT status FROM tasks WHERE id IN "
-                            "(" + ",".join("?" * len(parents)) + ")",
-                            parents,
-                        ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        # Execution completion is not outcome acceptance.
+                        if any(not task_outcome_accepted(conn, parent) for parent in parents):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -3331,11 +3326,8 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
+        # A linked parent releases its child only after outcome acceptance.
+        if not task_outcome_accepted(conn, parent_id):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -3895,10 +3887,126 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+_REQUIRED_CLASSIFICATION_RE = re.compile(
+    r"^\s*(?:required classification|terminal acceptance|terminal classification)"
+    r"\s*:\s*([A-Z][A-Z0-9_-]*)\s*\.?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_REQUIRED_EVIDENCE_TYPE_RE = re.compile(
+    r"^\s*required evidence type\s*:\s*([a-z][a-z0-9_-]*)\s*\.?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _acceptance_evidence_valid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    verifier_profile: str,
+    evidence_refs: object,
+) -> bool:
+    """Validate narrow, structured evidence against existing durable rows."""
+    if not isinstance(evidence_refs, list) or not evidence_refs:
+        return False
+    for ref in evidence_refs:
+        if not isinstance(ref, dict) or set(ref) != {"kind", "id"}:
+            return False
+        if not isinstance(ref["id"], int) or isinstance(ref["id"], bool):
+            return False
+        if ref["kind"] == "comment":
+            row = conn.execute(
+                "SELECT 1 FROM task_comments WHERE id = ? AND task_id = ? AND author = ?",
+                (ref["id"], task_id, verifier_profile),
+            ).fetchone()
+        elif ref["kind"] == "run":
+            row = conn.execute(
+                "SELECT 1 FROM task_runs "
+                "WHERE id = ? AND task_id = ? AND profile = ? AND ended_at IS NOT NULL",
+                (ref["id"], task_id, verifier_profile),
+            ).fetchone()
+        else:
+            return False
+        if row is None:
+            return False
+    return True
+
+
+def task_outcome_accepted(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether a completed task has an explicit accepted outcome.
+
+    Execution completion remains ``tasks.status = 'done'``. Dependency
+    release is a separate fail-closed decision derived from the task's
+    declared classification and the closing run's verifier evidence.
+    """
+    row = conn.execute(
+        "SELECT status, body FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] != "done":
+        return False
+    required_match = _REQUIRED_CLASSIFICATION_RE.search(row["body"] or "")
+    if required_match is None:
+        return False
+    evidence_type_match = _REQUIRED_EVIDENCE_TYPE_RE.search(row["body"] or "")
+    required_evidence_type = (
+        evidence_type_match.group(1).lower() if evidence_type_match else "implementation"
+    )
+    closing_run = conn.execute(
+        "SELECT id, profile, metadata FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if closing_run is None or not closing_run["metadata"]:
+        return False
+    try:
+        closing_metadata = json.loads(closing_run["metadata"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(closing_metadata, dict):
+        return False
+    verifier_run_id = closing_metadata.get("verifier_run_id")
+    if not isinstance(verifier_run_id, int) or isinstance(verifier_run_id, bool):
+        return False
+    verifier_run = conn.execute(
+        "SELECT id, profile, metadata FROM task_runs "
+        "WHERE id = ? AND outcome = 'completed' AND ended_at IS NOT NULL",
+        (verifier_run_id,),
+    ).fetchone()
+    if (
+        verifier_run is None
+        or verifier_run["id"] == closing_run["id"]
+        or not verifier_run["profile"]
+        or verifier_run["profile"] == closing_run["profile"]
+        or not verifier_run["metadata"]
+    ):
+        return False
+    try:
+        verifier_metadata = json.loads(verifier_run["metadata"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(verifier_metadata, dict):
+        return False
+    verification = verifier_metadata.get("verification")
+    if not isinstance(verification, dict):
+        return False
+    return (
+        verification.get("target_task_id") == task_id
+        and str(verification.get("classification", "")).upper()
+        == required_match.group(1).upper()
+        and str(verification.get("verdict", "")).upper() == "PASS"
+        and str(verification.get("evidence_type", "")).lower()
+        == required_evidence_type
+        and _acceptance_evidence_valid(
+            conn, task_id, verifier_run["profile"], verification.get("evidence_refs")
+        )
+    )
+
+
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
 ) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote tasks only when every parent has an accepted outcome.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -3944,12 +4052,12 @@ def recompute_ready(
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(task_outcome_accepted(conn, p["id"]) for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -4010,13 +4118,13 @@ def claim_task(
         # 'todo' here — recompute_ready will re-promote when the parents
         # actually finish. See RCA at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone = conn.execute(
-            "SELECT 1 FROM task_links l "
+        parent_rows = conn.execute(
+            "SELECT p.id FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ?",
             (task_id,),
-        ).fetchone()
-        if undone:
+        ).fetchall()
+        if any(not task_outcome_accepted(conn, row["id"]) for row in parent_rows):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' "
                 "WHERE id = ? AND status = 'ready'",
@@ -4634,6 +4742,9 @@ def complete_task(
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
     """
+    # Reject malformed structured handoff data before any terminal mutation.
+    if metadata is not None and not isinstance(metadata, dict):
+        return False
     now = int(time.time())
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected

@@ -28,7 +28,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         return f"/tmp/{jid}.txt"
 
     def fake_deliver(job, content, adapters=None, loop=None):
-        calls.append(("deliver", job["id"]))
+        calls.append(("deliver", job["id"], content))
         return None
 
     def fake_mark(jid, ok, err=None, delivery_error=None):
@@ -89,15 +89,35 @@ def test_run_one_job_empty_response_is_soft_failure(monkeypatch):
 
 
 def test_run_one_job_failed_job_delivers_error(monkeypatch):
-    """A failed job still delivers (the error notice) and marks not-ok."""
+    """A failed agent-backed job still delivers a summarized error notice and marks not-ok."""
     calls = _patch_pipeline(monkeypatch, success=False, final="", error="boom")
 
     s.run_one_job({"id": "j5", "name": "t"})
 
-    kinds = [c[0] for c in calls]
-    assert "deliver" in kinds  # failures always deliver
+    deliveries = [c for c in calls if c[0] == "deliver"]
+    assert deliveries  # failures always deliver
+    assert "boom" in deliveries[0][2]
     mark = [c for c in calls if c[0] == "mark"][0]
     assert mark == ("mark", "j5", False)
+
+
+def test_run_one_job_no_agent_failure_delivers_script_alert(monkeypatch):
+    """no_agent script failures must preserve the script alert, not rewrite timeout text as provider failure."""
+    script_alert = "⚠ Cron watchdog 'thermostat' script failed\n\nCommandError: Timed out waiting for Sensi\n"
+    calls = _patch_pipeline(
+        monkeypatch,
+        success=False,
+        final=script_alert,
+        error="Script exited with code 1\nstderr:\nCommandError: Timed out waiting for Sensi",
+    )
+
+    s.run_one_job({"id": "j5b", "name": "thermostat", "no_agent": True})
+
+    deliveries = [c for c in calls if c[0] == "deliver"]
+    assert deliveries == [("deliver", "j5b", script_alert)]
+    assert "provider timeout" not in deliveries[0][2]
+    mark = [c for c in calls if c[0] == "mark"][0]
+    assert mark == ("mark", "j5b", False)
 
 
 def test_run_one_job_exception_marks_failure(monkeypatch):

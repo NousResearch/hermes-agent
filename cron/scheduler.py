@@ -3904,8 +3904,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # output is already saved above). Failed jobs always deliver.
+            # Agent-backed failures can contain huge provider payloads, so
+            # summarize them. no_agent script failures already build a compact
+            # watchdog alert in run_job(); preserve that exact stderr/stdout.
+            if success:
+                deliver_content = final_response
+            elif job.get("no_agent") and final_response.strip():
+                deliver_content = final_response
+            else:
+                deliver_content = _summarize_cron_failure_for_delivery(job, error)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

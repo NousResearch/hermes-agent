@@ -5333,23 +5333,18 @@ def resolve_provider_client(
                            "could not mint token / resolve project")
             return None, None
 
-        default_model = "google/gemini-3-flash-preview"
+        default_model = _get_aux_model_for_provider(provider) or "gemini-3.5-flash"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
-            from openai import OpenAI
-
-            if auth_header == "x-goog-api-key":
-                # Express Mode — use the API key as x-goog-api-key header
-                # instead of Authorization: Bearer (which only works for
-                # OAuth2 tokens).
-                client = OpenAI(
-                    api_key="",
-                    base_url=base_url,
-                    default_headers={"x-goog-api-key": token_or_key},
-                )
-            else:
-                # Standard OAuth2 — pass token as Authorization: Bearer
-                client = OpenAI(api_key=token_or_key, base_url=base_url)
+            # Route through _create_openai_client which auto-detects native
+            # Vertex URLs and creates a GeminiNativeClient (which handles
+            # x-goog-api-key auth and the native generateContent format).
+            client = _create_openai_client(
+                api_key=token_or_key,
+                base_url=base_url,
+                **({"default_headers": {"x-goog-api-key": token_or_key}}
+                   if auth_header == "x-goog-api-key" else {}),
+            )
         except Exception as exc:
             logger.warning("resolve_provider_client: cannot create Vertex "
                            "client: %s", exc)

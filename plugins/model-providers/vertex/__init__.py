@@ -100,7 +100,7 @@ vertex = VertexProfile(
     ),
     base_url="https://aiplatform.googleapis.com",  # real base_url computed at runtime
     auth_type="vertex",
-    default_aux_model="google/gemini-3-flash-preview",
+    default_aux_model="gemini-3.5-flash",
 )
 
 register_provider(vertex)

@@ -82,6 +82,7 @@ import { findGitBash as _findGitBash } from './find-git-bash'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
+import { resolveNotificationAction } from './notification-actions'
 import {
   fileDiffVsHead,
   repoStatus,
@@ -9384,7 +9385,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
 
   // Action buttons render only on signed macOS builds; elsewhere they're dropped
   // and the body click still works.
-  const actions = Array.isArray(payload?.actions) ? payload.actions : []
+  const actions: { id?: string; text?: unknown }[] = Array.isArray(payload?.actions) ? payload.actions : []
 
   const notification = new Notification({
     title: payload?.title || 'Hermes',
@@ -9404,12 +9405,12 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
       mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
     }
   })
-  notification.on('action', (_actionEvent, index) => {
+  notification.on('action', (actionEvent, index) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return
     }
 
-    const action = actions[index]
+    const action = resolveNotificationAction(actions, actionEvent, index)
 
     if (action?.id) {
       mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })

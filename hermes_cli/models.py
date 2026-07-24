@@ -3394,7 +3394,13 @@ def ensure_lmstudio_model_loaded(
         return None
 
     max_ctx = target_entry.get("max_context_length")
-    if isinstance(max_ctx, int) and max_ctx > 0:
+    # When target_context_length is 0 (sentinel for "not configured, use
+    # default"), prefer the model's reported max_context_length so the
+    # initial load doesn't settle on a hardcoded floor (64000).  An
+    # explicitly configured value is honoured (capped at max_ctx).
+    if target_context_length <= 0:
+        target_context_length = max_ctx if (isinstance(max_ctx, int) and max_ctx > 0) else 65536
+    elif isinstance(max_ctx, int) and max_ctx > 0:
         target_context_length = min(target_context_length, max_ctx)
 
     for inst in target_entry.get("loaded_instances") or []:

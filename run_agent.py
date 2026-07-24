@@ -785,11 +785,13 @@ class AIAgent:
             logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return
         try:
-            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
             from hermes_cli.models import ensure_lmstudio_model_loaded
             if config_context_length is None:
                 config_context_length = getattr(self, "_config_context_length", None)
-            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            # When no explicit context_length is configured (None), pass 0 as
+            # sentinel so ensure_lmstudio_model_loaded defaults to the model's
+            # reported max_context_length instead of a hardcoded floor.
+            target_ctx = config_context_length if config_context_length is not None else 0
             loaded_ctx = ensure_lmstudio_model_loaded(
                 self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
             )

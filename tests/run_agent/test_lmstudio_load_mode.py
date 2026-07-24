@@ -44,7 +44,7 @@ def test_lmstudio_explicit_load_mode_preserves_preload(monkeypatch):
 
     assert len(calls) == 1
     assert calls[0][0][:3] == ("test/model", "http://127.0.0.1:1234/v1", "")
-    assert calls[0][0][3] == 64000
+    assert calls[0][0][3] == 0  # sentinel 0 = "use model's max_context_length"
 
 
 def test_missing_lmstudio_load_mode_defaults_to_explicit(monkeypatch):

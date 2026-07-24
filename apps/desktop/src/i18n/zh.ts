@@ -1029,6 +1029,19 @@ export const zh: Translations = {
         title: '本地 / 自定义端点',
         description: '将 Hermes 指向任意 OpenAI 兼容端点（Zyphra、vLLM、llama.cpp、Ollama 等）。'
       },
+      customEndpoint: {
+        title: '自定义端点',
+        description: '将 Hermes 指向任意 OpenAI 兼容端点（Ollama、vLLM 等）。',
+        baseUrlLabel: '端点 URL',
+        pasteApiKey: '粘贴 API 密钥',
+        removeApiKey: '移除 API 密钥',
+        removeConfirm: '确定移除 API 密钥？',
+        saved: '自定义端点已保存。',
+        apiKeyRemoved: 'API 密钥已移除。',
+        failedLoad: '加载自定义端点失败',
+        failedSave: '保存自定义端点失败',
+        failedRemove: '移除 API 密钥失败'
+      },
       loading: '正在加载提供方...'
     },
     sessions: {

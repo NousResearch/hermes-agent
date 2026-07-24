@@ -58,3 +58,23 @@ class TestMatrixHiddenOnWindows:
                 f"{must_have} disappeared from Windows picker — gate is "
                 "over-filtering"
             )
+
+
+class TestWebhookGatewaySetup:
+    def test_webhook_present_in_all_platforms(self, monkeypatch):
+        import hermes_cli.gateway as gateway_mod
+
+        monkeypatch.setattr(gateway_mod.sys, "platform", "darwin")
+        platforms = gateway_mod._all_platforms()
+        keys = {p["key"] for p in platforms}
+        assert "webhook" in keys
+
+    def test_builtin_setup_fn_accepts_webhook_key(self):
+        import hermes_cli.gateway as gateway_mod
+
+        assert gateway_mod._builtin_setup_fn("webhook") is not None
+
+    def test_builtin_setup_fn_keeps_webhooks_alias(self):
+        import hermes_cli.gateway as gateway_mod
+
+        assert gateway_mod._builtin_setup_fn("webhooks") is not None

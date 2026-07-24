@@ -923,6 +923,18 @@ def _run_review_in_thread(
                 except Exception:
                     pass
 
+        # ── improvement_record callback ────────────────────────────────
+        # Walk the forked agent's snapshotted session messages and emit
+        # one structured record per write tool call. Failures here never
+        # affect the review or the parent turn.
+        try:
+            from agent import background_review_callback as _br_cb
+            _br_cb.run_callback_pipeline(agent, review_messages)
+        except Exception as _cb_err:
+            logger.warning(
+                "background_review callback block failed: %s", _cb_err
+            )
+
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         agent._emit_auxiliary_failure("background review", e)

@@ -8,6 +8,7 @@ exercised hermetically.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -425,6 +426,35 @@ def test_generate_base_drafts_hardens_opaque_background(monkeypatch, tmp_path):
     assert rgba.getpixel((rgba.width // 2, rgba.height // 2))[3] > 0
 
 
+def test_harden_transparency_removes_non_png_original(tmp_path):
+    """A non-PNG base draft is replaced by a hardened PNG, and the original
+    draft file is not left behind in the image cache."""
+    from agent.pet.generate import orchestrate
+
+    src = tmp_path / "pet_base_sample.webp"
+    _strip(1).save(src, format="WEBP")
+
+    out = orchestrate._harden_transparency(src)
+
+    assert out.suffix == ".png"
+    assert out.exists()
+    assert not src.exists()
+
+
+def test_harden_transparency_keeps_png_input_in_place(tmp_path):
+    """A PNG base draft is hardened in place, so the returned path is the input
+    path and there is no separate original to remove."""
+    from agent.pet.generate import orchestrate
+
+    src = tmp_path / "pet_base_sample.png"
+    _strip(1).save(src, format="PNG")
+
+    out = orchestrate._harden_transparency(src)
+
+    assert out == src
+    assert out.exists()
+
+
 def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     from agent.pet import store
     from agent.pet.generate import atlas as atlas_mod
@@ -460,6 +490,74 @@ def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     assert ("compose", "") in events
     # The pet is on disk and adoptable.
     assert store.load_pet("mocky").exists
+
+
+def test_hatch_pet_removes_row_strips_after_extraction(monkeypatch, tmp_path):
+    """Row strips are intermediates. Once their frames are decoded, the strip
+    files are removed so the image cache does not grow on every hatch (nothing
+    prunes cache/images outside the gateway housekeeping loop)."""
+    from agent.pet.generate import atlas as atlas_mod
+    from agent.pet.generate import imagegen, orchestrate
+
+    base = tmp_path / "base.png"
+    _strip(1).save(base)
+
+    produced: list = []
+
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
+        state = prefix.replace("pet_row_", "")
+        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        p = tmp_path / f"{prefix}.png"
+        _strip(count).save(p)
+        produced.append(p)
+        return [p]
+
+    monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
+    monkeypatch.setattr(imagegen, "generate", fake_generate)
+
+    orchestrate.hatch_pet(base_image=base, slug="cleanup", concept="a fox")
+
+    assert produced, "expected row strips to be generated"
+    leftover = [p for p in produced if p.exists()]
+    assert leftover == [], f"row strips left in cache: {leftover}"
+
+
+def test_hatch_pet_removes_row_strips_after_failed_attempt(monkeypatch, tmp_path):
+    from agent.pet.generate import atlas as atlas_mod
+    from agent.pet.generate import imagegen, orchestrate
+
+    base = tmp_path / "base.png"
+    _strip(1).save(base)
+
+    attempts: dict[str, int] = {}
+
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
+        attempts[prefix] = attempts.get(prefix, 0) + 1
+        state = prefix.replace("pet_row_", "")
+        count = atlas_mod.FRAME_COUNTS.get(state, 6)
+        path = tmp_path / f"{prefix}_{attempts[prefix]}.png"
+        _strip(count).save(path)
+        return [path]
+
+    extract_strip_frames = atlas_mod.extract_strip_frames
+    failed_once = False
+
+    def flaky_extract(strip, count, *args, **kwargs):
+        nonlocal failed_once
+        if Path(strip).name.startswith("pet_row_idle_") and not failed_once:
+            failed_once = True
+            raise ValueError("retry idle row")
+        return extract_strip_frames(strip, count, *args, **kwargs)
+
+    monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
+    monkeypatch.setattr(imagegen, "generate", fake_generate)
+    monkeypatch.setattr(atlas_mod, "extract_strip_frames", flaky_extract)
+
+    orchestrate.hatch_pet(base_image=base, slug="retry-cleanup", concept="a fox")
+
+    assert failed_once
+    assert attempts["pet_row_idle"] == 2
+    assert not list(tmp_path.glob("pet_row_*"))
 
 
 def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):

@@ -15868,6 +15868,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
 
+        # On macOS, KqueueSelector can silently stall after system sleep/wake
+        # or extended idle — the select() call never returns even though the
+        # SIGINT handler enqueues a wake via call_soon_threadsafe (the self-pipe
+        # write goes unnoticed by a stalled kqueue). Caps the underlying select()
+        # timeout so the event loop wakes periodically, processes pending
+        # callbacks, and recovers without user-visible latency.
+        if sys.platform == "darwin":
+            try:
+                import selectors as _sel_kq
+                _kq_selector = getattr(_sel_kq, "KqueueSelector", None)
+                if _kq_selector is not None and not getattr(
+                    _kq_selector, "_hermes_kq_timeout_patched", False
+                ):
+                    _DEFAULT_TIMEOUT = _kq_selector.select
+
+                    _KQ_MAX_BLOCK = 2.0  # max seconds between event loop wake-ups
+
+                    def _patched_select(self, timeout=None):
+                        if timeout is None or timeout > _KQ_MAX_BLOCK:
+                            return _DEFAULT_TIMEOUT(self, _KQ_MAX_BLOCK)
+                        return _DEFAULT_TIMEOUT(self, timeout)
+
+                    _kq_selector.select = _patched_select
+                    _kq_selector._hermes_kq_timeout_patched = True
+                    logger.debug(
+                        "Capped KqueueSelector select() timeout to %ss "
+                        "to prevent post-sleep event loop stall",
+                        _KQ_MAX_BLOCK,
+                    )
+            except Exception as exc:
+                logger.debug("KqueueSelector timeout patch skipped: %s", exc)
+
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():

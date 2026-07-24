@@ -938,6 +938,7 @@ LEGACY_AUTHOR_MAP = {
     "beliefanx@gmail.com": "BeliefanX",
     "changchun989@proton.me": "changchun989",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
+    "jefferson@jeffersonnunn.com": "HeimdallStrategy",
     "44753291+Nanako0129@users.noreply.github.com": "Nanako0129",
     "steve.westerhouse@origami-analytics.com": "westers",
     "yeyitech@users.noreply.github.com": "yeyitech",

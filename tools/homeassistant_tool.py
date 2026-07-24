@@ -30,10 +30,18 @@ _HASS_TOKEN: str = ""
 
 def _get_config():
     """Return (hass_url, hass_token) from env vars at call time."""
-    return (
-        (_HASS_URL or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/"),
-        _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
-    )
+    url = (_HASS_URL or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/")
+    try:
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            raise ValueError(
+                f"HASS_URL '{url}' resolves to a private/internal address. "
+                "Set HASS_URL to the public or local network address of your "
+                "Home Assistant instance."
+            )
+    except ImportError:
+        pass
+    return (url, _HASS_TOKEN or os.getenv("HASS_TOKEN", ""))
 
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")

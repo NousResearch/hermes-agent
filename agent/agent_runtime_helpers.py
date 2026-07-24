@@ -850,6 +850,25 @@ def strip_think_blocks(agent, content: str) -> str:
 
 
 
+def sync_credential_pool_entry_id(agent) -> None:
+    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key.
+
+    OAuth refreshes can replace the runtime token before a failed request is
+    recovered, so the mutable API-key value alone cannot reliably attribute
+    the failure to its source entry.  This resolves the stable pool-entry ID
+    for the agent's current ``api_key`` and clears it when no pool is bound.
+    """
+    pool = getattr(agent, "_credential_pool", None)
+    try:
+        agent._credential_pool_entry_id = (
+            pool.entry_id_for_api_key(getattr(agent, "api_key", None))
+            if pool is not None
+            else None
+        )
+    except Exception:
+        agent._credential_pool_entry_id = None
+
+
 def recover_with_credential_pool(
     agent,
     *,
@@ -2254,16 +2273,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 shared=True,
             )
 
-        pool = getattr(agent, "_credential_pool", None)
-        if pool is not None:
-            try:
-                agent._credential_pool_entry_id = pool.entry_id_for_api_key(
-                    getattr(agent, "api_key", None)
-                )
-            except Exception:
-                agent._credential_pool_entry_id = None
-        else:
-            agent._credential_pool_entry_id = None
+        sync_credential_pool_entry_id(agent)
     except Exception:
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the

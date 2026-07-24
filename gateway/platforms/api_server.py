@@ -2960,7 +2960,11 @@ class APIServerAdapter(BasePlatformAdapter):
             if event_type == "reasoning.available":
                 _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                event_name = event_type.replace("tool.", "tool.")
+                event_name = (
+                    "tool.failed"
+                    if event_type == "tool.completed" and kwargs.get("is_error")
+                    else event_type
+                )
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         async def _run_and_signal() -> None:

@@ -484,6 +484,161 @@ def test_failing_tick_records_liveness_but_not_success():
     assert all(b is False for b in beats), "a failing tick wrongly bumped the success marker"
 
 
+# ── F9: interval timing + adapter/loop forwarding (#67102) ───────────────────
+#
+# The tests above prove the loop ticks and stops; none of them prove the
+# *value* of `interval` actually reaches `stop_event.wait()`, nor that the
+# `adapters`/`loop` kwargs handed to `start()` reach `cron.scheduler.tick()`
+# unchanged. Both are exercised with a duck-typed fake stop_event whose
+# `wait()` is pure bookkeeping (no real sleep, no thread) so the assertions
+# are exact and instantaneous rather than a timing-based approximation.
+
+
+def test_inprocess_provider_waits_configured_interval_between_ticks():
+    """The loop calls stop_event.wait(interval) with the exact configured
+    interval after every tick — it must not busy-loop or silently substitute
+    a different/default sleep duration regardless of how long tick() itself
+    took."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    wait_timeouts = []
+    tick_count = [0]
+
+    class FakeStopEvent:
+        """No real time elapses: is_set()/wait() are pure bookkeeping, driving
+        exactly `iterations` loop passes with zero wall-clock cost."""
+
+        def __init__(self, iterations):
+            self._remaining = iterations
+
+        def is_set(self):
+            return self._remaining <= 0
+
+        def wait(self, timeout=None):
+            wait_timeouts.append(timeout)
+            self._remaining -= 1
+            return False
+
+    def _fake_tick(*args, **kwargs):
+        tick_count[0] += 1
+        return 0
+
+    with patch("cron.scheduler.tick", side_effect=_fake_tick), \
+         patch("cron.jobs.record_ticker_heartbeat"):
+        InProcessCronScheduler().start(FakeStopEvent(iterations=3), interval=42)
+
+    assert tick_count[0] == 3, "expected exactly one tick per loop iteration"
+    assert wait_timeouts == [42, 42, 42], (
+        "every iteration must wait the configured interval, not a fixed/short default"
+    )
+
+
+def test_inprocess_provider_forwards_adapters_and_loop_to_tick():
+    """start()'s adapters/loop kwargs must reach cron.scheduler.tick() verbatim
+    on every iteration — the ticker is the only caller with live gateway
+    adapters and an event loop to hand to job delivery, so a dropped kwarg
+    here means jobs silently stop being able to deliver."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    received_kwargs = []
+
+    class FakeStopEvent:
+        def __init__(self, iterations):
+            self._remaining = iterations
+
+        def is_set(self):
+            return self._remaining <= 0
+
+        def wait(self, timeout=None):
+            self._remaining -= 1
+            return False
+
+    def _fake_tick(*args, **kwargs):
+        received_kwargs.append(kwargs)
+        return 0
+
+    sentinel_adapters = object()
+    sentinel_loop = object()
+    with patch("cron.scheduler.tick", side_effect=_fake_tick), \
+         patch("cron.jobs.record_ticker_heartbeat"):
+        InProcessCronScheduler().start(
+            FakeStopEvent(iterations=2),
+            adapters=sentinel_adapters,
+            loop=sentinel_loop,
+            interval=99,
+        )
+
+    assert len(received_kwargs) == 2, "expected exactly two tick iterations"
+    for kwargs in received_kwargs:
+        assert kwargs.get("adapters") is sentinel_adapters
+        assert kwargs.get("loop") is sentinel_loop
+        assert kwargs.get("sync") is False
+
+
+def test_inprocess_provider_recovers_interrupted_executions_before_first_tick():
+    """start() runs interrupted-execution recovery exactly once, before the
+    first tick — a crash mid-delivery must be reconciled before new jobs are
+    claimed, not raced against them, and not re-run on every iteration."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    order = []
+    stop = threading.Event()
+
+    def _fake_recover():
+        order.append("recover")
+        return 0
+
+    def _fake_tick(*args, **kwargs):
+        order.append("tick")
+        return 0
+
+    prov = InProcessCronScheduler()
+    with patch("cron.executions.recover_interrupted_executions", side_effect=_fake_recover), \
+         patch("cron.scheduler.tick", side_effect=_fake_tick), \
+         patch("cron.jobs.record_ticker_heartbeat"):
+        t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
+        t.start()
+        assert _wait_until(lambda: "tick" in order), "ticker never reached its first tick"
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert order[0] == "recover", "recovery must run before the first tick"
+    assert order.count("recover") == 1, "recovery must run exactly once per start(), not per tick"
+
+
+def test_start_cron_ticker_shim_forwards_kwargs_to_inprocess_provider():
+    """gateway.run._start_cron_ticker is a deprecated back-compat shim kept for
+    external callers (hermes_cli/debug.py) that still reference this symbol —
+    it must forward stop_event/adapters/loop/interval to
+    InProcessCronScheduler().start() unchanged rather than silently dropping
+    any of them."""
+    import gateway.run as gw_run
+    import cron.scheduler_provider as scheduler_provider
+
+    captured = {}
+
+    class FakeProvider:
+        def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+            captured["stop_event"] = stop_event
+            captured["adapters"] = adapters
+            captured["loop"] = loop
+            captured["interval"] = interval
+
+    stop = threading.Event()
+    sentinel_adapters = object()
+    sentinel_loop = object()
+    with patch.object(scheduler_provider, "InProcessCronScheduler", return_value=FakeProvider()):
+        gw_run._start_cron_ticker(
+            stop, adapters=sentinel_adapters, loop=sentinel_loop, interval=15
+        )
+
+    assert captured["stop_event"] is stop
+    assert captured["adapters"] is sentinel_adapters
+    assert captured["loop"] is sentinel_loop
+    assert captured["interval"] == 15
+
+
 def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     """record_ticker_heartbeat writes fresh timestamps atomically; the age
     getters read them back as small positive ages."""

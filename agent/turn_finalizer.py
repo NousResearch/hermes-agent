@@ -66,6 +66,31 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _should_emit_turn_failed(reason, last_msg_role, interrupted) -> bool:
+    """Return True when the ``turn_failed`` hook should fire for this exit.
+
+    Fire for every NON-clean turn exit:
+      * the agent stopped mid-work — ``last_msg_role == "tool"`` (the
+        protocol_violation / "breads-pc" premature-stop class), OR
+      * the reason is anything other than a healthy ``text_response(...)``
+        completion (errors, exhaustion, guardrail, etc.).
+
+    Never fire when ``interrupted`` is True: a user ``/stop`` is a deliberate,
+    clean exit, not a failure. Its exit reason (``interrupted_by_user``) is not
+    a ``text_response(...)``, so without this gate the reason-arm below would
+    raise a false-positive failure signal. Mirrors the existing
+    ``and not interrupted`` gate on the pending-tool diagnostic warning.
+
+    Do NOT fire on a healthy completion: a ``text_response(...)`` exit whose
+    last message is not a pending tool result. Mirrors the
+    ``normal_text_response`` classification used for the diagnostic log.
+    """
+    if interrupted:
+        return False
+    normal_text_response = str(reason).startswith("text_response(")
+    return last_msg_role == "tool" or not normal_text_response
+
+
 def finalize_turn(
     agent,
     *,
@@ -259,6 +284,14 @@ def finalize_turn(
         _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
         logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
 
+    # Capture the turn's TRUE tail role before persist-time mutations below
+    # (scaffolding drop, interrupt-close, and the #43849/#44100 assistant-row
+    # append) rewrite the tail. The "ended with a pending tool result" signal
+    # feeds both the turn-exit diagnostic and the ``turn_failed`` hook; reading
+    # ``messages[-1]`` after the append would classify every premature stop
+    # that delivered *any* final_response as a clean assistant exit.
+    _pre_persist_last_role = messages[-1].get("role") if messages else None
+
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn
     # can replay assistant("(empty)") / recovery nudges and fall into the
@@ -358,7 +391,12 @@ def finalize_turn(
     # Always logged at INFO so agent.log captures WHY every turn ended.
     # When the last message is a tool result (agent was mid-work), log
     # at WARNING — this is the "just stops" scenario users report.
-    _last_msg_role = messages[-1].get("role") if messages else None
+    # Uses the tail role captured BEFORE persist-time mutations: the
+    # #43849/#44100 assistant-row append above makes ``messages[-1]`` always
+    # "assistant" whenever a final_response was delivered, which would hide
+    # every pending-tool premature stop from this diagnostic and the
+    # ``turn_failed`` hook.
+    _last_msg_role = _pre_persist_last_role
     _last_tool_name = None
     if _last_msg_role == "tool":
         # Walk back to find the assistant message with the tool call
@@ -397,6 +435,30 @@ def finalize_turn(
         )
     else:
         logger.info(_diag_msg, *_diag_args)
+
+    # Plugin hook: turn_failed
+    # Fired once per turn at the same point the turn-exit diagnostic is
+    # logged, reusing the exact diag fields (no new computation). Observers
+    # only — for Phase-0 agent-failure observability capture. Gated to
+    # non-clean exits via the shared classification so healthy turns stay
+    # quiet, and wrapped so a failing handler never breaks finalization.
+    if _should_emit_turn_failed(_turn_exit_reason, _last_msg_role, interrupted):
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "turn_failed",
+                reason=str(_turn_exit_reason),
+                model=agent.model,
+                session_id=agent.session_id,
+                turn_id=turn_id,
+                last_msg_role=_last_msg_role,
+                interrupted=interrupted,
+                api_calls=api_call_count,
+                tool_turns=_turn_tool_count,
+                response_len=_resp_len,
+            )
+        except Exception as exc:
+            logger.warning("turn_failed hook failed: %s", exc)
 
     # File-mutation verifier footer.
     # If one or more ``write_file`` / ``patch`` calls failed during this

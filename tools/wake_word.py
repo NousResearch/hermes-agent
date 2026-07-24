@@ -8,10 +8,10 @@ pipeline, then answers.
 
 Two engines, both fully on-device (no audio leaves the machine for detection):
 
-* **openwakeword** (default, free, no API key) — loads a pretrained or custom
-  ONNX model. Ships with ``hey_jarvis``, ``alexa``, ``hey_mycroft``, … ; point
-  ``wake_word.openwakeword.model`` at a custom ``.onnx`` to detect a real
-  "hey hermes" (training guide in the wake-word docs).
+* **openwakeword** (default, free, no API key) — loads an ONNX model. Defaults
+  to the bundled "hey hermes" model (``tools/wakewords/``) so the wake word
+  works out of the box; or point ``wake_word.openwakeword.model`` at a built-in
+  name (``hey_jarvis``, ``alexa``, …) or a custom ``.onnx`` for another phrase.
 * **porcupine** (premium) — Picovoice's engine. Needs ``PORCUPINE_ACCESS_KEY``;
   supports built-in keywords and custom ``.ppn`` files from the Picovoice
   Console.
@@ -57,10 +57,21 @@ _DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "surface": "auto",
     "provider": "openwakeword",
-    "phrase": "hey jarvis",
+    "phrase": "hey hermes",
     "sensitivity": 0.5,
     "start_new_session": True,
 }
+
+# Bundled "hey hermes" model (tools/wakewords/) — the default, so the wake word
+# works out of the box. Config names in _ALIASES resolve to it, not a built-in.
+_BUNDLED_MODEL_NAME = "hey_hermes"
+_BUNDLED_MODEL_ALIASES = frozenset({"", "hey_hermes", "hey hermes", "hermes"})
+
+
+def _bundled_wakeword_path(framework: str = "onnx") -> str:
+    """Path to the shipped hey_hermes model (.onnx/.tflite) for ``framework``."""
+    ext = "tflite" if str(framework).strip().lower() == "tflite" else "onnx"
+    return os.path.join(os.path.dirname(__file__), "wakewords", f"{_BUNDLED_MODEL_NAME}.{ext}")
 
 
 def load_wake_word_config() -> Dict[str, Any]:
@@ -95,7 +106,7 @@ def _sensitivity(cfg: Dict[str, Any]) -> float:
 def wake_phrase(cfg: Optional[Dict[str, Any]] = None) -> str:
     """Human-facing wake phrase label (purely cosmetic; engine keys detection)."""
     cfg = cfg if cfg is not None else load_wake_word_config()
-    return str(_get(cfg, "phrase")) or "hey jarvis"
+    return str(_get(cfg, "phrase")) or "hey hermes"
 
 
 def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
@@ -174,20 +185,25 @@ class _OpenWakeWordEngine(_Engine):
         from openwakeword.model import Model
 
         sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
-        model_ref = str(sub.get("model") or "hey_jarvis").strip()
+        model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
         framework = str(sub.get("inference_framework") or "onnx").strip().lower()
         self._threshold = _sensitivity(cfg)
 
-        if _looks_like_path(model_ref):
-            models = [model_ref]
-        else:
-            # Pretrained name (e.g. "hey_jarvis"). Best-effort one-time fetch
-            # of the bundled models; harmless if already present / offline.
-            try:
-                openwakeword.utils.download_models([model_ref])
-            except Exception as e:  # pragma: no cover - network/path dependent
-                logger.debug("openwakeword model download skipped: %s", e)
-            models = [model_ref]
+        # Default (or explicit "hey_hermes") → the bundled model; a built-in name
+        # or custom path is used as-is.
+        if model_ref.lower() in _BUNDLED_MODEL_ALIASES:
+            model_ref = _bundled_wakeword_path(framework)
+
+        # openWakeWord needs its shared feature models (melspectrogram + embedding)
+        # for ANY model — download_models() fetches those first on every call, so a
+        # custom path must call it too, else a fresh install crashes on a missing
+        # melspectrogram.onnx. A built-in name additionally pulls that pretrained
+        # model; a path matches nothing in the catalog and is a no-op beyond base.
+        try:
+            openwakeword.utils.download_models([model_ref])
+        except Exception as e:  # pragma: no cover - network/path dependent
+            logger.debug("openwakeword model download skipped: %s", e)
+        models = [model_ref]
 
         self._model = Model(wakeword_models=models, inference_framework=framework)
         self._labels = list(self._model.models.keys())

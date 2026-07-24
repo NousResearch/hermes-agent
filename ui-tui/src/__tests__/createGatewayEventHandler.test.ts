@@ -779,7 +779,6 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
-<<<<<<< HEAD
   it('picks the polarity-matching paired palette from gateway.ready skins', async () => {
     const appended: Msg[] = []
 

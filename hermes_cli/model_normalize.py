@@ -414,7 +414,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
-        return _dots_to_hyphens(bare)
+        if bare.lower().startswith("claude-"):
+            return _dots_to_hyphens(bare)
+        return bare  # non-Claude models keep original dots
 
     # --- Copilot / Copilot ACP: delegate to the Copilot-specific
     #     normalizer.  It knows about the alias table (vendor-prefix

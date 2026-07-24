@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import stat
 from functools import lru_cache
 from contextlib import nullcontext
 from pathlib import Path
@@ -38,6 +39,14 @@ from tests.gateway.test_canonical_capability_canary_e2e import (
 
 NOW = 1_800_000_000
 REVISION = "a" * 40
+
+
+def test_phase_b_receipt_parent_is_nonroot_readable_but_not_writable() -> None:
+    mode = cutover.PHASE_B_RECEIPT_DIRECTORY_MODE
+
+    assert mode & stat.S_IROTH
+    assert mode & stat.S_IXOTH
+    assert not mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 @lru_cache(maxsize=4)

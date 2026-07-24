@@ -49,6 +49,13 @@ from cron.redaction import redact_credential_text
 logger = logging.getLogger(__name__)
 
 
+def _redacted_exception_detail(error: BaseException | str) -> tuple[str, bool]:
+    """Return safe exception text and whether its traceback is safe to log."""
+    detail = str(error)
+    redacted_detail = redact_credential_text(detail)
+    return redacted_detail, redacted_detail == detail
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -1375,12 +1382,19 @@ def _send_media_via_adapter(
                 future.cancel()
                 raise
             if result and not getattr(result, "success", True):
+                error_detail, _ = _redacted_exception_detail(
+                    getattr(result, "error", "unknown")
+                )
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                    job.get("id", "?"), media_path, error_detail,
                 )
         except Exception as e:
-            logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+            error_detail, _ = _redacted_exception_detail(e)
+            logger.warning(
+                "Job '%s': failed to send media %s: %s",
+                job.get("id", "?"), media_path, error_detail,
+            )
 
 
 def _confirm_adapter_delivery(send_result) -> bool:
@@ -1541,7 +1555,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     try:
         config = load_gateway_config()
     except Exception as e:
-        msg = f"failed to load gateway config: {redact_credential_text(str(e))}"
+        error_detail, _ = _redacted_exception_detail(e)
+        msg = f"failed to load gateway config: {error_detail}"
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
@@ -1862,7 +1877,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is
                             # still delivered.
-                            target_errors.append(f"live adapter send failed: {ex}")
+                            error_detail, _ = _redacted_exception_detail(ex)
+                            target_errors.append(
+                                f"live adapter send failed: {error_detail}"
+                            )
                             raise
 
                         if timeout_handled:
@@ -1897,9 +1915,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 else:
                                     err = "no response from adapter"
                                     shape = "None"
+                                error_detail, _ = _redacted_exception_detail(err)
                                 msg = (
                                     f"live adapter send to {platform_name}:{chat_id} "
-                                    f"returned unconfirmed result ({shape}, error={err})"
+                                    f"returned unconfirmed result ({shape}, error={error_detail})"
                                 )
                                 logger.warning(
                                     "Job '%s': %s, falling back to standalone",
@@ -1976,9 +1995,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
                     )
             except Exception as e:
+                error_detail, _ = _redacted_exception_detail(e)
                 err_msg = (
                     f"live adapter delivery to {platform_name}:{chat_id} failed: "
-                    f"{redact_credential_text(str(e))}"
+                    f"{error_detail}"
                 )
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
@@ -2043,23 +2063,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         target_errors.append(msg)
                         delivery_errors.extend(target_errors)
                         continue
-                    detail = str(e)
-                    redacted_detail = redact_credential_text(detail)
+                    redacted_detail, traceback_safe = _redacted_exception_detail(e)
                     msg = f"delivery to {platform_name}:{chat_id} failed: {redacted_detail}"
                     logger.error(
                         "Job '%s': %s", job["id"], msg,
-                        exc_info=redacted_detail == detail,
+                        exc_info=traceback_safe,
                     )
                     target_errors.extend([msg])
                     delivery_errors.extend(target_errors)
                     continue
             except Exception as e:
-                detail = str(e)
-                redacted_detail = redact_credential_text(detail)
+                redacted_detail, traceback_safe = _redacted_exception_detail(e)
                 msg = f"delivery to {platform_name}:{chat_id} failed: {redacted_detail}"
                 logger.error(
                     "Job '%s': %s", job["id"], msg,
-                    exc_info=redacted_detail == detail,
+                    exc_info=traceback_safe,
                 )
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
@@ -2710,14 +2728,16 @@ def _guard_job_credential_exfil(job: dict) -> None:
         # validator can actually vet the pair. Operator fallback providers come
         # from config, not the job, so they are unaffected.
         if job.get("base_url"):
+            error_detail, _ = _redacted_exception_detail(exc)
             err = (
                 f"could not validate provider/base_url pair "
-                f"({exc.__class__.__name__}: {exc}); refusing to run a job with "
+                f"({exc.__class__.__name__}: {error_detail}); refusing to run a job with "
                 "an unverified base_url override"
             )
         else:
             err = None
     if err:
+        err = redact_credential_text(str(err))
         job_id = job.get("id")
         logger.error(
             "Job '%s': refusing to run — unsafe provider/base_url pair could "
@@ -2898,9 +2918,10 @@ def run_job(
                 if _configured is not None:
                     _session_db_timeout = float(_configured)
             except Exception as exc:
+                error_detail, _ = _redacted_exception_detail(exc)
                 logger.debug(
                     "Failed to load cron.session_db_timeout_seconds from config: %s",
-                    exc,
+                    error_detail,
                 )
         if _session_db_timeout is None:
             _session_db_timeout = 10.0
@@ -2925,7 +2946,11 @@ def run_job(
             job.get("id", "?"), _session_db_timeout,
         )
     except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+        error_detail, _ = _redacted_exception_detail(e)
+        logger.debug(
+            "Job '%s': SQLite session store not available: %s",
+            job.get("id", "?"), error_detail,
+        )
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
@@ -3158,7 +3183,11 @@ def run_job(
                         if _default:
                             model = _default
         except Exception as e:
-            logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+            error_detail, _ = _redacted_exception_detail(e)
+            logger.warning(
+                "Job '%s': failed to load config.yaml, using defaults: %s",
+                job_id, error_detail,
+            )
 
         # Fail fast if no model resolved from job / env / config.yaml: an empty
         # model otherwise reaches the provider as an opaque 400 (#23979).
@@ -3207,7 +3236,11 @@ def run_job(
                     if not isinstance(prefill_messages, list):
                         prefill_messages = None
                 except Exception as e:
-                    logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
+                    error_detail, _ = _redacted_exception_detail(e)
+                    logger.warning(
+                        "Job '%s': failed to parse prefill messages file '%s': %s",
+                        job_id, pfpath, error_detail,
+                    )
                     prefill_messages = None
 
         # Max iterations
@@ -3270,7 +3303,8 @@ def run_job(
                 str(getattr(auth_exc, "provider", "") or "").strip().lower()
                 or primary_provider_for_drift
             )
-            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            error_detail, _ = _redacted_exception_detail(auth_exc)
+            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, error_detail)
             fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
@@ -3302,7 +3336,11 @@ def run_job(
                     )
                     break
                 except Exception as fb_exc:
-                    logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
+                    error_detail, _ = _redacted_exception_detail(fb_exc)
+                    logger.debug(
+                        "Job '%s': fallback %s failed: %s",
+                        job_id, fb_provider, error_detail,
+                    )
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
@@ -3385,7 +3423,11 @@ def run_job(
                         len(pool.entries()),
                     )
             except Exception as e:
-                logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
+                error_detail, _ = _redacted_exception_detail(e)
+                logger.debug(
+                    "Job '%s': failed to load credential pool for %s: %s",
+                    job_id, runtime_provider, error_detail,
+                )
 
         # Initialize MCP servers so configured mcp_servers are available to
         # the agent's tool registry before AIAgent is constructed. Without
@@ -3403,9 +3445,10 @@ def run_job(
                     job_id, len(_mcp_tools),
                 )
         except Exception as _mcp_exc:
+            error_detail, _ = _redacted_exception_detail(_mcp_exc)
             logger.warning(
                 "Job '%s': MCP initialization failed (non-fatal): %s",
-                job_id, _mcp_exc,
+                job_id, error_detail,
             )
 
         agent = AIAgent(
@@ -3658,12 +3701,11 @@ def run_job(
         return True, output, final_response, None
         
     except Exception as e:
-        detail = str(e)
-        redacted_detail = redact_credential_text(detail)
+        redacted_detail, traceback_safe = _redacted_exception_detail(e)
         error_msg = f"{type(e).__name__}: {redacted_detail}"
         logger.error(
             "Job '%s' failed: %s", job_name, error_msg,
-            exc_info=redacted_detail == detail,
+            exc_info=traceback_safe,
         )
         
         output = f"""# Cron Job: {job_name} (FAILED)
@@ -3723,10 +3765,11 @@ def run_job(
                         _final_cron_session_id = _agent_session_id
                 except (Exception, KeyboardInterrupt):
                     pass
+                error_detail, _ = _redacted_exception_detail(e)
                 logger.debug(
                     "Job '%s': failed to resolve cron compression tip: %s",
                     job_id,
-                    e,
+                    error_detail,
                 )
             # Title the cron session from the job (name -> id) and PERSIST it
             # BEFORE end_session()/close() tear the connection down, so the
@@ -3745,8 +3788,9 @@ def run_job(
                         _session_db, _final_cron_session_id, f"cron {job_id}"
                     )
             except (Exception, KeyboardInterrupt) as e:
+                error_detail, _ = _redacted_exception_detail(e)
                 logger.debug(
-                    "Job '%s': failed to set cron session title: %s", job_id, e
+                    "Job '%s': failed to set cron session title: %s", job_id, error_detail
                 )
                 # Last-resort: never leave the session blank (#50535). Try the
                 # next free title in the lineage, then a bare id-stamped title.
@@ -3768,11 +3812,15 @@ def run_job(
                     _final_cron_session_id, "cron_complete"
                 )
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+                error_detail, _ = _redacted_exception_detail(e)
+                logger.debug("Job '%s': failed to end session: %s", job_id, error_detail)
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+                error_detail, _ = _redacted_exception_detail(e)
+                logger.debug(
+                    "Job '%s': failed to close SQLite session store: %s", job_id, error_detail
+                )
         # Release subprocesses, terminal sandboxes, browser daemons, and the
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
@@ -3801,7 +3849,8 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         if agent is not None:
             agent.close()
     except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        error_detail, _ = _redacted_exception_detail(e)
+        logger.debug("Job '%s': failed to close agent resources: %s", job_id, error_detail)
     # Each cron run spins up a short-lived worker thread whose event loop
     # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
     # httpx clients cached under that loop are now unusable — reap them
@@ -3810,7 +3859,10 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         from agent.auxiliary_client import cleanup_stale_async_clients
         cleanup_stale_async_clients()
     except Exception as e:
-        logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+        error_detail, _ = _redacted_exception_detail(e)
+        logger.debug(
+            "Job '%s': failed to reap stale auxiliary clients: %s", job_id, error_detail
+        )
 
 
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:

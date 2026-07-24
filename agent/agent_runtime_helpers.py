@@ -3194,6 +3194,22 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     return changed
 
 
+def strip_reasoning_details_from_api_messages(api_messages: list) -> int:
+    """Remove rejected reasoning replay metadata from request-local messages.
+
+    ``api_messages`` contains shallow copies of canonical history.  Removing
+    the top-level field here repairs the wire payload without deleting signed
+    reasoning blocks from the persisted conversation, where a later switch
+    back to OpenRouter or Anthropic may still need them.
+    """
+    stripped = 0
+    for api_msg in api_messages:
+        if isinstance(api_msg, dict) and "reasoning_details" in api_msg:
+            api_msg.pop("reasoning_details", None)
+            stripped += 1
+    return stripped
+
+
 def _iter_pool_sockets(client: Any):
     """Yield raw sockets reachable from an OpenAI/httpx client pool.
 
@@ -3531,6 +3547,7 @@ __all__ = [
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
+    "strip_reasoning_details_from_api_messages",
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",

@@ -62,7 +62,8 @@ class TestFailoverReason:
             "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "content_policy_blocked",
-            "thinking_signature", "long_context_tier",
+            "thinking_signature", "reasoning_details_unsupported",
+            "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "unknown",
@@ -810,6 +811,26 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.thinking_signature
         assert result.retryable is True
+
+    @pytest.mark.parametrize("status_code", [400, 422])
+    def test_unsupported_reasoning_details_uses_replay_recovery(self, status_code):
+        e = MockAPIError(
+            "'messages.2' : for 'role:assistant' property "
+            "'reasoning_details' is unsupported",
+            status_code=status_code,
+        )
+        result = classify_api_error(e, provider="custom:groq")
+        assert result.reason == FailoverReason.reasoning_details_unsupported
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_malformed_reasoning_details_is_not_treated_as_unsupported(self):
+        e = MockAPIError(
+            "messages.2.reasoning_details must be an array",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.format_error
 
     def test_non_anthropic_400_with_signature_not_classified_as_thinking(self):
         """400 with 'signature' but from non-Anthropic → format error."""
@@ -2169,4 +2190,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

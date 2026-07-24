@@ -1,8 +1,8 @@
-"""Regression tests for the thinking-block signature recovery.
+"""Regression tests for request-local reasoning-details recovery.
 
-The recovery in ``agent/conversation_loop.py`` strips ``reasoning_details``
-from ``api_messages`` (the API-call-time list rebuilt on every retry) and
-leaves ``messages`` (the canonical store) untouched. The previous
+The recovery used by ``agent/conversation_loop.py`` strips
+``reasoning_details`` from ``api_messages`` (the API-call-time list rebuilt on
+every retry) and leaves ``messages`` (the canonical store) untouched. The previous
 implementation popped from ``messages`` directly, which never reached
 ``api_messages`` because each entry in ``api_messages`` was a shallow
 copy of the corresponding entry in ``messages``, and the mutation also
@@ -20,12 +20,18 @@ def _shallow_copies(messages):
     return [m.copy() for m in messages]
 
 
+def _strip(api_messages):
+    from agent.agent_runtime_helpers import strip_reasoning_details_from_api_messages
+
+    return strip_reasoning_details_from_api_messages(api_messages)
+
+
 def test_pop_on_shallow_copy_does_not_affect_source():
     rd = [{"type": "thinking", "thinking": "r", "signature": "s"}]
     src = {"role": "assistant", "content": "x", "reasoning_details": rd}
     cp = src.copy()
 
-    cp.pop("reasoning_details", None)
+    assert _strip([cp]) == 1
 
     assert "reasoning_details" not in cp
     assert "reasoning_details" in src
@@ -48,11 +54,7 @@ def test_strip_api_messages_leaves_canonical_messages_intact():
     ]
     api_messages = _shallow_copies(messages)
 
-    stripped = 0
-    for m in api_messages:
-        if isinstance(m, dict) and "reasoning_details" in m:
-            m.pop("reasoning_details", None)
-            stripped += 1
+    stripped = _strip(api_messages)
 
     assert stripped == 2
     assert all("reasoning_details" not in m for m in api_messages)
@@ -70,10 +72,8 @@ def test_strip_is_idempotent_when_run_twice():
         {"role": "assistant", "content": "a", "reasoning_details": [{"x": 1}]},
         {"role": "user", "content": "q"},
     ]
-    for _ in range(2):
-        for m in api_messages:
-            if isinstance(m, dict) and "reasoning_details" in m:
-                m.pop("reasoning_details", None)
+    assert _strip(api_messages) == 1
+    assert _strip(api_messages) == 0
 
     assert all("reasoning_details" not in m for m in api_messages)
 
@@ -86,8 +86,6 @@ def test_strip_skips_messages_without_reasoning_details():
     ]
     snapshot = [dict(m) for m in api_messages]
 
-    for m in api_messages:
-        if isinstance(m, dict) and "reasoning_details" in m:
-            m.pop("reasoning_details", None)
+    assert _strip(api_messages) == 0
 
     assert api_messages == snapshot

@@ -17039,21 +17039,86 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
-            # adapter.send() catches provider errors (e.g. "Chat not found")
-            # and returns SendResult(success=False) rather than raising, so
-            # we must inspect the result before claiming success — otherwise
-            # the log line is misleading and hides real delivery failures.
-            if result is not None and getattr(result, "success", True) is False:
+            # Attempt delivery.  The first send is attempted without any
+            # pre-wait so that platforms with a ready send path (non-Telegram,
+            # or Telegram when polling has already settled) pay zero overhead.
+            # Only when the adapter concretely returns send_path_degraded do we
+            # wait for the Telegram adapter's polling-progress event — the same
+            # asyncio.Event the adapter sets when getUpdates completes its
+            # first I/O round-trip.  A reduced retry loop after the wait
+            # catches any remaining transient blips (rate-limits, brief network
+            # hiccups).  Non-degraded failures (e.g. "Chat not found") are
+            # never retried.
+            _polling_waited = False
+            _max_attempts = 3
+            for _attempt in range(_max_attempts):
+                result = await adapter.send(
+                    str(chat_id),
+                    "♻ Gateway restarted successfully. Your session continues.",
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+                err = getattr(result, "error", None) if result else "send returned None"
+                if result is not None and getattr(result, "success", True) is True:
+                    break
+                if err == "send_path_degraded":
+                    # On the first degraded hit — and only then — wait for the
+                    # adapter's polling readiness signal (Telegram only; other
+                    # platforms skip this because they have no
+                    # _polling_progress_event attribute).  The wait is outside
+                    # the retry budget: it blocks until polling settles or 90 s
+                    # elapses, whichever comes first.  Subsequent degraded
+                    # hits after the wait are fast-retried (3 s sleep).
+                    if not _polling_waited:
+                        _poll_timeout = 90.0  # _POLLING_PROGRESS_TIMEOUT + _UPDATER_START_TIMEOUT
+                        _poll_start = time.monotonic()
+                        # Re-read _polling_progress_event each iteration:
+                        # TelegramAdapter._begin_polling_generation() replaces the
+                        # event object on every recovery generation, so a one-shot
+                        # capture can wait on an event that will never be set.
+                        # Short 3 s sub-waits let us pick up a replacement event
+                        # when it arrives, keeping the 90 s total budget.
+                        while time.monotonic() - _poll_start < _poll_timeout:
+                            _polling_event = getattr(
+                                adapter, "_polling_progress_event", None
+                            )
+                            if _polling_event is None or _polling_event.is_set():
+                                break
+                            try:
+                                await asyncio.wait_for(
+                                    _polling_event.wait(), timeout=3.0,
+                                )
+                                break
+                            except asyncio.TimeoutError:
+                                continue
+                        else:
+                            logger.warning(
+                                "Restart notification to %s:%s — polling did not settle "
+                                "within %.0f s; attempting send anyway",
+                                platform_str, chat_id, _poll_timeout,
+                            )
+                        _polling_waited = True
+
+                    if _attempt + 1 >= _max_attempts:
+                        logger.warning(
+                            "Restart notification to %s:%s abandoned after "
+                            "polling-wait + %d retries — send path stayed degraded",
+                            platform_str, chat_id, _max_attempts,
+                        )
+                        return None
+
+                    logger.info(
+                        "Restart notification to %s:%s deferred — send path degraded "
+                        "(attempt %d/%d), retrying in 3s",
+                        platform_str, chat_id, _attempt + 1, _max_attempts,
+                    )
+                    await asyncio.sleep(3.0)
+                    continue
+                # Non-degraded permanent failure — don't retry
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    err,
                 )
                 return None
 

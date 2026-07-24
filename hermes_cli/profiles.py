@@ -27,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -1823,10 +1824,24 @@ def set_active_profile(name: str) -> None:
         # Remove the file to indicate default
         path.unlink(missing_ok=True)
     else:
-        # Atomic write
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(canon + "\n")
-        tmp.replace(path)
+        # Atomic write via unique tmp to avoid parallel-writer clobber
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            suffix=".tmp",
+            prefix=".active_profile_",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(canon + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def get_active_profile_name() -> str:

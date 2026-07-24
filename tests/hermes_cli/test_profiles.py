@@ -15,6 +15,7 @@ import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import concurrent.futures
 import pytest
 import yaml
 
@@ -739,6 +740,52 @@ class TestActiveProfile:
     def test_set_nonexistent_raises(self, profile_env):
         with pytest.raises(FileNotFoundError):
             set_active_profile("nonexistent")
+
+    def test_write_leaves_no_orphan_tmp(self, profile_env):
+        """Successful write must not leave .tmp siblings in the profile dir."""
+        create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+
+        active_dir = profile_env / ".hermes"
+        assert (active_dir / "active_profile").exists()
+        assert not [
+            p for p in active_dir.iterdir()
+            if p.name.endswith(".tmp")
+        ], "orphan .tmp file(s) found after set_active_profile"
+
+    def test_parallel_writes_produce_valid_active_profile(self, profile_env):
+        """Concurrent callers must not corrupt active_profile or leak tmp files."""
+        create_profile("alpha", no_alias=True)
+        create_profile("beta", no_alias=True)
+
+        active_path = profile_env / ".hermes" / "active_profile"
+        errors = []
+
+        def _writer(name: str) -> None:
+            try:
+                set_active_profile(name)
+            except Exception as exc:
+                errors.append(exc)
+
+        workers = 6
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(_writer, n)
+                for n in ("alpha", "beta") * (workers // 2)
+            ]
+            concurrent.futures.wait(futures)
+            for fut in futures:
+                fut.result()
+
+        assert not errors, f"set_active_profile raised during parallel write: {errors}"
+        final = active_path.read_text().strip()
+        assert final in {"alpha", "beta"}, (
+            f"active_profile contains unexpected value {final!r}"
+        )
+        assert not [
+            p for p in active_path.parent.iterdir()
+            if p.name.endswith(".tmp")
+        ], "orphan .tmp file(s) after parallel writes"
 
 
 # ===================================================================

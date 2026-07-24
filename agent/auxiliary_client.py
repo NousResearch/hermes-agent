@@ -561,6 +561,7 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+    "ollama-cloud",
 })
 
 # OpenRouter app attribution headers (base — always sent).

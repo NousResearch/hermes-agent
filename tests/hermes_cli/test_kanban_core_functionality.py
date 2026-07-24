@@ -904,6 +904,34 @@ def test_cli_gc_reports_counts(kanban_home):
     assert "GC complete" in out
 
 
+def test_cli_dirty_worktrees_json_lists_dirty_task(kanban_home, tmp_path):
+    repo = tmp_path / "repo"
+    from tests.hermes_cli.test_kanban_db import _init_git_repo
+
+    _init_git_repo(repo)
+    (repo / "dirty.txt").write_text("unstaged changes\n", encoding="utf-8")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="dirty task",
+            workspace_kind="worktree",
+            workspace_path=str(repo),
+            branch_name="wt/test-dirty",
+        )
+    finally:
+        conn.close()
+
+    out = run_slash("dirty-worktrees --json")
+    data = json.loads(out)
+    assert any(item["task_id"] == tid for item in data)
+    item = next(item for item in data if item["task_id"] == tid)
+    assert item["workspace_path"] == str(repo)
+    assert item["branch"] == "wt/test-dirty"
+    assert item["status_lines"] == ["?? dirty.txt"]
+
+
 # ---------------------------------------------------------------------------
 # run_slash parity — every verb returns a sensible, non-crashy string
 # ---------------------------------------------------------------------------

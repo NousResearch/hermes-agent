@@ -2339,7 +2339,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     if preserved_stale:
         logger.warning(
             "Preserving %d worktree(s) older than 7 days with unmerged work "
-            "(push or remove them to reclaim disk): %s",
+            "(push or remove them to reclaim disk; run `hermes kanban dirty-worktrees` "
+            "for a per-task view): %s",
             len(preserved_stale), ", ".join(sorted(preserved_stale)),
         )
 

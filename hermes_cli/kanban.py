@@ -601,6 +601,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument(
+        "--allow-dirty-worktree",
+        action="store_true",
+        help="Reviewer override: allow completion even if the workspace still has dirty git changes after they have already been intentionally committed/parked.",
+    )
 
     p_edit = sub.add_parser(
         "edit",
@@ -761,6 +766,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "stats", help="Per-status + per-assignee counts + oldest-ready age",
     )
     p_stats.add_argument("--json", action="store_true")
+
+    # --- dirty worktrees ---
+    p_dirty = sub.add_parser(
+        "dirty-worktrees",
+        help="List dirty task worktrees with task id, status, branch, and sample git status lines",
+    )
+    p_dirty.add_argument(
+        "--max-lines",
+        type=int,
+        default=5,
+        help="Show at most this many porcelain status lines per task (default: 5)",
+    )
+    p_dirty.add_argument("--json", action="store_true")
 
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
@@ -1074,6 +1092,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
+            "dirty-worktrees": _cmd_dirty_worktrees,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
@@ -2214,13 +2233,20 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                         failed.append(tid)
                         continue
 
-            if not kb.complete_task(
-                conn, tid,
-                result=args.result,
-                summary=summary,
-                metadata=metadata,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                ok = kb.complete_task(
+                    conn, tid,
+                    result=args.result,
+                    summary=summary,
+                    metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                    allow_dirty_workspace=getattr(args, "allow_dirty_worktree", False),
+                )
+            except kb.DirtyWorkspaceError as dirty_err:
+                failed.append(tid)
+                print(f"kanban: {dirty_err}", file=sys.stderr)
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
             else:
@@ -2749,6 +2775,30 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
     return 0
+
+
+def _cmd_dirty_worktrees(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        dirty = kb.list_dirty_task_worktrees(conn, max_status_lines=args.max_lines)
+    if getattr(args, "json", False):
+        print(json.dumps(dirty, indent=2, ensure_ascii=False))
+        return 0
+    if not dirty:
+        print("No dirty task worktrees found.")
+        return 0
+    print(f"{len(dirty)} dirty task worktree(s):\n")
+    for item in dirty:
+        branch = item.get("branch") or "-"
+        assignee = item.get("assignee") or "-"
+        print(
+            f"  {item['task_id']:10s}  {item['status']:8s}  @{assignee:16s}  "
+            f"{branch}"
+        )
+        print(f"    {item['workspace_path']}")
+        for line in item.get("status_lines", []):
+            print(f"    {line}")
+    return 0
+
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:

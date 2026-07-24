@@ -4680,6 +4680,130 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class DirtyWorkspaceError(ValueError):
+    """Raised when a task attempts to complete from a dirty git workspace."""
+
+    def __init__(
+        self,
+        task_id: str,
+        workspace_path: str,
+        status_lines: list[str],
+        *,
+        task_status: Optional[str] = None,
+        branch_name: Optional[str] = None,
+    ):
+        self.task_id = task_id
+        self.workspace_path = workspace_path
+        self.status_lines = list(status_lines)
+        self.task_status = task_status
+        self.branch_name = branch_name
+        lines = "\n".join(f"  {line}" for line in self.status_lines)
+        status_bits = []
+        if task_status:
+            status_bits.append(f"status={task_status}")
+        if branch_name:
+            status_bits.append(f"branch={branch_name}")
+        suffix = f" ({', '.join(status_bits)})" if status_bits else ""
+        super().__init__(
+            f"dirty git workspace for {task_id} at {workspace_path}{suffix}\n"
+            f"{lines}\n"
+            "Commit task-relevant files and retry kanban_complete, or use "
+            "kanban_block(reason=\"review-required: ...\") if the work needs "
+            "human review. Reviewers who already committed or intentionally "
+            "parked the task may rerun with --allow-dirty-worktree."
+        )
+
+
+def _git_porcelain_status_lines(workspace_path: Path | str, *, timeout: int = 10) -> Optional[list[str]]:
+    """Return porcelain status lines for a git checkout, or ``None`` if the path
+    is not a repo or git could not be queried safely.
+
+    The output preserves ignored-file filtering by using git porcelain status
+    rather than filesystem scanning.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            capture_output=True, text=True, timeout=timeout, cwd=workspace_path,
+        )
+        if result.returncode != 0:
+            return None
+        return [line for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        return None
+
+
+def _task_dirty_workspace_status(
+    task: Task,
+    *,
+    max_status_lines: int = 5,
+) -> Optional[tuple[str, list[str]]]:
+    """Return ``(workspace_path, status_lines)`` if the task's workspace is a dirty
+    git checkout.
+
+    Non-git scratch/research workspaces return ``None`` rather than blocking.
+    """
+    if not task.workspace_path:
+        return None
+    workspace = Path(task.workspace_path).expanduser()
+    if not workspace.exists() or not workspace.is_dir():
+        return None
+    lines = _git_porcelain_status_lines(workspace)
+    if not lines:
+        return None
+    return str(workspace), lines[:max_status_lines]
+
+
+def _task_worktree_branch(task: Task) -> Optional[str]:
+    if task.branch_name:
+        return task.branch_name
+    if not task.workspace_path:
+        return None
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5, cwd=task.workspace_path,
+        )
+        if result.returncode != 0:
+            return None
+        branch = result.stdout.strip()
+        return branch or None
+    except Exception:
+        return None
+
+
+def list_dirty_task_worktrees(
+    conn: sqlite3.Connection,
+    *,
+    max_status_lines: int = 5,
+) -> list[dict[str, Any]]:
+    """Return dirty task worktrees with task metadata and sample status lines."""
+    dirty: list[dict[str, Any]] = []
+    for task in list_tasks(conn, include_archived=False):
+        status = _task_dirty_workspace_status(task, max_status_lines=max_status_lines)
+        if not status:
+            continue
+        workspace_path, status_lines = status
+        dirty.append(
+            {
+                "task_id": task.id,
+                "title": task.title,
+                "status": task.status,
+                "assignee": task.assignee,
+                "workspace_kind": task.workspace_kind,
+                "workspace_path": workspace_path,
+                "branch": _task_worktree_branch(task),
+                "status_lines": status_lines,
+            }
+        )
+    dirty.sort(key=lambda item: (item["status"], item["task_id"]))
+    return dirty
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4689,6 +4813,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    allow_dirty_workspace: bool = False,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4717,6 +4842,10 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    ``allow_dirty_workspace`` is an explicit reviewer override for
+    intentional dirty completions after the work has already been
+    committed/parked or when a non-code task must be closed manually.
     """
     now = int(time.time())
 
@@ -4746,6 +4875,21 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    task = get_task(conn, task_id)
+    if not task:
+        return False
+    if not allow_dirty_workspace:
+        dirty_status = _task_dirty_workspace_status(task)
+        if dirty_status:
+            workspace_path, status_lines = dirty_status
+            raise DirtyWorkspaceError(
+                task.id,
+                workspace_path,
+                status_lines,
+                task_status=task.status,
+                branch_name=_task_worktree_branch(task),
+            )
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,

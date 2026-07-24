@@ -29,6 +29,10 @@ import {
   shouldCloseOuterModalOnEscape,
 } from "@/lib/dashboard-modal-shell";
 import { formatTokenCount } from "@/lib/format";
+import {
+  tokenBarBreakdown,
+  type TokenSegment,
+} from "@/lib/token-breakdown";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -91,19 +95,35 @@ function modelVendor(model: string, fallback?: string): string {
   return fallback || "";
 }
 
+const TOKEN_SEGMENT_COLORS: Record<TokenSegment["key"], string> = {
+  cacheRead: "#60a5fa", // tailwind blue-400
+  cacheWrite: "#22d3ee", // tailwind cyan-400
+  reasoning: "#c084fc", // tailwind purple-400
+  input: "var(--series-input-token)",
+  output: "var(--series-output-token)",
+};
+
 function TokenBar({
   input,
   output,
   cacheRead,
+  cacheWrite,
   reasoning,
 }: {
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite: number;
   reasoning: number;
 }) {
-  const total = input + output + cacheRead + reasoning;
-  if (total === 0) return null;
+  const { total, segments, metadata } = tokenBarBreakdown({
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    reasoning,
+  });
+  if (total === 0 && metadata.length === 0) return null;
 
   // Segments carry a CSS color value (hex or `var(--token)`) rather than
   // a Tailwind class so the input/output series can pick up the active
@@ -111,47 +131,51 @@ function TokenBar({
   // `ThemeSeriesColors`. The /60–/70 fade on the bar is applied via
   // color-mix on the same value so themes don't need to ship two
   // separate hex literals.
-  const segments: Array<{ color: string; label: string; value: number }> = [
-    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
-    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
-    { value: input, color: "var(--series-input-token)", label: "Input" },
-    { value: output, color: "var(--series-output-token)", label: "Output" },
-  ].filter((s) => s.value > 0);
-
   return (
     <div className="space-y-1.5">
-      {/* Stacked bar — segments fill proportionally to their share of total */}
-      <div className="relative flex min-h-[1.5rem] w-full items-stretch overflow-hidden">
-        {segments.map((s, i) => (
-          <div
-            key={i}
-            className="relative flex items-center transition-all duration-300"
-            style={{
-              backgroundColor: `color-mix(in srgb, ${s.color} 70%, transparent)`,
-              width: `${(s.value / total) * 100}%`,
-            }}
-          >
-            {/* Stepped fill pattern overlay */}
+      {/* Only canonical additive buckets participate in the stacked bar. */}
+      {total > 0 && (
+        <div className="relative flex min-h-[1.5rem] w-full items-stretch overflow-hidden">
+          {segments.map((s) => (
             <div
-              className="absolute inset-0 opacity-30"
+              key={s.key}
+              className="relative flex items-center transition-all duration-300"
               style={{
-                backgroundImage:
-                  "repeating-linear-gradient(to right, transparent 0 0.4rem, currentColor 0.4rem calc(0.4rem + 1px))",
+                backgroundColor: `color-mix(in srgb, ${TOKEN_SEGMENT_COLORS[s.key]} 70%, transparent)`,
+                width: `${(s.value / total) * 100}%`,
               }}
-            />
-          </div>
-        ))}
-      </div>
+            >
+              {/* Stepped fill pattern overlay */}
+              <div
+                className="absolute inset-0 opacity-30"
+                style={{
+                  backgroundImage:
+                    "repeating-linear-gradient(to right, transparent 0 0.4rem, currentColor 0.4rem calc(0.4rem + 1px))",
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Legend */}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-text-secondary">
-        {segments.map((s, i) => (
-          <span key={i} className="flex items-center gap-1">
+        {segments.map((s) => (
+          <span key={s.key} className="flex items-center gap-1">
             <span
               className="inline-block h-1.5 w-1.5 rounded-full"
-              style={{ backgroundColor: s.color }}
+              style={{ backgroundColor: TOKEN_SEGMENT_COLORS[s.key] }}
             />
             {s.label} {formatTokens(s.value)}
+          </span>
+        ))}
+        {metadata.map((s) => (
+          <span key={s.key} className="flex items-center gap-1">
+            <span
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: TOKEN_SEGMENT_COLORS[s.key] }}
+            />
+            {s.label} {formatTokens(s.value)} (reported separately)
           </span>
         ))}
       </div>
@@ -383,7 +407,7 @@ function ModelCard({
 }) {
   const { t } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
-  const totalTokens = entry.input_tokens + entry.output_tokens;
+  const totalTokens = entry.total_tokens ?? entry.input_tokens + entry.output_tokens + entry.cache_read_tokens + entry.cache_write_tokens;
   const caps = entry.capabilities;
 
   const isMain =
@@ -479,6 +503,7 @@ function ModelCard({
               input={entry.input_tokens}
               output={entry.output_tokens}
               cacheRead={entry.cache_read_tokens}
+              cacheWrite={entry.cache_write_tokens}
               reasoning={entry.reasoning_tokens}
             />
 
@@ -1266,7 +1291,11 @@ export default function ModelsPage() {
                         {
                           label: t.analytics.totalTokens,
                           value: formatTokens(
-                            data.totals.total_input + data.totals.total_output,
+                            data.totals.total_tokens ??
+                              data.totals.total_input +
+                                data.totals.total_output +
+                                data.totals.total_cache_read +
+                                (data.totals.total_cache_write ?? 0),
                           ),
                         },
                         {

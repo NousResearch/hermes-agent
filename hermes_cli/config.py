@@ -1007,6 +1007,12 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Startup context-budget audit. Values:
+        #   "off" (default) — collect only when explicitly requested by tests/tools.
+        #   "summary" — append a compact redacted startup summary to the first prompt.
+        #   "status" — collect once and expose via /context-audit without prompt injection.
+        #   "debug_file" — collect once, expose via command, and write a redacted JSON report.
+        "startup_context_audit": "off",
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

@@ -88,7 +88,9 @@ conservative at the waist.
 - **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict
   message role alternation (never two same-role messages in a row; never a
   synthetic user message injected mid-loop), and a system prompt that is
-  byte-stable for the life of a conversation.
+  byte-stable for the life of a conversation. Use `agent.startup_context_audit`
+  / `/context-audit` to inspect startup prompt and tool-schema budget; treat its
+  optimization options as review hints, not automatic live config changes.
 - **Contributor credit preserved.** Salvage external work by cherry-picking
   (rebase-merge) so authorship survives in git history; don't reimplement from
   scratch when you can build on top.

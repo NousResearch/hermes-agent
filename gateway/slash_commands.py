@@ -684,6 +684,39 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
+    async def _handle_context_audit_command(self, event: MessageEvent) -> str:
+        """Handle /context-audit — show the redacted startup context budget report."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        from agent.context_audit import render_context_audit_report
+
+        session_key = self._session_key_for_source(event.source)
+        agent = (getattr(self, "_running_agents", {}) or {}).get(session_key)
+        if agent is _AGENT_PENDING_SENTINEL:
+            agent = None
+        if agent is None:
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            cache = getattr(self, "_agent_cache", None)
+            if cache_lock is not None and cache is not None:
+                try:
+                    with cache_lock:
+                        cached = cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+                except Exception:
+                    agent = None
+
+        report = getattr(agent, "_context_audit_report", None) if agent is not None else None
+        if report is None:
+            return (
+                "Context audit is not available for this session. "
+                "Set `agent.startup_context_audit` to `status`, `summary`, or `debug_file` before startup."
+            )
+        text = render_context_audit_report(report)
+        path = getattr(agent, "_context_audit_report_path", "") or ""
+        if path:
+            text += f"\n\nDebug file: `{path}`"
+        return text[:3800]
+
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:
         """Return a stable Matrix session-key fingerprint for shared room status."""

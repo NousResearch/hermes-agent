@@ -436,6 +436,16 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        try:
+            if getattr(agent, "_context_audit_report", None) is None:
+                from agent.system_prompt import _collect_startup_context_audit, build_system_prompt_parts
+
+                _collect_startup_context_audit(
+                    agent,
+                    build_system_prompt_parts(agent, system_message=system_message),
+                )
+        except Exception:
+            pass
         return
     if stored_prompt:
         stored_state = "stale_runtime"

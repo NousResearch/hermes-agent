@@ -6947,6 +6947,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
+    def _show_context_audit(self):
+        """Show the redacted startup context audit for the active CLI agent."""
+        agent = getattr(self, "agent", None)
+        report = getattr(agent, "_context_audit_report", None) if agent is not None else None
+        if report is None:
+            self._console_print(
+                "Context audit is not available for this session. Set agent.startup_context_audit to status, summary, or debug_file before startup.",
+                highlight=False,
+                markup=False,
+            )
+            return
+        from agent.context_audit import render_context_audit_report
+
+        text = render_context_audit_report(report)
+        path = getattr(agent, "_context_audit_report_path", "") or ""
+        if path:
+            text += f"\n\nDebug file: {path}"
+        self._console_print(text, highlight=False, markup=False)
+
     def _fast_command_available(self) -> bool:
         try:
             from hermes_cli.models import model_supports_fast_mode
@@ -9274,6 +9293,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "context-audit":
+            self._show_context_audit()
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

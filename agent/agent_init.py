@@ -1720,6 +1720,13 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    _audit_mode = str(_agent_section.get("startup_context_audit", "off") or "off").strip().lower()
+    if _audit_mode not in {"off", "summary", "status", "debug_file"}:
+        _audit_mode = "off"
+    agent._startup_context_audit_mode = _audit_mode
+    agent._context_audit_report = None
+    agent._context_audit_report_path = ""
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

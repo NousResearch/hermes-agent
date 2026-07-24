@@ -27,6 +27,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import get_hermes_home
+
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
@@ -524,7 +526,39 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     }
 
 
-def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
+def _collect_startup_context_audit(agent: Any, parts: Dict[str, str]):
+    """Collect and optionally persist the startup context audit once per session."""
+    mode = str(getattr(agent, "_startup_context_audit_mode", "off") or "off").strip().lower()
+    if mode not in {"summary", "status", "debug_file"}:
+        return None
+    existing = getattr(agent, "_context_audit_report", None)
+    if existing is not None:
+        return existing
+    try:
+        from agent.context_audit import collect_context_audit
+        from utils import atomic_json_write
+
+        report = collect_context_audit(agent, prompt_parts=parts)
+        agent._context_audit_report = report
+        if mode == "debug_file":
+            reports_dir = get_hermes_home() / "sessions" / "context_audits"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            sid = str(getattr(agent, "session_id", "startup") or "startup")
+            safe_sid = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in sid)
+            path = reports_dir / f"{safe_sid}.json"
+            atomic_json_write(path, report.to_redacted_dict(), indent=2, sort_keys=True)
+            agent._context_audit_report_path = str(path)
+        return report
+    except Exception:
+        return None
+
+
+def build_system_prompt(
+    agent: Any,
+    system_message: Optional[str] = None,
+    *,
+    prompt_parts: Optional[Dict[str, str]] = None,
+) -> str:
     """Assemble the full system prompt from all layers.
 
     Called once per session (cached on ``agent._cached_system_prompt``) and
@@ -539,8 +573,22 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
     """
-    parts = build_system_prompt_parts(agent, system_message=system_message)
+    parts = prompt_parts or build_system_prompt_parts(agent, system_message=system_message)
+    if prompt_parts is None:
+        report = _collect_startup_context_audit(agent, parts)
+        if report is not None and str(getattr(agent, "_startup_context_audit_mode", "") or "").lower() == "summary":
+            from agent.context_audit import render_context_audit_summary, with_prompt_summary_entry
+
+            summary = render_context_audit_summary(report, max_lines=8)
+            if summary:
+                report = with_prompt_summary_entry(report, summary)
+                agent._context_audit_report = report
+                parts = dict(parts)
+                parts["volatile"] = "\n\n".join(p for p in (parts.get("volatile", ""), summary) if p)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+
+    if prompt_parts is not None:
+        return joined
 
     # Surface context-file truncation warnings through the normal agent status
     # channel so gateway/CLI users see them in chat instead of only in logs.

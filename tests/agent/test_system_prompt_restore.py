@@ -68,6 +68,39 @@ class TestStoredPromptReuse:
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
         assert agent._cached_system_prompt == stored
 
+    def test_present_row_collects_context_audit_without_rebuilding_prompt(self, monkeypatch):
+        """Restored sessions keep /context-audit available without mutating cached prompt."""
+        stored = "Stored prompt from turn 1 — byte-identical reuse"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent._startup_context_audit_mode = "status"
+        agent._context_audit_report = None
+        agent.tools = []
+        agent.load_soul_identity = False
+        agent.skip_context_files = True
+        agent.valid_tool_names = []
+        agent._task_completion_guidance = False
+        agent._parallel_tool_call_guidance = False
+        agent._tool_use_enforcement = False
+        agent._environment_probe = False
+        agent._kanban_worker_guidance = ""
+        agent._memory_store = None
+        agent._memory_manager = None
+        agent.pass_session_id = False
+        agent._emit_status = lambda message: None
+
+        monkeypatch.setattr("run_agent.load_soul_md", lambda: "")
+        monkeypatch.setattr("run_agent.build_nous_subscription_prompt", lambda *_args, **_kwargs: "")
+        monkeypatch.setattr("run_agent.build_environment_hints", lambda *_args, **_kwargs: "")
+        monkeypatch.setattr("run_agent.build_context_files_prompt", lambda *_args, **_kwargs: "")
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        assert agent._context_audit_report is not None
+
     def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
         """Stored prompts are cache gold unless their runtime identity is stale.
 

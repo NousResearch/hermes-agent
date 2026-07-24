@@ -95,6 +95,22 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+## Startup Context Audit
+
+Use `agent.startup_context_audit` when you need a redacted inventory of startup prompt and tool-schema budget:
+
+```yaml
+agent:
+  startup_context_audit: off  # off | summary | status | debug_file
+```
+
+- `off` is the default and preserves current startup behavior.
+- `status` collects once and exposes `/context-audit` without injecting audit text.
+- `summary` appends a compact redacted summary to the first prompt.
+- `debug_file` writes a redacted JSON report under `~/.hermes/sessions/context_audits/`.
+
+See [Context Audit](./features/context-audit.md) for ranks, output fields, and safe optimization levers. Recommendations are advisory; review config changes before applying them to a running gateway/profile.
+
 ## Update Behavior
 
 `hermes update` settings live under `updates` in `config.yaml`:

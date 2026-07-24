@@ -913,6 +913,34 @@ export interface Translations {
         failedSelect: (backend: string) => string
         needsSetupHint: string
       }
+      computerUse: {
+        checking: string
+        statusReadFailed: string
+        unsupported: (platform: string) => string
+        installHint: string
+        installGrantHint: string
+        /** Per-OS one-liner keyed by `process.platform` (linux / win32);
+         *  unknown platforms render nothing. */
+        platformNotes: Record<string, string>
+        macGrantNote: string
+        recheck: string
+        accessibility: string
+        accessibilityHint: string
+        screenRecording: string
+        screenRecordingHint: string
+        driverHealth: string
+        granted: string
+        notGranted: string
+        ready: string
+        notReady: string
+        unknown: string
+        readyMessage: string
+        grantPermissions: string
+        waitingApproval: string
+        grantFailed: string
+        approveTitle: string
+        approveMessage: string
+      }
     }
   }
 

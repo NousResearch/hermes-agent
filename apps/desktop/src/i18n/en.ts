@@ -1039,6 +1039,36 @@ export const en: Translations = {
         selectedMessage: backend => `Terminal commands now run via ${backend}. Applies to new sessions.`,
         failedSelect: backend => `Failed to select ${backend}`,
         needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
+      },
+      computerUse: {
+        checking: 'Checking Computer Use status…',
+        statusReadFailed: 'Could not read Computer Use status',
+        unsupported: platform => `Computer Use isn't supported on this platform (${platform}).`,
+        installHint: 'Install the cua-driver backend below to drive this machine.',
+        installGrantHint: ' Then grant Accessibility and Screen Recording here.',
+        platformNotes: {
+          linux: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
+          win32: 'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.'
+        },
+        macGrantNote:
+          "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes — so the dialog is attributed to the process that drives your Mac.",
+        recheck: 'Recheck',
+        accessibility: 'Accessibility',
+        accessibilityHint: 'Lets cua-driver post clicks, keystrokes, and read the accessibility tree.',
+        screenRecording: 'Screen Recording',
+        screenRecordingHint: 'Lets cua-driver capture screenshots of app windows.',
+        driverHealth: 'Driver health',
+        granted: 'Granted',
+        notGranted: 'Not granted',
+        ready: 'Ready',
+        notReady: 'Not ready',
+        unknown: 'Unknown',
+        readyMessage: 'Computer Use is ready. Ask the agent to capture an app and click around.',
+        grantPermissions: 'Grant permissions',
+        waitingApproval: 'Waiting for approval…',
+        grantFailed: 'Could not request permissions',
+        approveTitle: 'Approve in System Settings',
+        approveMessage: 'macOS will show a permission dialog attributed to CuaDriver. Approve it, then return here.'
       }
     }
   },

@@ -1168,6 +1168,36 @@ export const zhHant = defineLocale({
         selectedMessage: backend => `終端命令現在透過 ${backend} 執行。將套用於新工作階段。`,
         failedSelect: backend => `選擇 ${backend} 失敗`,
         needsSetupHint: '現在即可選擇此後端——但在完成設定前命令將會失敗。'
+      },
+      computerUse: {
+        checking: '正在檢查電腦使用狀態…',
+        statusReadFailed: '無法讀取電腦使用狀態',
+        unsupported: platform => `目前平台（${platform}）不支援電腦使用。`,
+        installHint: '請先在下方安裝 cua-driver 後端，才能操控本機。',
+        installGrantHint: '然後在此處授予輔助使用和螢幕錄製權限。',
+        platformNotes: {
+          linux: '透過 X11/XWayland 無障礙堆疊操控桌面——無需權限提示。',
+          win32: '首次執行時 Windows SmartScreen 可能會對 cua-driver 的 UIAccess 工作處理程序跳出提示——請選擇允許。'
+        },
+        macGrantNote:
+          '權限授予給 CuaDriver 自身的識別（com.trycua.driver）而非 Hermes——因此系統對話框顯示的是實際操控 Mac 的處理程序。',
+        recheck: '重新檢查',
+        accessibility: '輔助使用',
+        accessibilityHint: '允許 cua-driver 送出點擊、按鍵，並讀取無障礙樹。',
+        screenRecording: '螢幕錄製',
+        screenRecordingHint: '允許 cua-driver 擷取應用程式視窗的螢幕截圖。',
+        driverHealth: '驅動程式健康狀態',
+        granted: '已授權',
+        notGranted: '未授權',
+        ready: '就緒',
+        notReady: '未就緒',
+        unknown: '未知',
+        readyMessage: '電腦使用已就緒。可以讓智慧代理擷取應用程式畫面並進行點擊操作了。',
+        grantPermissions: '授予權限',
+        waitingApproval: '等待核准…',
+        grantFailed: '無法要求權限',
+        approveTitle: '請在系統設定中核准',
+        approveMessage: 'macOS 將顯示一個歸屬於 CuaDriver 的權限對話框。核准後返回此處。'
       }
     }
   },

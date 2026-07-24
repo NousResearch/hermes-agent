@@ -1216,6 +1216,37 @@ export const ja = defineLocale({
         selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
         failedSelect: backend => `${backend} の選択に失敗しました`,
         needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+      },
+      computerUse: {
+        checking: 'コンピュータ操作のステータスを確認中…',
+        statusReadFailed: 'コンピュータ操作のステータスを読み取れませんでした',
+        unsupported: platform => `このプラットフォーム（${platform}）ではコンピュータ操作はサポートされていません。`,
+        installHint: 'このマシンを操作するには、下の cua-driver バックエンドをインストールしてください。',
+        installGrantHint: 'その後、ここでアクセシビリティと画面収録の権限を付与してください。',
+        platformNotes: {
+          linux: 'X11/XWayland アクセシビリティスタック経由でデスクトップを操作します——権限プロンプトはありません。',
+          win32:
+            '初回実行時に cua-driver の UIAccess ワーカーに対して Windows SmartScreen の警告が表示される場合があります——許可してください。'
+        },
+        macGrantNote:
+          '権限は Hermes ではなく CuaDriver 自身の識別子（com.trycua.driver）に付与されます——ダイアログには実際に Mac を操作するプロセスが表示されます。',
+        recheck: '再チェック',
+        accessibility: 'アクセシビリティ',
+        accessibilityHint: 'cua-driver によるクリック・キー入力の送信とアクセシビリティツリーの読み取りを許可します。',
+        screenRecording: '画面収録',
+        screenRecordingHint: 'cua-driver によるアプリウィンドウのスクリーンショット取得を許可します。',
+        driverHealth: 'ドライバーの状態',
+        granted: '許可済み',
+        notGranted: '未許可',
+        ready: '準備完了',
+        notReady: '未準備',
+        unknown: '不明',
+        readyMessage: 'コンピュータ操作の準備ができました。エージェントにアプリのキャプチャやクリック操作を依頼できます。',
+        grantPermissions: '権限を付与',
+        waitingApproval: '承認を待機中…',
+        grantFailed: '権限をリクエストできませんでした',
+        approveTitle: 'システム設定で承認してください',
+        approveMessage: 'macOS に CuaDriver に帰属する権限ダイアログが表示されます。承認後、ここに戻ってください。'
       }
     }
   },

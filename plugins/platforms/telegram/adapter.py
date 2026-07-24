@@ -3399,6 +3399,43 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _wire_plugin_handlers(self) -> None:
+        """Invoke plugin-registered Telegram handler factories at connect.
+
+        Plugins call ``ctx.register_telegram_handler(factory)`` at register()
+        time; the manager queues the factories and this method invokes each
+        with ``(application, adapter)`` right after the PTB Application is
+        built and BEFORE the core handlers are added. PTB dispatches only the
+        first matching handler per group, so plugin handlers registered first
+        take precedence for the updates they scope to (e.g. a
+        ``CallbackQueryHandler`` with a ``pattern=`` prefix) while everything
+        else falls through to the core handlers.
+
+        Each factory is isolated so a misbehaving plugin can't prevent
+        Telegram from connecting.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            factories = get_plugin_manager().get_telegram_handler_factories()
+        except Exception as tg_load_exc:
+            logger.warning(
+                "[%s] Could not load plugin Telegram handler factories: %s",
+                self.name, tg_load_exc,
+            )
+            return
+        for factory, plugin_name in factories:
+            try:
+                factory(self._app, self)
+                logger.info(
+                    "[%s] Wired Telegram handlers from plugin '%s'",
+                    self.name, plugin_name,
+                )
+            except Exception as tg_factory_exc:
+                logger.error(
+                    "[%s] Plugin '%s' Telegram handler factory raised: %s",
+                    self.name, plugin_name, tg_factory_exc, exc_info=True,
+                )
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3597,6 +3634,10 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
+
+            # Wire plugin-provided PTB handlers BEFORE the core handlers are
+            # added — see _wire_plugin_handlers for precedence + isolation.
+            self._wire_plugin_handlers()
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(

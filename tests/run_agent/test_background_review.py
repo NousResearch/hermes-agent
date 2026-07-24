@@ -473,3 +473,164 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle tests: config parsing → set/clear thread-local protection
+# Exercises the config-to-guard path that _run_review_in_thread uses.
+# ---------------------------------------------------------------------------
+
+def _parse_protection_config(raw_value):
+    """Replicate the config parsing logic from _run_review_in_thread."""
+    import json as _json
+
+    protected_names = set()
+    parse_failed = False
+
+    _raw = raw_value
+    if isinstance(_raw, str):
+        try:
+            _raw = _json.loads(_raw)
+        except _json.JSONDecodeError:
+            parse_failed = True
+            _raw = None
+    if isinstance(_raw, list):
+        protected_names = {str(n).strip() for n in _raw if str(n).strip()}
+    elif _raw is None or _raw == []:
+        pass
+    else:
+        parse_failed = True
+
+    return protected_names, parse_failed
+
+
+class TestReviewProtectedConfigParsing:
+    """Test config parsing logic that drives the protection lifecycle."""
+
+    def test_yaml_list(self):
+        names, failed = _parse_protection_config(["skill-a", "skill-b"])
+        assert not failed
+        assert names == {"skill-a", "skill-b"}
+
+    def test_json_array_string(self):
+        names, failed = _parse_protection_config('["skill-a", "skill-b"]')
+        assert not failed
+        assert names == {"skill-a", "skill-b"}
+
+    def test_empty_list(self):
+        names, failed = _parse_protection_config([])
+        assert not failed
+        assert names == set()
+
+    def test_none_value(self):
+        names, failed = _parse_protection_config(None)
+        assert not failed
+        assert names == set()
+
+    def test_whitespace_trimmed(self):
+        names, failed = _parse_protection_config(["  spaced  "])
+        assert not failed
+        assert names == {"spaced"}
+
+    def test_scalar_string_malformed(self):
+        names, failed = _parse_protection_config("my-skill")
+        assert failed
+
+    def test_dict_malformed(self):
+        names, failed = _parse_protection_config({"key": "value"})
+        assert failed
+
+    def test_int_malformed(self):
+        names, failed = _parse_protection_config(42)
+        assert failed
+
+    def test_invalid_json_string(self):
+        names, failed = _parse_protection_config('not json')
+        assert failed
+
+
+class TestReviewProtectedLifecycle:
+    """Test the set/clear lifecycle as _run_review_in_thread uses it."""
+
+    def test_protection_set_then_cleared(self):
+        """Simulate: config loads, set is called, review runs, clear in finally."""
+        from tools.skill_manager_tool import (
+            set_review_protected_skills,
+            clear_review_protected_skills,
+            _review_protected_guard,
+        )
+
+        clear_review_protected_skills()
+        # Simulate config load
+        names, failed = _parse_protection_config(["important-skill"])
+        assert not failed
+
+        try:
+            set_review_protected_skills(names or None)
+            # During review, writes are blocked
+            assert _review_protected_guard("patch", "important-skill") is not None
+        finally:
+            clear_review_protected_skills()
+
+        # After review, writes are allowed
+        assert _review_protected_guard("patch", "important-skill") is None
+
+    def test_fail_closed_on_malformed(self):
+        """Simulate: malformed config → deny-all → review runs → clear."""
+        from tools.skill_manager_tool import (
+            set_review_protected_skills,
+            clear_review_protected_skills,
+            _review_protected_guard,
+        )
+
+        clear_review_protected_skills()
+        names, failed = _parse_protection_config("my-skill")
+        assert failed
+
+        try:
+            set_review_protected_skills({"*"})
+            # During review, ALL writes blocked
+            assert _review_protected_guard("patch", "any") is not None
+            assert _review_protected_guard("edit", "other") is not None
+        finally:
+            clear_review_protected_skills()
+
+        assert _review_protected_guard("patch", "any") is None
+
+    def test_empty_config_no_protection(self):
+        """Simulate: empty config → no protection."""
+        from tools.skill_manager_tool import (
+            set_review_protected_skills,
+            clear_review_protected_skills,
+            _review_protected_guard,
+        )
+
+        clear_review_protected_skills()
+        names, failed = _parse_protection_config([])
+        assert not failed
+
+        try:
+            set_review_protected_skills(names or None)
+            assert _review_protected_guard("patch", "any") is None
+        finally:
+            clear_review_protected_skills()
+
+    def test_exception_during_review_still_cleans_up(self):
+        """Simulate: exception in run_conversation → finally clears protection."""
+        from tools.skill_manager_tool import (
+            set_review_protected_skills,
+            clear_review_protected_skills,
+            _review_protected_guard,
+        )
+
+        clear_review_protected_skills()
+
+        try:
+            set_review_protected_skills({"blocked-skill"})
+            raise RuntimeError("simulated review crash")
+        except RuntimeError:
+            pass
+        finally:
+            clear_review_protected_skills()
+
+        assert _review_protected_guard("patch", "blocked-skill") is None

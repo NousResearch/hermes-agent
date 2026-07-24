@@ -482,6 +482,8 @@ class AIAgent:
         gateway_session_key: str = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
+        memory_mode: str = "full",
+        # Deprecated — use memory_mode instead (remove after 2026-08)
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
@@ -496,6 +498,16 @@ class AIAgent:
         requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
+        # Backward compatibility for deprecated skip_memory parameter
+        if skip_memory:
+            import warnings
+            warnings.warn(
+                "skip_memory is deprecated, use memory_mode='off' instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            memory_mode = "off"
+
         from agent.agent_init import init_agent
         init_agent(
             self,
@@ -560,7 +572,7 @@ class AIAgent:
             gateway_session_key=gateway_session_key,
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
-            skip_memory=skip_memory,
+            memory_mode=memory_mode,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,

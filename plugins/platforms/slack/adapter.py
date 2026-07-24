@@ -4709,8 +4709,48 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_app_home_opened(
         self, event: dict, body: Optional[dict] = None
     ) -> None:
-        """Handle Slack Agent DM-open lifecycle events without producing replies."""
-        if event.get("tab") != "messages":
+        """Handle Slack App Home and Agent DM-open lifecycle events."""
+        tab = event.get("tab")
+        if tab == "home":
+            user_id = str(event.get("user") or event.get("user_id") or "")
+            team_id = self._event_team_id(event, body)
+            if not user_id:
+                return
+            try:
+                from hermes_cli.plugins import invoke_hook
+
+                views = await asyncio.to_thread(
+                    invoke_hook,
+                    "slack_app_home_opened",
+                    user_id=user_id,
+                    team_id=str(team_id or ""),
+                    event=event,
+                )
+                view = next(
+                    (
+                        candidate
+                        for candidate in views
+                        if isinstance(candidate, dict)
+                        and candidate.get("type") == "home"
+                        and isinstance(candidate.get("blocks"), list)
+                    ),
+                    None,
+                )
+                if view is None:
+                    return
+                client = self._team_clients.get(str(team_id or ""))
+                if client is None:
+                    logger.warning(
+                        "[Slack] Refusing App Home publish for unknown workspace %s",
+                        team_id or "<missing>",
+                    )
+                    return
+                await client.views_publish(user_id=user_id, view=view)
+            except Exception:
+                logger.warning("[Slack] Failed to publish plugin App Home view", exc_info=True)
+            return
+
+        if tab != "messages":
             return
 
         context = event.get("context") or event.get("app_context") or {}

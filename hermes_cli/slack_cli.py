@@ -65,7 +65,7 @@ def _build_full_manifest(
 
     features = {
         "app_home": {
-            "home_tab_enabled": False,
+            "home_tab_enabled": True,
             "messages_tab_enabled": True,
             "messages_tab_read_only_enabled": False,
         },
@@ -96,6 +96,7 @@ def _build_full_manifest(
     ]
 
     bot_events = [
+        "app_home_opened",
         "app_mention",
         "message.channels",
         "message.groups",
@@ -124,7 +125,7 @@ def _build_full_manifest(
         # Slack includes current viewing context in Agent DM events only after
         # this subscription is enabled; the adapter consumes that context to
         # preserve the referred channel across the agent turn.
-        bot_events.extend(["app_context_changed", "app_home_opened"])
+        bot_events.append("app_context_changed")
 
     bot_scopes.sort()
     bot_events.sort()

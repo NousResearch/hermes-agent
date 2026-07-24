@@ -275,7 +275,7 @@ class TestSlackFullManifest:
         manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
 
         assert manifest["features"]["app_home"] == {
-            "home_tab_enabled": False,
+            "home_tab_enabled": True,
             "messages_tab_enabled": True,
             "messages_tab_read_only_enabled": False,
         }
@@ -322,6 +322,7 @@ class TestSlackFullManifest:
         assert "assistant:write" in manifest["oauth_config"]["scopes"]["bot"]
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
+        assert "app_home_opened" in bot_events
 
     def test_no_assistant_omits_assistant_pieces(self):
         manifest = _build_full_manifest(
@@ -336,6 +337,7 @@ class TestSlackFullManifest:
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" not in bot_events
         assert "assistant_thread_context_changed" not in bot_events
+        assert "app_home_opened" in bot_events
 
     def test_agent_view_uses_agent_manifest_surface(self):
         manifest = _build_full_manifest(

@@ -532,10 +532,11 @@ class TestTerminalFormatting:
 
         assert "Input tokens" in text
         assert "Output tokens" in text
-        # Cost and cache metrics are intentionally hidden (pricing was unreliable).
+        assert "Cache read tokens" in text
+        assert "Cache write tokens" in text
+        assert "Cache read token share" in text
+        # Cost display is intentionally hidden (pricing was unreliable).
         assert "Est. cost" not in text
-        assert "Cache read" not in text
-        assert "Cache write" not in text
 
     def test_terminal_format_shows_platforms(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -586,13 +587,12 @@ class TestGatewayFormatting:
         assert "**" in text  # Markdown bold
 
     def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+        """Gateway format omits dollar figures."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
         assert "$" not in text
-        assert "cache" not in text.lower()
 
     def test_gateway_format_shows_models(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -601,6 +601,64 @@ class TestGatewayFormatting:
 
         assert "Models" in text
         assert "sessions" in text
+
+
+class TestCacheInsights:
+    @staticmethod
+    def _add_cached_session(db):
+        db.create_session(
+            session_id="c1", source="cli",
+            model="anthropic/claude-sonnet-4-20250514", user_id="user1",
+        )
+        db.update_token_counts(
+            "c1", input_tokens=1000, output_tokens=500,
+            cache_read_tokens=3000, cache_write_tokens=800,
+        )
+        db._conn.commit()
+
+    def test_overview_cache_totals_and_share(self, db):
+        self._add_cached_session(db)
+        engine = InsightsEngine(db)
+        overview = engine.generate(days=30)["overview"]
+
+        assert overview["total_cache_read_tokens"] == 3000
+        assert overview["total_cache_write_tokens"] == 800
+        # share = cache_read / (uncached input + cache_read) = 3000 / 4000
+        assert overview["cache_read_token_share"] == pytest.approx(0.75)
+
+    def test_cache_read_token_share_zero_denominator(self, db):
+        """No input and no cache reads → share is 0.0, not a ZeroDivisionError."""
+        db.create_session(session_id="c1", source="cli", model="gpt-4o")
+        db.update_token_counts("c1", input_tokens=0, output_tokens=500)
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        overview = engine.generate(days=30)["overview"]
+
+        assert overview["total_cache_read_tokens"] == 0
+        assert overview["cache_read_token_share"] == 0.0
+
+    def test_terminal_format_shows_cache_metrics(self, db):
+        self._add_cached_session(db)
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        assert "Cache read tokens: 3,000" in text
+        assert "Cache write tokens: 800" in text
+        assert "Cache read token share: 75.0%" in text
+        assert "hit rate" not in text.lower()
+
+    def test_gateway_format_shows_cache_metrics(self, db):
+        self._add_cached_session(db)
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_gateway(report)
+
+        assert "**Cache read tokens:** 3,000" in text
+        assert "**Cache write tokens:** 800" in text
+        assert "**Cache read token share:** 75.0%" in text
+        assert "hit rate" not in text.lower()
 
 
 # =========================================================================

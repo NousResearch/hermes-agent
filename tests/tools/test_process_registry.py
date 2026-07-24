@@ -2229,3 +2229,103 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+class TestCheckpointRecovery:
+    """Recovery from checkpoint: idempotency, recycled-PID safety, round-trip."""
+
+    def test_recover_idempotent_skips_already_tracked(self, registry, tmp_path):
+        """A session already in _running must not be overwritten by recovery."""
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "sk1",
+        }]))
+        # Pre-populate the live registry with a non-detached session of the same id
+        existing = _make_session(sid="proc_live")
+        existing.detached = False
+        registry._running["proc_live"] = existing
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+        # The existing live (non-detached) entry must win — recovery skips it.
+        assert recovered == 0
+        assert registry.get("proc_live") is existing
+        assert registry.get("proc_live").detached is False
+
+    def test_recover_and_log_returns_count(self, registry, tmp_path, caplog):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            with caplog.at_level("INFO"):
+                n = registry.recover_and_log()
+        assert n == 1
+        assert any("recover" in r.message.lower() for r in caplog.records)
+
+    def test_spawn_checkpoint_clear_recover_list(self, registry, tmp_path):
+        """A process that was running, got checkpointed, then the in-memory
+        registry was cleared (simulating a CLI restart), must reappear in
+        list_sessions() after recover_from_checkpoint() with detached=True,
+        the correct PID, and status=running — as long as the OS process is
+        still alive."""
+        import subprocess, time as _time
+        # Spawn a real short-lived sleep so the PID is genuinely alive.
+        proc = subprocess.Popen(["sleep", "30"], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            _time.sleep(0.2)  # let it start
+            assert proc.poll() is None  # alive
+            sid = "proc_roundtrip"
+            s = ProcessSession(
+                id=sid, command="sleep 30", pid=proc.pid,
+                host_start_time=registry._safe_host_start_time(proc.pid),
+                pid_scope="host", started_at=_time.time(),
+                task_id="t1", session_key="sk1",
+            )
+            registry._running[sid] = s
+            with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+                registry._write_checkpoint()
+                # Simulate CLI restart: wipe in-memory registry.
+                registry._running.clear()
+                registry._finished.clear()
+                assert registry.list_sessions() == []
+                # Recover.
+                n = registry.recover_from_checkpoint()
+                assert n == 1
+                sessions = registry.list_sessions()
+                assert len(sessions) == 1
+                got = sessions[0]
+                assert got["session_id"] == sid
+                assert got["pid"] == proc.pid
+                assert got["status"] == "running"
+                assert got.get("detached") is True
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    def test_recycled_pid_not_adopted_on_recovery(self, registry, tmp_path):
+        """A checkpoint entry whose PID is alive but whose kernel start time
+        no longer matches (PID was recycled onto an unrelated process) must
+        NOT be adopted by recovery."""
+        import os
+        checkpoint = tmp_path / "procs.json"
+        # Use our own PID but a bogus start time that will never match.
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_recycled",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "host_start_time": 1,  # impossibly old — guaranteed mismatch
+            "task_id": "t1",
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            n = registry.recover_from_checkpoint()
+        assert n == 0
+        assert registry.get("proc_recycled") is None

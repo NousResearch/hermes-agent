@@ -187,6 +187,17 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
     return text
 
 
+def _format_execute_code_preview(code: Any) -> str | None:
+    lines = str(code).strip().splitlines()
+    if not lines:
+        return None
+    if len(lines) == 1:
+        return _oneline(lines[0])
+    if len(lines) == 2:
+        return f"{_oneline(lines[0])} | {_oneline(lines[1])}"
+    return f"{_oneline(lines[0])} (+{len(lines) - 1} lines)"
+
+
 _SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
 _SHELL_PIPE_TAIL_HEADS = {"head", "tail", "wc", "sort", "uniq"}
 
@@ -482,9 +493,12 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         else:
             return f"planning {len(todos_arg)} task(s)"
 
-    if tool_name in {"terminal", "execute_code"}:
-        key = "code" if tool_name == "execute_code" else "command"
-        command = args.get(key)
+    if tool_name == "execute_code":
+        preview = _format_execute_code_preview(args.get("code", ""))
+        return _truncate_preview(preview, max_len) if preview else None
+
+    if tool_name == "terminal":
+        command = args.get("command")
         if command is None:
             return None
         preview = summarize_shell_command(str(command))
@@ -1333,14 +1347,14 @@ def _get_cute_tool_message(
         s = str(s)
         if _tool_preview_max_len == 0:
             return s  # no limit
-        limit = _tool_preview_max_len
+        limit = min(_tool_preview_max_len, n)
         return (s[:limit-3] + "...") if len(s) > limit else s
 
     def _path(p, n=35):
         p = str(p)
         if _tool_preview_max_len == 0:
             return p  # no limit
-        limit = _tool_preview_max_len
+        limit = min(_tool_preview_max_len, n)
         return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
     def _wrap(line: str) -> str:
@@ -1474,9 +1488,8 @@ def _get_cute_tool_message(
             return _wrap(f"┊ ⏰ cron      listing  {dur}")
         return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name == "execute_code":
-        code = args.get("code", "")
-        first_line = code.strip().split("\n")[0] if code.strip() else ""
-        return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
+        preview = _format_execute_code_preview(args.get("code", "")) or ""
+        return _wrap(f"┊ 🐍 exec      {_trunc(preview, 55)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
@@ -1506,5 +1519,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

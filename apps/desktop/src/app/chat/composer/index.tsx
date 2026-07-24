@@ -49,7 +49,7 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
-  insertPlainTextAtCaret,
+  insertPastedTextAtCaret,
   normalizeComposerEditorDom,
   RICH_INPUT_SLOT
 } from './rich-editor'
@@ -402,7 +402,7 @@ export function ChatBar({
     }
 
     event.preventDefault()
-    insertPlainTextAtCaret(event.currentTarget, pastedText)
+    insertPastedTextAtCaret(event.currentTarget, pastedText)
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 

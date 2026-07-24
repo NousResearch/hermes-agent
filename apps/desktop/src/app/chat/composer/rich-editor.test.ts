@@ -4,7 +4,9 @@ import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
   composerPlainText,
   deleteSelectionInEditor,
+  insertPastedTextAtCaret,
   insertPlainTextAtCaret,
+  NATIVE_PASTE_INSERT_MAX_CHARS,
   normalizeComposerEditorDom,
   refChipElement,
   renderComposerContents,
@@ -107,6 +109,88 @@ describe('insertPlainTextAtCaret', () => {
     expect(composerPlainText(editor)).toBe('abcdef')
 
     editor.remove()
+  })
+})
+
+describe('insertPastedTextAtCaret', () => {
+  const runFallbackCase = (execCommand: typeof document.execCommand) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    const original = document.execCommand
+    document.execCommand = execCommand
+
+    try {
+      insertPastedTextAtCaret(editor, 'pasted')
+      expect(composerPlainText(editor)).toBe('pasted')
+    } finally {
+      document.execCommand = original
+      editor.remove()
+    }
+  }
+
+  it('uses the native insertText transaction for normal-sized pastes', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    const original = document.execCommand
+    const calls: Array<[string, string | undefined]> = []
+
+    document.execCommand = ((command: string, _showDefaultUI?: boolean, value?: string) => {
+      calls.push([command, value])
+      editor.textContent = value ?? ''
+
+      return true
+    }) as typeof document.execCommand
+
+    try {
+      insertPastedTextAtCaret(editor, 'pasted')
+      expect(calls).toEqual([['insertText', 'pasted']])
+      expect(composerPlainText(editor)).toBe('pasted')
+    } finally {
+      document.execCommand = original
+      editor.remove()
+    }
+  })
+
+  it('falls back when native insertText returns false', () => {
+    runFallbackCase((() => false) as typeof document.execCommand)
+  })
+
+  it('falls back when native insertText throws', () => {
+    runFallbackCase((() => {
+      throw new Error('unsupported')
+    }) as typeof document.execCommand)
+  })
+
+  it('falls back to manual insertion for very large pastes', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    const original = document.execCommand
+    const calls: string[] = []
+    const pasted = 'x'.repeat(NATIVE_PASTE_INSERT_MAX_CHARS + 1)
+
+    document.execCommand = ((command: string) => {
+      calls.push(command)
+
+      return true
+    }) as typeof document.execCommand
+
+    try {
+      insertPastedTextAtCaret(editor, pasted)
+      expect(calls).toEqual([])
+      expect(composerPlainText(editor)).toBe(pasted)
+    } finally {
+      document.execCommand = original
+      editor.remove()
+    }
   })
 })
 

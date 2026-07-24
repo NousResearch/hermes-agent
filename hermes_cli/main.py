@@ -4270,7 +4270,11 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     # Already configured — offer K / R / C ────────────────────────────────
     from hermes_cli.env_loader import format_secret_source_suffix
 
-    source_suffix = format_secret_source_suffix(key_env) if key_env else ""
+    source_suffix = ""
+    for _ev in pconfig.api_key_env_vars:
+        source_suffix = format_secret_source_suffix(_ev)
+        if source_suffix:
+            break
     print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
     if not key_env:
         # Nothing we can rewrite; just acknowledge and move on.

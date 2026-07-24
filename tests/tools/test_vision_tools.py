@@ -1318,3 +1318,143 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight shrink — first async_call_llm must carry a resized payload
+# ---------------------------------------------------------------------------
+
+
+class TestAuxVisionPreFlightShrink:
+    """Regression: production Anthropic failures were oversized aux-vision
+    images (6+ MB base64) that burned all 3 retries because the shrink was
+    reactive-only. The pre-flight in ``vision_analyze_tool`` must resize
+    BEFORE the first ``async_call_llm`` call.
+
+    These tests mock ``async_call_llm`` and inspect the first call's message
+    payload directly — proving the pre-flight fires end-to-end, not just
+    that ``_resize_image_for_vision`` works in isolation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_api_call_payload_is_pre_shrunk(self, tmp_path):
+        """A ~6 MB base64 image must be resized before the first API call."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+
+        from tools.vision_tools import _AUX_VISION_TARGET_BYTES
+
+        # Build a real ~6 MB JPEG payload that exceeds the aux target.
+        import io as _io
+        img = Image.new("RGB", (3000, 3000))
+        pixels = img.load()
+        for y in range(0, 3000, 10):
+            for x in range(0, 3000, 10):
+                pixels[x, y] = ((x * 7) % 256, (y * 11) % 256, ((x + y) * 3) % 256)
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=95)
+        raw = buf.getvalue()
+
+        big_path = tmp_path / "big.jpg"
+        big_path.write_bytes(raw)
+
+        # Confirm the source really is oversized — otherwise the test is a no-op.
+        import base64 as _b64
+        raw_b64_len = len(_b64.b64encode(raw))
+        if raw_b64_len <= _AUX_VISION_TARGET_BYTES:
+            pytest.skip(
+                f"Generated JPEG is only {raw_b64_len} bytes b64 — "
+                f"not oversized enough to exercise pre-flight path"
+            )
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "shrunk-and-analyzed"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await vision_analyze_tool(
+                str(big_path), "describe", "test/model"))
+
+        # Sanity: the tool succeeded (didn't raise or 400).
+        assert result["success"] is True
+
+        # Load-bearing assertion: the FIRST async_call_llm invocation must
+        # carry an already-shrunk image payload — never full-resolution.
+        assert mock_llm.await_count == 1, (
+            f"expected exactly 1 API call after pre-flight shrink, "
+            f"got {mock_llm.await_count}"
+        )
+        first_call_kwargs = mock_llm.await_args.kwargs
+        messages = first_call_kwargs["messages"]
+        image_url_part = messages[0]["content"][1]["image_url"]["url"]
+        assert image_url_part.startswith("data:image/"), (
+            f"expected data URL, got {image_url_part[:60]!r}"
+        )
+        assert len(image_url_part) <= _AUX_VISION_TARGET_BYTES, (
+            f"first API call carried {len(image_url_part)} bytes "
+            f"— pre-flight shrink didn't fire "
+            f"(target={_AUX_VISION_TARGET_BYTES})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_small_image_untouched_by_preflight(self, tmp_path):
+        """Small images below target must NOT be resized — full resolution
+        preserved so aux-vision quality doesn't degrade unnecessarily."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+
+        # Small 256x256 solid image — well under the target.
+        import io as _io
+        img = Image.new("RGB", (256, 256), color=(128, 64, 200))
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        small_path = tmp_path / "small.png"
+        small_path.write_bytes(buf.getvalue())
+
+        original_b64_len = len(base64_encoded_data_url_for_path(small_path))
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "small-image-untouched"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={}),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await vision_analyze_tool(
+                str(small_path), "describe", "test/model"))
+
+        assert result["success"] is True
+        first_call_kwargs = mock_llm.await_args.kwargs
+        image_url_part = first_call_kwargs["messages"][0]["content"][1]["image_url"]["url"]
+        # Small image sent at full resolution — length identical to original encode.
+        assert len(image_url_part) == original_b64_len, (
+            f"small image was resized by pre-flight (before={original_b64_len}, "
+            f"after={len(image_url_part)}) — pre-flight should skip small payloads"
+        )
+
+
+def base64_encoded_data_url_for_path(path):
+    """Helper: encode a file to a data URL the same way vision_tools does."""
+    import base64 as _b64
+    from tools.vision_tools import _determine_mime_type
+    raw = path.read_bytes()
+    mime = _determine_mime_type(path)
+    return f"data:{mime};base64,{_b64.b64encode(raw).decode('ascii')}"

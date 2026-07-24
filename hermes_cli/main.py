@@ -6215,6 +6215,9 @@ def _find_stale_dashboard_pids(
     through their owning systemd scope; only manually-started processes use
     the kill path because we can't know their original launch args.
 
+    On POSIX hosts the scan is scoped to the current UID so one user's update
+    never tries to stop another user's dashboard on shared machines.
+
     *exclude_pids* is an optional set of PIDs that must never be returned.
     This is used by the Hermes Desktop Electron app to protect its own
     backend child process: when the desktop spawns ``hermes serve`` as
@@ -6288,24 +6291,31 @@ def _find_stale_dashboard_pids(
             # greedy regex matching unrelated cmdlines that merely contain
             # both words (e.g. a chat session discussing "dashboard").
             result = subprocess.run(
-                ["ps", "-A", "-o", "pid=,command="],
+                ["ps", "-A", "-o", "uid=,pid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             if result.returncode == 0:
+                getuid = getattr(os, "getuid", None)
+                if getuid is None:
+                    return []
+                current_uid = getuid()
                 for line in getattr(result, "stdout", "").split("\n"):
                     stripped = line.strip()
                     if not stripped or "grep" in stripped:
                         continue
-                    parts = stripped.split(None, 1)
-                    if len(parts) != 2:
+                    parts = stripped.split(None, 2)
+                    if len(parts) != 3:
                         continue
                     try:
-                        pid = int(parts[0])
+                        uid = int(parts[0])
+                        pid = int(parts[1])
                     except ValueError:
                         continue
-                    command = parts[1]
+                    if uid != current_uid:
+                        continue
+                    command = parts[2]
                     if any(p in command for p in patterns) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

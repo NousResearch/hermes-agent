@@ -91,6 +91,18 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_routine_create_and_list(kanban_home):
+    out = kc.run_slash(
+        "routine create 'weekly note' --cron '* * * * *' "
+        "--assignee scribe --body 'Draft the weekly note.'"
+    )
+    assert "Created routine" in out
+
+    out = kc.run_slash("routine list")
+    assert "weekly note" in out
+    assert "scribe" in out
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

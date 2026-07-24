@@ -553,3 +553,41 @@ def test_bridge_forwards_requests_and_poisons_on_token_endpoint_400(
     assert not (d / "srv.client.json").exists()
     assert provider._initialized is False
     assert provider.context.client_info is None
+
+@pytest.mark.asyncio
+async def test_reset_initialized_flips_flag_false(tmp_path, monkeypatch):
+    """reset_initialized(name) forces the cached provider to re-run _initialize.
+
+    On a reconnect/transport-rebuild the manager returns the SAME cached
+    provider, whose in-memory token may have expired while the session sat
+    idle. _initialize() (which re-seeds token_expiry_time so is_token_valid()
+    reports expired and the SDK's refresh branch fires) only re-runs when
+    _initialized is False. Nothing on the reconnect path resets it, so an idle
+    expired token cannot self-heal without an external disk write. This method
+    is the reset hook the reconnect path calls; mirrors invalidate_if_disk_changed
+    minus the mtime gate.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+    assert provider is not None
+    provider._initialized = True
+
+    changed = mgr.reset_initialized("srv")
+
+    assert changed is True
+    assert provider._initialized is False
+
+
+@pytest.mark.asyncio
+async def test_reset_initialized_noop_for_unknown_server(tmp_path, monkeypatch):
+    """reset_initialized on a server with no cached provider is a safe no-op."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    # never built a provider for "ghost"
+    assert mgr.reset_initialized("ghost") is False

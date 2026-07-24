@@ -672,6 +672,40 @@ class MCPOAuthManager:
                 return True
             return False
 
+    def reset_initialized(
+        self,
+        server_name: str,
+        *,
+        hermes_home: str | Path | None = None,
+    ) -> bool:
+        """Force the cached provider to re-run ``_initialize`` on its next flow.
+
+        Returns True if a cached provider existed and its ``_initialized`` flag
+        was flipped to False, else False.
+
+        This is the reconnect-path counterpart to
+        :meth:`invalidate_if_disk_changed`. Disk-watch only resets
+        ``_initialized`` when the tokens *file* changed; but when an OAuth MCP
+        session sits idle and its access token expires in memory, the run
+        loop's reconnect/parked-revival path rebuilds the transport reusing the
+        SAME cached provider (``get_or_build_provider`` returns the cached
+        instance) whose ``_initialized`` is still True. The SDK then never
+        re-runs ``_initialize`` — the only place that calls
+        ``update_token_expiry`` so ``is_token_valid()`` reports the token
+        expired and ``async_auth_flow`` takes the ``can_refresh_token()``
+        refresh branch. The result is an idle-expired token that can only
+        self-heal via an external disk write. Resetting ``_initialized`` here
+        forces a fresh disk read + expiry re-seed so the SDK refreshes on the
+        reconnect handshake, with no mtime dependency.
+        """
+        entry = self._entries.get(self._key(server_name, hermes_home))
+        if entry is None or entry.provider is None:
+            return False
+        if not hasattr(entry.provider, "_initialized"):
+            return False
+        entry.provider._initialized = False  # noqa: SLF001
+        return True
+
     # -- 401 handler (dedup'd) -----------------------------------------------
 
     async def handle_401(

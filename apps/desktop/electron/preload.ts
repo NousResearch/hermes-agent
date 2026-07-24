@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
+import { customWindowControlsEnabled } from './window-controls'
+
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
@@ -8,6 +10,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  windowControls: {
+    custom: customWindowControlsEnabled(),
+    minimize: () => ipcRenderer.send('hermes:window-control', 'minimize'),
+    toggleMaximize: () => ipcRenderer.send('hermes:window-control', 'toggle-maximize'),
+    close: () => ipcRenderer.send('hermes:window-control', 'close')
+  },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.

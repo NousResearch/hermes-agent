@@ -11,6 +11,7 @@ import { test, vi } from 'vitest'
 import {
   applyZoomLevel,
   clampZoomLevel,
+  createZoomCoordinator,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_RESIZE_REASSERT_DELAY_MS,
@@ -63,6 +64,34 @@ test('conversion is monotonic across the preset range', () => {
 test('extreme percentages clamp to the level bounds', () => {
   assert.equal(percentToZoomLevel(1), -9)
   assert.equal(percentToZoomLevel(1_000_000), 9)
+})
+
+test('zoom coordinator commits the initial persisted restore', () => {
+  const coordinator = createZoomCoordinator()
+  const commitRestore = coordinator.beginRestore()
+
+  assert.equal(commitRestore(1), 1)
+  assert.equal(coordinator.getDesired(), 1)
+})
+
+test('zoom coordinator rejects a stale restore after a global zoom change', () => {
+  const coordinator = createZoomCoordinator()
+  const commitRestore = coordinator.beginRestore()
+
+  coordinator.setDesired(2)
+
+  assert.equal(commitRestore(1), undefined)
+  assert.equal(coordinator.getDesired(), 2)
+})
+
+test('zoom coordinator rejects restores started after global zoom is known', () => {
+  const coordinator = createZoomCoordinator()
+  coordinator.setDesired(2)
+
+  const commitRestore = coordinator.beginRestore()
+
+  assert.equal(commitRestore(1), undefined)
+  assert.equal(coordinator.getDesired(), 2)
 })
 
 test('installZoomReassertOnWindowEvents wires show, restore, resize, and cross-display moves on macOS and Windows', () => {

@@ -48,6 +48,41 @@ export function applyZoomLevel(webContents, level) {
   return clamped
 }
 
+/**
+ * One desired zoom shared by every chat window. A revision rejects an async
+ * localStorage read when a newer in-memory choice already exists.
+ */
+export function createZoomCoordinator() {
+  let desiredLevel
+  let revision = 0
+
+  return {
+    beginRestore() {
+      const restoreRevision = revision
+      const canRestore = desiredLevel === undefined
+
+      return level => {
+        if (!canRestore || revision !== restoreRevision) {
+          return undefined
+        }
+
+        desiredLevel = clampZoomLevel(level)
+
+        return desiredLevel
+      }
+    },
+    getDesired() {
+      return desiredLevel
+    },
+    setDesired(level) {
+      desiredLevel = clampZoomLevel(level)
+      revision += 1
+
+      return desiredLevel
+    }
+  }
+}
+
 // Chromium can drop webContents zoom when a BrowserWindow is resized, minimized
 // and restored, or crosses onto a monitor with different display scaling. macOS
 // and Windows provide trailing `resized`/`moved` events; Linux only provides the

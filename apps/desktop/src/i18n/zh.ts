@@ -1860,6 +1860,7 @@ export const zh: Translations = {
     promptPlaceholder: '总结我未读的 Slack 话题，并把前 5 条邮件发给我…',
     frequencyLabel: '频率',
     deliverLabel: '投递至',
+    deliverNeedsHomeChannel: '请先设置主频道',
     modelLabel: '模型',
     modelDefault: '默认（全局模型）',
     customScheduleLabel: '自定义排程',
@@ -1871,7 +1872,23 @@ export const zh: Translations = {
     scheduleRequired: '排程为必填项。',
     scriptOnlyEditHint: '仅脚本任务（无 AI 提示词）。任务 ID：',
     saveChanges: '保存更改',
-    createAction: '创建定时任务'
+    createAction: '创建定时任务',
+    tabs: {
+      jobs: '任务',
+      blueprints: '蓝图'
+    },
+    blueprints: {
+      tab: '蓝图',
+      subtitle: '现成的自动化',
+      dialogDesc: '填写详细信息并进行排程。',
+      scheduleIt: '安排任务',
+      scheduling: '安排中...',
+      scheduled: '蓝图已安排',
+      loading: '正在加载蓝图...',
+      failedLoad: '加载蓝图失败',
+      emptyTitle: '没有可用的蓝图',
+      emptyDesc: '此后端上没有可用的自动化蓝图。'
+    }
   },
 
   artifacts: {

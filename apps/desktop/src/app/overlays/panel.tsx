@@ -71,7 +71,11 @@ interface PanelHeaderProps {
 
 export function PanelHeader({ actions, subtitle, title }: PanelHeaderProps) {
   return (
-    <header className="mb-3 flex shrink-0 items-start justify-between gap-3">
+    // The overlay's close (X) is absolutely positioned at right-3 and costs no
+    // layout space, so header actions would otherwise slide right up against it.
+    // Reserve clearance (button footprint from the card edge + a small gap) on
+    // the right whenever actions are present.
+    <header className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}>
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}

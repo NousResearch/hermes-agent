@@ -601,6 +601,48 @@ class TestFinalCleanupEditFloodControl:
         assert consumer.final_response_sent is False
         assert consumer.final_content_delivered is False
 
+    @pytest.mark.asyncio
+    async def test_failed_final_split_does_not_mark_truncated_preview_delivered(self):
+        """Telegram reports the one-message preview text it actually showed.
+
+        Without this cross-layer metadata, the consumer records the full
+        oversized input as visible. A flood-controlled final split then looks
+        like a cosmetic cursor-strip failure and incorrectly marks the clipped
+        `(1/N)` preview as complete, suppressing the gateway recovery send.
+        """
+        adapter = _make_adapter()
+        adapter.FALLBACK_ON_FINAL_EDIT_FLOOD = True
+        truncated_preview = "first chunk only\n\n(1/2)"
+        adapter.edit_message = AsyncMock(side_effect=[
+            SimpleNamespace(
+                success=True,
+                message_id="initial_preview",
+                raw_response={"delivered_text": truncated_preview},
+            ),
+            SimpleNamespace(
+                success=False,
+                error="flood_control:12",
+                raw_response=None,
+            ),
+        ])
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        await consumer._send_or_edit("preview")
+        full_text = "first chunk only" + (" plus unsent tail" * 400)
+        await consumer._send_or_edit(f"{full_text} ▉")
+        assert consumer._last_sent_text == truncated_preview
+
+        ok = await consumer._send_or_edit(full_text, finalize=True)
+
+        assert ok is False
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+        assert consumer._fallback_final_send is True
+
 
 class TestStreamConsumerConfigFreshFinalField:
     """The dataclass field must exist and default to 0 (disabled)."""

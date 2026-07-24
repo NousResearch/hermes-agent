@@ -1001,6 +1001,7 @@ class TestEditMessageStreamingSafety:
         # The edit must contain truncated content (≤ MAX_MESSAGE_LENGTH).
         edited_text = adapter._bot.edit_message_text.call_args.kwargs["text"]
         assert len(edited_text) <= adapter.MAX_MESSAGE_LENGTH
+        assert result.raw_response["delivered_text"] == edited_text
 
     @pytest.mark.asyncio
     async def test_saturated_preview_dedups_repeat_oversized_edits(self):
@@ -1029,6 +1030,9 @@ class TestEditMessageStreamingSafety:
             r = await adapter.edit_message("123", "456", "x" * grow, finalize=False)
             assert r.success is True
             assert r.message_id == "456"
+            assert r.raw_response["delivered_text"] == (
+                adapter._last_overflow_preview[("123", "456")]
+            )
         assert adapter._bot.edit_message_text.await_count == 1, (
             "identical saturated previews must not be re-sent"
         )
@@ -1105,6 +1109,7 @@ class TestEditMessageStreamingSafety:
         assert adapter._bot.edit_message_text.await_count == 2
         retry_text = adapter._bot.edit_message_text.await_args_list[1].kwargs["text"]
         assert len(retry_text) <= adapter.MAX_MESSAGE_LENGTH
+        assert result.raw_response["delivered_text"] == retry_text
 
 
 # =========================================================================

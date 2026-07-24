@@ -75,6 +75,7 @@ def _hard_stop_config(**overrides) -> dict:
         "tool_loop_guardrails": {
             "warnings_enabled": True,
             "hard_stop_enabled": True,
+            "no_progress_hard_stop_enabled": True,
             "hard_stop_after": {
                 "exact_failure": 2,
                 "same_tool_failure": 8,
@@ -266,6 +267,78 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert result["final_response"] == "done"
     tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
+
+
+def test_default_run_conversation_halts_repeated_idempotent_no_progress_loop():
+    agent = _make_agent("read_file", max_iterations=10)
+    same_args = {"path": "/tmp/same.txt"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("read_file", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 8)
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("run_agent.handle_function_call", return_value="same file contents") as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("check whether the file already has the right content")
+
+    assert mock_hfc.call_count == 5
+    assert result["api_calls"] == 6
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["completed"] is True
+    assert "idempotent_no_progress_block" in result["final_response"]
+    assert "5 repeated non-progressing attempts" in result["final_response"]
+    assert result["guardrail"]["code"] == "idempotent_no_progress_block"
+    assert result["guardrail"]["tool_name"] == "read_file"
+
+
+def test_config_can_disable_default_idempotent_no_progress_halt():
+    agent = _make_agent(
+        "read_file",
+        max_iterations=10,
+        config={
+            "tool_loop_guardrails": {
+                "warnings_enabled": True,
+                "hard_stop_enabled": False,
+                "no_progress_hard_stop_enabled": False,
+                "warn_after": {"idempotent_no_progress": 2},
+                "hard_stop_after": {"idempotent_no_progress": 5},
+            }
+        },
+    )
+    same_args = {"path": "/tmp/same.txt"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("read_file", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 4)
+    ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("run_agent.handle_function_call", return_value="same file contents") as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("check whether the file already has the right content")
+
+    assert mock_hfc.call_count == 3
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "guardrail" not in result
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("idempotent_no_progress_warning" in content for content in tool_contents)
 
 
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():

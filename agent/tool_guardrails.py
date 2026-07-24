@@ -64,13 +64,17 @@ MUTATING_TOOL_NAMES = frozenset(
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
-    Warnings are enabled by default and never prevent tool execution. Hard stops
-    are explicit opt-in so interactive CLI/TUI sessions get a gentle nudge unless
-    the user enables circuit-breaker behavior in config.yaml.
+    Warnings are enabled by default and never prevent tool execution. Failure
+    hard stops are explicit opt-in so interactive CLI/TUI sessions get a gentle
+    nudge unless the user enables circuit-breaker behavior in config.yaml.
+    Repeating the exact same read-only result is treated more strictly by
+    default because it often means the requested state is already satisfied and
+    the model is stuck in an instruction-reality mismatch loop.
     """
 
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
+    no_progress_hard_stop_enabled: bool = True
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
@@ -97,6 +101,10 @@ class ToolCallGuardrailConfig:
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            no_progress_hard_stop_enabled=_as_bool(
+                data.get("no_progress_hard_stop_enabled"),
+                defaults.no_progress_hard_stop_enabled,
+            ),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
@@ -240,27 +248,25 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        if not self.config.hard_stop_enabled:
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        if self.config.hard_stop_enabled:
+            exact_count = self._exact_failure_counts.get(signature, 0)
+            if exact_count >= self.config.exact_failure_block_after:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="repeated_exact_failure_block",
+                    message=(
+                        f"Blocked {tool_name}: the same tool call failed {exact_count} "
+                        "times with identical arguments. Stop retrying it unchanged; "
+                        "change strategy or explain the blocker."
+                    ),
+                    tool_name=tool_name,
+                    count=exact_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
-        exact_count = self._exact_failure_counts.get(signature, 0)
-        if exact_count >= self.config.exact_failure_block_after:
-            decision = ToolGuardrailDecision(
-                action="block",
-                code="repeated_exact_failure_block",
-                message=(
-                    f"Blocked {tool_name}: the same tool call failed {exact_count} "
-                    "times with identical arguments. Stop retrying it unchanged; "
-                    "change strategy or explain the blocker."
-                ),
-                tool_name=tool_name,
-                count=exact_count,
-                signature=signature,
-            )
-            self._halt_decision = decision
-            return decision
-
-        if self._is_idempotent(tool_name):
+        if self.config.no_progress_hard_stop_enabled and self._is_idempotent(tool_name):
             record = self._no_progress.get(signature)
             if record is not None:
                 _result_hash, repeat_count = record
@@ -271,7 +277,9 @@ class ToolCallGuardrailController:
                         message=(
                             f"Blocked {tool_name}: this read-only call returned the same "
                             f"result {repeat_count} times. Stop repeating it unchanged; "
-                            "use the result already provided or try a different query."
+                            "use the result already provided or try a different query. "
+                            "If the current state already satisfies the user's request, "
+                            "stop and report that no changes are needed."
                         ),
                         tool_name=tool_name,
                         count=repeat_count,
@@ -365,7 +373,8 @@ class ToolCallGuardrailController:
                 message=(
                     f"{tool_name} returned the same result {repeat_count} times. "
                     "Use the result already provided or change the query instead of "
-                    "repeating it unchanged."
+                    "repeating it unchanged. If the current state already satisfies "
+                    "the user's request, stop and explain that no changes are needed."
                 ),
                 tool_name=tool_name,
                 count=repeat_count,

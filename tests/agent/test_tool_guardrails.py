@@ -38,6 +38,7 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
 
     assert cfg.warnings_enabled is True
     assert cfg.hard_stop_enabled is False
+    assert cfg.no_progress_hard_stop_enabled is True
     assert cfg.exact_failure_warn_after == 2
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
@@ -51,6 +52,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
         {
             "warnings_enabled": False,
             "hard_stop_enabled": True,
+            "no_progress_hard_stop_enabled": False,
             "warn_after": {
                 "exact_failure": 3,
                 "same_tool_failure": 4,
@@ -66,6 +68,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
 
     assert cfg.warnings_enabled is False
     assert cfg.hard_stop_enabled is True
+    assert cfg.no_progress_hard_stop_enabled is False
     assert cfg.exact_failure_warn_after == 3
     assert cfg.same_tool_failure_warn_after == 4
     assert cfg.no_progress_warn_after == 5
@@ -188,27 +191,52 @@ def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
     assert third.count == 3
 
 
-def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_default():
+def test_idempotent_no_progress_repeated_result_blocks_future_repeat_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
     args = {"path": "/tmp/same.txt"}
     result = "same file contents"
 
-    for _ in range(4):
-        assert controller.before_call("read_file", args).action == "allow"
-        decision = controller.after_call("read_file", args, result, failed=False)
-
+    assert controller.before_call("read_file", args).action == "allow"
+    assert controller.after_call("read_file", args, result, failed=False).action == "allow"
+    assert controller.before_call("read_file", args).action == "allow"
+    decision = controller.after_call("read_file", args, result, failed=False)
     assert decision.action == "warn"
     assert decision.code == "idempotent_no_progress_warning"
-    assert controller.before_call("read_file", args).action == "allow"
-    assert controller.halt_decision is None
+    blocked = controller.before_call("read_file", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+    assert controller.halt_decision == blocked
 
 
-def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
+def test_warnings_disabled_does_not_disable_no_progress_hard_stop():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(
-            hard_stop_enabled=True,
+            warnings_enabled=False,
+            hard_stop_enabled=False,
+            no_progress_hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"path": "/tmp/same.txt"}
+    result = "same file contents"
+
+    assert controller.before_call("read_file", args).action == "allow"
+    assert controller.after_call("read_file", args, result, failed=False).action == "allow"
+    assert controller.before_call("read_file", args).action == "allow"
+    assert controller.after_call("read_file", args, result, failed=False).action == "allow"
+
+    blocked = controller.before_call("read_file", args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_opt_out_disables_default_idempotent_no_progress_block():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            no_progress_hard_stop_enabled=False,
             no_progress_warn_after=2,
             no_progress_block_after=2,
         )
@@ -223,9 +251,8 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert warn.action == "warn"
     assert warn.code == "idempotent_no_progress_warning"
 
-    blocked = controller.before_call("read_file", args)
-    assert blocked.action == "block"
-    assert blocked.code == "idempotent_no_progress_block"
+    assert controller.before_call("read_file", args).action == "allow"
+    assert controller.halt_decision is None
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():

@@ -1701,6 +1701,7 @@ export const en: Translations = {
       menuDelete: 'Delete',
       reveal: 'Reveal in folder',
       copyPath: 'Copy path',
+      archiveAllThreads: 'Archive all threads',
       removeFromSidebar: 'Hide from sidebar',
       createFailed: 'Could not create project',
       staleBackend:

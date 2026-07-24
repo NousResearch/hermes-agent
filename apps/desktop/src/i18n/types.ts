@@ -1416,6 +1416,7 @@ export interface Translations {
       menuDelete: string
       reveal: string
       copyPath: string
+      archiveAllThreads: string
       removeFromSidebar: string
       createFailed: string
       staleBackend: string

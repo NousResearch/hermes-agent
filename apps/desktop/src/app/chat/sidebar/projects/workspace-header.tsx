@@ -83,7 +83,17 @@ export function WorkspaceShowMoreButton({
 // Per-worktree actions (linked worktree lanes only), mirroring the session row
 // and ProjectMenu kebab: reveal in the file manager, copy path, and remove the
 // worktree (runs a real `git worktree remove` via the caller's confirm dialog).
-export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemove: () => void }) {
+// ``onArchiveAll`` adds a bulk-archive entry that archives every session in the
+// lane — available on any lane with sessions, including the main/home checkout.
+export function WorkspaceMenu({
+  path,
+  onArchiveAll,
+  onRemove
+}: {
+  path: null | string
+  onArchiveAll?: () => Promise<void> | void
+  onRemove?: () => void
+}) {
   const { t } = useI18n()
   const p = t.sidebar.projects
 
@@ -102,19 +112,34 @@ export function WorkspaceMenu({ path, onRemove }: { path: null | string; onRemov
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end" className="w-48" sideOffset={6}>
-        <DropdownMenuItem disabled={!path} onSelect={() => void revealPath(path)}>
-          <Codicon name="folder-opened" size="0.875rem" />
-          <span>{p.reveal}</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={!path} onSelect={() => void copyPath(path)}>
-          <Codicon name="copy" size="0.875rem" />
-          <span>{p.copyPath}</span>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onRemove} variant="destructive">
-          <Codicon name="trash" size="0.875rem" />
-          <span>{`${p.removeWorktree}…`}</span>
-        </DropdownMenuItem>
+        {onArchiveAll && (
+          <DropdownMenuItem onSelect={() => void onArchiveAll()}>
+            <Codicon name="archive" size="0.875rem" />
+            <span>{p.archiveAllThreads}</span>
+          </DropdownMenuItem>
+        )}
+        {path && (onArchiveAll || onRemove) && <DropdownMenuSeparator />}
+        {path && (
+          <DropdownMenuItem onSelect={() => void revealPath(path)}>
+            <Codicon name="folder-opened" size="0.875rem" />
+            <span>{p.reveal}</span>
+          </DropdownMenuItem>
+        )}
+        {path && (
+          <DropdownMenuItem onSelect={() => void copyPath(path)}>
+            <Codicon name="copy" size="0.875rem" />
+            <span>{p.copyPath}</span>
+          </DropdownMenuItem>
+        )}
+        {onRemove && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onRemove} variant="destructive">
+              <Codicon name="trash" size="0.875rem" />
+              <span>{`${p.removeWorktree}…`}</span>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

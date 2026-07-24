@@ -39,6 +39,7 @@ import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
 export function EnteredProjectContent({
   project,
   renderRows,
+  onArchiveSession,
   onNewSession,
   repoWorktrees,
   liveSessions,
@@ -46,6 +47,7 @@ export function EnteredProjectContent({
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  onArchiveSession?: (sessionId: string) => Promise<void> | void
   onNewSession?: (path: null | string) => void
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
@@ -64,6 +66,7 @@ export function EnteredProjectContent({
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
           liveSessions={liveSessions}
+          onArchiveSession={onArchiveSession}
           onNewSession={onNewSession}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
@@ -79,6 +82,7 @@ function RepoFlatSection({
   repo,
   showHeader,
   renderRows,
+  onArchiveSession,
   onNewSession,
   discoveredWorktrees,
   liveSessions,
@@ -87,6 +91,7 @@ function RepoFlatSection({
   repo: SidebarWorkspaceTree
   showHeader: boolean
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  onArchiveSession?: (sessionId: string) => Promise<void> | void
   onNewSession?: (path: null | string) => void
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
@@ -166,6 +171,7 @@ function RepoFlatSection({
         <SidebarWorkspaceGroup
           group={group}
           key={group.id}
+          onArchiveSession={onArchiveSession}
           // The kanban bucket is read-only: it aggregates many task worktrees, so
           // "new session here" and "remove worktree" have no single target.
           onNewSession={group.isKanban ? undefined : onNewSession}

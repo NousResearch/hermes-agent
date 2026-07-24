@@ -19,13 +19,20 @@ import { WorkspaceAddButton, WorkspaceHeader, WorkspaceMenu, WorkspaceShowMoreBu
 interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
+  onArchiveSession?: (sessionId: string) => Promise<void> | void
   onNewSession?: (path: null | string) => void
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  group,
+  renderRows,
+  onArchiveSession,
+  onNewSession,
+  onRemove
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -100,11 +107,25 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
     onNewSession(group.path)
   }
 
+  // Archive every session in this lane. Each session action owns its optimistic
+  // state + rollback snapshot, so we go one at a time — overlapping parallel
+  // calls could restore stale sidebar/pin state if one request failed while
+  // another succeeded. Sequential keeps the rollback per-session.
+  const handleArchiveAll = async () => {
+    if (!onArchiveSession) {
+      return
+    }
+
+    for (const session of group.sessions) {
+      await onArchiveSession(session.id)
+    }
+  }
+
   return (
     <SidebarRowStack>
       <WorkspaceHeader
         action={
-          (onNewSession || isProfileGroup || onRemove) && (
+          (onNewSession || isProfileGroup || onRemove || (!isProfileGroup && group.sessions.length > 0)) && (
             <div className="flex items-center">
               {(onNewSession || isProfileGroup) && (
                 <WorkspaceAddButton
@@ -115,7 +136,15 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
                   onClick={() => void handleNewSession()}
                 />
               )}
-              {onRemove && <WorkspaceMenu onRemove={onRemove} path={group.path} />}
+              {!isProfileGroup && (onRemove || (onArchiveSession && group.sessions.length > 0)) && (
+                <WorkspaceMenu
+                  onArchiveAll={
+                    onArchiveSession && group.sessions.length > 0 ? handleArchiveAll : undefined
+                  }
+                  onRemove={onRemove}
+                  path={group.path}
+                />
+              )}
             </div>
           )
         }

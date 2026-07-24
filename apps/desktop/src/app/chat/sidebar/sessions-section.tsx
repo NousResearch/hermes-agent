@@ -88,7 +88,7 @@ interface SidebarSessionsSectionProps {
   workingSessionIdSet: Set<string>
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string) => Promise<void> | void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
@@ -251,6 +251,7 @@ export function SidebarSessionsSection({
         {hasProjectContent ? (
           <EnteredProjectContent
             liveSessions={liveSessions}
+            onArchiveSession={onArchiveSession}
             onNewSession={onNewSessionInWorkspace}
             project={projectContent}
             removedSessionIds={removedSessionIds}
@@ -301,6 +302,7 @@ export function SidebarSessionsSection({
       <SidebarWorkspaceGroup
         group={group}
         key={group.id}
+        onArchiveSession={group.mode === 'workspace' ? onArchiveSession : undefined}
         onNewSession={onNewSessionInWorkspace}
         renderRows={renderRows}
       />

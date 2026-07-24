@@ -574,6 +574,78 @@ def test_repair_preserves_reasoning_content_on_merge():
     assert merged.get("reasoning_content") == "thinking A"
 
 
+def test_repair_drops_stale_api_content_on_assistant_merge():
+    """Merging assistants must drop the earlier one's api_content sidecar.
+
+    An assistant row whose stored content diverges from the exact bytes sent
+    (sanitize-divergence — e.g. it quotes a <memory-context> fence) carries an
+    ``api_content`` sidecar. The request-build replay substitutes that sidecar
+    verbatim for historical user/assistant rows. When Pass 0 folds a following
+    assistant's content into this one but leaves the sidecar in place, replay
+    resends only the pre-merge bytes and silently drops the second turn's
+    content from the wire (while keeping its tool_call in the union). Mirrors
+    the consecutive-user merge, which already drops the sidecar.
+    """
+    from agent.turn_context import substitute_api_content
+
+    agent = _bare_agent()
+    prev = {
+        "role": "assistant",
+        "content": "PREV",
+        "api_content": "PREV exact wire bytes",
+        "tool_calls": [{"id": "a", "type": "function",
+                        "function": {"name": "f", "arguments": "{}"}}],
+    }
+    messages = [
+        {"role": "user", "content": "go"},
+        prev,
+        {"role": "assistant", "content": "NEW real answer",
+         "tool_calls": [{"id": "b", "type": "function",
+                         "function": {"name": "g", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "tool", "tool_call_id": "b", "content": "rb"},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    merged = [m for m in messages if m.get("role") == "assistant"][0]
+    # Union of both tool_calls survives.
+    assert [tc["id"] for tc in merged["tool_calls"]] == ["a", "b"]
+    # The stale sidecar is gone, so replay composes from the merged content.
+    assert "api_content" not in merged
+    api_copy = dict(merged)
+    substitute_api_content(api_copy)
+    assert "NEW real answer" in api_copy["content"]
+
+
+def test_repair_drops_stale_api_content_when_prev_content_empty():
+    """The empty-prev branch (content fully replaced) also drops the sidecar."""
+    from agent.turn_context import substitute_api_content
+
+    agent = _bare_agent()
+    prev = {
+        "role": "assistant",
+        "content": "",
+        "api_content": "stale bytes",
+        "tool_calls": [{"id": "a", "type": "function",
+                        "function": {"name": "f", "arguments": "{}"}}],
+    }
+    messages = [
+        {"role": "user", "content": "go"},
+        prev,
+        {"role": "assistant", "content": "the answer"},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    merged = [m for m in messages if m.get("role") == "assistant"][0]
+    assert merged["content"] == "the answer"
+    assert "api_content" not in merged
+    api_copy = dict(merged)
+    substitute_api_content(api_copy)
+    assert api_copy["content"] == "the answer"
+
+
 def test_repair_noop_on_valid_parallel_format():
     """A correctly-formatted single assistant with multiple tool_calls is unchanged."""
     agent = _bare_agent()

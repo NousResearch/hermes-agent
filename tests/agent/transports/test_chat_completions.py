@@ -458,6 +458,31 @@ class TestChatCompletionsBuildKwargs:
             "thinkingLevel": "high",
         }
 
+    @pytest.mark.parametrize("field_name", ["safety_settings", "safetySettings"])
+    def test_gemini_native_preserves_safety_settings_and_drops_unknown_extra_body(
+        self, transport, field_name
+    ):
+        settings = [
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_NONE",
+            }
+        ]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            request_overrides={
+                "extra_body": {
+                    field_name: settings,
+                    "unsupported_native_field": "drop-me",
+                }
+            },
+        )
+
+        assert kw["extra_body"] == {field_name: settings}
+
     def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

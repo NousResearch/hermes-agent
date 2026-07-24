@@ -69,7 +69,7 @@ Default deliverable:
 - exact on-disk path in the final response
 - verification using available local methods before saying it is done
 
-For two to four visual alternatives that should drive an iterative refinement, use the bundled visual companion when `open_preview` and a local terminal runtime are available. Load and follow [references/visual-companion.md](references/visual-companion.md) in full. It provides the authenticated preview, click-to-tool-result loop, stale-selection protection, decision ledger, fallback behavior, and cleanup sequence. Keep ordinary local HTML delivery as the fallback for remote backends and non-Desktop surfaces.
+For two to four visual alternatives that should drive an iterative refinement, use the bundled visual companion when `open_preview` and a local terminal runtime are available. Load and follow [references/visual-companion.md](references/visual-companion.md) in full. It provides the authenticated preview, click-to-tool-result loop, stale-selection protection, decision ledger, fallback behavior, and cleanup sequence. Its high-fidelity presentation contract is mandatory for page and product-surface decisions: show complete surfaces, a composition thesis, decision callouts, responsive proof, real product vocabulary, and a consolidated accepted board—not decorative thumbnails. Keep ordinary local HTML delivery as the fallback for remote backends and non-Desktop surfaces.
 
 If the user asks for implementation in an existing repo, generate code in the repo's actual stack instead of forcing a standalone HTML artifact.
 

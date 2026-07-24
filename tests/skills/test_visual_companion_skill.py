@@ -935,3 +935,16 @@ def test_skill_frontmatter_links_and_visual_workflow_contract_are_valid(monkeypa
     assert "open-preview.html" in reference_text
     assert "`open_preview`" in reference_text
     assert "Do not read `state.json`" in reference_text
+    assert "complete representative product surface" in reference_text
+    assert "not a thumbnail, moodboard, or palette swatch" in reference_text
+    assert "one-sentence composition thesis" in reference_text
+    assert "numbered anatomy callouts" in reference_text
+    assert "wide and narrow behavior" in reference_text
+    assert "actual product vocabulary" in reference_text
+    assert "consolidated presentation artifact" in reference_text
+    assert "Run the Slop Diagnostic before publication" in reference_text
+    assert "preserve the same viewport, crop, content, and zoom" in reference_text
+    assert "inspect the primary wide viewport and the named narrow viewport" in reference_text
+    assert "changing only the ledger's `varying` dimension" in reference_text
+    assert "This artifact is the design handoff, not another vote" in reference_text
+    assert "high-fidelity presentation contract is mandatory" in skill_text

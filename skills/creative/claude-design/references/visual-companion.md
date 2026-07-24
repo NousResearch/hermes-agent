@@ -88,6 +88,23 @@ Rules enforced by the publisher:
 
 Make options comparable at the same scale. Label the differentiating idea, best use, tradeoff, and recommendation without making the recommendation unselectable.
 
+#### High-fidelity presentation contract
+
+A companion round is a decision board, not a gallery of decorative cards. For a page, application screen, dashboard, or other product-surface decision, every selectable direction must:
+
+- show a complete representative product surface at a readable scale, not a thumbnail, moodboard, or palette swatch;
+- pair its short direction name with a one-sentence composition thesis that explains the organizing idea rather than describing colors;
+- use actual product vocabulary, representative content, design tokens, and component patterns from the supplied source or repository instead of generic SaaS filler;
+- add numbered anatomy callouts when hierarchy, layout, or interaction structure is being judged, tying each number to a visible locus and a concise design rationale;
+- demonstrate wide and narrow behavior when the target is responsive, using the same content and accepted hierarchy rather than merely claiming that it adapts;
+- identify the differentiating idea, best use, primary tradeoff, and recommendation without making any direction harder to select.
+
+Use three to six callouts for a screen-level direction unless fewer truly cover every material decision. For a lower-level exploration such as type, accent, motion posture, or component shape, the candidate may be scoped to that dimension, but show it in representative product context rather than as an isolated token sample.
+
+Keep the comparison fair: preserve the same viewport, crop, content, and zoom wherever the varying dimension allows. Stack rich candidates vertically when side-by-side columns would make their interfaces unreadable. Do not put links, text fields, or other nested interactive controls inside a selectable direction; describe those states visually.
+
+Run the Slop Diagnostic before publication. Record the score, repair every compositional tell, and re-score. When screenshot or browser-inspection tools are available, inspect the primary wide viewport and the named narrow viewport before asking the user to choose; source validation alone is not visual acceptance.
+
 ### 3. Publish the first round
 
 Write the source fragment to a stable path, then run:
@@ -176,9 +193,21 @@ A good sequence is:
 overall layout → color posture → accent system → component/detail refinement
 ```
 
-Do not generate endless rounds. Once the remaining uncertainty is better resolved in implementation, summarize the accepted decisions and build the real artifact.
+Do not generate endless rounds. Keep every refinement at the same readable fidelity while changing only the ledger's `varying` dimension; preserve the accepted composition, content, callouts, and responsive behavior unless the user's correction explicitly reopens one of them. Once the remaining uncertainty is better resolved in implementation, summarize the accepted decisions and build the real artifact.
 
-### 8. Stop and preserve the outcome
+### 8. Consolidate the accepted direction
+
+After the final selection, create a consolidated presentation artifact outside the selectable companion fragment before treating a screen-level design review as complete. It should contain:
+
+- the accepted complete representative product surface at full readable scale;
+- the final one-sentence composition thesis;
+- numbered anatomy callouts for the decisions the user accepted;
+- wide and narrow behavior when the product is responsive;
+- a compact record of the selected direction, incorporated feedback, fixed properties, and consciously rejected tradeoffs.
+
+This artifact is the design handoff, not another vote, so it does not need `data-choice` elements. Save it in the user's requested project or artifact location, open it through the ordinary preview path, inspect its primary viewports and browser console when tools permit, and use it as the visual contract for implementation. If the user explicitly asks to proceed directly into implementation, preserve the same information in the implementation plan and verify the production surface against it.
+
+### 9. Stop and preserve the outcome
 
 When the user accepts a direction, cancels, or the workflow cannot continue:
 

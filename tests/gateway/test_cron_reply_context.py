@@ -51,6 +51,24 @@ def test_falls_back_to_latest_chat_context(tmp_path, monkeypatch):
     assert record["content"] == "New"
 
 
+def test_explicit_unknown_thread_does_not_borrow_latest_context(tmp_path, monkeypatch):
+    store = tmp_path / "cron_reply_contexts.json"
+    monkeypatch.setattr(crc, "_STORE_PATH", store)
+
+    crc.record_cron_reply_context(
+        "teams",
+        "conv-1",
+        "Different thread",
+        thread_id="other-root",
+    )
+
+    assert crc.find_cron_reply_context(
+        "teams",
+        "conv-1",
+        thread_id="uncached-root",
+    ) is None
+
+
 def test_normalizes_teams_thread_conversation_ids(tmp_path, monkeypatch):
     store = tmp_path / "cron_reply_contexts.json"
     monkeypatch.setattr(crc, "_STORE_PATH", store)

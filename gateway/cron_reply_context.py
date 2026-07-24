@@ -111,6 +111,8 @@ def find_cron_reply_context(
     exact = records.get(_record_key(platform_name, chat, thread))
     if exact and _fresh(exact):
         return exact
+    if thread is not None:
+        return None
 
     candidates = [
         record

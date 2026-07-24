@@ -442,8 +442,16 @@ def is_safe_url(url: str) -> bool:
             # the proxy rather than blocking the request outright.
             # The hostname was already checked against
             # _BLOCKED_HOSTNAMES above so metadata endpoints remain
-            # blocked regardless.
-            if _proxy_is_configured():
+            # blocked regardless.  Literal IPs never qualify — they
+            # need no DNS, so a getaddrinfo failure on one is not a
+            # proxy-environment symptom; keep them on the fail-closed
+            # path (and the blocked-IP floor) instead of delegating.
+            _is_literal_ip = True
+            try:
+                ipaddress.ip_address(hostname)
+            except ValueError:
+                _is_literal_ip = False
+            if not _is_literal_ip and _proxy_is_configured():
                 logger.debug(
                     "DNS resolution failed for %s — proxy configured, "
                     "allowing through for proxy-side resolution",

@@ -135,9 +135,65 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("http://[::1]:8080/") is False
 
-    def test_dns_failure_blocked(self):
-        """DNS failures now fail closed — block the request."""
+    def test_dns_failure_blocked(self, monkeypatch):
+        """DNS failures fail closed — block the request (no proxy configured)."""
+        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.delenv(var, raising=False)
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
+            assert is_safe_url("https://nonexistent.example.com") is False
+
+
+class TestProxyEnvironmentDnsDelegation:
+    """When an HTTP proxy is configured, DNS is delegated to the proxy.
+
+    Sandbox / proxy-only environments (Docker + Squid, NVIDIA OpenShell,
+    iron-proxy egress sandboxes) block direct DNS at the network level;
+    only HTTP(S) via the proxy works. is_safe_url must not fail closed on
+    the pre-flight DNS check there — the proxy is the egress boundary.
+    Regression tests for #32217 / PR #68469.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_proxy_env(self, monkeypatch):
+        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_dns_failure_allowed_when_proxy_configured(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://host.docker.internal:9090")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("blocked at network level")):
+            assert is_safe_url("https://api.openai.com/v1/models") is True
+
+    def test_lowercase_proxy_var_also_recognized(self, monkeypatch):
+        monkeypatch.setenv("http_proxy", "http://proxy.internal:3128")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("no dns")):
+            assert is_safe_url("https://example.com/") is True
+
+    def test_metadata_hostname_still_blocked_with_proxy(self, monkeypatch):
+        """The blocked-hostname floor runs BEFORE the DNS skip."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("no dns")):
+            assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+
+    def test_literal_metadata_ip_still_blocked_with_proxy(self, monkeypatch):
+        """Literal IPs never take the DNS-failure path — floor intact."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_literal_private_ip_still_blocked_with_proxy(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        assert is_safe_url("http://192.168.1.1/admin") is False
+
+    def test_dns_success_path_unchanged_with_proxy(self, monkeypatch):
+        """When DNS resolves, the normal IP checks still apply under a proxy."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("10.0.0.5", 0)),
+        ]):
+            assert is_safe_url("https://internal.corp/") is False
+
+    def test_empty_proxy_var_does_not_trigger_delegation(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", "")
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
             assert is_safe_url("https://nonexistent.example.com") is False
 
     def test_empty_url_blocked(self):
@@ -275,7 +331,9 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("http://multimedia.nt.qq.com.cn/download?id=123") is False
 
-    def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
+    def test_qq_multimedia_hostname_dns_failure_still_blocked(self, monkeypatch):
+        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.delenv(var, raising=False)
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
 
@@ -637,6 +695,8 @@ class TestAllowPrivateUrlsIntegration:
     def test_dns_failure_still_blocked_with_toggle(self, monkeypatch):
         """DNS failures are still blocked even with toggle on."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+            monkeypatch.delenv(var, raising=False)
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("fail")):
             assert is_safe_url("https://nonexistent.example.com") is False
 

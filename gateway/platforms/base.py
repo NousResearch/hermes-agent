@@ -1510,11 +1510,21 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # consumer so both behave identically.
 # Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
 # ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
+#
+# The terminating lookahead also treats a literal backslash as a boundary.
+# Small models sometimes emit two-char escape sequences (literal ``\n`` /
+# ``\r\n``, not real newlines) immediately after the path, e.g.
+# ``MEDIA:/tmp/audio.mp3\n\nAnd more``. Without the backslash boundary the
+# greedy ``\S+`` swallows the escape text, the extension lookahead fails, and
+# the whole tag silently fails to match — the audio is dropped. Terminating at
+# the backslash lets the path end at its real extension. (Windows backslash
+# paths are unaffected: they end at the extension, where the lookahead is
+# already satisfied by end-of-string or whitespace.)
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
+    r'''(?=[\s`"',;:)\]}\\]|$)[`"']?''',
     re.IGNORECASE,
 )
 

@@ -442,6 +442,26 @@ class TestExtractMedia:
         assert len(media) == 1
         assert media[0][0].endswith("file.pdf")
 
+    def test_media_tag_truncates_at_literal_escape_sequence(self):
+        """A literal ``\\n`` escape after the path must not drop the tag.
+
+        Small models emit two-char escape sequences (literal backslash-n, not
+        a real newline) right after a MEDIA: path. The path must terminate at
+        the real extension instead of failing to match entirely.
+        """
+        content = "Here you go MEDIA:/tmp/audio.mp3\\n\\nAnd more text"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0].endswith("audio.mp3")
+        assert "MEDIA:" not in cleaned
+
+    def test_media_tag_truncates_at_crlf_escape_sequence(self):
+        """A literal ``\\r\\n`` escape after the path must not drop the tag."""
+        content = "MEDIA:/tmp/audio.mp3\\r\\nrest"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0].endswith("audio.mp3")
+
     def test_media_tag_windows_forward_slash_path(self):
         """extract_media should recognise Windows forward-slash paths."""
         media, cleaned = BasePlatformAdapter.extract_media(

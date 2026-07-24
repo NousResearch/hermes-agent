@@ -24,10 +24,7 @@ def get_provider_request_timeout(
     except Exception:
         return None
 
-    providers = config.get("providers", {}) if isinstance(config, dict) else {}
-    provider_config = (
-        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
-    )
+    provider_config = _get_provider_config(config, provider_id)
     if not isinstance(provider_config, dict):
         return None
 
@@ -53,10 +50,7 @@ def get_provider_stale_timeout(
     except Exception:
         return None
 
-    providers = config.get("providers", {}) if isinstance(config, dict) else {}
-    provider_config = (
-        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
-    )
+    provider_config = _get_provider_config(config, provider_id)
     if not isinstance(provider_config, dict):
         return None
 
@@ -80,3 +74,34 @@ def _get_model_config(
     if isinstance(model_config, dict):
         return model_config
     return None
+
+
+def _get_provider_config(config: object, provider_id: str) -> dict[str, object] | None:
+    providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    if not isinstance(providers, dict):
+        return None
+
+    direct_config = providers.get(provider_id)
+    if isinstance(direct_config, dict):
+        return direct_config
+
+    if provider_id != "custom" or not isinstance(config, dict):
+        return None
+
+    model_cfg = config.get("model", {})
+    configured_provider = (
+        model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    )
+    if not isinstance(configured_provider, str):
+        return None
+
+    configured_provider = configured_provider.strip()
+    if not configured_provider.startswith("custom:"):
+        return None
+
+    named_provider = configured_provider.split(":", 1)[1].strip()
+    if not named_provider:
+        return None
+
+    named_config = providers.get(named_provider)
+    return named_config if isinstance(named_config, dict) else None

@@ -43,6 +43,26 @@ def test_provider_timeout_used_when_no_model_override(monkeypatch, tmp_path):
     assert get_provider_request_timeout("ollama-local", "qwen3:32b") == 300.0
 
 
+def test_named_custom_provider_timeout_used_for_custom_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        model:
+          provider: custom:nb
+        providers:
+          nb:
+            request_timeout_seconds: 180
+            models:
+              gpt-5.5:
+                timeout_seconds: 240
+        """,
+    )
+
+    assert get_provider_request_timeout("custom", "gpt-5.5") == 240.0
+    assert get_provider_request_timeout("custom", "gpt-5.4") == 180.0
+
+
 def test_model_stale_timeout_override_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_config(
@@ -72,6 +92,28 @@ def test_provider_stale_timeout_used_when_no_model_override(monkeypatch, tmp_pat
     )
 
     assert get_provider_stale_timeout("openai-codex", "gpt-5.4") == 900.0
+
+
+def test_named_custom_provider_stale_timeout_used_for_custom_runtime(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        model:
+          provider: custom:nb
+        providers:
+          nb:
+            stale_timeout_seconds: 600
+            models:
+              gpt-5.5:
+                stale_timeout_seconds: 1200
+        """,
+    )
+
+    assert get_provider_stale_timeout("custom", "gpt-5.5") == 1200.0
+    assert get_provider_stale_timeout("custom", "gpt-5.4") == 600.0
 
 
 def test_missing_timeout_returns_none(monkeypatch, tmp_path):

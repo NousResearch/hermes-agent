@@ -19,6 +19,7 @@ from hermes_cli.config import (
     load_config,
     load_env,
     migrate_config,
+    reload_env,
     read_raw_config,
     remove_env_value,
     save_config,
@@ -876,6 +877,81 @@ class TestRemoveEnvValue:
         assert "DROP" not in env_path.read_text()
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
+
+class TestReloadEnv:
+    """Regression coverage for reload_env() boot-env protection.
+
+    A parent-process secret injector (secrets manager, systemd
+    EnvironmentFile, Docker --env-file) can populate os.environ before
+    ~/.hermes/.env is ever read. reload_env() must not clobber or delete
+    those externally-injected values.
+    """
+
+    def test_skips_uninterpolated_env_var_reference(self, tmp_path):
+        """load_env() is a literal parser — it does not expand ${...}.
+
+        If .env contains ``KEY=${OTHER_KEY}`` (already expanded once by the
+        boot-time python-dotenv loader against the real environment),
+        reload_env() must not overwrite the correctly-expanded boot value
+        with the literal, uninterpolated string.
+        """
+        env_path = tmp_path / ".env"
+        env_path.write_text("SOME_KEY=${OTHER_KEY}\n")
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "SOME_KEY": "already-expanded-value"},
+        ):
+            reload_env()
+            assert os.environ["SOME_KEY"] == "already-expanded-value"
+
+    def test_writes_interpolated_values_normally(self, tmp_path):
+        """A plain (non-${}) value in .env is still applied as before."""
+        env_path = tmp_path / ".env"
+        env_path.write_text("SOME_KEY=plain-value\n")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("SOME_KEY", None)
+            reload_env()
+            assert os.environ["SOME_KEY"] == "plain-value"
+
+    def test_deletes_known_key_removed_from_dotenv(self, tmp_path):
+        """A known Hermes var removed from .env is cleared from os.environ
+        (pre-existing behavior, unaffected by the boot-env guard)."""
+        env_path = tmp_path / ".env"
+        env_path.write_text("UNRELATED=1\n")
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "OPENROUTER_API_KEY": "sk-stale"},
+        ):
+            reload_env()
+            assert "OPENROUTER_API_KEY" not in os.environ
+
+    def test_never_deletes_a_boot_injected_known_key(self, tmp_path, monkeypatch):
+        """A known key present in os.environ at process boot (simulated via
+        _PROCESS_BOOT_ENV_KEYS) must survive even though it is absent from
+        .env — deleting it would silently poison provider resolution for the
+        rest of the process lifetime.
+        """
+        import hermes_cli.config as config_module
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("UNRELATED=1\n")
+
+        monkeypatch.setattr(
+            config_module,
+            "_PROCESS_BOOT_ENV_KEYS",
+            frozenset({"OPENROUTER_API_KEY"}),
+        )
+
+        with patch.dict(
+            os.environ,
+            {"HERMES_HOME": str(tmp_path), "OPENROUTER_API_KEY": "sk-boot-injected"},
+        ):
+            reload_env()
+            assert os.environ["OPENROUTER_API_KEY"] == "sk-boot-injected"
 
 
 class TestSaveConfigAtomicity:

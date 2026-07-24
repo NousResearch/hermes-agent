@@ -41,6 +41,16 @@ logger = logging.getLogger(__name__)
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
 
+# reload_env boot-env protection.
+# Keys present in the process environment at import time. A parent-process
+# secret injector (e.g. a secrets manager, systemd EnvironmentFile, Docker
+# --env-file) populates os.environ BEFORE this module is imported and BEFORE
+# any .env file is applied, so this snapshot is exactly the set of
+# externally-injected env vars. reload_env() must NEVER delete these: they are
+# not sourced from ~/.hermes/.env, and deleting them silently poisons provider
+# resolution for the rest of the process lifetime.
+_PROCESS_BOOT_ENV_KEYS = frozenset(os.environ.keys())
+
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
@@ -8327,11 +8337,27 @@ def reload_env() -> int:
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
     count = 0
     for key, value in env_vars.items():
+        # Never write an UNINTERPOLATED ${VAR} reference into the live env.
+        # load_env() is a literal parser -- it does NOT expand ${...}, unlike the
+        # boot-time python-dotenv loader (load_dotenv override=True) that
+        # resolves e.g. `SOME_KEY=${OTHER_KEY}` against the externally-injected
+        # env. Writing the literal "${OTHER_KEY}" here would clobber the
+        # correctly-expanded boot value and silently break key resolution after
+        # the first /reload. Skipping uninterpolated refs preserves the good
+        # boot value.
+        if "${" in value:
+            continue
         if os.environ.get(key) != value:
             os.environ[key] = value
             count += 1
-    # Remove known Hermes vars that are no longer in .env
+    # Remove known Hermes vars that .env previously owned but were deleted from
+    # it. Crucially, NEVER delete a key that was injected by the parent process
+    # environment at boot -- those are absent from .env by design, and deleting
+    # them silently poisons provider key resolution for the rest of the process
+    # lifetime.
     for key in known_keys:
+        if key in _PROCESS_BOOT_ENV_KEYS:
+            continue
         if key not in env_vars and key in os.environ:
             del os.environ[key]
             count += 1

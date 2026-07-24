@@ -111,6 +111,37 @@ def test_existing_binary_finds_windows_wrapper_in_staging(tmp_path, monkeypatch)
     assert install_mod.detect_status("pyright") == "installed"
 
 
+def test_cmd_which_resolves_aliased_server_id(tmp_path, monkeypatch):
+    """``hermes lsp which`` must map aliased server_ids to their recipe.
+
+    Registry server_ids like ``typescript`` and ``dockerfile-ls`` are not
+    keys in ``INSTALL_RECIPES`` — they alias to ``typescript-language-server``
+    / ``dockerfile-language-server-nodejs`` via ``_recipe_pkg_for``.  Without
+    that mapping, ``_cmd_which`` probed for a binary literally named
+    ``typescript`` (which never exists) and reported "not installed" even
+    when the server was present.
+    """
+    from agent.lsp import cli as lsp_cli
+
+    probed: list[str] = []
+
+    def fake_existing_binary(name: str):
+        probed.append(name)
+        # The real binary for the typescript server is
+        # ``typescript-language-server``; pretend it's installed.
+        return "/opt/lsp/typescript-language-server" if name == "typescript-language-server" else None
+
+    monkeypatch.setattr("agent.lsp.install._existing_binary", fake_existing_binary)
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rc = lsp_cli._cmd_which("typescript")
+
+    assert rc == 0
+    assert probed == ["typescript-language-server"]
+    assert "typescript-language-server" in out.getvalue()
+
+
 def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
     """pip console scripts can land in Scripts/ on native Windows."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

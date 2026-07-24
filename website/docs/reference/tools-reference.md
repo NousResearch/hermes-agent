@@ -60,7 +60,15 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary is returned -- intermediate tool results never enter your context window. TWO… | — |
+| `assign_agent` | Run a named agent (defined in `$HERMES_HOME/agents/` or `<project>/.hermes/agents/`) with a task prompt. The agent runs synchronously through `delegate_task`; only the final result is returned. Pass `toolsets`, `role`, or `context` to constrain the subagent's environment. | — |
+| `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary is returned -- intermediate tool results never enter your context window. | — |
+
+## `agents` toolset (read-only)
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `agents_list` | List all registered named agents with compact metadata (name, description, source path, shadowing status). Does not include prompt bodies. Accepts `category`, `include_disabled`, `include_shadowed`, and `workdir` filters. | — |
+| `agent_view` | Return the full definition of a named agent including its prompt body. Accepts `name`, `source` (`global` \| `project`), and `workdir`. Use to inspect or verify an agent before delegating to it. | — |
 
 ## `feishu_doc` toolset
 

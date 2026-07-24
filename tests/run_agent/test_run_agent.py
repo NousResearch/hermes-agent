@@ -898,6 +898,101 @@ class TestSaveSessionLogRedactsSecrets:
         assert parts[1]["image_url"]["url"].startswith("data:image")
 
 
+class TestSaveSessionLogRedactsPii:
+    """Regression: session_*.json must not contain plaintext email/SSN,
+    including in fields the first PII-redaction pass missed — system_prompt
+    and tool-call arguments (#57741 review)."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_redaction_enabled(self, monkeypatch):
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+    def test_redacts_email_in_user_message(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [{"role": "user", "content": "reach me at jane.doe@example.com please"}]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "jane.doe@example.com" not in snapshot
+
+    def test_redacts_ssn_in_system_prompt(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent._cached_system_prompt = "User's SSN on file is 123-45-6789 for verification."
+        agent._save_session_log([{"role": "user", "content": "test"}])
+
+        snapshot_text = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "123-45-6789" not in snapshot_text
+        snapshot = json.loads(snapshot_text)
+        assert "123-45-6789" not in snapshot["system_prompt"]
+
+    def test_redacts_email_in_tool_call_arguments(self, agent, tmp_path):
+        """Assistant tool-call args (e.g. a write_file call) can carry PII;
+        the export snapshot must scrub it even though the replayable
+        state.db copy built in chat_completion_helpers.py leaves arguments
+        raw by design (#43083)."""
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": json.dumps({
+                                "path": "contacts.txt",
+                                "content": "Contact: john.smith@example.com",
+                            }),
+                        },
+                    }
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot_text = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "john.smith@example.com" not in snapshot_text
+        snapshot = json.loads(snapshot_text)
+        tc = snapshot["messages"][0]["tool_calls"][0]
+        # Structure (id/name) preserved; only the arguments string is scrubbed.
+        assert tc["id"] == "call_1"
+        assert tc["function"]["name"] == "write_file"
+        args = json.loads(tc["function"]["arguments"])
+        assert "john.smith@example.com" not in args["content"]
+
+    def test_redacts_secret_in_tool_call_arguments(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": json.dumps({
+                                "command": "curl -H 'Authorization: Bearer sk-proj-abc123def456ghi789jkl012mno'"
+                            }),
+                        },
+                    }
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot_text = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-abc123def456ghi789jkl012mno" not in snapshot_text
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

@@ -173,6 +173,46 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["host_path"] == str(skills_dir)
 
+    def test_multiple_symlinked_skill_roots_keep_distinct_live_temp_dirs(self, tmp_path):
+        """Sanitizing one skills root must not delete another root's temp copy."""
+        hermes_home = tmp_path / ".hermes"
+        local_skills = hermes_home / "skills"
+        external_skills = tmp_path / "external-skills"
+        local_skills.mkdir(parents=True)
+        external_skills.mkdir(parents=True)
+        (local_skills / "local.md").write_text("local")
+        (external_skills / "external.md").write_text("external")
+        (local_skills / "local-link").write_text("placeholder")
+        (external_skills / "external-link").write_text("placeholder")
+
+        real_is_symlink = Path.is_symlink
+
+        def fake_is_symlink(path):
+            if path.name in {"local-link", "external-link"}:
+                return True
+            return real_is_symlink(path)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_skills]), \
+             patch("pathlib.Path.is_symlink", new=fake_is_symlink), \
+             patch("os.readlink", return_value="mock-target"):
+            mounts = get_skills_directory_mount()
+
+        assert len(mounts) == 2
+        local_mount, external_mount = mounts
+        local_safe_path = Path(local_mount["host_path"])
+        external_safe_path = Path(external_mount["host_path"])
+
+        assert local_safe_path.exists()
+        assert external_safe_path.exists()
+        assert local_safe_path != external_safe_path
+        assert local_safe_path != local_skills
+        assert external_safe_path != external_skills
+        assert (local_safe_path / "local.md").exists()
+        assert (external_safe_path / "external.md").exists()
+        assert not (local_safe_path / "local-link").exists()
+        assert not (external_safe_path / "external-link").exists()
+
 
 class TestIterSkillsFiles:
     def test_returns_files_skipping_symlinks(self, tmp_path):

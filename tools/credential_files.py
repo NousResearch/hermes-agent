@@ -289,12 +289,14 @@ def get_skills_directory_mount(
     return mounts
 
 
-_safe_skills_tempdir: Path | None = None
+_safe_skills_tempdirs: Dict[Path, Path] = {}
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
     """Return *skills_dir* if symlink-free, else a sanitized temp copy."""
-    global _safe_skills_tempdir
+    global _safe_skills_tempdirs
+
+    skills_dir = skills_dir.resolve()
 
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
@@ -308,12 +310,13 @@ def _safe_skills_path(skills_dir: Path) -> str:
     import shutil
     import tempfile
 
-    # Reuse the same temp dir across calls to avoid accumulation.
-    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
+    # Reuse only the sanitized copy for this specific skills root.
+    old_safe_dir = _safe_skills_tempdirs.get(skills_dir)
+    if old_safe_dir and old_safe_dir.is_dir():
+        shutil.rmtree(old_safe_dir, ignore_errors=True)
 
     safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
-    _safe_skills_tempdir = safe_dir
+    _safe_skills_tempdirs[skills_dir] = safe_dir
 
     for item in skills_dir.rglob("*"):
         if item.is_symlink():
@@ -329,6 +332,8 @@ def _safe_skills_path(skills_dir: Path) -> str:
     def _cleanup():
         if safe_dir.is_dir():
             shutil.rmtree(safe_dir, ignore_errors=True)
+        if _safe_skills_tempdirs.get(skills_dir) == safe_dir:
+            _safe_skills_tempdirs.pop(skills_dir, None)
 
     atexit.register(_cleanup)
     logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)

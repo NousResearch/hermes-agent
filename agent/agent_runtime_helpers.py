@@ -1889,6 +1889,24 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
+        # Z.AI / Zhipu GLM on its Anthropic-compatible endpoint
+        # (base_url ``.../api/anthropic``) honours the same cache_control
+        # contract as Anthropic/MiniMax: cached reads at ~0.1x, 5m/1h TTL.
+        # The blanket ``is_claude`` gate above excludes GLM-named models, so
+        # opt them in explicitly here. Without this branch GLM traffic falls
+        # through to ``(False, False)`` and re-bills the full prompt every
+        # turn. The docstring above already documents that Zhipu GLM honours
+        # cache_control; this branch makes the code match.
+        is_zai_provider = provider_lower in {
+            "zai", "glm", "z-ai", "z.ai", "zhipu",
+        }
+        is_zai_host = (
+            base_url_host_matches(eff_base_url, "z.ai")
+            or base_url_host_matches(eff_base_url, "bigmodel.cn")
+        )
+        if is_zai_provider or is_zai_host:
+            return True, True
+
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
     # transport that accepts Anthropic-style cache_control markers and
     # rewards them with real cache hits.  Without this branch

@@ -72,6 +72,8 @@ def _build_sha() -> str:
             ["git", "rev-parse", "HEAD"],
             cwd=str(_repo_root()),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stderr=subprocess.DEVNULL,
             timeout=2,
         ).strip()
@@ -112,6 +114,8 @@ def _pid_command(pid: int) -> str:
         return subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "command="],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stderr=subprocess.DEVNULL,
             timeout=2,
         ).strip()
@@ -327,6 +331,11 @@ class HostSupervisor:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Lossy UTF-8 decode — the compute host emits UTF-8; a
+            # locale-mismatched byte must not raise inside the drain
+            # threads and kill the supervisor (#52649).
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             start_new_session=True,
         )

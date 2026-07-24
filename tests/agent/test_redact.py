@@ -83,6 +83,42 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result
 
+        # --- #66920 Google Gemini authorization keys (AQ. prefix) ---
+
+    def test_google_gemini_aq_bare_key(self):
+        # Bare 48-char AQ.-prefix key must be redacted by the known-prefix
+        # list. Before the fix the bare value passed through verbatim;
+        # after the fix it must differ from the input. No real credential
+        # is needed; the inner key chars are placeholders.
+        key = "AQ." + "B" * 48
+        result = redact_sensitive_text(key, force=True)
+        assert result != key
+        assert key not in result
+
+    def test_google_gemini_aq_labeled_key(self):
+        # Regression net for the env-assignment detector: the same
+        # value, when labelled, is masked. Guards against a future
+        # refactor accidentally over-broadening the env fallback.
+        key = "AQ." + "B" * 48
+        assigned = "GEMINI_API_KEY=" + key
+        result = redact_sensitive_text(assigned, force=True)
+        assert result != assigned
+
+    def test_google_gemini_aq_short_unprefixed_unchanged(self):
+        # Below the 40-char floor the prefix must NOT mask --- protects
+        # against over-eager matching of short fragments or variable
+        # names that happen to begin with "AQ.".
+        short = "AQ." + "B" * 10
+        result = redact_sensitive_text(short, force=True)
+        assert result == short
+
+    def test_google_gemini_aq_ordinary_prose_unchanged(self):
+        # "AQ." appearing as an ordinary abbreviation in prose (followed by
+        # a space, far short of the 40-char key floor) must NOT be redacted.
+        prose = "See the AQ. section for acquisition details."
+        result = redact_sensitive_text(prose, force=True)
+        assert result == prose
+
 
 class TestEnvAssignments:
     def test_export_api_key(self):

@@ -4965,7 +4965,7 @@ class TestCodexAdapterPromptCacheKey:
     ])
     def test_extended_cache_models_set_prompt_cache_retention(self, model):
         adapter, captured = self._build_adapter(
-            base_url="https://responses.example.com/v1",
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
             model=model,
         )
         adapter.create(messages=[
@@ -4976,6 +4976,19 @@ class TestCodexAdapterPromptCacheKey:
 
     def test_prompt_cache_retention_skipped_for_codex_backend(self):
         adapter, captured = self._build_adapter()
+        adapter.create(messages=[
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ])
+        assert "prompt_cache_retention" not in captured
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.openai.com/v1",
+        "https://example.services.ai.azure.com/openai/v1",
+        "https://responses.example.com/v1",
+    ])
+    def test_prompt_cache_retention_skipped_for_other_compatible_endpoints(self, base_url):
+        adapter, captured = self._build_adapter(base_url=base_url)
         adapter.create(messages=[
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": "hi"},

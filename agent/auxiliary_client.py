@@ -2697,6 +2697,84 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(model: Optional[str]) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an auxiliary client for a MiniMax OAuth-authenticated session.
+
+    MiniMax's inference endpoint is Anthropic-compatible (the
+    ``/v1/messages`` wire format), but it's exposed under the OpenAI
+    ``/v1`` URL prefix and is reached via a short-lived bearer token
+    minted by MiniMax's device-code OAuth flow.  The persisted
+    ``access_token`` lives in ``auth.json`` under ``providers.minimax-oauth``
+    and is rotated every ~15 minutes by :func:`_refresh_minimax_oauth_state`.
+
+    We pass the *token provider callable* (not the raw string) as
+    ``api_key`` so that ``_wrap_if_needed`` -> ``build_anthropic_client``
+    installs a per-request bearer hook that re-reads the latest token from
+    ``auth.json`` on every outbound request.  Without that hook, the static
+    token captured at client construction would expire mid-session and the
+    user would see 401s on long-running auxiliary work
+    (compression, title_generation, curator, etc.).
+
+    Returns ``(None, None)`` when the user has not authenticated with
+    MiniMax OAuth (no entry in ``auth.json``, or the entry has no
+    ``access_token``).
+    """
+    try:
+        from hermes_cli.auth import build_minimax_oauth_token_provider
+    except ImportError:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested but "
+            "hermes_cli.auth.build_minimax_oauth_token_provider is unavailable"
+        )
+        return None, None
+
+    # Probe auth state once to fail fast with a clear warning when the user
+    # isn't logged in.  build_minimax_oauth_token_provider() doesn't surface
+    # that case at construction time — it raises on the first invocation,
+    # which would land mid-request with a confusing traceback.
+    try:
+        from hermes_cli.auth import get_minimax_oauth_auth_status
+        status = get_minimax_oauth_auth_status()
+    except ImportError:
+        status = None
+    if status is not None and not status.get("logged_in", False):
+        return None, None
+
+    api_key = build_minimax_oauth_token_provider()
+    # The MiniMax OAuth base URL is stored in auth.json under
+    # ``inference_base_url`` (e.g. https://api.minimax.io/anthropic for
+    # the global region). We could read it from there, but for auxiliary
+    # tasks the Anthropic-compatible endpoint and the OpenAI SDK wrapper
+    # both work as long as we use the URL the OAuth state recorded at
+    # login time.  resolve_minimax_oauth_runtime_credentials is the
+    # authoritative source.
+    try:
+        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+        creds = resolve_minimax_oauth_runtime_credentials()
+        base_url = creds.get("base_url", "").rstrip("/")
+    except Exception as exc:
+        logger.warning(
+            "Auxiliary client: minimax-oauth requested but no MiniMax OAuth "
+            "token found in auth.json (run: hermes model -> MiniMax (OAuth)): %s",
+            exc,
+        )
+        return None, None
+
+    if not base_url:
+        logger.warning(
+            "Auxiliary client: minimax-oauth resolved but base_url is empty"
+        )
+        return None, None
+
+    logger.debug("Auxiliary client: MiniMax OAuth (model=%s base_url=%s)", model, base_url)
+    real_client = OpenAI(api_key=api_key, base_url=base_url)
+    # _wrap_if_needed in the caller detects the Anthropic-compatible
+    # endpoint (base_url ends in /anthropic or matches _ANTHROPIC_COMPAT_PROVIDERS)
+    # and swaps in the Anthropic transport automatically.
+    final_model = (model or "").strip() or creds.get("default_model", "MiniMax-M2.7-highspeed")
+    return real_client, final_model
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
@@ -5018,6 +5096,43 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── MiniMax OAuth (device-code flow) ─────────────────────────────
+    # Without this branch, a minimax-oauth main provider falls through to
+    # the generic ``oauth_minimax`` arm below (which currently only logs a
+    # warning and returns None). Auxiliary tasks configured with
+    # ``provider: minimax-oauth`` (compression, title_generation, etc.)
+    # would then raise the misleading
+    # "Provider 'minimax-oauth' is set in config.yaml but no API key was found"
+    # error, even though the user is logged in via ``hermes auth`` /
+    # ``hermes model -> MiniMax (OAuth)``.
+    if provider == "minimax-oauth":
+        client, default = _build_minimax_oauth_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but no "
+                "MiniMax OAuth token found (run: hermes model -> MiniMax (OAuth))"
+            )
+            return None, None
+        # Note: the main agent path uses the Anthropic-Messages endpoint
+        # at https://api.minimax.io/anthropic/ for OAuth, but auxiliary
+        # tasks work fine over the OpenAI-compatible /v1/chat/completions
+        # route at the same host. We rewrite the base_url to the OpenAI
+        # path so the bare OpenAI client we built in the helper works
+        # without needing the Anthropic transport wrapper. The OAuth
+        # token provider is plumbed through ``OpenAI(api_key=callable)``
+        # which the SDK accepts and reads on every request — this is the
+        # same pattern the main chat path uses.
+        try:
+            _raw = str(getattr(client, "base_url", "") or "")
+            if _raw.endswith("/anthropic") or _raw.endswith("/anthropic/"):
+                _openai_base = _raw.rstrip("/").removesuffix("/anthropic") + "/v1"
+                client.base_url = _openai_base  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        final_model = _normalize_resolved_model(model or default, provider) or ""
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         custom_base = ""
@@ -5507,6 +5622,12 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: OAuth provider %s not "
                          "directly supported, try 'auto'", provider)
         return None, None
+    elif pconfig.auth_type == "oauth_minimax":
+        # MiniMax uses its own auth_type (``oauth_minimax``) that isn't in the
+        # generic ``oauth_device_code``/``oauth_external`` set above. Route
+        # through the dedicated minimax-oauth helper so the token provider
+        # in auth.json is consulted.
+        return resolve_provider_client("minimax-oauth", model, async_mode)
 
     # Demoted from logger.warning to debug; dedup keyed on (auth_type,
     # provider) so the first occurrence surfaces (real schema-drift bug) but

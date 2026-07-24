@@ -2603,6 +2603,14 @@ def cmd_chat(args):
     _pin_kanban_board_env()
 
     if use_tui:
+        # --no-streaming is a classic-CLI-only flag — the TUI uses full-screen
+        # differential rendering where streaming vs batch has negligible UX
+        # impact (tool-call segments and reasoning are always progressive).
+        if getattr(args, "no_streaming", False):
+            print(
+                "Warning: --no-streaming is not supported in TUI mode; ignoring.",
+                file=sys.stderr,
+            )
         _launch_tui(
             getattr(args, "resume", None),
             tui_dev=getattr(args, "tui_dev", False),
@@ -2620,6 +2628,7 @@ def cmd_chat(args):
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
         )
+        return
 
     # Import and run the CLI
     from cli import main as cli_main
@@ -2642,6 +2651,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
+        "no_streaming": getattr(args, "no_streaming", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}

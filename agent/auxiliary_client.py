@@ -4501,6 +4501,21 @@ def _resolve_auto(
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
 
+    # ── Fail-closed subscription lane (claude-agent-sdk, #25267) ──
+    # When the MAIN provider is the claude-agent-sdk (subscription OAuth,
+    # never metered), auto-detection must NOT silently re-route auxiliary
+    # tasks (title generation, context compression, ...) onto metered
+    # fallback providers — that would break the provider's billing contract
+    # through the side door. Explicit `auxiliary.<task>.{provider,model}`
+    # config is resolved before this chain and remains the operator's
+    # deliberate opt-in; without it, aux features simply no-op.
+    if runtime_api_mode == "claude_agent_sdk":
+        logger.debug(
+            "aux auto-detect disabled: main provider is claude-agent-sdk "
+            "(subscription lane, fail-closed)"
+        )
+        return None, None
+
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
     #    scenario where a user switches providers via `hermes model` but the

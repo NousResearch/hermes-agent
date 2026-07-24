@@ -783,6 +783,20 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Claude Agent SDK provider runtime (provider: claude-agent-sdk).
+  # claude_agent_sdk:
+  #   # Emit the SDK's partial-message deltas into the gateway streaming
+  #   # pipeline (default off — upstream-conservative; the top-level
+  #   # streaming: block still governs how deltas are displayed).
+  #   streaming: false
+  #   # The provider exists to bill the Claude subscription and refuses to
+  #   # start while a metered ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN could
+  #   # silently take over billing. Set true to explicitly allow that.
+  #   allow_metered_key: false
+  #   # Optional operator persona/soul file appended to the system prompt
+  #   # ("" = none).
+  #   append_file: ""
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

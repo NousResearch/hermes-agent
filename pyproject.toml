@@ -143,6 +143,9 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+# Claude via the official Agent SDK (subscription OAuth) — only needed when
+# provider=claude-agent-sdk. The SDK bundles/locates the Claude Code CLI.
+claude-agent-sdk = ["claude-agent-sdk==0.2.120"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

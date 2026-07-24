@@ -861,3 +861,23 @@ class TestHermesHomeLeakGuard:
             f"HERMES_HOME should not be set when env var is unset, got: "
             f"{env.get('HERMES_HOME')!r}"
         )
+
+    def test_session_id_is_never_burned_into_codex_config(self, monkeypatch):
+        """A session id must NEVER be serialized into the MCP entry.
+
+        This entry is written to ``~/.codex/config.toml`` at MIGRATE time, so any
+        per-session value baked in here is frozen for the life of that config and
+        would forever name the wrong session — the same burn-in failure the
+        HERMES_HOME guards above exist to prevent. The one legitimate delivery
+        under codex is the entry's ``env_vars`` name-passthrough (a spawn-time
+        snapshot of the codex process env — a NAME, never a value); this entry
+        does not wire it, so the shim's own-lineage exclusion stays INACTIVE
+        (fail-open) under codex rather than wrong. What this test pins is the
+        burn-in rule: no literal session id, under any key, may land in the
+        entry's ``env`` map."""
+        monkeypatch.setenv("HERMES_SESSION_ID", "sess-must-not-persist")
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert not any("SESSION_ID" in key for key in env), (
+            f"no session id may be serialized into config.toml, got: {env!r}"
+        )

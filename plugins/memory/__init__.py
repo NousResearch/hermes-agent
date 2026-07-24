@@ -3,7 +3,8 @@
 Scans two directories for memory provider plugins:
 
 1. Bundled providers: ``plugins/memory/<name>/`` (shipped with hermes-agent)
-2. User-installed providers: ``$HERMES_HOME/plugins/<name>/``
+2. User-installed providers: ``$HERMES_HOME/plugins/<name>/`` and
+   ``$HERMES_HOME/plugins/<category>/<name>/``
 
 Each subdirectory must contain ``__init__.py`` with a class implementing
 the MemoryProvider ABC.  On name collisions, bundled providers take
@@ -106,17 +107,32 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
             seen.add(child.name)
             dirs.append((child.name, child))
 
-    # 2. User-installed providers ($HERMES_HOME/plugins/<name>/)
+    # 2. User-installed providers:
+    #    $HERMES_HOME/plugins/<name>/ and $HERMES_HOME/plugins/<category>/<name>/
     user_dir = _get_user_plugins_dir()
     if user_dir:
         for child in sorted(user_dir.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
-            if child.name in seen:
-                continue  # bundled takes precedence
-            if not _is_memory_provider_dir(child):
-                continue  # skip non-memory plugins
-            dirs.append((child.name, child))
+            if _is_memory_provider_dir(child):
+                if child.name in seen:
+                    continue  # bundled takes precedence
+                seen.add(child.name)
+                dirs.append((child.name, child))
+                continue
+
+            # Mirror the runtime plugin loader's category-aware layout:
+            # a top-level directory without plugin files may be a namespace
+            # such as plugins/memory/<provider>/.
+            for grandchild in sorted(child.iterdir()):
+                if not grandchild.is_dir() or grandchild.name.startswith(("_", ".")):
+                    continue
+                if grandchild.name in seen:
+                    continue
+                if not _is_memory_provider_dir(grandchild):
+                    continue
+                seen.add(grandchild.name)
+                dirs.append((grandchild.name, grandchild))
 
     return dirs
 
@@ -136,6 +152,12 @@ def find_provider_dir(name: str) -> Optional[Path]:
         user = user_dir / name
         if user.is_dir() and _is_memory_provider_dir(user):
             return user
+        for category_dir in sorted(user_dir.iterdir()):
+            if not category_dir.is_dir() or category_dir.name.startswith(("_", ".")):
+                continue
+            nested = category_dir / name
+            if nested.is_dir() and _is_memory_provider_dir(nested):
+                return nested
     return None
 
 

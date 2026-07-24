@@ -503,9 +503,12 @@ class TestUserInstalledProviderDiscovery:
     directory, ignoring user-installed plugins.
     """
 
-    def _make_user_memory_plugin(self, tmp_path, name="myprovider"):
+    def _make_user_memory_plugin(self, tmp_path, name="myprovider", parts=None):
         """Create a minimal user memory provider plugin."""
-        plugin_dir = tmp_path / "plugins" / name
+        rel_parts = list(parts) if parts is not None else [name]
+        plugin_dir = tmp_path / "plugins"
+        for part in rel_parts:
+            plugin_dir /= part
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
             "from agent.memory_provider import MemoryProvider\n"
@@ -536,6 +539,20 @@ class TestUserInstalledProviderDiscovery:
         assert "myexternal" in names
         assert "holographic" in names  # bundled still found
 
+    def test_discover_finds_category_nested_user_plugins(self, tmp_path, monkeypatch):
+        """discover_memory_providers() descends one user-plugin category level."""
+        from plugins.memory import discover_memory_providers
+        self._make_user_memory_plugin(
+            tmp_path, "myexternal", parts=["memory", "myexternal"]
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        providers = discover_memory_providers()
+        names = [n for n, _, _ in providers]
+        assert "myexternal" in names
+
     def test_load_user_plugin(self, tmp_path, monkeypatch):
         """load_memory_provider() can load from $HERMES_HOME/plugins/."""
         from plugins.memory import load_memory_provider
@@ -544,6 +561,22 @@ class TestUserInstalledProviderDiscovery:
             "plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
         )
+        p = load_memory_provider("myexternal")
+        assert p is not None
+        assert p.name == "myexternal"
+        assert p.is_available()
+
+    def test_load_category_nested_user_plugin(self, tmp_path, monkeypatch):
+        """load_memory_provider() resolves category-nested user plugins."""
+        from plugins.memory import find_provider_dir, load_memory_provider
+        plugin_dir = self._make_user_memory_plugin(
+            tmp_path, "myexternal", parts=["memory", "myexternal"]
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        assert find_provider_dir("myexternal") == plugin_dir
         p = load_memory_provider("myexternal")
         assert p is not None
         assert p.name == "myexternal"

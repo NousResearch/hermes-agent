@@ -93,12 +93,23 @@ class WinPtyBridge:
             spawn_env["TERM"] = "xterm-256color"
         # pywinpty mirrors ptyprocess: dimensions=(rows, cols).
         # This call shape is the one already used in tools/process_registry.py.
-        proc = PtyProcess.spawn(  # type: ignore[union-attr]
-            list(argv),
-            cwd=cwd,
-            env=spawn_env,
-            dimensions=(rows, cols),
-        )
+        try:
+            proc = PtyProcess.spawn(  # type: ignore[union-attr]
+                list(argv),
+                cwd=cwd,
+                env=spawn_env,
+                dimensions=(rows, cols),
+            )
+        except Exception as exc:
+            # winpty-rs v0.4.1 panics on Chinese Windows when the ConPTY API
+            # returns HRESULT(0x00000000) (S_OK) but the Rust crate wraps it
+            # in an Err variant and calls unwrap().  The panic propagates as
+            # a pyo3 PanicException (subclass of Exception).  Catch it here
+            # and surface as PtyUnavailableError so the caller can fall back
+            # gracefully instead of crashing the gateway.
+            raise PtyUnavailableError(
+                f"ConPTY spawn failed: {exc}"
+            ) from exc
         return cls(proc)
 
     @property

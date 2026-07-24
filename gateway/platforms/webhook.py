@@ -75,7 +75,7 @@ _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
     "matrix", "mattermost", "homeassistant", "email", "dingtalk",
     "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
-    "qqbot", "yuanbao",
+    "qqbot", "yuanbao", "whatsapp_cloud",
 }
 
 # Default bind host. ``None`` tells aiohttp/asyncio's ``create_server`` to bind

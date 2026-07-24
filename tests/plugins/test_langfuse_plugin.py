@@ -712,6 +712,80 @@ class TestRequestMessageCoercion:
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
 
 
+class TestRequestToolsMetadata:
+    def test_request_tools_metadata_extracts_count_names_and_safe_schema(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web",
+                    "parameters": {"type": "object"},
+                },
+            },
+            {
+                "name": "legacy_tool",
+                "description": "Legacy schema shape",
+            },
+        ]
+
+        metadata = mod._request_tools_metadata(tools)
+
+        assert metadata["request_tool_count"] == 2
+        assert metadata["request_tool_names"] == ["web_search", "legacy_tool"]
+        assert metadata["request_tools"][0]["function"]["name"] == "web_search"
+
+    def test_pre_llm_request_writes_request_tools_to_generation_metadata(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        monkeypatch.setattr(
+            mod,
+            "_start_root_trace",
+            lambda *args, **kwargs: mod.TraceState(
+                trace_id="trace-1",
+                root_ctx=None,
+                root_span=object(),
+            ),
+        )
+
+        captured = {}
+
+        def fake_start_child_observation(state, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(mod, "_start_child_observation", fake_start_child_observation)
+
+        mod.on_pre_llm_request(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            provider="openai",
+            platform="cli",
+            api_mode="responses",
+            base_url="https://api.example.com",
+            request_messages=[{"role": "user", "content": "hi"}],
+            request_tools=[{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {"type": "object"},
+                },
+            }],
+        )
+
+        metadata = captured["metadata"]
+        assert metadata["provider"] == "openai"
+        assert metadata["request_tool_count"] == 1
+        assert metadata["request_tool_names"] == ["read_file"]
+        assert metadata["request_tools"][0]["function"]["name"] == "read_file"
+
+
 class TestToolCallOutputBackfill:
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)

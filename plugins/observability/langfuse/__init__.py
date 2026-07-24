@@ -482,6 +482,32 @@ def _coerce_request_messages(
     return [{"role": "user", "content": user_message}]
 
 
+def _tool_schema_name(tool: Any) -> Optional[str]:
+    if not isinstance(tool, dict):
+        return None
+    function = tool.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function.get("name"))
+    if tool.get("name"):
+        return str(tool.get("name"))
+    return None
+
+
+def _request_tools_metadata(request_tools: Any) -> dict[str, Any]:
+    if not isinstance(request_tools, list):
+        return {}
+
+    names = [
+        name for name in (_tool_schema_name(tool) for tool in request_tools)
+        if name
+    ]
+    return {
+        "request_tool_count": len(request_tools),
+        "request_tool_names": names[:50],
+        "request_tools": _safe_value(request_tools),
+    }
+
+
 def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         return []
@@ -841,6 +867,7 @@ def on_pre_llm_request(
     approx_input_tokens: int = 0,
     request_char_count: int = 0,
     max_tokens: Any = None,
+    request_tools: Any = None,
     conversation_history: Any = None,
     user_message: Any = None,
     turn_id: str = "",
@@ -888,18 +915,20 @@ def on_pre_llm_request(
         previous = state.generations.pop(req_key, None)
         if previous is not None:
             _end_observation(previous)
+        metadata = {
+            "provider": provider,
+            "platform": platform,
+            "api_mode": api_mode,
+            "base_url": base_url,
+        }
+        metadata.update(_request_tools_metadata(request_tools))
         state.generations[req_key] = _start_child_observation(
             state,
             client=client,
             name=f"LLM call {api_call_count}",
             as_type="generation",
             input_value=_serialize_messages(input_messages),
-            metadata={
-                "provider": provider,
-                "platform": platform,
-                "api_mode": api_mode,
-                "base_url": base_url,
-            },
+            metadata=metadata,
             model=model,
             model_parameters={"api_mode": api_mode, "provider": provider},
         )

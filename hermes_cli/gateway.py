@@ -4201,6 +4201,19 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 
 def launchd_install(force: bool = False):
+    # Guard against running as root on macOS — launchd service management
+    # requires a GUI user session.  Root's /var/root plist, bootstrap
+    # failure on the GUI-less root domain, and the subsequent
+    # root-owned ~/.hermes state would compound into a broken install
+    # that blocks a correct user-level retry (#67732).
+    if is_macos() and os.geteuid() == 0:
+        print_error(
+            "Running `hermes gateway install` as root on macOS is not supported.\n"
+            "  launchd requires a GUI user session; root has none.\n"
+            "  Run the command without sudo, or use --system on Linux:\n"
+            "    hermes gateway install"
+        )
+        sys.exit(1)
     plist_path = get_launchd_plist_path()
 
     if plist_path.exists() and not force:

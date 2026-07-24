@@ -131,13 +131,21 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
   return rules.length > 0 ? entries.filter(entry => !ignoredBy(rules, entry)) : entries
 }
 
-export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
+export async function readProjectDir(
+  dirPath: string,
+  rootPath = dirPath,
+  { showIgnored = false }: { showIgnored?: boolean } = {}
+): Promise<HermesReadDirResult> {
   if (!window.hermesDesktop) {
     return { entries: [], error: 'no-bridge' }
   }
 
   const result = await readDesktopDir(dirPath)
   const entries = (result?.entries ?? []).filter(entry => !ALWAYS_EXCLUDED.has(entry.name))
+
+  if (showIgnored) {
+    return { ...result, entries }
+  }
 
   return { ...result, entries: await filterIgnored(entries, rootPath, dirPath) }
 }

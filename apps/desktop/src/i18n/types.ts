@@ -1925,6 +1925,8 @@ export interface Translations {
     openFolder: string
     refreshTree: string
     collapseAll: string
+    showIgnoredFiles: string
+    hideIgnoredFiles: string
     previewUnavailable: string
     couldNotPreview: (path: string) => string
     noProjectTitle: string

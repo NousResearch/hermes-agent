@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
 import { $connection } from '@/store/session'
+import { $workspaceChangeTick } from '@/store/workspace-events'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
 import { resetProjectTreeState, useProjectTree } from './use-project-tree'
@@ -268,5 +269,61 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.rootError).toBe('no-bridge'))
     expect(result.current.data).toEqual([])
+  })
+
+  it('toggles showIgnored and carries the setting into loadChildren and revalidateTree', async () => {
+    const gitRoot = vi.fn(async () => '/p')
+    const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('ignored.log\n')}`)
+    readDir.mockImplementation(async path => {
+      if (path === '/p') {
+        return ok([
+          { name: '.gitignore', path: '/p/.gitignore', isDirectory: false },
+          { name: 'src', path: '/p/src', isDirectory: true }
+        ])
+      }
+
+      if (path === '/p/src') {
+        return ok([
+          { name: 'app.ts', path: '/p/src/app.ts', isDirectory: false },
+          { name: 'ignored.log', path: '/p/src/ignored.log', isDirectory: false }
+        ])
+      }
+
+      return ok([])
+    })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+
+    const { result } = renderHook(() => useProjectTree('/p'))
+    await waitFor(() => expect(result.current.rootLoading).toBe(false))
+
+    // Expand src folder
+    await act(async () => {
+      await result.current.loadChildren('/p/src')
+    })
+
+    // By default showIgnored is false, so ignored.log is filtered out
+    const srcNode = result.current.data.find(n => n.name === 'src')
+    expect(srcNode?.children?.map(c => c.name)).toEqual(['app.ts'])
+
+    // Toggle showIgnored
+    await act(async () => {
+      result.current.toggleShowIgnored()
+    })
+
+    // Now it should reload the root and when expanding children it should include ignored.log
+    await act(async () => {
+      await result.current.loadChildren('/p/src')
+    })
+    const srcNodeAfter = result.current.data.find(n => n.name === 'src')
+    expect(srcNodeAfter?.children?.map(c => c.name)).toEqual(['app.ts', 'ignored.log'])
+
+    // Bumping workspaceChangeTick triggers revalidateTree which should also keep ignored.log
+    await act(async () => {
+      $workspaceChangeTick.set($workspaceChangeTick.get() + 1)
+    })
+
+    // Check that it still has ignored.log after revalidation
+    const srcNodeAfterReval = result.current.data.find(n => n.name === 'src')
+    expect(srcNodeAfterReval?.children?.map(c => c.name)).toEqual(['app.ts', 'ignored.log'])
   })
 })

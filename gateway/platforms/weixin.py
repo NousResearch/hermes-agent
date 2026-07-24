@@ -97,7 +97,6 @@ SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 STALE_SESSION_RET = RATE_LIMIT_ERRCODE  # -2: stale session disguised as rate limit
 DEAD_SESSION_RET = -3  # -3: session fully dead
-ALERT_SCRIPT = os.environ.get("HERMES_ALERT_SCRIPT", "")
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
@@ -1012,14 +1011,14 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(path, {"get_updates_buf": sync_buf})
 
 
-def _fire_alert(event_type: str, detail: str) -> None:
+def _fire_alert(event_type: str, detail: str, script_path: str = "") -> None:
     """Fire an external alert script if configured."""
-    if not ALERT_SCRIPT:
+    if not script_path:
         return
     try:
         import subprocess
         subprocess.Popen(
-            [ALERT_SCRIPT, event_type, detail],
+            [script_path, event_type, detail],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -1235,6 +1234,10 @@ class WeixinAdapter(BasePlatformAdapter):
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
             default=False,
         )
+        self._alert_script = str(
+            extra.get("alert_script")
+            or os.getenv("HERMES_ALERT_SCRIPT", "")
+        ).strip()
 
         # Text debounce batching (mirrors Telegram adapter pattern).
         # iLink delivers messages individually, so rapid multi-message
@@ -1388,8 +1391,8 @@ class WeixinAdapter(BasePlatformAdapter):
                         logger.error("[%s] Session expired (ret=%s errcode=%s); clearing sync buffer and pausing for 10 minutes", self.name, ret, errcode)
                         sync_buf = ""
                         _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
-                        if ALERT_SCRIPT:
-                            _fire_alert("stale_session", f"ret={ret} errcode={errcode}")
+                        if self._alert_script:
+                            _fire_alert("stale_session", f"ret={ret} errcode={errcode}", self._alert_script)
                         await asyncio.sleep(600)
                         consecutive_failures = 0
                         continue
@@ -1856,8 +1859,8 @@ class WeixinAdapter(BasePlatformAdapter):
                     self.name,
                     _safe_id(chat_id),
                 )
-                if ALERT_SCRIPT:
-                    _fire_alert("session_expired", f"to={_safe_id(chat_id)}")
+                if self._alert_script:
+                    _fire_alert("session_expired", f"to={_safe_id(chat_id)}", self._alert_script)
                 raise
             except Exception as exc:
                 last_error = exc

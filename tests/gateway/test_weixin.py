@@ -402,16 +402,17 @@ class TestWeixinSessionExpired:
         from gateway.platforms.weixin import _is_stale_session_ret
         assert _is_stale_session_ret(None, -14, None) is False
 
-    def test_alert_script_constant(self):
-        """ALERT_SCRIPT is defined (may be empty if env var not set)."""
-        from gateway.platforms.weixin import ALERT_SCRIPT
-        assert isinstance(ALERT_SCRIPT, str)
-
     def test_fire_alert_no_script(self):
-        """_fire_alert is a no-op when ALERT_SCRIPT is empty."""
+        """_fire_alert is a no-op when script_path is empty."""
         from gateway.platforms.weixin import _fire_alert
         # Should not raise even with no script configured
         _fire_alert("test_event", "test_detail")
+
+    def test_fire_alert_default_param(self):
+        """_fire_alert default script_path is empty string."""
+        from gateway.platforms.weixin import _fire_alert
+        # Verify default parameter works (backward compat)
+        _fire_alert("test_event", "test_detail", "")
 
 
 class TestWeixinPollStaleDetection:

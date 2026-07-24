@@ -852,6 +852,18 @@ def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
     return name.startswith("audio_message")
 
 
+def _trusted_bot_user_id(auth_response) -> str:
+    """Return Slack's bot user ID only for a verified bot-token response."""
+    try:
+        bot_id = auth_response.get("bot_id", "") or ""
+        user_id = auth_response.get("user_id", "") or ""
+    except Exception:
+        data = getattr(auth_response, "data", None) or {}
+        bot_id = data.get("bot_id", "") or ""
+        user_id = data.get("user_id", "") or ""
+    return str(user_id) if bot_id and user_id else ""
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -1695,19 +1707,11 @@ class SlackAdapter(BasePlatformAdapter):
         (``xoxp-…`` / a legacy/personal OAuth token) it is the *installing
         human's* member ID and there is **no** ``bot_id``.
 
-        When that happens, ``self._bot_user_id`` becomes a human's member ID,
-        and every "is this the bot?" check downstream misfires: that one
-        person's ``<@…>`` mentions wake the bot (``is_mentioned`` in
-        ``_handle_slack_message``) and get stripped as if they were the bot's
-        own mention — so the agent is genuinely told it was @mentioned and
-        replies to messages merely *addressed to that human*. There is no
-        runtime API error to catch; the only detectable moment is here at
-        connect time, by noticing ``bot_id`` is absent from ``auth.test``.
-
-        Warning-only: a user token can still send/receive, and we don't want
-        to hard-fail a working-but-misconfigured install on connect. We log
-        exactly what is wrong and how to fix it, once per workspace per
-        process.
+        Without a trusted bot identity, native ``<@bot>`` text matching is
+        unavailable. Shared-channel admission therefore remains fail-closed
+        and accepts only Slack ``app_mention`` events or configured mention
+        patterns. A user token can still send and receive, so connect remains
+        warning-only and logs the remediation once per workspace per process.
         """
         try:
             warned = getattr(self, "_user_token_warned", None)
@@ -1738,12 +1742,12 @@ class SlackAdapter(BasePlatformAdapter):
                     "authenticated as a USER (member %s), not a bot — the "
                     "auth.test response has no 'bot_id'. This is almost "
                     "certainly a user token (xoxp-...) instead of a Bot User "
-                    "OAuth Token (xoxb-...). The bot's identity is now bound "
-                    "to that member's ID, so mentions OF THAT PERSON will be "
-                    "misrouted as mentions of the bot (the bot replies to "
-                    "messages merely addressed to them). Use the 'Bot User "
-                    "OAuth Token' (xoxb-...) from your Slack app's 'OAuth & "
-                    "Permissions' page in SLACK_BOT_TOKEN.",
+                    "OAuth Token (xoxb-...). Native bot mention detection is "
+                    "disabled for this workspace, so mention-gated channels "
+                    "will accept only app_mention events or configured "
+                    "mention_patterns. Use the 'Bot User OAuth Token' "
+                    "(xoxb-...) from your Slack app's 'OAuth & Permissions' "
+                    "page in SLACK_BOT_TOKEN.",
                     team_key or "this workspace",
                     user_id,
                 )
@@ -1910,7 +1914,7 @@ class SlackAdapter(BasePlatformAdapter):
                 _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
-                bot_user_id = auth_response.get("user_id", "")
+                bot_user_id = _trusted_bot_user_id(auth_response)
                 bot_name = auth_response.get("user", "unknown")
                 team_name = auth_response.get("team", "unknown")
 
@@ -5602,7 +5606,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Detect mentions authored only inside Block Kit blocks too (#52387)
         routing_text = _slack_mention_detection_text(event) or original_text or ""
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
+            event.get("type") == "app_mention"
+            or (bot_uid and f"<@{bot_uid}>" in routing_text)
             or self._slack_message_matches_mention_patterns(routing_text)
         )
         event_thread_ts = event.get("thread_ts")
@@ -5637,7 +5642,7 @@ class SlackAdapter(BasePlatformAdapter):
                 if allow_bots == "mentions" and not is_mentioned:
                     return
 
-        if not is_one_to_one_dm and bot_uid:
+        if not is_one_to_one_dm:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:

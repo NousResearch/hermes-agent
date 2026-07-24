@@ -33,4 +33,13 @@ describe('TerminalRail', () => {
     expect(label?.classList.contains('inline-flex')).toBe(true)
     expect(label?.classList.contains('flex')).toBe(false)
   })
+  it('keeps <body> pointer-events enabled when the terminal tab context menu opens (regression: Radix modal mode would break the rail\'s :hover-based pane-reveal suppression)', async () => {
+    render(<TerminalRail />)
+
+    fireEvent.contextMenu(screen.getByRole('tab', { name: '1. PowerShell' }))
+
+    await screen.findByRole('menu')
+
+    expect(document.body.style.pointerEvents).not.toBe('none')
+  })
 })

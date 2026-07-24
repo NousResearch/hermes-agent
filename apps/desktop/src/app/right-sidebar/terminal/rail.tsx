@@ -111,7 +111,11 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
   const label = `${index + 1}. ${term.title}`
 
   return (
-    <ContextMenu>
+    // modal={false}: Radix's default modal mode sets pointer-events:none on
+    // <body> while open, which breaks the :hover-based pane-reveal suppression
+    // on the rail (see data-suppress-pane-reveal above) — the right sidebar's
+    // hover-reveal trigger would spuriously fire the instant this menu opened.
+    <ContextMenu modal={false}>
       <ContextMenuTrigger asChild>
         <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
           {active && (

@@ -37,6 +37,9 @@ OPERATION_SCHEMA = "muncho-owner-gate-deferred-mutation-iam-operation.v1"
 SUCCESS_SCHEMA = "muncho-owner-gate-deferred-mutation-iam-success.v1"
 FAILURE_SCHEMA = "muncho-owner-gate-deferred-mutation-iam-failure.v1"
 TRANSACTION_SCHEMA = "muncho-owner-gate-deferred-mutation-iam-transaction.v1"
+HISTORICAL_CLEANUP_SCHEMA = (
+    "muncho-owner-gate-deferred-mutation-iam-historical-cleanup.v1"
+)
 
 ACTION_ACTIVATE = "activate"
 ACTION_REMOVE = "remove"
@@ -2329,14 +2332,34 @@ class _TrustedGcloudDeferredMutationIamProvider(
         gcloud_executable: launcher.TrustedGcloudExecutable,
         gcloud_configuration: launcher.PinnedGcloudConfiguration,
         owner_identity: launcher.GcloudOwnerAccessToken,
+        runtime_release_revision: str | None = None,
     ) -> None:
-        super().__init__(
-            plan=authority.plan,
-            gcloud_executable=gcloud_executable,
-            gcloud_configuration=gcloud_configuration,
-            expected_release_revision=authority.plan.spec.release_revision,
-            runner=foundation_apply._SubprocessFoundationRunner(),
+        expected_runtime_release = (
+            authority.plan.spec.release_revision
+            if runtime_release_revision is None
+            else runtime_release_revision
         )
+        if _REVISION.fullmatch(expected_runtime_release or "") is None:
+            _error("owner_gate_deferred_mutation_iam_capability_invalid")
+        foundation_plan = authority.foundation_apply_chain.foundation_a.plan
+        try:
+            super().__init__(
+                plan=foundation_plan,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+                expected_release_revision=expected_runtime_release,
+                runner=foundation_apply._SubprocessFoundationRunner(),
+            )
+        except (
+            AttributeError,
+            TypeError,
+            foundation_apply.OwnerGateFoundationApplyError,
+            pre_foundation.OwnerGatePreFoundationError,
+        ) as exc:
+            _error(
+                "owner_gate_deferred_mutation_iam_provider_invalid",
+                exc,
+            )
         if action not in _ACTIONS:
             _error("owner_gate_deferred_mutation_iam_action_invalid")
         self._action = action
@@ -2354,6 +2377,7 @@ class _TrustedGcloudDeferredMutationIamProvider(
         self.assert_stable()
         if action == ACTION_REMOVE:
             return
+        foundation_plan = authority.foundation_apply_chain.foundation_a.plan
         foundation_apply._validate_live_ancestry(
             self,
             authority.foundation_apply_chain.foundation_a,
@@ -2363,11 +2387,13 @@ class _TrustedGcloudDeferredMutationIamProvider(
             "create_narrow_storage_executor_role",
         ):
             matches = tuple(
-                step for step in authority.plan.foundation_steps if step.name == name
+                step
+                for step in foundation_plan.foundation_steps
+                if step.name == name
             )
             if len(matches) != 1:
                 _error("owner_gate_deferred_mutation_iam_lineage_invalid")
-            observed = self.inspect_resource(matches[0], plan=authority.plan)
+            observed = self.inspect_resource(matches[0], plan=foundation_plan)
             observed.validate()
             if (
                 observed.state != "exact"
@@ -2545,7 +2571,13 @@ def _validate_owner_capabilities(
     gcloud_executable: launcher.TrustedGcloudExecutable,
     gcloud_configuration: launcher.PinnedGcloudConfiguration,
     owner_identity: launcher.GcloudOwnerAccessToken,
+    runtime_release_revision: str | None = None,
 ) -> Any:
+    expected_runtime_release = (
+        authority.plan.spec.release_revision
+        if runtime_release_revision is None
+        else runtime_release_revision
+    )
     if (
         type(gcloud_executable) is not launcher.TrustedGcloudExecutable
         or type(gcloud_configuration) is not launcher.PinnedGcloudConfiguration
@@ -2553,11 +2585,12 @@ def _validate_owner_capabilities(
         or owner_identity.gcloud_configuration is not gcloud_configuration
         or getattr(owner_identity, "_gcloud_executable", None)
         is not gcloud_executable
+        or _REVISION.fullmatch(expected_runtime_release or "") is None
     ):
         _error("owner_gate_deferred_mutation_iam_capability_invalid")
     try:
         runtime = gcloud_executable.sealed_runtime_identity(
-            expected_release_sha=authority.plan.spec.release_revision
+            expected_release_sha=expected_runtime_release
         )
         gcloud_configuration.assert_stable()
         if gcloud_configuration.account != owner_reauth.OWNER_ACCOUNT:
@@ -3474,6 +3507,241 @@ def _execute_pathless_under_contract_lease(
             _error("owner_gate_deferred_mutation_iam_capability_changed")
 
 
+def _historical_cleanup_attestation(
+    *,
+    executor_release_revision: str,
+    historical_release_revision: str,
+    result: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    replayed: bool,
+    lifecycle_count: int,
+) -> Mapping[str, Any]:
+    contract = _fixed_contract_values()
+    runtime_identity_sha256 = str(runtime.get("identity_sha256", ""))
+    if (
+        _REVISION.fullmatch(executor_release_revision or "") is None
+        or _REVISION.fullmatch(historical_release_revision or "") is None
+        or executor_release_revision == historical_release_revision
+        or result.get("ok") is not True
+        or result.get("action") != ACTION_REMOVE
+        or result.get("final_release_revision")
+        != historical_release_revision
+        or result.get("mutation_binding_present") is not False
+        or result.get("resource_name") != contract.resource_name
+        or result.get("role") != contract.role
+        or result.get("member") != contract.member
+        or result.get("condition") != contract.condition
+        or _SHA256.fullmatch(str(result.get("transaction_id", "")))
+        is None
+        or _SHA256.fullmatch(str(result.get("receipt_sha256", "")))
+        is None
+        or _SHA256.fullmatch(
+            str(
+                result.get(
+                    "paired_activation_success_receipt_sha256",
+                    "",
+                )
+            )
+        )
+        is None
+        or _SHA256.fullmatch(runtime_identity_sha256) is None
+        or type(replayed) is not bool
+        or type(lifecycle_count) is not int
+        or lifecycle_count <= 0
+    ):
+        _error(
+            "owner_gate_deferred_mutation_iam_historical_cleanup_invalid"
+        )
+    unsigned = {
+        "schema": HISTORICAL_CLEANUP_SCHEMA,
+        "ok": True,
+        "state": "already_released" if replayed else "released",
+        "executor_release_revision": executor_release_revision,
+        "historical_release_revision": historical_release_revision,
+        "transaction_id": result["transaction_id"],
+        "paired_activation_success_receipt_sha256": result[
+            "paired_activation_success_receipt_sha256"
+        ],
+        "remove_success_receipt_sha256": result["receipt_sha256"],
+        "historical_remove_disposition": result["disposition"],
+        "successor_runtime_identity_sha256": runtime_identity_sha256,
+        "fixed_contract_sha256": _sha256_json({
+            "resource_name": contract.resource_name,
+            "role": contract.role,
+            "member": contract.member,
+            "condition": dict(contract.condition),
+        }),
+        "validated_lifecycle_count": lifecycle_count,
+        "live_binding_absent": True,
+        "caller_selected_historical_release_accepted": False,
+        "caller_selected_resource_accepted": False,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def _remove_historical_contract_owner(
+    *,
+    executor_release_revision: str,
+    gcloud_executable: launcher.TrustedGcloudExecutable,
+    gcloud_configuration: launcher.PinnedGcloudConfiguration,
+    owner_identity: launcher.GcloudOwnerAccessToken,
+    now_unix: Callable[[], int] = lambda: int(time.time()),
+    journal: DeferredMutationIamJournal | None = None,
+) -> Mapping[str, Any]:
+    """Release the one journal-owned predecessor without a caller target."""
+
+    if (
+        _REVISION.fullmatch(executor_release_revision or "") is None
+        or type(gcloud_executable) is not launcher.TrustedGcloudExecutable
+        or type(gcloud_configuration)
+        is not launcher.PinnedGcloudConfiguration
+        or type(owner_identity) is not launcher.GcloudOwnerAccessToken
+        or owner_identity.gcloud_configuration is not gcloud_configuration
+        or getattr(owner_identity, "_gcloud_executable", None)
+        is not gcloud_executable
+        or (
+            journal is not None
+            and not isinstance(journal, DeferredMutationIamJournal)
+        )
+    ):
+        _error("owner_gate_deferred_mutation_iam_capability_invalid")
+    selected_journal = journal or DeferredMutationIamJournal()
+    runtime_before: Mapping[str, Any] | None = None
+    authority: _DeferredMutationIamAuthority | None = None
+    try:
+        launcher.require_trusted_owner_support_activation(
+            gcloud_executable,
+            release_sha=executor_release_revision,
+        )
+        launcher.require_local_launcher_provenance(
+            executor_release_revision
+        )
+        with selected_journal.contract_lease():
+            inspected_at = _clock(now_unix)
+            lifecycles: list[tuple[str, str, bool]] = []
+            for transaction_id in selected_journal.transaction_ids():
+                with selected_journal.transaction_lease(transaction_id):
+                    artifacts = selected_journal.list(transaction_id)
+                    release_revision = _journal_release_revision(
+                        transaction_id=transaction_id,
+                        artifacts=artifacts,
+                    )
+                    if release_revision is None:
+                        continue
+                    released = _other_lifecycle_released(
+                        transaction_id=transaction_id,
+                        release_revision=release_revision,
+                        journal=selected_journal,
+                        now_unix=inspected_at,
+                    )
+                    lifecycles.append(
+                        (transaction_id, release_revision, released)
+                    )
+            selected_journal.require_contract_lease()
+            active = tuple(item for item in lifecycles if not item[2])
+            if len(active) > 1:
+                _error(
+                    "owner_gate_deferred_mutation_iam_"
+                    "historical_cleanup_ambiguous"
+                )
+            if active:
+                target = active[0]
+                replayed = False
+            else:
+                historical_released = tuple(
+                    item
+                    for item in lifecycles
+                    if item[2] and item[1] != executor_release_revision
+                )
+                if not historical_released:
+                    _error(
+                        "owner_gate_deferred_mutation_iam_"
+                        "historical_cleanup_missing"
+                    )
+                target = sorted(historical_released)[-1]
+                replayed = True
+            transaction_id, historical_release_revision, _released = target
+            if historical_release_revision == executor_release_revision:
+                _error(
+                    "owner_gate_deferred_mutation_iam_"
+                    "historical_cleanup_current"
+                )
+            with _historical_remove_authority(
+                release_revision=historical_release_revision,
+                journal=selected_journal,
+                now_unix=inspected_at,
+            ) as (frozen, historical_authority, _descriptor):
+                if historical_authority.transaction_id != transaction_id:
+                    _error(
+                        "owner_gate_deferred_mutation_iam_"
+                        "contract_owner_changed"
+                    )
+                authority = historical_authority
+                runtime_before = _validate_owner_capabilities(
+                    authority=authority,
+                    gcloud_executable=gcloud_executable,
+                    gcloud_configuration=gcloud_configuration,
+                    owner_identity=owner_identity,
+                    runtime_release_revision=executor_release_revision,
+                )
+                provider = _TrustedGcloudDeferredMutationIamProvider(
+                    action=ACTION_REMOVE,
+                    authority=authority,
+                    gcloud_executable=gcloud_executable,
+                    gcloud_configuration=gcloud_configuration,
+                    owner_identity=owner_identity,
+                    runtime_release_revision=executor_release_revision,
+                )
+                result = _execute_with_provider(
+                    authority=authority,
+                    action=ACTION_REMOVE,
+                    provider=provider,
+                    journal=selected_journal,
+                    require_contract_lease=True,
+                )
+                frozen.inputs.assert_stable()
+            return _historical_cleanup_attestation(
+                executor_release_revision=executor_release_revision,
+                historical_release_revision=historical_release_revision,
+                result=result,
+                runtime=runtime_before,
+                replayed=replayed,
+                lifecycle_count=len(lifecycles),
+            )
+    finally:
+        failures: list[BaseException] = []
+        runtime_after: Any = None
+        for check in (
+            gcloud_configuration.assert_stable,
+            owner_identity.require_stable,
+        ):
+            try:
+                check()
+            except BaseException as exc:
+                failures.append(exc)
+        if authority is not None:
+            try:
+                runtime_after = gcloud_executable.sealed_runtime_identity(
+                    expected_release_sha=executor_release_revision
+                )
+            except BaseException as exc:
+                failures.append(exc)
+        try:
+            launcher.require_trusted_owner_support_activation(
+                gcloud_executable,
+                release_sha=executor_release_revision,
+            )
+            launcher.require_local_launcher_provenance(
+                executor_release_revision
+            )
+        except BaseException as exc:
+            failures.append(exc)
+        if failures or (
+            authority is not None and runtime_after != runtime_before
+        ):
+            _error("owner_gate_deferred_mutation_iam_capability_changed")
+
+
 def activate_deferred_mutation_iam(
     *,
     release_revision: str,
@@ -3512,10 +3780,28 @@ def remove_deferred_mutation_iam(
     )
 
 
+def remove_historical_deferred_mutation_iam(
+    *,
+    release_revision: str,
+    gcloud_executable: launcher.TrustedGcloudExecutable,
+    gcloud_configuration: launcher.PinnedGcloudConfiguration,
+    owner_identity: launcher.GcloudOwnerAccessToken,
+) -> Mapping[str, Any]:
+    """Release the exact validated predecessor owned by the global journal."""
+
+    return _remove_historical_contract_owner(
+        executor_release_revision=release_revision,
+        gcloud_executable=gcloud_executable,
+        gcloud_configuration=gcloud_configuration,
+        owner_identity=owner_identity,
+    )
+
+
 __all__ = [
     "DeferredMutationIamJournal",
     "OwnerGateDeferredMutationIamError",
     "OwnerGateDeferredMutationIamFailed",
     "activate_deferred_mutation_iam",
+    "remove_historical_deferred_mutation_iam",
     "remove_deferred_mutation_iam",
 ]

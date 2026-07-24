@@ -20424,6 +20424,14 @@ def _cli_parser() -> argparse.ArgumentParser:
         ),
     )
     actions.add_argument(
+        "--remove-historical-owner-gate-deferred-mutation-iam",
+        action="store_true",
+        help=(
+            "through this successor runtime, discover and CAS-remove only the "
+            "single validated predecessor binding owned by the closed journal"
+        ),
+    )
+    actions.add_argument(
         "--stage-owner-gate-activation-evidence",
         action="store_true",
         help=(
@@ -20780,6 +20788,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if (
             arguments.activate_owner_gate_deferred_mutation_iam
             or arguments.remove_owner_gate_deferred_mutation_iam
+            or arguments.remove_historical_owner_gate_deferred_mutation_iam
         ):
             if arguments.external_iam_policy_sha256 is not None:
                 raise OwnerLauncherError(
@@ -20787,19 +20796,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             from scripts.canary import owner_gate_deferred_mutation_iam
 
-            action = (
+            if arguments.activate_owner_gate_deferred_mutation_iam:
+                action = (
+                    owner_gate_deferred_mutation_iam.
+                    activate_deferred_mutation_iam
+                )
+            elif arguments.remove_owner_gate_deferred_mutation_iam:
+                action = (
+                    owner_gate_deferred_mutation_iam.
+                    remove_deferred_mutation_iam
+                )
+            else:
+                action = (
+                    owner_gate_deferred_mutation_iam.
+                    remove_historical_deferred_mutation_iam
+                )
+            try:
+                receipt = action(
+                    release_revision=release_sha,
+                    gcloud_executable=gcloud_executable,
+                    gcloud_configuration=gcloud_configuration,
+                    owner_identity=owner_identity,
+                )
+            except (
                 owner_gate_deferred_mutation_iam.
-                activate_deferred_mutation_iam
-                if arguments.activate_owner_gate_deferred_mutation_iam
-                else owner_gate_deferred_mutation_iam.
-                remove_deferred_mutation_iam
-            )
-            receipt = action(
-                release_revision=release_sha,
-                gcloud_executable=gcloud_executable,
-                gcloud_configuration=gcloud_configuration,
-                owner_identity=owner_identity,
-            )
+                OwnerGateDeferredMutationIamError
+            ) as exc:
+                code = str(exc)
+                if _STABLE_CODE.fullmatch(code) is None or len(code) > 63:
+                    code = "owner_gate_deferred_mutation_iam_failed"
+                raise OwnerLauncherError(code) from None
             runtime_and_provenance_guard(release_sha)
             _emit_canonical_line(receipt)
             return 0

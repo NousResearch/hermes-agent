@@ -15,6 +15,7 @@ from scripts.canary import owner_gate_deferred_mutation_iam as deferred
 from scripts.canary import owner_gate_foundation as foundation
 from scripts.canary import owner_gate_foundation_apply as foundation_apply
 from scripts.canary import owner_gate_owner_reauth as owner_reauth
+from scripts.canary import owner_gate_pre_foundation as pre_foundation
 from scripts.canary import owner_gate_trust as trust
 from tests.scripts.canary import test_owner_gate_foundation_apply as apply_fixture
 from tests.scripts.canary import test_owner_gate_foundation as foundation_fixture
@@ -513,6 +514,7 @@ def test_public_boundary_has_no_caller_selected_iam_fields() -> None:
     for function in (
         deferred.activate_deferred_mutation_iam,
         deferred.remove_deferred_mutation_iam,
+        deferred.remove_historical_deferred_mutation_iam,
     ):
         assert set(inspect.signature(function).parameters) == allowed
     assert not allowed.intersection({
@@ -535,14 +537,31 @@ def test_public_boundary_has_no_caller_selected_iam_fields() -> None:
         pre_fixture.REVISION,
         "--remove-owner-gate-deferred-mutation-iam",
     ])
+    historical_remove = parser.parse_args([
+        "--release-sha",
+        pre_fixture.REVISION,
+        "--remove-historical-owner-gate-deferred-mutation-iam",
+    ])
     assert activate.activate_owner_gate_deferred_mutation_iam is True
     assert remove.remove_owner_gate_deferred_mutation_iam is True
+    assert (
+        historical_remove.
+        remove_historical_owner_gate_deferred_mutation_iam
+        is True
+    )
     with pytest.raises(SystemExit):
         parser.parse_args([
             "--release-sha",
             pre_fixture.REVISION,
             "--activate-owner-gate-deferred-mutation-iam",
             "--remove-owner-gate-deferred-mutation-iam",
+        ])
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "--release-sha",
+            pre_fixture.REVISION,
+            "--remove-owner-gate-deferred-mutation-iam",
+            "--remove-historical-owner-gate-deferred-mutation-iam",
         ])
     for forbidden in ("--project", "--role", "--member", "--journal"):
         with pytest.raises(SystemExit):
@@ -553,6 +572,207 @@ def test_public_boundary_has_no_caller_selected_iam_fields() -> None:
                 forbidden,
                 "attacker-controlled",
             ])
+
+
+def test_concrete_provider_uses_foundation_plan_for_foundation_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final_authority = _authority()
+    foundation_plan = pre_fixture._plan()
+    resource_identities = {
+        "create_dedicated_service_account": {"kind": "service-account"},
+        "create_narrow_storage_executor_role": {"kind": "custom-role"},
+    }
+    chain = SimpleNamespace(
+        foundation_a=SimpleNamespace(plan=foundation_plan),
+        resource_identity=lambda name: resource_identities[name],
+    )
+    authority = deferred._DeferredMutationIamAuthority._create(
+        plan=final_authority.plan,
+        foundation_apply_chain=chain,  # type: ignore[arg-type]
+        final_release_public_key=final_authority.final_release_public_key,
+        contract=final_authority.contract,
+        lineage=final_authority.lineage,
+    )
+    captured_init: dict[str, Any] = {}
+
+    def fake_base_init(_self: object, **kwargs: Any) -> None:
+        captured_init.update(kwargs)
+
+    monkeypatch.setattr(
+        foundation_apply._TrustedGcloudFoundationProvider,
+        "__init__",
+        fake_base_init,
+    )
+    owner_identity = object()
+    provider = deferred._TrustedGcloudDeferredMutationIamProvider(
+        action=deferred.ACTION_ACTIVATE,
+        authority=authority,
+        gcloud_executable=object(),  # type: ignore[arg-type]
+        gcloud_configuration=object(),  # type: ignore[arg-type]
+        owner_identity=owner_identity,  # type: ignore[arg-type]
+    )
+    assert captured_init["plan"] is foundation_plan
+    assert (
+        captured_init["expected_release_revision"]
+        == final_authority.plan.spec.release_revision
+    )
+    assert provider._token_provider is owner_identity
+
+    ancestry_calls: list[object] = []
+    monkeypatch.setattr(provider, "assert_stable", lambda: None)
+    monkeypatch.setattr(
+        foundation_apply,
+        "_validate_live_ancestry",
+        lambda selected, foundation_a: ancestry_calls.append(
+            (selected, foundation_a)
+        ),
+    )
+    inspected: list[tuple[str, object]] = []
+
+    def inspect_resource(
+        step: foundation.PlanStep,
+        *,
+        plan: foundation.OwnerGateFoundationPlan,
+    ) -> foundation_apply.ResourceObservation:
+        inspected.append((step.name, plan))
+        return foundation_apply.ResourceObservation(
+            "exact",
+            "0" * 64,
+            resource_identity=resource_identities[step.name],
+        )
+
+    monkeypatch.setattr(provider, "inspect_resource", inspect_resource)
+    provider.assert_lineage(authority, action=deferred.ACTION_ACTIVATE)
+    assert ancestry_calls == [(provider, chain.foundation_a)]
+    assert inspected == [
+        ("create_dedicated_service_account", foundation_plan),
+        ("create_narrow_storage_executor_role", foundation_plan),
+    ]
+    assert all(plan is not final_authority.plan for _name, plan in inspected)
+
+
+def test_concrete_provider_normalizes_foundation_plan_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final_authority = _authority()
+    chain = SimpleNamespace(
+        foundation_a=SimpleNamespace(plan=pre_fixture._plan()),
+    )
+    authority = deferred._DeferredMutationIamAuthority._create(
+        plan=final_authority.plan,
+        foundation_apply_chain=chain,  # type: ignore[arg-type]
+        final_release_public_key=final_authority.final_release_public_key,
+        contract=final_authority.contract,
+        lineage=final_authority.lineage,
+    )
+
+    def fail_base_init(_self: object, **_kwargs: Any) -> None:
+        raise pre_foundation.OwnerGatePreFoundationError(
+            "owner_gate_pre_foundation_plan_invalid"
+        )
+
+    monkeypatch.setattr(
+        foundation_apply._TrustedGcloudFoundationProvider,
+        "__init__",
+        fail_base_init,
+    )
+    with pytest.raises(
+        deferred.OwnerGateDeferredMutationIamError,
+        match="^owner_gate_deferred_mutation_iam_provider_invalid$",
+    ):
+        deferred._TrustedGcloudDeferredMutationIamProvider(
+            action=deferred.ACTION_REMOVE,
+            authority=authority,
+            gcloud_executable=object(),  # type: ignore[arg-type]
+            gcloud_configuration=object(),  # type: ignore[arg-type]
+            owner_identity=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_owner_launcher_routes_successor_historical_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = deferred.launcher
+    executable = SimpleNamespace(
+        trusted_command_prefix=lambda: ("/trusted/python",),
+    )
+    configuration = object()
+    identity = object()
+    emitted: list[Mapping[str, Any]] = []
+    calls: list[Mapping[str, Any]] = []
+    expected = {
+        "schema": deferred.HISTORICAL_CLEANUP_SCHEMA,
+        "ok": True,
+    }
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_runtime",
+        lambda _release: executable,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "activate_trusted_owner_support",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_local_launcher_provenance",
+        lambda _release: "0" * 64,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_install_canonical_launcher_bridge",
+        lambda _release: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_validate_owner_interpreter_invocation",
+        lambda _python: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_support_activation",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "PinnedGcloudConfiguration",
+        lambda: configuration,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "GcloudOwnerAccessToken",
+        lambda **_kwargs: identity,
+    )
+
+    def historical_cleanup(**kwargs: Any) -> Mapping[str, Any]:
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(
+        deferred,
+        "remove_historical_deferred_mutation_iam",
+        historical_cleanup,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_emit_canonical_line",
+        lambda value: emitted.append(value),
+    )
+
+    assert launcher.main([
+        "--release-sha",
+        pre_fixture.REVISION,
+        "--remove-historical-owner-gate-deferred-mutation-iam",
+    ]) == 0
+    assert calls == [{
+        "release_revision": pre_fixture.REVISION,
+        "gcloud_executable": executable,
+        "gcloud_configuration": configuration,
+        "owner_identity": identity,
+    }]
+    assert emitted == [expected]
 
 
 def test_activate_is_cas_bound_and_replays_without_second_mutation(
@@ -1942,6 +2162,144 @@ def test_pathless_remove_uses_historical_activation_after_expiry(
     assert [call["action"] for call in provider.mutate_calls] == [
         "activate",
         "remove",
+    ]
+
+
+def test_successor_historical_cleanup_discovers_owner_and_replays_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    historical_authority = _authority()
+    successor_authority = _distinct_release_authority(
+        historical_authority
+    )
+    provider = _FakeProvider(historical_authority)
+    journal = _journal(tmp_path / "journal")
+    activated = _execute(historical_authority, provider, journal)
+    frozen = _frozen_stub("historical-owner")
+
+    @contextmanager
+    def historical_context(
+        *,
+        release_revision: str,
+        **_kwargs: Any,
+    ):
+        assert (
+            release_revision
+            == historical_authority.plan.spec.release_revision
+        )
+        descriptor = deferred._basic_activation_attempt_descriptor(
+            artifacts=journal.list(historical_authority.transaction_id),
+            transaction_id=historical_authority.transaction_id,
+            release_revision=release_revision,
+        )
+        assert descriptor is not None
+        yield frozen, historical_authority, descriptor
+
+    monkeypatch.setattr(
+        deferred,
+        "_historical_remove_authority",
+        historical_context,
+    )
+    monkeypatch.setattr(
+        deferred,
+        "_TrustedGcloudDeferredMutationIamProvider",
+        lambda *, authority, runtime_release_revision, **_kwargs: (
+            provider
+            if authority is historical_authority
+            and runtime_release_revision
+            == successor_authority.plan.spec.release_revision
+            else (_ for _ in ()).throw(
+                AssertionError("unexpected historical provider authority")
+            )
+        ),
+    )
+    executable, configuration, identity = _pathless_capabilities(
+        monkeypatch,
+        transaction_id=successor_authority.transaction_id,
+    )
+    common = {
+        "executor_release_revision": (
+            successor_authority.plan.spec.release_revision
+        ),
+        "gcloud_executable": executable,
+        "gcloud_configuration": configuration,
+        "owner_identity": identity,
+        "now_unix": lambda: pre_fixture.NOW + 10_000,
+        "journal": journal,
+    }
+
+    removed = deferred._remove_historical_contract_owner(**common)
+    replay = deferred._remove_historical_contract_owner(**common)
+
+    assert removed["schema"] == deferred.HISTORICAL_CLEANUP_SCHEMA
+    assert removed["state"] == "released"
+    assert removed["historical_release_revision"] == (
+        historical_authority.plan.spec.release_revision
+    )
+    assert removed["executor_release_revision"] == (
+        successor_authority.plan.spec.release_revision
+    )
+    assert removed["transaction_id"] == historical_authority.transaction_id
+    assert removed["paired_activation_success_receipt_sha256"] == (
+        activated["receipt_sha256"]
+    )
+    assert removed["live_binding_absent"] is True
+    assert removed["caller_selected_historical_release_accepted"] is False
+    assert removed["caller_selected_resource_accepted"] is False
+    assert replay["state"] == "already_released"
+    assert replay["remove_success_receipt_sha256"] == removed[
+        "remove_success_receipt_sha256"
+    ]
+    assert [call["action"] for call in provider.mutate_calls] == [
+        deferred.ACTION_ACTIVATE,
+        deferred.ACTION_REMOVE,
+    ]
+
+
+def test_successor_historical_cleanup_rejects_current_release_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = _authority()
+    provider = _FakeProvider(authority)
+    journal = _journal(tmp_path / "journal")
+    _execute(authority, provider, journal)
+    frozen = _frozen_stub("current-owner")
+
+    @contextmanager
+    def historical_context(**_kwargs: Any):
+        descriptor = deferred._basic_activation_attempt_descriptor(
+            artifacts=journal.list(authority.transaction_id),
+            transaction_id=authority.transaction_id,
+            release_revision=authority.plan.spec.release_revision,
+        )
+        assert descriptor is not None
+        yield frozen, authority, descriptor
+
+    monkeypatch.setattr(
+        deferred,
+        "_historical_remove_authority",
+        historical_context,
+    )
+    executable, configuration, identity = _pathless_capabilities(
+        monkeypatch,
+        transaction_id=authority.transaction_id,
+    )
+    with pytest.raises(
+        deferred.OwnerGateDeferredMutationIamError,
+        match="historical_cleanup_current",
+    ):
+        deferred._remove_historical_contract_owner(
+            executor_release_revision=authority.plan.spec.release_revision,
+            gcloud_executable=executable,
+            gcloud_configuration=configuration,
+            owner_identity=identity,
+            now_unix=lambda: pre_fixture.NOW,
+            journal=journal,
+        )
+    assert [call["action"] for call in provider.mutate_calls] == [
+        deferred.ACTION_ACTIVATE,
     ]
 
 

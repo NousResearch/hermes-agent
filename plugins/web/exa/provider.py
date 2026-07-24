@@ -170,7 +170,7 @@ class ExaWebSearchProvider(WebSearchProvider):
                 ]
 
             logger.info("Exa extract: %d URL(s)", len(urls))
-            response = _get_exa_client().get_contents(urls, text=True, encoding='utf-8', errors='replace')
+            response = _get_exa_client().get_contents(urls, text=True)
 
             results: List[Dict[str, Any]] = []
             for result in response.results or []:

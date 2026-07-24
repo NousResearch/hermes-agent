@@ -2639,14 +2639,24 @@ def test_resolve_workspace_accepts_absolute_dir_path(kanban_home, tmp_path):
 
 
 def test_resolve_workspace_rejects_relative_worktree_path(kanban_home):
-    """Worktree paths also must be absolute when explicitly set."""
+    """Worktree paths also must be absolute when explicitly set.
+
+    ``create_task`` now rejects a relative worktree path at mint (it can never
+    dispatch), so to still exercise ``resolve_workspace``'s own absolute-path
+    guard — the defense-in-depth rail for any legacy/pre-guard row — we create
+    a valid scratch task and rewrite the row to the bad worktree state directly.
+    """
     conn = kb.connect()
     try:
         tid = kb.create_task(
-            conn, title="wt", assignee="worker",
-            workspace_kind="worktree",
-            workspace_path="../escape",
+            conn, title="wt", assignee="worker", workspace_kind="scratch",
         )
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='worktree', workspace_path='../escape' "
+            "WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
         with pytest.raises(ValueError, match=r"non-absolute"):
             kb.resolve_workspace(kb.get_task(conn, tid))
     finally:

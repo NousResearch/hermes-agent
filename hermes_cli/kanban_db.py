@@ -137,6 +137,121 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
+WORKTREE_KIND = "worktree"
+
+
+def _path_is_git_repo(path: Optional[str]) -> bool:
+    """True if *path* is (or is) a git working tree or a bare repo.
+
+    Cheap filesystem probe — no subprocess. A worktree card branches from this
+    directory, so it must resolve to something git can operate on: a dir
+    containing ``.git`` (normal or linked worktree), or a bare repo (``HEAD`` +
+    ``objects``). We deliberately do NOT shell out to ``git rev-parse`` so the
+    check stays pure, fast, and usable in the mint path.
+    """
+    if not path:
+        return False
+    try:
+        p = Path(path).expanduser()
+    except (ValueError, OSError):
+        return False
+    if not p.is_dir():
+        return False
+    if (p / ".git").exists():
+        return True
+    # Bare repo shape.
+    return (p / "HEAD").is_file() and (p / "objects").is_dir()
+
+
+def _worktree_workspace_path_resolvable(workspace_path: Optional[str]) -> bool:
+    """A worktree ``workspace_path`` git can actually create a worktree at.
+
+    Non-empty is necessary but NOT sufficient — a garbage/relative/nonexistent
+    path is just as un-dispatchable as an empty one. Mirror what
+    ``_resolve_worktree_workspace`` actually does with an explicit path: the
+    target is dispatchable iff it is already a linked worktree checkout, iff it
+    is itself a git repo root, or iff walking up from its nearest existing
+    ancestor finds a git repo (``_repo_root_for_worktree_target``). A path with
+    no git repo anywhere in its ancestry can only ``spawn_failed`` at dispatch.
+    """
+    if not workspace_path or not workspace_path.strip():
+        return False
+    raw = workspace_path.strip()
+    # Relative paths are rejected at dispatch by resolve_workspace; treat them
+    # as un-resolvable at mint time too.
+    if not os.path.isabs(raw):
+        return False
+    try:
+        requested = Path(raw).expanduser()
+    except (ValueError, OSError):
+        return False
+    if _path_is_git_repo(raw):
+        return True
+    # Walk up from the nearest existing ancestor looking for a git repo, exactly
+    # as _repo_root_for_worktree_target does at dispatch. No subprocess: a git
+    # repo root/worktree carries a ``.git`` entry (or bare-repo HEAD+objects).
+    try:
+        current: Optional[Path] = requested
+        while current is not None:
+            if current.exists():
+                probe: Optional[Path] = current
+                while probe is not None:
+                    if _path_is_git_repo(str(probe)):
+                        return True
+                    probe = probe.parent if probe != probe.parent else None
+                return False
+            current = current.parent if current != current.parent else None
+    except (ValueError, OSError):
+        return False
+    return False
+
+
+def worktree_mint_is_broken(
+    workspace_kind: Optional[str],
+    workspace_path: Optional[str],
+    board_default_workdir: Optional[str],
+) -> Optional[str]:
+    """Return a reason string if a worktree mint can never dispatch, else None.
+
+    A ``workspace_kind=worktree`` card is dispatchable only if EITHER:
+      * ``workspace_path`` is a non-empty, absolute, resolvable path (a git
+        repo, or a path whose parent dir exists so git can create the worktree
+        there), OR
+      * the board carries a ``default_workdir`` that is itself a git repo (the
+        dispatcher falls back to it when the card omits a path).
+
+    Non-worktree kinds (scratch, dir, unset) are never flagged here — scratch is
+    the safe default and ``dir`` has its own absolute-path rule. Returns None
+    (OK) for those.
+
+    Mirrors ``coord/card_mint_guard.worktree_mint_is_broken`` in the pantheon
+    repo; inlined here (no pantheon import) so the reject fires for the raw
+    ``kanban_create`` tool / CLI path that pantheon's mint helpers cannot wrap.
+    """
+    kind = (workspace_kind or "").strip().lower()
+    if kind != WORKTREE_KIND:
+        return None
+    if _worktree_workspace_path_resolvable(workspace_path):
+        return None
+    if board_default_workdir and _path_is_git_repo(board_default_workdir):
+        return None
+    path_desc = (
+        "empty" if not (workspace_path or "").strip()
+        else f"unresolvable ({workspace_path!r})"
+    )
+    workdir_desc = (
+        "null" if not (board_default_workdir or "").strip()
+        else f"not a git repo ({board_default_workdir!r})"
+    )
+    return (
+        f"workspace_kind=worktree with {path_desc} workspace_path and a board "
+        f"default_workdir that is {workdir_desc} — the card can never dispatch "
+        f"(a worktree needs a git repo to branch from). Provide a non-empty "
+        f"resolvable workspace_path or set the board's default_workdir to a git "
+        f"repo, or use workspace_kind=scratch."
+    )
+
+
 
 def _assert_not_delegated_child_mutation() -> None:
     """Reject Kanban state mutations from ``delegate_task`` child contexts.
@@ -3015,6 +3130,7 @@ def create_task(
     # task would point cleanup at the user's source tree (#28818). The
     # containment guard in ``_cleanup_workspace`` is the safety rail, but
     # we also stop the bad state from being created in the first place.
+    board_default_workdir: Optional[str] = None
     if (
         workspace_path is None
         and project_repo is None
@@ -3024,7 +3140,32 @@ def create_task(
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
         if board_default:
-            workspace_path = str(board_default)
+            board_default_workdir = str(board_default)
+            workspace_path = board_default_workdir
+
+    # Reject an un-dispatchable worktree mint at the source (loud, no row
+    # written). A ``workspace_kind=worktree`` card needs a git repo to branch
+    # from: without a resolvable explicit ``workspace_path`` AND without a
+    # git-repo board ``default_workdir`` to fall back to, dispatch can only
+    # ``spawn_failed`` until the breaker trips and parks the card silently
+    # blocked. Project-linked worktrees (``project_repo`` set) are exempt: their
+    # concrete path is derived from the project's primary repo inside the insert
+    # loop below, so ``workspace_path`` is legitimately still None here. This is
+    # the mint-gate counterpart to the pantheon card_mint_guard, covering the
+    # raw kanban_create tool / CLI path that pantheon's mint helpers cannot wrap.
+    #
+    # Pass the *explicit* path and the board default separately: an explicit
+    # worktree path is accepted when its parent dir exists (git creates the
+    # worktree there), but an inherited board default must be an actual git repo
+    # — it is meant to BE the repo to branch from, so a plain non-repo dir is
+    # still un-dispatchable even though its parent exists.
+    if project_repo is None:
+        _explicit_path = None if board_default_workdir else workspace_path
+        _worktree_reason = worktree_mint_is_broken(
+            workspace_kind, _explicit_path, board_default_workdir
+        )
+        if _worktree_reason is not None:
+            raise ValueError(_worktree_reason)
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

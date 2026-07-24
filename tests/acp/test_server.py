@@ -594,7 +594,7 @@ class TestSessionOps:
         assert [entry.status for entry in plan.entries] == ["in_progress"]
 
     @pytest.mark.asyncio
-    async def test_resume_session_replays_persisted_history_to_client(self, agent):
+    async def test_resume_session_does_not_replay_persisted_history_to_client(self, agent):
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
         agent._conn = mock_conn
@@ -609,12 +609,20 @@ class TestSessionOps:
         await asyncio.sleep(0)
 
         assert isinstance(resp, ResumeSessionResponse)
-        updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
-        assert any(
-            isinstance(update, UserMessageChunk)
-            and update.content.text == "So tell me the current state"
-            for update in updates
-        )
+        replay_kinds = [
+            getattr(call.kwargs.get("update"), "session_update", None)
+            for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {
+                "user_message_chunk",
+                "agent_message_chunk",
+                "agent_thought_chunk",
+                "tool_call",
+                "tool_call_update",
+                "plan",
+            }
+        ]
+        assert replay_kinds == []
 
     @pytest.mark.asyncio
     async def test_load_session_replays_reasoning_thought_before_message(self, agent):
@@ -850,8 +858,8 @@ class TestSessionOps:
         assert events == ["replay", "returned"]
 
     @pytest.mark.asyncio
-    async def test_resume_session_replays_history_before_returning_response(self, agent):
-        """Same spec rationale as ``load_session`` — replay before responding."""
+    async def test_resume_session_does_not_replay_history_before_returning_response(self, agent):
+        """Per ACP resume semantics, resume should not replay transcript history."""
         new_resp = await agent.new_session(cwd="/tmp")
         state = agent.session_manager.get_session(new_resp.session_id)
         state.history = [{"role": "user", "content": "hello from history"}]
@@ -865,7 +873,7 @@ class TestSessionOps:
             events.append("returned")
 
         assert isinstance(resp, ResumeSessionResponse)
-        assert events == ["replay", "returned"]
+        assert events == ["returned"]
 
     @pytest.mark.asyncio
     async def test_load_session_survives_replay_helper_exception(self, agent, caplog):
@@ -892,8 +900,8 @@ class TestSessionOps:
         assert "history replay raised during session/load" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_resume_session_survives_replay_helper_exception(self, agent, caplog):
-        """Same guarantee as ``load_session`` for the resume path."""
+    async def test_resume_session_does_not_invoke_replay_helper(self, agent, caplog):
+        """No-replay resume semantics should bypass replay helpers entirely."""
         new_resp = await agent.new_session(cwd="/tmp")
         state = agent.session_manager.get_session(new_resp.session_id)
         state.history = [{"role": "user", "content": "hi"}]
@@ -906,7 +914,7 @@ class TestSessionOps:
                 resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
 
         assert isinstance(resp, ResumeSessionResponse)
-        assert "history replay raised during session/resume" in caplog.text
+        assert "history replay raised during session/resume" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):

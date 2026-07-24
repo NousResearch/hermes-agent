@@ -1065,12 +1065,12 @@ class HermesACPAgent(acp.Agent):
         ).strip()
 
     async def _replay_session_history(self, state: SessionState) -> None:
-        """Replay persisted user/assistant history during session/load or session/resume.
+        """Replay persisted user/assistant history during session/load.
 
-        Invoked inline (``await``) from both ``load_session`` and
-        ``resume_session`` so that spec-compliant ACP clients receive the
-        full transcript within the request's lifetime — see the comment at
-        the call sites for the rationale and prior-art citations.
+        Invoked inline (``await``) from ``load_session`` so that
+        spec-compliant ACP clients receive the full transcript within the
+        request's lifetime — see the comment at the call site for the
+        rationale and prior-art citations.
 
         Replays the conversation as user/assistant chunks, thinking-mode
         thought chunks, plus reconstructed tool-call start/completion
@@ -1242,18 +1242,9 @@ class HermesACPAgent(acp.Agent):
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
-        # See `load_session` above for the spec rationale — replay must
-        # complete before the response so clients receive the full transcript
-        # within the request's lifetime.
-        try:
-            await self._replay_session_history(state)
-        except Exception:
-            logger.warning(
-                "ACP history replay raised during session/resume for %s — "
-                "resume will still succeed, partial transcript may be missing",
-                state.session_id,
-                exc_info=True,
-            )
+        # ACP ``session/resume`` reattaches to an existing runtime session and
+        # intentionally does not replay prior transcript history. Clients that
+        # need to hydrate a transcript should use ``session/load`` instead.
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(

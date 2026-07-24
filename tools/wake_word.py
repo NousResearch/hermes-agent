@@ -128,6 +128,52 @@ def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> 
 
 
 # ---------------------------------------------------------------------------
+# Multi-profile phrase enrollment (open-vocabulary routing)
+# ---------------------------------------------------------------------------
+
+def _active_profile_name() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+def enrolled_profile_phrases() -> Dict[str, str]:
+    """Map ``profile name -> wake phrase`` for every wake-enabled profile.
+
+    Reads each profile's own ``config.yaml`` raw (cheap, no full config merge).
+    A profile is enrolled when its ``wake_word.enabled`` is truthy; its phrase
+    defaults to ``"hey <profile>"`` when unset. Used by the sherpa engine to
+    listen for every enrolled profile's phrase at once and route the wake to
+    the matching profile. Best-effort: unreadable profiles are skipped.
+    """
+    phrases: Dict[str, str] = {}
+    try:
+        import yaml
+
+        from hermes_cli.profiles import get_profile_dir, list_profiles
+
+        for info in list_profiles():
+            name = getattr(info, "name", None) or str(info)
+            try:
+                cfg_path = Path(get_profile_dir(name)) / "config.yaml"
+                raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                wc = raw.get("wake_word") or {}
+                if not isinstance(wc, dict) or not wc.get("enabled"):
+                    continue
+                phrase = str(wc.get("phrase") or f"hey {name}").strip()
+                if phrase:
+                    phrases[name] = phrase
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return phrases
+
+
+# ---------------------------------------------------------------------------
 # Audio capture (lazy — never import sounddevice at module load)
 # ---------------------------------------------------------------------------
 
@@ -154,6 +200,12 @@ class _Engine:
     """Minimal hotword-engine contract: feed int16 frames, get a bool."""
 
     frame_length: int = 1280  # 80 ms at 16 kHz
+
+    #: Optional (matched phrase, profile name) of the most recent fire.
+    #: Multi-phrase engines (sherpa) set this for profile routing; the
+    #: single-phrase engines leave it None (callers fall back to the
+    #: configured phrase / active profile).
+    last_match: Optional[tuple[str, str]] = None
 
     def process(self, frame) -> bool:  # frame: 1-D int16 ndarray
         raise NotImplementedError
@@ -292,24 +344,41 @@ class _SherpaKwsEngine(_Engine):
         if not (d / "tokens.txt").exists():
             raise RuntimeError(f"sherpa KWS model not found at {d}")
 
+        # Phrase set: this profile's own phrase, plus — when profile routing is
+        # on — every other wake-enabled profile's phrase, so ONE listener can
+        # wake any profile ("hey hermes" / "hey coder" / ...). display-name →
+        # profile is kept for routing the match back.
         phrase = str(_get(cfg, "phrase") or "hey hermes").strip()
-        # Runtime tokenization of the arbitrary phrase — the open-vocab core.
-        # sherpa keyword entries reject spaces in the @display-name; underscore it.
+        own_profile = _active_profile_name()
+        phrase_map: Dict[str, str] = {phrase: own_profile}
+        if bool(cfg.get("profile_routing", True)):
+            for prof, p in enrolled_profile_phrases().items():
+                phrase_map.setdefault(p.strip(), prof)
+
+        phrases = list(phrase_map)
+        # Runtime tokenization of the arbitrary phrases — the open-vocab core.
         tokens = text2token(
-            [phrase.upper()],
+            [p.upper() for p in phrases],
             tokens=str(d / "tokens.txt"),
             tokens_type="bpe",
             bpe_model=str(d / "bpe.model"),
         )
         import tempfile
 
+        # sherpa keyword entries reject spaces in the @display-name; underscore
+        # them and map display → profile for match routing.
+        self._display_to_profile: Dict[str, str] = {}
         kw = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", prefix="hermes-kws-", delete=False, encoding="utf-8"
         )
-        display = phrase.upper().replace(" ", "_")
-        kw.write(" ".join(tokens[0]) + f" @{display}\n")
+        for p, toks in zip(phrases, tokens):
+            display = p.upper().replace(" ", "_")
+            self._display_to_profile[display] = phrase_map[p]
+            kw.write(" ".join(toks) + f" @{display}\n")
         kw.close()
         self._keywords_file = kw.name
+        #: (phrase display name, profile) of the most recent fire, for routing.
+        self.last_match: Optional[tuple[str, str]] = None
 
         # Map the shared 0..1 sensitivity onto sherpa's keywords_threshold
         # (posterior probability; its default is 0.25).
@@ -340,8 +409,14 @@ class _SherpaKwsEngine(_Engine):
         fired = False
         while self._spotter.is_ready(self._stream):
             self._spotter.decode_stream(self._stream)
-            if self._spotter.get_result(self._stream):
+            result = self._spotter.get_result(self._stream)
+            if result:
                 fired = True
+                display = str(result)
+                self.last_match = (
+                    display.replace("_", " ").lower(),
+                    self._display_to_profile.get(display, ""),
+                )
                 # Reset decoder state so one utterance can't fire repeatedly.
                 self._spotter.reset_stream(self._stream)
         return fired
@@ -774,3 +849,13 @@ def is_listening() -> bool:
     with _detector_lock:
         det = _detector
     return det is not None and det.running
+
+
+def get_last_match() -> Optional[tuple[str, str]]:
+    """(matched phrase, profile) of the most recent wake fire, if the engine
+    reports per-phrase matches (sherpa multi-profile routing). None otherwise."""
+    with _detector_lock:
+        det = _detector
+    if det is None:
+        return None
+    return getattr(det.engine, "last_match", None)

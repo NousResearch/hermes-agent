@@ -16349,7 +16349,7 @@ def _(rid, params: dict) -> dict:
     new_session = bool(cfg.get("start_new_session", True))
 
     def _on_detect() -> None:
-        from tools.wake_word import owns_listener, pause_listening
+        from tools.wake_word import get_last_match, owns_listener, pause_listening
 
         if not pause_listening(owner=transport):
             return
@@ -16358,12 +16358,18 @@ def _(rid, params: dict) -> dict:
         if _transport_is_dead(transport):
             _release_wake_for_transport(transport)
             return
-        logger.info("wake.detected: emitting to sid=%r (transport=%s)",
-                    sid, type(transport).__name__)
+        # Multi-phrase engines report WHICH phrase fired and the profile it
+        # belongs to, so one listener can wake any enrolled profile. Falls
+        # back to the owner's configured phrase / no profile for
+        # single-phrase engines.
+        matched_phrase, matched_profile = get_last_match() or (phrase, "")
+        logger.info("wake.detected: emitting to sid=%r (transport=%s, profile=%r)",
+                    sid, type(transport).__name__, matched_profile)
         token = bind_transport(transport)
         try:
             _emit("wake.detected", sid, {
-                "phrase": phrase,
+                "phrase": matched_phrase or phrase,
+                "profile": matched_profile or None,
                 "start_new_session": new_session,
             })
         finally:

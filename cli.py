@@ -11771,6 +11771,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
         self._wake_suspended = True
 
+        # Multi-profile routing: the CLI is a single-profile process, so a
+        # phrase enrolled by ANOTHER profile can't be routed here — print the
+        # switch command and re-arm rather than answering as the wrong profile.
+        try:
+            from tools.wake_word import get_last_match
+            _match = get_last_match()
+        except Exception:
+            _match = None
+        if _match and _match[1]:
+            from tools.wake_word import _active_profile_name
+            if _match[1] != _active_profile_name():
+                _cprint(f"\n{_DIM}Wake phrase for profile '{_match[1]}' — "
+                        f"run: hermes -p {_match[1]}{_RST}")
+                self._wake_suspended = True  # watchdog resumes the listener
+                return
+
         _cprint(f"\n{_ACCENT}✦ Wake word detected — listening...{_RST}")
         if getattr(self, "_app", None):
             try:

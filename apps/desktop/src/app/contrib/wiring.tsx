@@ -33,7 +33,7 @@ import { requestVoiceConversationStart } from '@/store/composer'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, ensureGatewayProfile, newSessionInProfile, normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -649,9 +649,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       emitGatewayEvent(event)
 
       if (event.type === 'wake.detected') {
-        const payload = event.payload as { start_new_session?: boolean } | undefined
+        const payload = event.payload as
+          | { profile?: null | string; start_new_session?: boolean }
+          | undefined
 
-        if (payload?.start_new_session !== false) {
+        // Multi-profile routing: a wake phrase enrolled by another profile
+        // re-homes the gateway to that profile first (live swap — same path
+        // as clicking it in the profile rail), then opens the fresh session
+        // and starts voice there.
+        const targetProfile = payload?.profile?.trim()
+        const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+        if (targetProfile && normalizeProfileKey(targetProfile) !== activeProfile) {
+          if (payload?.start_new_session !== false) {
+            newSessionInProfile(targetProfile)
+          } else {
+            void ensureGatewayProfile(normalizeProfileKey(targetProfile))
+          }
+        } else if (payload?.start_new_session !== false) {
           startFreshSessionDraft()
         }
 

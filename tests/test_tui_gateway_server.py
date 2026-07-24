@@ -1274,7 +1274,7 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
         assert emitted == [(
             "wake.detected",
             "first-session",
-            {"phrase": "hey hermes", "start_new_session": True},
+            {"phrase": "hey hermes", "profile": None, "start_new_session": True},
             first,
         )]
         assert state["paused"] is True
@@ -1307,7 +1307,7 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
         assert emitted[-1] == (
             "wake.detected",
             "second-session",
-            {"phrase": "hey hermes", "start_new_session": True},
+            {"phrase": "hey hermes", "profile": None, "start_new_session": True},
             second,
         )
 

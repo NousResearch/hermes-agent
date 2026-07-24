@@ -2308,6 +2308,7 @@ DEFAULT_CONFIG = {
         "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
         "sensitivity": 0.5,           # 0.0-1.0 detection threshold (higher = stricter)
         "start_new_session": True,    # start a fresh session on wake vs. continue the current one
+        "profile_routing": True,      # sherpa only: also listen for every wake-enabled profile's phrase and route the wake to the matching profile
         "openwakeword": {
             # "hey_hermes" (the bundled, works-out-of-the-box default) OR a
             # built-in openWakeWord name ("hey_jarvis", "alexa", "hey_mycroft",

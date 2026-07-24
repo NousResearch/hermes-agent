@@ -178,8 +178,18 @@ export function resolveNewSessionCwd(): string {
   return workspaceCwdForNewSession()
 }
 
-const underPath = (parent: string, child: string): boolean =>
-  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
+const comparablePath = (value: string): string => {
+  const normalized = value.replace(/\\/g, '/')
+
+  return normalized === '/' ? normalized : normalized.replace(/\/+$/, '')
+}
+
+const underPath = (parent: string, child: string): boolean => {
+  const root = comparablePath(parent)
+  const target = comparablePath(child)
+
+  return target === root || target.startsWith(root.endsWith('/') ? root : `${root}/`)
+}
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh
@@ -215,7 +225,10 @@ export function projectIdForCwd(cwd: string): null | string {
 // keep the cwd-leaf label — matching the backend `_project_info_for_cwd`, which
 // only resolves projects.db rows, so the desktop and TUI name the same session
 // identically without threading a second per-session copy through session.info.
-export function projectNameForCwd(cwd: string): null | string {
+export function projectNameForCwd(
+  cwd: string,
+  projects: readonly SidebarProjectTree[] = $projectTree.get()
+): null | string {
   const target = (cwd || '').trim()
 
   if (!target) {
@@ -225,7 +238,7 @@ export function projectNameForCwd(cwd: string): null | string {
   let best: null | string = null
   let bestLen = -1
 
-  for (const project of $projectTree.get()) {
+  for (const project of projects) {
     if (project.isAuto || project.isNoProject) {
       continue
     }

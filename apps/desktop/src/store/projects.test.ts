@@ -133,6 +133,13 @@ describe('projectNameForCwd', () => {
     expect(projectNameForCwd('/repos/website/src/app')).toBe('Website')
   })
 
+  it('resolves against the supplied profile tree snapshot', () => {
+    $projectTree.set([treeNode({ id: 'p_personal', label: 'Personal', path: '/repos/shared' })])
+    const workTree = [treeNode({ id: 'p_work', label: 'Work', path: '/repos/shared' })]
+
+    expect(projectNameForCwd('/repos/shared/src', workTree)).toBe('Work')
+  })
+
   it('matches nested repo and worktree paths, not just the project root', () => {
     $projectTree.set([
       treeNode({
@@ -153,6 +160,13 @@ describe('projectNameForCwd', () => {
 
     // A linked worktree lives OUTSIDE the project root but still belongs to it.
     expect(projectNameForCwd('/elsewhere/mono-feature/src')).toBe('Monorepo')
+  })
+
+  it('matches Windows cwd descendants across path separators', () => {
+    $projectTree.set([treeNode({ id: 'p_windows', label: 'Windows app', path: 'C:\\repos\\app' })])
+
+    expect(projectNameForCwd('C:\\repos\\app\\src')).toBe('Windows app')
+    expect(projectNameForCwd('C:/repos/app/src')).toBe('Windows app')
   })
 
   it('ignores auto-projects and the No-project bucket (no named identity)', () => {

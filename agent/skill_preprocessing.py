@@ -22,6 +22,23 @@ _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
 _INLINE_SHELL_MAX_OUTPUT = 4000
 
 
+def has_preprocessable_tokens(content: str) -> bool:
+    """True if *content* contains anything the preprocessor would rewrite.
+
+    Matches exactly the tokens preprocessing recognizes: the two supported
+    template variables (``${HERMES_SKILL_DIR}`` / ``${HERMES_SESSION_ID}``,
+    see ``_SKILL_TEMPLATE_RE``) and inline-shell snippets (``!`cmd```, see
+    ``_INLINE_SHELL_RE``). Ordinary shell parameter expansion such as
+    ``${HOME}`` does NOT count — the preprocessor never touches it, so a
+    preprocessing failure changes nothing about it.
+    """
+    if not content:
+        return False
+    return bool(
+        _SKILL_TEMPLATE_RE.search(content) or _INLINE_SHELL_RE.search(content)
+    )
+
+
 def load_skills_config() -> dict:
     """Load the ``skills`` section of config.yaml (best-effort)."""
     try:

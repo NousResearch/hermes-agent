@@ -1691,3 +1691,87 @@ def test_excluded_providers_empty_is_noop(monkeypatch):
         excluded_providers=[],
     )
     assert [p["slug"] for p in a] == [p["slug"] for p in b]
+
+def test_prewarm_probe_is_read_only(monkeypatch):
+    """A successful custom-provider probe with ``persist_discovered=False``
+    (the background prewarm path) must not write discovered models back into
+    config.yaml (#67841)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    save_calls = []
+
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url, **kwargs: ["discovered-a", "discovered-b"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._save_discovered_models_to_config",
+        lambda api_url, model_ids: save_calls.append((api_url, model_ids)),
+    )
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "***",
+            "base_url": "https://gateway.example.com/v1",
+            "discover_models": True,
+            "model": "only-model",
+            "models": {"only-model": {"context_length": 128000}},
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="my-gateway",
+        current_base_url="https://gateway.example.com/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+        probe_custom_providers=True,
+        persist_discovered=False,
+    )
+
+    assert save_calls == [], (
+        "persist_discovered=False must keep the probe read-only w.r.t. config"
+    )
+    # The live catalog is still surfaced for this session — only the write is skipped.
+    gateway_prov = next(
+        (p for p in providers if p.get("api_url") == "https://gateway.example.com/v1"),
+        None,
+    )
+    assert gateway_prov is not None
+    assert gateway_prov["models"] == ["discovered-a", "discovered-b"]
+
+
+def test_prewarm_picker_cache_passes_persist_discovered_false(monkeypatch):
+    """``prewarm_picker_cache_async`` must invoke discovery in read-only mode
+    so simply starting Hermes never rewrites config.yaml (#67841)."""
+    import hermes_cli.model_switch as ms
+
+    # Reset the process-level guard so the prewarm actually runs.
+    ms._picker_prewarm_done.clear()
+
+    captured = {}
+
+    class _Ctx:
+        current_provider = "my-gateway"
+        current_base_url = "https://gateway.example.com/v1"
+        current_model = "only-model"
+        user_providers = {}
+        custom_providers = []
+        excluded_providers = []
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context", lambda: _Ctx()
+    )
+    monkeypatch.setattr(
+        ms, "list_authenticated_providers",
+        lambda *a, **k: captured.update(k) or [],
+    )
+
+    t = ms.prewarm_picker_cache_async()
+    if t is not None:
+        t.join(timeout=5)
+
+    assert captured.get("persist_discovered") is False, (
+        "prewarm must call list_authenticated_providers with persist_discovered=False"
+    )

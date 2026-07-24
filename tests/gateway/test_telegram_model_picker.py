@@ -37,6 +37,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 def _make_adapter():
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._is_callback_user_authorized = MagicMock(return_value=True)
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
     return adapter
@@ -322,6 +323,43 @@ class TestTelegramModelPicker:
 
         callback.assert_awaited_once_with("12345", "openai/gpt-5.5-pro", "openrouter")
         assert "12345" not in adapter._model_picker_state
+
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_callback_cannot_mutate_model_picker_state(self):
+        """The shared picker handler authenticates before model selection or cancellation."""
+        adapter = _make_adapter()
+        callback = AsyncMock()
+        adapter._is_callback_user_authorized = MagicMock(return_value=False)
+        adapter._model_picker_state["12345"] = {
+            "providers": [{"slug": "openai", "name": "OpenAI", "total_models": 1}],
+            "current_model": "model_1",
+            "current_provider": "openai",
+            "session_key": "s",
+            "on_model_selected": callback,
+            "selected_provider": "openai",
+            "model_list": ["gpt-5"],
+            "msg_id": 42,
+        }
+        query = SimpleNamespace(
+            message=SimpleNamespace(
+                chat_id=12345,
+                chat=SimpleNamespace(type="private"),
+                message_thread_id=None,
+            ),
+            from_user=SimpleNamespace(id=999, first_name="Unauthorized"),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+
+        await adapter._handle_model_picker_callback(query, "mm:0", "12345")
+
+        callback.assert_not_awaited()
+        query.edit_message_text.assert_not_awaited()
+        assert "12345" in adapter._model_picker_state
+        query.answer.assert_awaited_once_with(
+            text="⛔ You are not authorized to change the model."
+        )
 
     @pytest.mark.asyncio
     async def test_retries_without_thread_when_thread_not_found(self):

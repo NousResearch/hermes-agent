@@ -160,9 +160,15 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml
+mattermost:
+  # Outbound chunk size. Default: 4000; valid range: 500-16383.
+  max_post_length: 16000
+
 group_sessions_per_user: true
 ```
 
+- `mattermost.max_post_length` lets self-hosted deployments use fewer, larger posts while preserving the historic `4000`-character default
+- values below `500` fall back to `4000`; values above Mattermost's `16383`-character cap are clamped
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
 
 ### Start the Gateway

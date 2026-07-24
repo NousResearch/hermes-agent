@@ -344,7 +344,7 @@ class CLIAgentSetupMixin:
                 pass
         
         try:
-            runtime = runtime_override or {
+            runtime = {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
@@ -356,6 +356,9 @@ class CLIAgentSetupMixin:
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
+            if runtime_override:
+                for _k, _v in runtime_override.items():
+                    runtime.setdefault(_k, _v)
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,

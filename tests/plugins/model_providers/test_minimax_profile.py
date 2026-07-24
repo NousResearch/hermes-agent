@@ -137,6 +137,20 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert extra_body == {"reasoning_split": True}
         assert top_level == {}
 
+    def test_m3_minimax_chat_openai_route_requests_reasoning_split(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile("minimax")
+        assert profile is not None
+        extra_body, top_level = profile.build_api_kwargs_extras(
+            reasoning_config=None,
+            model="MiniMax-M3",
+            base_url="https://api.minimax.chat/v1",
+        )
+        assert extra_body == {"reasoning_split": True}
+        assert top_level == {}
+
     def test_m3_openai_route_maps_explicit_effort_to_adaptive_only(self):
         import model_tools  # noqa: F401
         import providers

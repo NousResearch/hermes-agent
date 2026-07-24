@@ -2,8 +2,8 @@
 
 The default API-key routes use anthropic_messages because their base URLs end
 with /anthropic. Users can opt MiniMax-M3 into the OpenAI-compatible endpoint
-with base_url=https://api.minimax.io/v1; that route needs MiniMax-specific
-reasoning controls in extra_body.
+with base_url=https://api.minimax.io/v1 or https://api.minimax.chat/v1; that
+route needs MiniMax-specific reasoning controls in extra_body.
 """
 
 from typing import Any
@@ -15,7 +15,7 @@ from providers.base import ProviderProfile
 
 def _is_minimax_global_openai_base_url(base_url: str | None) -> bool:
     parsed = urlparse(str(base_url or "").strip())
-    if (parsed.hostname or "").lower() != "api.minimax.io":
+    if (parsed.hostname or "").lower() not in {"api.minimax.io", "api.minimax.chat"}:
         return False
     path = parsed.path.rstrip("/").lower()
     return path == "/v1"
@@ -37,7 +37,7 @@ class MiniMaxProfile(ProviderProfile):
         base_url: str | None = None,
         **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Emit M3 reasoning controls for api.minimax.io/v1.
+        """Emit M3 reasoning controls for MiniMax's global /v1 endpoints.
 
         MiniMax-M3's OpenAI-compatible endpoint keeps thinking inline unless
         ``reasoning_split`` is sent, so always request the split format on that

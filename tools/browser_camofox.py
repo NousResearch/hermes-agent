@@ -395,6 +395,32 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         return _adopt_existing_tab(session)
 
 
+def _apply_viewport_config(tab_id: str, user_id: str) -> None:
+    """Set viewport on a tab from ``browser.camofox.viewport`` config, if configured.
+
+    Camofox creates tabs at a default viewport (1280x720). When
+    ``browser.camofox.viewport: {width: N, height: M}`` is set in config.yaml,
+    this applies the user's preferred dimensions via ``POST /tabs/:tabId/viewport``.
+    """
+    camofox_cfg = _get_camofox_config()
+    viewport = camofox_cfg.get("viewport")
+    if not isinstance(viewport, dict):
+        return
+    width = viewport.get("width")
+    height = viewport.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        return
+    try:
+        _post(
+            f"/tabs/{tab_id}/viewport",
+            {"userId": user_id, "width": width, "height": height},
+            timeout=10,
+        )
+        logger.debug("Applied Camofox viewport %dx%d", width, height)
+    except Exception:
+        logger.warning("Failed to apply Camofox viewport %dx%d", width, height)
+
+
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
@@ -414,6 +440,8 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     resp.raise_for_status()
     data = resp.json()
     session["tab_id"] = data.get("tabId")
+    # Apply configured viewport after tab creation
+    _apply_viewport_config(session["tab_id"], session["user_id"])
     return session
 
 

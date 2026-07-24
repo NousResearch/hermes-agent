@@ -1,17 +1,30 @@
 ---
-name: airtable
-description: Airtable REST API via curl. Records CRUD, filters, upserts.
-version: 1.1.0
 author: community
+description: Airtable REST API via curl. Records CRUD, filters, upserts.
 license: MIT
-platforms: [linux, macos, windows]
-prerequisites:
-  env_vars: [AIRTABLE_API_KEY]
-  commands: [curl]
 metadata:
   hermes:
-    tags: [Airtable, Productivity, Database, API]
     homepage: https://airtable.com/developers/web/api/introduction
+    scenes:
+    - coding
+    - research
+    tags:
+    - airtable
+    - api
+    - curl
+    - crud
+    - database
+name: airtable
+platforms:
+- linux
+- macos
+- windows
+prerequisites:
+  commands:
+  - curl
+  env_vars:
+  - AIRTABLE_API_KEY
+version: 1.1.0
 ---
 
 # Airtable — Bases, Tables & Records

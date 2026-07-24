@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS skill_nodes (
     tags        TEXT DEFAULT '[]',      -- JSON array
     scenes      TEXT DEFAULT '[]',      -- JSON array, from metadata.hermes.scenes
     auto_tagged INTEGER DEFAULT 0,      -- 1 if tags/scenes were LLM-generated
+    auto_tagged_at TEXT DEFAULT NULL,    -- timestamp of last successful auto-tag
     file_path   TEXT DEFAULT '',
     content_hash TEXT DEFAULT '',
     last_parsed REAL DEFAULT 0
@@ -616,7 +617,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 
 Skill: {skill_name}
 Content:
-{content[:8000]}"""
+{content[:4000]}"""
 
 
 SCENE_VOCABULARY_DESC = {
@@ -700,6 +701,9 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
         if not model_name:
             model_name = "deepseek-chat"
 
+        logger.debug("skill-graph: auto-tag using provider=%s model=%s",
+                     provider_name, model_name)
+
         # Normalise base_url: strip /v1 suffix if present (we add it below)
         base_url = base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -716,29 +720,57 @@ def _call_llm_for_tagging(prompt: str) -> dict[str, Any] | None:
             "max_tokens": 512,
         }
 
-        resp = requests.post(
-            f"{base_url}/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"].strip()
+        import time as _time
 
-        # Extract JSON from possible markdown code blocks
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:]) if len(lines) > 1 else text
-            if text.endswith("```"):
-                text = text[:-3]
-        if text.startswith("json"):
-            text = text[4:].strip()
+        for _attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{base_url}/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                text = (data.get("choices", [{}])[0]
+                        .get("message", {}).get("content", "")).strip()
+                # deepseek-v4-pro puts output in reasoning_content
+                if not text:
+                    text = (data.get("choices", [{}])[0]
+                            .get("message", {}).get("reasoning_content", "")).strip()
+                if not text:
+                    logger.warning(
+                        "skill-graph: auto-tag empty response (attempt %d/3). "
+                        "provider=%s model=%s status=%d body=%.200s",
+                        _attempt + 1, provider_name, model_name,
+                        resp.status_code, resp.text)
+                    if _attempt < 2:
+                        _time.sleep(2 * (_attempt + 1))
+                        continue
+                    return None
 
-        result = json.loads(text)
-        if not isinstance(result, dict):
-            return None
-        return result
+                # Extract JSON from possible markdown code blocks
+                if text.startswith("```"):
+                    lines = text.split("\n")
+                    text = "\n".join(lines[1:]) if len(lines) > 1 else text
+                    if text.endswith("```"):
+                        text = text[:-3]
+                if text.startswith("json"):
+                    text = text[4:].strip()
+
+                result = json.loads(text)
+                if not isinstance(result, dict):
+                    return None
+                return result
+
+            except (requests.RequestException, json.JSONDecodeError) as e:
+                logger.warning(
+                    "skill-graph: auto-tag LLM call failed (attempt %d/3): %s",
+                    _attempt + 1, e)
+                if _attempt < 2:
+                    _time.sleep(2 * (_attempt + 1))
+
+        return None
 
     except Exception as e:
         logger.warning("skill-graph: auto-tag LLM call failed: %s", e)
@@ -829,7 +861,7 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
 
     # Update DB
     conn.execute(
-        "UPDATE skill_nodes SET tags = ?, scenes = ?, auto_tagged = 1 WHERE name = ?",
+        "UPDATE skill_nodes SET tags = ?, scenes = ?, auto_tagged = 1, auto_tagged_at = datetime('now') WHERE name = ?",
         (json.dumps(tags, ensure_ascii=False),
          json.dumps(valid_scenes, ensure_ascii=False),
          skill_name),
@@ -852,7 +884,11 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
         )
 
     # Write back to SKILL.md if not read-only
-    if not _is_read_only_skill(skill_path):
+    _hermes_live = str(Path.home() / ".hermes" / "hermes-agent")
+    if skill_path.startswith(_hermes_live):
+        logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (live dir, DB only)",
+                    skill_name, tags, valid_scenes)
+    elif not _is_read_only_skill(skill_path):
         wrote = _patch_skill_frontmatter(skill_path, tags, valid_scenes)
         if wrote:
             logger.info("skill-graph: auto-tagged '%s' → tags=%s scenes=%s (wrote SKILL.md)",
@@ -867,6 +903,40 @@ def _auto_tag_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
     conn.commit()
     return True
 
+
+
+def _auto_tag_pending_skills(conn: sqlite3.Connection, limit: int = 10,
+                             force: bool = False) -> int:
+    """Process pending auto-tag skills. Returns count of successfully tagged.
+
+    If ``force`` is False, skips skills auto-tagged within the last 5 minutes
+    (cooldown to avoid rapid re-runs after rebuild).
+    """
+    if force:
+        where = "auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
+    else:
+        where = ("auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0) "
+                 "AND (auto_tagged_at IS NULL "
+                 "OR auto_tagged_at < datetime('now', '-5 minutes'))")
+    rows = conn.execute(
+        f"SELECT name FROM skill_nodes WHERE {where} LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+    total = len(rows)
+    if total > 10:
+        logger.info("skill-graph: %d skills need auto-tagging — this may take a while, please wait...", total)
+
+    logger.info("skill-graph: auto-tagging %d pending skills", total)
+    count = 0
+    for i, row in enumerate(rows, 1):
+        logger.info("skill-graph: auto-tag [%d/%d] %s", i, total, row["name"])
+        if _auto_tag_skill(conn, row["name"]):
+            count += 1
+        else:
+            logger.warning("skill-graph: auto-tag FAILED [%d/%d] %s", i, total, row["name"])
+    logger.info("skill-graph: auto-tag done — %d/%d succeeded", count, total)
+    return count
 
 
 
@@ -1380,6 +1450,13 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE skill_term_stats ADD COLUMN last_loaded TEXT")
     except sqlite3.OperationalError:
         pass
+    # v6: auto_tagged_at for cooldown tracking
+    try:
+        conn.execute(
+            "ALTER TABLE skill_nodes ADD COLUMN auto_tagged_at TEXT DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
+
     # v4: scenes + auto_tagged for LLM-powered scene/tag generation
     for col, col_type in (
         ("scenes", "TEXT DEFAULT '[]'"),
@@ -1667,9 +1744,35 @@ def _handle_slash_command(args: str) -> str | None:
 
     if subcmd == "rebuild":
         try:
+            force = rest.strip() == "--force"
             conn = _ensure_graph()
             with _graph_lock:
                 count = _full_rebuild(conn)
+            where = "auto_tagged = 0 AND (is_deleted IS NULL OR is_deleted = 0)"
+            if not force:
+                where += (" AND (auto_tagged_at IS NULL "
+                          "OR auto_tagged_at < datetime('now', '-5 minutes'))")
+            pending = conn.execute(
+                f"SELECT COUNT(*) FROM skill_nodes WHERE {where}"
+            ).fetchone()[0]
+            if pending > 0:
+                import subprocess as _sp
+                _log_file = str(Path.home() / ".hermes" / "personal" / "skill-graph" / "autotag.log")
+                Path(_log_file).parent.mkdir(parents=True, exist_ok=True)
+                _force_flag = " --force" if force else ""
+                _sp.Popen(
+                    [__import__("sys").executable, "-c",
+                     f"import sys; sys.path.insert(0, '{Path(__file__).parent.parent}'); "
+                     f"from plugins.skill_graph import _auto_tag_pending_skills, _get_conn; "
+                     f"conn = _get_conn(); "
+                     f"_auto_tag_pending_skills(conn, limit={pending}, force={force})"],
+                    stdout=open(_log_file, "a"), stderr=open(_log_file, "a"),
+                    start_new_session=True,
+                )
+                msg = f"Skill graph rebuilt: {count} skills indexed. {pending} skills pending auto-tag — running in background."
+                if force:
+                    msg += " (forced — cooldown bypassed)"
+                return msg
             return f"Skill graph rebuilt: {count} skills indexed."
         except Exception as e:
             logger.exception("skill-graph: rebuild failed")
@@ -1785,6 +1888,56 @@ def _handle_slash_command(args: str) -> str | None:
             logger.exception("skill-graph: search failed")
             return f"Search failed: {e}"
 
+    elif subcmd == "scene":
+        scene_sub = rest.strip().split(None, 1)[0].lower() if rest.strip() else "list"
+        scene_arg = rest.strip().split(None, 1)[1] if len(rest.strip().split(None, 1)) > 1 else ""
+        try:
+            conn = _ensure_graph()
+            if scene_sub == "list":
+                rows = conn.execute("""
+                    SELECT scenes FROM skill_nodes
+                    WHERE (is_deleted IS NULL OR is_deleted = 0)
+                """).fetchall()
+                counts = {}
+                untagged = 0
+                for row in rows:
+                    try:
+                        slist = json.loads(row["scenes"]) if row["scenes"] else []
+                    except Exception:
+                        slist = []
+                    if not slist:
+                        untagged += 1
+                    for s in slist:
+                        counts[s] = counts.get(s, 0) + 1
+                lines = [f"Scene distribution ({len(rows)} skills):", ""]
+                for s in SCENE_VOCABULARY:
+                    lines.append(f"  {s:12s} {counts.get(s, 0):4d}")
+                if untagged:
+                    lines.append(f"  {'(untagged)':12s} {untagged:4d}")
+                other = sum(v for k, v in counts.items() if k not in SCENE_VOCABULARY)
+                if other:
+                    lines.append(f"  {'(other)':12s} {other:4d}")
+                return "\n".join(lines)
+            elif scene_sub == "show" and scene_arg:
+                rows = conn.execute("""
+                    SELECT name, description FROM skill_nodes
+                    WHERE (is_deleted IS NULL OR is_deleted = 0)
+                    AND instr(scenes, ?) > 0
+                    ORDER BY name
+                """, (json.dumps(scene_arg),)).fetchall()
+                if not rows:
+                    return f"No skills with scene: {scene_arg}"
+                lines = [f"Skills with scene '{scene_arg}' ({len(rows)}):", ""]
+                for row in rows:
+                    desc = (row["description"] or "")[:80]
+                    lines.append(f"  {row['name']:40s} {desc}")
+                return "\n".join(lines)
+            else:
+                return "Usage: /sg scene list | /sg scene show <scene-name>"
+        except Exception as e:
+            logger.exception("skill-graph: scene command failed")
+            return f"Scene command failed: {e}"
+
     elif subcmd == "list":
         try:
             conn = _ensure_graph()
@@ -1880,6 +2033,7 @@ def _handle_slash_command(args: str) -> str | None:
             "  /skill-graph config           Show configuration (paths, DB)\n"
             "  /skill-graph status           Show graph stats\n"
             "  /skill-graph rebuild          Force full graph rebuild\n"
+            "  /skill-graph scene [list|show]  List scene distribution or show skills per scene\n"
 
         )
 

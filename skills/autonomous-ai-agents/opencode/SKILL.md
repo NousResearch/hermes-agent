@@ -1,14 +1,28 @@
 ---
-name: opencode
-description: "Delegate coding to OpenCode CLI (features, PR review)."
-version: 1.2.0
 author: Hermes Agent
+description: Delegate coding to OpenCode CLI (features, PR review).
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Coding-Agent, OpenCode, Autonomous, Refactoring, Code-Review]
-    related_skills: [claude-code, codex, hermes-agent]
+    related_skills:
+    - claude-code
+    - codex
+    - hermes-agent
+    scenes:
+    - coding
+    tags:
+    - opencode
+    - coding-agent
+    - cli
+    - code-review
+    - autonomous
+    - refactoring
+name: opencode
+platforms:
+- linux
+- macos
+- windows
+version: 1.2.0
 ---
 
 # OpenCode CLI

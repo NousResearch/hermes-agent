@@ -43,6 +43,9 @@ export const zh: Translations = {
     expand: "展开",
     general: "通用",
     messaging: "消息平台",
+    gateway: "网关",
+    gatewayHint:
+      "消息平台、API 服务器和 Webhook 在「频道」页面配置。这些是网关全局设置（代理/中继模式和全局允许列表）。",
     pluginLoadFailed:
       "无法加载此插件的脚本。请检查网络请求（dashboard-plugins/…）以及服务器上的插件路径。",
     pluginNotRegistered: "插件脚本未调用 register()，或执行出错。请打开浏览器控制台查看详情。",
@@ -89,6 +92,10 @@ export const zh: Translations = {
     statusOverview: "状态概览",
     system: "系统",
     webUi: "管理面板",
+    managingProfile: "正在管理多Agent配置",
+    currentProfileOption: "当前管理面板（{name}）",
+    managingProfileBanner:
+      "正在管理多Agent配置“{name}”——配置、密钥、技能、MCP、模型和新对话都会应用于该配置。",
   },
 
   status: {
@@ -100,6 +107,7 @@ export const zh: Translations = {
     connected: "已连接",
     connectedPlatforms: "已连接平台",
     disconnected: "已断开",
+    disabled: "已禁用",
     error: "错误",
     failed: "失败",
     gateway: "网关",
@@ -112,6 +120,9 @@ export const zh: Translations = {
     platformError: "错误",
     recentSessions: "最近会话",
     restartGateway: "重启网关",
+    restartGatewayConfirmMessage:
+      "这将重启 Hermes 网关进程。已连接的频道和活跃会话随后会自动重新连接。",
+    restartGatewayConfirmTitle: "重启网关？",
     restartingGateway: "正在重启网关…",
     running: "运行中",
     runningRemote: "运行中（远程）",
@@ -120,6 +131,10 @@ export const zh: Translations = {
     startedInBackground: "已在后台启动 — 请查看日志",
     stopped: "已停止",
     updateHermes: "更新 Hermes",
+    updateHermesConfirmMessage:
+      "这将运行 hermes update，并在完成后重启网关。在此之前，活跃会话会保留其提示词缓存。",
+    updateHermesConfirmNow: "立即更新",
+    updateHermesConfirmTitle: "更新 Hermes？",
     updatingHermes: "正在更新 Hermes…",
     waitingForOutput: "等待输出…",
   },
@@ -273,6 +288,8 @@ export const zh: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "邮件",
+      needsHomeChannel: "请先设置主页频道",
+      noneConfigured: "未配置消息平台。请先在「频道」页面设置一个平台以投递报告。",
     },
   },
 
@@ -306,6 +323,36 @@ export const zh: Translations = {
     created: "已创建",
     deleted: "已删除",
     renamed: "已重命名",
+    activeProfile: "当前多Agent配置",
+    activeBadge: "当前",
+    setActive: "设为当前",
+    activeSet: "当前多Agent配置已设置",
+    gatewayRunning: "网关运行中",
+    gatewayStopped: "网关已停止",
+    gatewayRunningWarning: "此多Agent配置的网关正在运行——它将被停止。",
+    aliasBadge: "别名",
+    description: "描述",
+    descriptionPlaceholder: "此多Agent配置擅长什么？用于按角色分配看板任务。",
+    noDescription: "暂无描述",
+    editDescription: "编辑描述",
+    descriptionSaved: "描述已保存",
+    reviewBadge: "审核",
+    autoGenerate: "自动生成",
+    generating: "生成中…",
+    describeFailed: "无法生成描述",
+    distribution: "分发",
+    advancedOptions: "高级选项",
+    cloneAll: "克隆全部（记忆、会话、技能和状态）",
+    noSkillsOption: "不预置内置技能",
+    descriptionOptional: "描述（可选）",
+    modelOptional: "模型（可选）",
+    modelInherit: "从克隆源或默认设置继承",
+    modelLoading: "正在加载模型…",
+    modelNone: "没有已认证的提供商——请先设置密钥",
+    editModel: "更改模型",
+    modelSaved: "模型已更新",
+    modelSelect: "选择模型",
+    actions: "操作",
   },
 
   pluginsPage: {
@@ -366,6 +413,10 @@ export const zh: Translations = {
     setupNeeded: "需要配置",
     disabledForCli: "CLI 已禁用",
     more: "还有 {count} 个",
+    profileSelector: "多Agent配置",
+    currentProfile: "当前（{name}）",
+    managingProfile:
+      "正在管理多Agent配置“{name}”——开关会应用于该配置，而非当前管理面板。",
   },
 
   config: {
@@ -486,6 +537,12 @@ export const zh: Translations = {
   theme: {
     title: "主题",
     switchTheme: "切换主题",
+    fontTitle: "字体",
+    fontDefault: "跟随主题",
+    fontDefaultHint: "使用当前主题的字体",
+    fontSans: "无衬线体",
+    fontSerif: "衬线体",
+    fontMono: "等宽字体",
   },
 
   achievements: {
@@ -754,6 +811,31 @@ export const zh: Translations = {
     workspacePathDir: "工作区路径（必填，例如 ~/projects/my-app）",
     workspacePathOptional:
       "工作区路径（可选，留空则根据负责人推导）",
+    needsAssignee: "需要分配负责人",
+    needsAssigneeHint:
+      "依赖项已满足，但在分配多Agent配置之前，调度器会跳过此任务。",
+    confirmScheduled:
+      "将此任务移至「已调度」？该状态用于已知的时间延迟，而非等待人工处理。",
+    newTaskTitle: "新建任务 — {column}",
+    taskTitleLabel: "标题",
+    assigneeLabel: "负责人",
+    assigneeLabelHint: "（留空 = 由调度器选择）",
+    skillsLabel: "技能",
+    skillsLabelHint: "（可选，逗号分隔）",
+    parentLabel: "父任务",
+    parentLabelHint: "（父任务完成前，子任务保持阻塞）",
+    create: "创建",
+    boardSettings: "设置",
+    boardSettingsTitle:
+      "看板设置 — 名称、描述，以及新任务默认继承的项目目录",
+    boardSettingsTitleFor: "看板设置 — {name}",
+    projectDirectoryOverrideHint:
+      "新任务会继承此目录作为默认工作区；每个任务仍可在创建对话框中单独覆盖。",
+    saving: "保存中…",
+    commentHint:
+      "评论会在工作者下次运行或调用 kanban_show() 时送达——无需先阻塞任务。",
+    commentHintTitle:
+      "评论是与任务工作者沟通的渠道。评论会立即进入任务线程——无需先阻塞任务。运行中的工作者会在下次调用 kanban_show() 或重新生成时读取线程；只有当你希望工作者停止并等待输入时，才需要阻塞任务。",
     logTruncated: "（显示最后 100 KB — 完整日志位于 ",
     logAt: "）",
   },

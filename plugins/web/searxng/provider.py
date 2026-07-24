@@ -89,9 +89,10 @@ class SearXNGWebSearchProvider(WebSearchProvider):
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("SearXNG HTTP error: %s", exc)
+            status_code = getattr(exc.response, "status_code", "unknown")
             return {
                 "success": False,
-                "error": f"SearXNG returned HTTP {exc.response.status_code}",
+                "error": f"SearXNG returned HTTP {status_code}",
             }
         except httpx.RequestError as exc:
             logger.warning("SearXNG request error: %s", exc)

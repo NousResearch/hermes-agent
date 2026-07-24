@@ -674,3 +674,129 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Dual-stack bind default (NS-603)
+# ---------------------------------------------------------------------------
+
+class TestDualStackBind:
+    """The LINE webhook server's default bind must serve BOTH IPv4 and IPv6.
+
+    Regression guard for the hosted LINE 502 (NS-603): Fly.io 6PN — the
+    private network the edge router reverse-proxies LINE ingest over — is
+    IPv6-only (``<app>.internal`` resolves to an ``fdaa:…`` address). The
+    adapter used to default to ``host="0.0.0.0"`` (IPv4 only), so the
+    router's dial to ``<app>.internal:8646`` hit an address nothing was
+    listening on → connection refused → 502 on webhook verification.
+
+    Mirrors gateway/platforms/webhook.py's fix (commit d542894ad):
+    ``DEFAULT_HOST = None`` → asyncio binds one socket per address family.
+    ``"::"`` is NOT a valid substitute (bindv6only=1 on Fly machines makes
+    it IPv6-only, breaking IPv4 loopback health probes).
+    """
+
+    def _cfg(self, **extra):
+        from gateway.config import PlatformConfig
+        base = {"channel_access_token": "tok", "channel_secret": "sec"}
+        base.update(extra)
+        return PlatformConfig(enabled=True, extra=base)
+
+    def test_default_host_is_none_for_dual_stack(self, monkeypatch):
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        assert _line.DEFAULT_HOST is None
+        ad = LineAdapter(self._cfg())
+        assert ad.webhook_host is None
+
+    def test_empty_host_normalises_to_none(self, monkeypatch):
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        ad = LineAdapter(self._cfg(host=""))
+        assert ad.webhook_host is None
+
+    def test_pinned_host_is_preserved(self, monkeypatch):
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        ad = LineAdapter(self._cfg(host="127.0.0.1"))
+        assert ad.webhook_host == "127.0.0.1"
+
+    def test_line_host_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("LINE_HOST", "10.0.0.5")
+        ad = LineAdapter(self._cfg())
+        assert ad.webhook_host == "10.0.0.5"
+
+    @pytest.mark.asyncio
+    async def test_default_bind_serves_both_families(self, monkeypatch):
+        """Behavioural proof: host=None opens v4 AND v6 listening sockets."""
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        ad = LineAdapter(self._cfg(port=0))
+        ad._client = MagicMock()
+        ad._client.get_bot_user_id = AsyncMock(return_value="Ubot")
+
+        # Skip credential/network preamble — drive the aiohttp bind directly
+        # the same way connect() does.
+        from aiohttp import web
+        ad._app = web.Application()
+        ad._runner = web.AppRunner(ad._app)
+        await ad._runner.setup()
+        site = web.TCPSite(ad._runner, ad.webhook_host, 0)
+        try:
+            await site.start()
+            addrs = list(ad._runner.addresses)
+            has_v6 = any(len(a) == 4 for a in addrs)
+            has_v4 = any(len(a) == 2 for a in addrs)
+            assert has_v4, f"IPv4 bind missing — got {addrs}"
+            assert has_v6, (
+                f"IPv6 bind missing (the 6PN reachability bug, NS-603) — got {addrs}"
+            )
+        finally:
+            await ad._runner.cleanup()
+
+
+class TestMediaPublicUrlGuard:
+    """Outbound media requires LINE_PUBLIC_URL whenever the bind host is not
+    a publicly fetchable address — including the new dual-stack ``None``
+    default and the legacy wildcard strings."""
+
+    def _adapter(self, monkeypatch, **extra):
+        from gateway.config import PlatformConfig
+        monkeypatch.delenv("LINE_HOST", raising=False)
+        monkeypatch.delenv("LINE_PUBLIC_URL", raising=False)
+        base = {"channel_access_token": "tok", "channel_secret": "sec"}
+        base.update(extra)
+        return LineAdapter(PlatformConfig(enabled=True, extra=base))
+
+    def test_missing_public_url_true_for_default_none(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        assert ad.webhook_host is None
+        assert ad._missing_public_url() is True
+
+    @pytest.mark.parametrize("wildcard", ["0.0.0.0", "::"])
+    def test_missing_public_url_true_for_wildcards(self, monkeypatch, wildcard):
+        ad = self._adapter(monkeypatch, host=wildcard)
+        assert ad._missing_public_url() is True
+
+    def test_missing_public_url_false_with_public_base(self, monkeypatch):
+        ad = self._adapter(monkeypatch, public_url="https://tunnel.example.com")
+        if not ad.public_base_url:
+            # Adapter reads env var name LINE_PUBLIC_URL / extra key —
+            # set directly if the extra key differs.
+            ad.public_base_url = "https://tunnel.example.com"
+        assert ad._missing_public_url() is False
+
+    def test_missing_public_url_false_with_pinned_host(self, monkeypatch):
+        ad = self._adapter(monkeypatch, host="203.0.113.7")
+        assert ad._missing_public_url() is False
+
+    def test_send_image_blocked_without_public_url(self, monkeypatch, tmp_path):
+        ad = self._adapter(monkeypatch)
+        ad._client = MagicMock()
+        img = tmp_path / "x.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n123")
+        result = asyncio.run(ad.send_image_file("Uchat", str(img)))
+        assert not result.success
+        assert "LINE_PUBLIC_URL" in (result.error or "")
+
+    def test_media_url_never_contains_none(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        url = ad._media_url("tok123", "cat.jpg")
+        assert "None" not in url
+        assert url.startswith("https://")

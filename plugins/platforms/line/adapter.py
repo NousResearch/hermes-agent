@@ -30,8 +30,8 @@ binary uploads — images, audio, and video must be reachable HTTPS URLs.
 We register registered tempfiles under ``/line/media/<token>/<filename>``
 served by the same aiohttp app, with an allowed-roots traversal guard.
 ``LINE_PUBLIC_URL`` (e.g. ``https://my-tunnel.example.com``) overrides
-the host:port construction so URLs are reachable when bind is 0.0.0.0
-or behind a reverse proxy.
+the host:port construction so URLs are reachable when the bind is a
+wildcard/dual-stack listener or behind a reverse proxy.
 
 **5-message batching.** LINE accepts at most 5 message objects per
 Reply/Push call; longer responses are smart-chunked at 4500 chars
@@ -71,6 +71,7 @@ import mimetypes
 import os
 import re
 import secrets
+import sys
 import tempfile
 import time
 import uuid
@@ -118,6 +119,29 @@ WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
 DEFAULT_WEBHOOK_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/line/webhook"
 DEFAULT_MEDIA_PATH_PREFIX = "/line/media"
+
+# Default bind host. ``None`` tells aiohttp/asyncio's ``create_server`` to
+# bind BOTH address families (IPv4 + IPv6) — the portable dual-stack default.
+# Mirrors gateway/platforms/webhook.py DEFAULT_HOST (commit d542894ad).
+#
+# Why not "0.0.0.0" (the old default) or "::"?
+#   - "0.0.0.0" binds IPv4 ONLY. On IPv6-only private networks — notably
+#     Fly.io 6PN, where the hosted edge router reverse-proxies LINE ingest to
+#     ``<app>.internal:8646`` over an ``fdaa:…`` IPv6 address — an IPv4-only
+#     listener is unreachable: dial refused → customer-visible 502 (NS-603).
+#   - "::" is NOT a safe fix: on hosts where the kernel sets IPV6_V6ONLY=1
+#     (verified on Fly machines), binding "::" yields an IPv6-ONLY socket,
+#     breaking IPv4 loopback health probes.
+#   - ``None`` asks the event loop to create a listening socket per resolved
+#     family, so both 127.0.0.1 (v4) and the 6PN fdaa (v6) are served
+#     regardless of the bindv6only sysctl. Users can still pin a host via
+#     ``LINE_HOST`` or ``platforms.line.extra.host``.
+DEFAULT_HOST = None
+
+# Hosts that mean "listening on every interface" — i.e. the bind address is
+# not a name LINE's servers could ever fetch media from, so a public base URL
+# is required for outbound media.
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
 
 # Slow-LLM postback button defaults
 DEFAULT_SLOW_RESPONSE_THRESHOLD = 45.0  # seconds; 0 disables
@@ -659,8 +683,12 @@ class LineAdapter(BasePlatformAdapter):
             or extra.get("channel_secret", "")
         )
 
-        # Webhook server
-        self.webhook_host = os.getenv("LINE_HOST") or extra.get("host", "0.0.0.0")
+        # Webhook server. Host default is ``None`` → dual-stack bind (both
+        # IPv4 and IPv6); see DEFAULT_HOST above. ``LINE_HOST``/extra.host pin
+        # a specific address when needed; empty string collapses to None.
+        self.webhook_host = (
+            os.getenv("LINE_HOST") or extra.get("host", DEFAULT_HOST) or DEFAULT_HOST
+        )
         try:
             self.webhook_port = int(
                 os.getenv("LINE_PORT") or extra.get("port", DEFAULT_WEBHOOK_PORT)
@@ -803,12 +831,26 @@ class LineAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(self._app)
         try:
             await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
+            # SO_REUSEADDR is platform-dependent (mirrors the generic webhook
+            # adapter, commits d542894ad/9420ad946):
+            #   - macOS (BSD semantics): two wildcard/specific sockets with
+            #     SO_REUSEADDR can silently split traffic — disable it there.
+            #   - Linux: SO_REUSEADDR only permits rebinding past TIME_WAIT;
+            #     disabling it would make a quick gateway restart fail to
+            #     bind for up to ~60s — keep the default (enabled).
+            self._site = web.TCPSite(
+                self._runner,
+                self.webhook_host,
+                self.webhook_port,
+                reuse_address=False if sys.platform == "darwin" else None,
+            )
             await self._site.start()
         except OSError as exc:
             self._set_fatal_error(
                 "bind_failed",
-                f"Could not bind LINE webhook on {self.webhook_host}:{self.webhook_port}: {exc}",
+                "Could not bind LINE webhook on "
+                f"{self.webhook_host or 'all IPv4+IPv6 interfaces'}:"
+                f"{self.webhook_port}: {exc}",
                 retryable=True,
             )
             return False
@@ -816,7 +858,7 @@ class LineAdapter(BasePlatformAdapter):
         self._mark_connected()
         logger.info(
             "LINE: webhook listening on %s:%s%s%s",
-            self.webhook_host,
+            self.webhook_host or "* (all interfaces, IPv4+IPv6)",
             self.webhook_port,
             self.webhook_path,
             f" (public: {self.public_base_url})" if self.public_base_url else "",
@@ -1263,7 +1305,12 @@ class LineAdapter(BasePlatformAdapter):
         if self.public_base_url:
             base = self.public_base_url
         else:
+            # A wildcard/dual-stack bind has no fetchable hostname; the
+            # _missing_public_url guard should have caught this earlier.
+            # Fall back to localhost so the URL is at least well-formed.
             host = self.webhook_host
+            if host is None or host in _WILDCARD_HOSTS:
+                host = "127.0.0.1"
             port = self.webhook_port
             if port == 443:
                 base = f"https://{host}"
@@ -1271,6 +1318,14 @@ class LineAdapter(BasePlatformAdapter):
                 base = f"https://{host}:{port}"
         safe_name = _urlquote(filename, safe="")
         return f"{base}{DEFAULT_MEDIA_PATH_PREFIX}/{token}/{safe_name}"
+
+    def _missing_public_url(self) -> bool:
+        """True when outbound media cannot work: no LINE_PUBLIC_URL and the
+        bind host is a wildcard (or the dual-stack ``None`` default), i.e.
+        not an address LINE's fetchers could ever reach."""
+        if self.public_base_url:
+            return False
+        return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
 
     async def _handle_media(self, request) -> Any:
         """Serve a registered local file over HTTPS for LINE's media URLs.
@@ -1333,7 +1388,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="image exceeds 10 MB LINE limit")
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+        if self._missing_public_url():
             return SendResult(
                 success=False,
                 error="LINE_PUBLIC_URL must be set to send images "
@@ -1363,7 +1418,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="audio exceeds 200 MB LINE limit")
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+        if self._missing_public_url():
             return SendResult(
                 success=False,
                 error="LINE_PUBLIC_URL must be set to send audio",
@@ -1387,7 +1442,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="video exceeds 200 MB LINE limit")
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+        if self._missing_public_url():
             return SendResult(
                 success=False,
                 error="LINE_PUBLIC_URL must be set to send video",

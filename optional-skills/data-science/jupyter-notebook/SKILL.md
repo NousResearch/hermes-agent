@@ -1,5 +1,5 @@
 ---
-name: jupyter-live-kernel
+name: jupyter-notebook
 description: "Iterative Python via live Jupyter kernel (hamelnb)."
 version: 1.0.0
 author: Hermes Agent
@@ -11,7 +11,7 @@ metadata:
     category: data-science
 ---
 
-# Jupyter Live Kernel (hamelnb)
+# Jupyter Notebook (hamelnb live kernel)
 
 Gives you a **stateful Python REPL** via a live Jupyter kernel. Variables persist
 across executions. Use this instead of `execute_code` when you need to build up

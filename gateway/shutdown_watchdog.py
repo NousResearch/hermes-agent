@@ -208,6 +208,8 @@ def start_loop_liveness_watchdog(
                 faulthandler.dump_traceback(all_threads=True)
             except Exception:
                 logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+            if stop_event.is_set():
+                return
             os._exit(exit_code)
             return
 

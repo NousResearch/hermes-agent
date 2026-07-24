@@ -71,6 +71,69 @@ def test_loop_liveness_watchdog_exits_after_consecutive_misses():
     assert exit_codes == [75]
 
 
+def test_loop_liveness_watchdog_stop_during_critical_log_disarms_hard_exit():
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    handle_ready = threading.Event()
+    handle_ref = {}
+    exit_codes = []
+
+    def stop_during_critical(*_args) -> None:
+        assert handle_ready.wait(timeout=2.0)
+        handle_ref["handle"].stop()
+
+    with (
+        patch(
+            "gateway.shutdown_watchdog.logger.critical",
+            side_effect=stop_during_critical,
+        ) as critical,
+        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+        )
+        assert handle is not None
+        handle_ref["handle"] = handle
+        handle_ready.set()
+        handle.join(timeout=2.0)
+
+    assert not handle.is_alive()
+    critical.assert_called_once()
+    assert exit_codes == []
+
+
+def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    handle_ready = threading.Event()
+    handle_ref = {}
+    exit_codes = []
+
+    def stop_during_dump(*_args, **_kwargs) -> None:
+        assert handle_ready.wait(timeout=2.0)
+        handle_ref["handle"].stop()
+
+    with (
+        patch("gateway.shutdown_watchdog.logger.critical") as critical,
+        patch(
+            "gateway.shutdown_watchdog.faulthandler.dump_traceback",
+            side_effect=stop_during_dump,
+        ) as dump,
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+        )
+        assert handle is not None
+        handle_ref["handle"] = handle
+        handle_ready.set()
+        handle.join(timeout=2.0)
+
+    assert not handle.is_alive()
+    critical.assert_called_once()
+    dump.assert_called_once_with(all_threads=True)
+    assert exit_codes == []
+
+
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     probe_scheduled = threading.Event()

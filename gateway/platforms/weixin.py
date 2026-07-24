@@ -95,6 +95,8 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
+STALE_SESSION_RET = RATE_LIMIT_ERRCODE  # -2: stale session disguised as rate limit
+DEAD_SESSION_RET = -3  # -3: session fully dead
 ALERT_SCRIPT = os.environ.get("HERMES_ALERT_SCRIPT", "")
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
@@ -469,6 +471,9 @@ async def _send_message(
     }
     if context_token:
         message["context_token"] = context_token
+    # NOTE: _send_message returns the raw API response dict.
+    # Stale-session detection and rate-limit handling are in
+    # _send_text_chunk_locked(), not here.
     return await _api_post(
         session,
         base_url=base_url,
@@ -477,16 +482,6 @@ async def _send_message(
         token=token,
         timeout_ms=API_TIMEOUT_MS,
     )
-    ret = result.get("ret")
-    if ret is not None and ret != 0:
-        errmsg = result.get("errmsg", "unknown error")
-        if ret in (STALE_SESSION_RET, DEAD_SESSION_RET):
-            raise SessionExpiredError(
-                f"iLink session expired: ret={ret} errmsg={errmsg}"
-            )
-        raise RuntimeError(
-            f"iLink sendmessage error: ret={ret} errmsg={errmsg}"
-        )
 
 
 async def _send_typing(

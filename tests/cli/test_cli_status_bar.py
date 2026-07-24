@@ -30,10 +30,15 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    provider: str | None = None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
-        provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
+        provider=(
+            provider
+            if provider is not None
+            else ("anthropic" if cli_obj.model.startswith("anthropic/") else None)
+        ),
         base_url="",
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
@@ -536,6 +541,30 @@ class TestCLIUsageReport:
         assert "Cost source:" not in output
         assert "Cache read tokens:" not in output
         assert "Cache write tokens:" not in output
+
+    def test_show_usage_fetches_grok_limits_before_first_api_call(self, capsys, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="xai-oauth/grok-4.5"),
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            api_calls=0,
+            context_tokens=0,
+            context_length=200_000,
+            provider="xai-oauth",
+        )
+        cli_obj.verbose = False
+        snapshot = MagicMock()
+        snapshot_lines = ["📈 Grok limits", "SuperGrok weekly credits: 82% remaining"]
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *args, **kwargs: snapshot)
+        monkeypatch.setattr("agent.account_usage.render_account_usage_lines", lambda value: snapshot_lines)
+        monkeypatch.setattr(cli_obj, "_print_nous_credits_block", lambda: False)
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Grok limits" in output
+        assert "No API calls made yet" not in output
 
 
 class TestStatusBarWidthSource:

@@ -1,7 +1,10 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -103,6 +106,25 @@ class TestBlueBubblesHelpers:
 
         assert result.success is True
         assert sent == ["first thought", "second thought"]
+
+    @pytest.mark.asyncio
+    async def test_read_timeout_is_ambiguous_and_does_not_send_fallback(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(
+            adapter,
+            "_resolve_chat_guid",
+            AsyncMock(return_value="iMessage;-;user@example.com"),
+        )
+        post = AsyncMock(side_effect=httpx.ReadTimeout(""))
+        monkeypatch.setattr(adapter, "_api_post", post)
+
+        result = await adapter._send_with_retry("user@example.com", "hello")
+
+        assert result.success is False
+        assert result.error == "ReadTimeout"
+        assert post.await_count == 1
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -406,6 +428,1274 @@ class TestBlueBubblesWebhookParsing:
         assert record["text"] == "hello"
 
 
+class TestBlueBubblesInboundDeduplication:
+    @staticmethod
+    def _payload(
+        message_guid,
+        *,
+        event_type="new-message",
+        chat_guid=None,
+        text="hello",
+        attachments=None,
+    ):
+        return {
+            "type": event_type,
+            "data": {
+                "guid": message_guid,
+                "text": text,
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": chat_guid or "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+                "attachments": attachments or [],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_same_message_guid_dispatches_once_across_new_and_updated_events(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+
+        first = self._payload("stable-guid", event_type="new-message")
+        updated = self._payload(
+            "stable-guid",
+            event_type="updated-message",
+            chat_guid="iMessage;-;different-chat-fields@example.com",
+        )
+
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(first))).status == 200
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(updated))).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == ["stable-guid"]
+
+    @pytest.mark.asyncio
+    async def test_distinct_message_guids_still_dispatch(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+
+        for guid in ("guid-1", "guid-2"):
+            response = await adapter._handle_webhook(
+                _FakeBlueBubblesRequest(self._payload(guid))
+            )
+            assert response.status == 200
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == ["guid-1", "guid-2"]
+
+    @pytest.mark.asyncio
+    async def test_malformed_delivery_does_not_poison_valid_retry(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+        malformed = self._payload("retry-guid", text="")
+        valid = self._payload("retry-guid", text="valid retry")
+
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(malformed))).status == 400
+        assert (await adapter._handle_webhook(_FakeBlueBubblesRequest(valid))).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["valid retry"]
+
+    @pytest.mark.asyncio
+    async def test_seen_guid_cache_has_size_bound_and_ttl(self, monkeypatch):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        now = [100.0]
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_CACHE_SIZE", 2)
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_TTL_SECONDS", 5.0)
+        monkeypatch.setattr(bluebubbles.time, "monotonic", lambda: now[0])
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock(side_effect=handled.append))
+
+        for guid in ("guid-1", "guid-2", "guid-3"):
+            response = await adapter._handle_webhook(
+                _FakeBlueBubblesRequest(self._payload(guid))
+            )
+            assert response.status == 200
+            if adapter._background_tasks:
+                await asyncio.gather(*list(adapter._background_tasks))
+        assert len(adapter._seen_message_guids) == 2
+
+        now[0] += 6.0
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("guid-3"))
+        )
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        assert [event.message_id for event in handled] == [
+            "guid-1",
+            "guid-2",
+            "guid-3",
+            "guid-3",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_overlapping_duplicate_webhooks_download_and_dispatch_once(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        download_started = asyncio.Event()
+        release_download = asyncio.Event()
+        handled = []
+
+        async def download_once(*_args):
+            download_started.set()
+            await release_download.wait()
+            return "/cache/photo.jpg"
+
+        download = AsyncMock(side_effect=download_once)
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        payload = self._payload(
+            "overlap-guid",
+            attachments=[{"guid": "att-1", "mimeType": "image/jpeg"}],
+        )
+
+        first = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await download_started.wait()
+        second = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await asyncio.sleep(0)
+        release_download.set()
+        responses = await asyncio.gather(first, second)
+        await asyncio.sleep(0)
+
+        assert [response.status for response in responses] == [200, 200]
+        assert download.await_count == 1
+        assert [event.message_id for event in handled] == ["overlap-guid"]
+
+    @pytest.mark.asyncio
+    async def test_late_updated_message_dispatches_attachment_only_enrichment(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        download = AsyncMock(return_value="/cache/enriched-photo.jpg")
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+
+        original = self._payload("enrich-guid", event_type="new-message")
+        enriched = self._payload(
+            "enrich-guid",
+            event_type="updated-message",
+            attachments=[{"guid": "att-new", "mimeType": "image/png"}],
+        )
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(original))
+        ).status == 200
+        await asyncio.sleep(0)
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(enriched))
+        ).status == 200
+        await asyncio.sleep(0)
+
+        assert download.await_count == 1
+        assert len(handled) == 2
+        assert handled[0].text == "hello"
+        assert handled[0].media_urls == []
+        assert handled[1].text == "(attachment)"
+        assert handled[1].media_urls == ["/cache/enriched-photo.jpg"]
+        assert handled[1].media_types == ["image/png"]
+        assert handled[1].message_type.value == "photo"
+
+    @pytest.mark.asyncio
+    async def test_failed_attachment_download_is_retryable_on_updated_message(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        download = AsyncMock(side_effect=[None, "/cache/retried.jpg"])
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        payload = self._payload(
+            "retry-download-guid",
+            attachments=[{"guid": "retry-att", "mimeType": "image/jpeg"}],
+        )
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await asyncio.sleep(0)
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await asyncio.sleep(0)
+
+        assert download.await_count == 2
+        assert len(handled) == 2
+        assert handled[0].media_urls == []
+        assert handled[1].text == "(attachment)"
+        assert handled[1].media_urls == ["/cache/retried.jpg"]
+        assert handled[1].message_type.value == "photo"
+
+    @pytest.mark.asyncio
+    async def test_caf_uti_attachment_remains_voice_message(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_download_attachment",
+            AsyncMock(return_value="/cache/voice.caf"),
+        )
+        payload = self._payload(
+            "caf-guid",
+            attachments=[
+                {
+                    "guid": "caf-att",
+                    "mimeType": "application/octet-stream",
+                    "uti": "com.apple.caf",
+                }
+            ],
+        )
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await asyncio.sleep(0)
+
+        assert len(handled) == 1
+        assert handled[0].message_type.value == "voice"
+        assert handled[0].media_types == ["application/octet-stream"]
+
+    @pytest.mark.asyncio
+    async def test_waiting_duplicate_takes_over_after_owner_dispatch_failure(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        attempts = []
+
+        async def flaky_handle(event):
+            attempts.append(event.message_id)
+            if len(attempts) == 1:
+                first_started.set()
+                await release_first.wait()
+                raise RuntimeError("owner dispatch failed")
+
+        monkeypatch.setattr(adapter, "handle_message", flaky_handle)
+        payload = self._payload("joined-retry-guid")
+
+        first_response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(payload)
+        )
+        await first_started.wait()
+        duplicate = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await asyncio.sleep(0)
+        assert not duplicate.done()
+
+        release_first.set()
+        duplicate_response = await duplicate
+        await asyncio.sleep(0)
+
+        assert first_response.status == 200
+        assert duplicate_response.status == 200
+        assert attempts == ["joined-retry-guid", "joined-retry-guid"]
+
+    @pytest.mark.asyncio
+    async def test_capacity_pressure_returns_503_without_evicting_inflight(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_CACHE_SIZE", 1)
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        download_started = asyncio.Event()
+        release_download = asyncio.Event()
+
+        async def blocked_download(*_args):
+            download_started.set()
+            await release_download.wait()
+            return "/cache/photo.jpg"
+
+        monkeypatch.setattr(adapter, "_download_attachment", blocked_download)
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock())
+        first_payload = self._payload(
+            "capacity-1",
+            attachments=[{"guid": "att-1", "mimeType": "image/jpeg"}],
+        )
+        first = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(first_payload))
+        )
+        await download_started.wait()
+
+        second_response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("capacity-2"))
+        )
+        assert second_response.status == 503
+        assert "capacity-1" in adapter._seen_message_guids
+
+        release_download.set()
+        assert (await first).status == 200
+
+    @pytest.mark.asyncio
+    async def test_no_guid_message_still_enforces_attachment_bound(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_MAX_ATTACHMENTS", 2)
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        download = AsyncMock(return_value="/cache/photo.jpg")
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        payload = self._payload(
+            None,
+            attachments=[
+                {"guid": f"att-{index}", "mimeType": "image/jpeg"}
+                for index in range(3)
+            ],
+        )
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert response.status == 413
+        assert download.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_duplicate_join_has_bounded_wait(self, monkeypatch):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(
+            bluebubbles, "_MESSAGE_DEDUP_JOIN_TIMEOUT_SECONDS", 0.01
+        )
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        owner_started = asyncio.Event()
+        release_owner = asyncio.Event()
+
+        async def blocked_handle(_event):
+            owner_started.set()
+            await release_owner.wait()
+
+        monkeypatch.setattr(adapter, "handle_message", blocked_handle)
+        payload = self._payload("bounded-join")
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await owner_started.wait()
+
+        duplicate_response = await asyncio.wait_for(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload)),
+            timeout=0.1,
+        )
+
+        assert duplicate_response.status == 503
+        release_owner.set()
+
+    @pytest.mark.asyncio
+    async def test_late_enrichment_download_exception_rolls_back_for_retry(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        original = self._payload("late-failure")
+        enriched = self._payload(
+            "late-failure",
+            event_type="updated-message",
+            attachments=[{"guid": "late-att", "mimeType": "image/jpeg"}],
+        )
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(original))
+        ).status == 200
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+        monkeypatch.setattr(
+            adapter,
+            "_download_attachment",
+            AsyncMock(side_effect=RuntimeError("download failed")),
+        )
+
+        with pytest.raises(RuntimeError, match="download failed"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(enriched))
+
+        reservation = adapter._seen_message_guids["late-failure"]
+        assert reservation["state"] == "complete"
+        assert "late-att" not in reservation["attachment_guids"]
+
+        monkeypatch.setattr(
+            adapter,
+            "_download_attachment",
+            AsyncMock(return_value="/cache/retried-late.jpg"),
+        )
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(enriched))
+        ).status == 200
+        await asyncio.sleep(0)
+        assert len(handled) == 2
+        assert handled[1].media_urls == ["/cache/retried-late.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_new_attachment_waits_for_inflight_owner_then_dispatches(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        owner_started = asyncio.Event()
+        release_owner = asyncio.Event()
+        download_started = asyncio.Event()
+        release_download = asyncio.Event()
+        handled = []
+
+        async def handle(event):
+            handled.append(event)
+            if len(handled) == 1:
+                owner_started.set()
+                await release_owner.wait()
+
+        async def download(*_args):
+            download_started.set()
+            await release_download.wait()
+            return "/cache/serialized.jpg"
+
+        monkeypatch.setattr(adapter, "handle_message", handle)
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        original = self._payload("serialize-enrichment")
+        enriched = self._payload(
+            "serialize-enrichment",
+            event_type="updated-message",
+            attachments=[{"guid": "serialized-att", "mimeType": "image/jpeg"}],
+        )
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(original))
+        ).status == 200
+        await owner_started.wait()
+        enrichment = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(enriched))
+        )
+        await asyncio.sleep(0)
+        assert not download_started.is_set()
+
+        release_owner.set()
+        await download_started.wait()
+        release_download.set()
+        assert (await enrichment).status == 200
+        await asyncio.sleep(0)
+
+        assert len(handled) == 2
+        assert handled[1].text == "(attachment)"
+        assert handled[1].media_urls == ["/cache/serialized.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_completed_reservation_does_not_retain_raw_message_event(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        monkeypatch.setattr(adapter, "handle_message", AsyncMock())
+        payload = self._payload("no-event-retention", text="x" * 100_000)
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        reservation = adapter._seen_message_guids["no-event-retention"]
+        assert reservation["state"] == "complete"
+        assert "event" not in reservation
+
+    @pytest.mark.asyncio
+    async def test_reservation_preserves_bluebubbles_attachment_order(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+
+        delivery_kind, _reservation, new_guids = adapter._reserve_message_delivery(
+            "ordered-attachments", ["z-last-lexically", "a-first-lexically"]
+        )
+
+        assert delivery_kind == "new"
+        assert new_guids == ["z-last-lexically", "a-first-lexically"]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_join_loop_has_request_wide_attempt_bound(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_MAX_JOIN_ATTEMPTS", 2)
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        outcome = asyncio.get_running_loop().create_future()
+        outcome.set_result(False)
+        reservation = {"outcome": outcome, "waiters": 0}
+        reserve = Mock(return_value=("duplicate_wait", reservation, set()))
+        monkeypatch.setattr(adapter, "_reserve_message_delivery", reserve)
+        monkeypatch.setattr(
+            adapter, "_join_message_reservation", AsyncMock(return_value=False)
+        )
+
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(self._payload("bounded-attempts"))
+        )
+
+        assert response.status == 503
+        assert reserve.call_count == 3
+        assert adapter._join_message_reservation.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_duplicate_rechecks_released_attachment_after_owner_success(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        first_download_started = asyncio.Event()
+        release_first_download = asyncio.Event()
+        downloads = 0
+        handled = []
+
+        async def retrying_download(*_args):
+            nonlocal downloads
+            downloads += 1
+            if downloads == 1:
+                first_download_started.set()
+                await release_first_download.wait()
+                return None
+            return "/cache/join-retry.jpg"
+
+        monkeypatch.setattr(adapter, "_download_attachment", retrying_download)
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        payload = self._payload(
+            "joined-download-retry",
+            attachments=[{"guid": "joined-att", "mimeType": "image/jpeg"}],
+        )
+
+        owner = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await first_download_started.wait()
+        duplicate = asyncio.create_task(
+            adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        )
+        await asyncio.sleep(0)
+        release_first_download.set()
+
+        responses = await asyncio.gather(owner, duplicate)
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        assert [response.status for response in responses] == [200, 200]
+        assert downloads == 2
+        assert len(handled) == 2
+        assert handled[1].media_urls == ["/cache/join-retry.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_attachment_guid_bound_rejects_oversized_message(self, monkeypatch):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_MESSAGE_DEDUP_MAX_ATTACHMENTS", 2)
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        download = AsyncMock(return_value="/cache/photo.jpg")
+        monkeypatch.setattr(adapter, "_download_attachment", download)
+        payload = self._payload(
+            "too-many-attachments",
+            attachments=[
+                {"guid": f"att-{index}", "mimeType": "image/jpeg"}
+                for index in range(3)
+            ],
+        )
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+
+        assert response.status == 413
+        assert download.await_count == 0
+        assert "too-many-attachments" not in adapter._seen_message_guids
+
+    @pytest.mark.asyncio
+    async def test_failed_webhook_task_scheduling_releases_reservation_for_retry(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        real_create_task = asyncio.create_task
+        scheduling_attempts = 0
+
+        def fail_first_schedule(coro):
+            nonlocal scheduling_attempts
+            scheduling_attempts += 1
+            if scheduling_attempts == 1:
+                coro.close()
+                raise RuntimeError("task scheduler unavailable")
+            return real_create_task(coro)
+
+        monkeypatch.setattr(bluebubbles.asyncio, "create_task", fail_first_schedule)
+        payload = self._payload("retry-schedule-guid")
+
+        with pytest.raises(RuntimeError, match="scheduler unavailable"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == ["retry-schedule-guid"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_site", ["build_source", "message_event", "apply_media"])
+    async def test_synchronous_event_setup_failure_releases_reservation_for_retry(
+        self, monkeypatch, failure_site
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        setup_attempts = 0
+
+        def fail_once_then(call):
+            def wrapped(*args, **kwargs):
+                nonlocal setup_attempts
+                setup_attempts += 1
+                if setup_attempts == 1:
+                    raise RuntimeError("event setup failed")
+                return call(*args, **kwargs)
+
+            return wrapped
+
+        if failure_site == "build_source":
+            monkeypatch.setattr(
+                adapter, "build_source", fail_once_then(adapter.build_source)
+            )
+        elif failure_site == "message_event":
+            monkeypatch.setattr(
+                bluebubbles,
+                "MessageEvent",
+                fail_once_then(bluebubbles.MessageEvent),
+            )
+        else:
+            monkeypatch.setattr(
+                adapter,
+                "_apply_reservation_media",
+                fail_once_then(adapter._apply_reservation_media),
+            )
+        payload = self._payload(f"retry-{failure_site}-guid")
+
+        with pytest.raises(RuntimeError, match="event setup failed"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        assert f"retry-{failure_site}-guid" not in adapter._seen_message_guids
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in handled] == [
+            f"retry-{failure_site}-guid"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_late_enrichment_setup_failure_restores_reservation_for_retry(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(
+            adapter, "handle_message", AsyncMock(side_effect=handled.append)
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_download_attachment",
+            AsyncMock(return_value="/cache/retried-enrichment.jpg"),
+        )
+        original = self._payload("retry-late-setup-guid")
+        enriched = self._payload(
+            "retry-late-setup-guid",
+            event_type="updated-message",
+            attachments=[{"guid": "late-setup-att", "mimeType": "image/jpeg"}],
+        )
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(original))
+        ).status == 200
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        original_apply = adapter._apply_reservation_media
+        setup_attempts = 0
+
+        def fail_first_enrichment(event, reservation):
+            nonlocal setup_attempts
+            setup_attempts += 1
+            if setup_attempts == 1:
+                raise RuntimeError("late setup failed")
+            return original_apply(event, reservation)
+
+        monkeypatch.setattr(
+            adapter, "_apply_reservation_media", fail_first_enrichment
+        )
+        with pytest.raises(RuntimeError, match="late setup failed"):
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(enriched))
+        reservation = adapter._seen_message_guids["retry-late-setup-guid"]
+        assert reservation["state"] == "complete"
+        assert "late-setup-att" not in reservation["attachment_guids"]
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(enriched))
+        ).status == 200
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        assert len(handled) == 2
+        assert handled[1].media_urls == ["/cache/retried-enrichment.jpg"]
+
+    @pytest.mark.asyncio
+    async def test_observable_dispatch_failure_releases_reservation_for_retry(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        first_failed = asyncio.Event()
+        attempts = []
+
+        async def flaky_handle(event):
+            attempts.append(event.message_id)
+            if len(attempts) == 1:
+                first_failed.set()
+                raise RuntimeError("dispatch setup failed")
+
+        monkeypatch.setattr(adapter, "handle_message", flaky_handle)
+        payload = self._payload("retry-dispatch-guid")
+
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await first_failed.wait()
+        await asyncio.sleep(0)
+        assert (
+            await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        ).status == 200
+        await asyncio.sleep(0)
+
+        assert attempts == ["retry-dispatch-guid", "retry-dispatch-guid"]
+
+
+def _quick_ack_runner(monkeypatch, config, *, platform=Platform.BLUEBUBBLES):
+    from gateway.platforms.base import MessageEvent, SessionSource
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._pending_turn_sidecar_notes = {}
+    adapter = _make_adapter(monkeypatch)
+    adapter.send = AsyncMock(return_value=SimpleNamespace(success=True))
+    runner._adapter_for_source = lambda source: adapter
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+    source = SessionSource(
+        platform=platform,
+        chat_id="iMessage;-;user@example.com",
+        user_id="user@example.com",
+        chat_type="dm",
+    )
+    event = MessageEvent(text="Please compare these two contracts", source=source)
+    return runner, adapter, event, source
+
+
+def _quick_ack_config(**overrides):
+    return {
+        "display": {
+            "platforms": {
+                "bluebubbles": {
+                    "quick_ack_enabled": True,
+                    **overrides,
+                }
+            }
+        }
+    }
+
+
+def _aux_response(text):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
+    )
+
+
+class TestBlueBubblesQuickAcknowledgment:
+    @pytest.mark.asyncio
+    async def test_enabled_bluebubbles_sends_contextual_ack_before_main_turn(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_model="fast-model", quick_ack_timeout_seconds=2),
+        )
+        aux = AsyncMock(return_value=_aux_response('"I’ll compare both carefully."'))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+        notes = []
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+
+        assert ack == "I’ll compare both carefully."
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+        kwargs = aux.await_args.kwargs
+        assert kwargs["model"] == "fast-model"
+        assert kwargs["timeout"] == 2.0
+        assert kwargs.get("tools") is None
+        assert "stream" not in kwargs
+        prompt = kwargs["messages"][0]["content"]
+        assert "under 8 words" in prompt
+        assert "no quotes or Markdown" in prompt
+        assert "must not claim" in prompt
+        assert [message["role"] for message in kwargs["messages"]] == ["system", "user"]
+        assert event.text in kwargs["messages"][1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_disabled_setting_skips_ack(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(monkeypatch, {})
+        aux = AsyncMock(return_value=_aux_response("Taking a look now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack is None
+        aux.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_timeout_setting_is_bounded(self, monkeypatch):
+        runner, _adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_timeout_seconds=999),
+        )
+        aux = AsyncMock(return_value=_aux_response("I’ll inspect this now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert aux.await_args.kwargs["timeout"] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_non_bluebubbles_message_skips_ack(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config(), platform=Platform.TELEGRAM
+        )
+        aux = AsyncMock(return_value=_aux_response("Taking a look now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack is None
+        aux.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["/help", "hi", "ping", "thanks", "yes", "no"])
+    async def test_slash_and_trivial_messages_skip_ack(self, monkeypatch, text):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        event.text = text
+        aux = AsyncMock(return_value=_aux_response("Taking a look now."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack is None
+        aux.assert_not_awaited()
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auxiliary_failure_sends_configured_fallback(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_fallback="Got it — I’m checking."),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(side_effect=RuntimeError("aux unavailable")),
+        )
+        notes = []
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+
+        assert ack == "Got it — I’m checking."
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+        assert ack in notes[0]
+
+    @pytest.mark.asyncio
+    async def test_ack_send_failure_does_not_abort_main_turn(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(return_value=_aux_response("I’ll inspect this now.")),
+        )
+        adapter.send.side_effect = RuntimeError("BlueBubbles offline")
+        main_turn = AsyncMock(return_value="main response")
+        notes = []
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+        result = await main_turn()
+
+        assert ack is None
+        assert notes == []
+        assert result == "main response"
+        main_turn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_prompt_injected_completion_claim_uses_safe_fallback(
+        self, monkeypatch
+    ):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(
+                quick_ack_fallback="Got it — I’m checking.",
+            ),
+        )
+        aux = AsyncMock(return_value=_aux_response("Done — I sent it."))
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", aux)
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack == "Got it — I’m checking."
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+        messages = aux.await_args.kwargs["messages"]
+        assert [message["role"] for message in messages] == ["system", "user"]
+        assert "must not claim" in messages[0]["content"].lower()
+        assert event.text in messages[1]["content"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unsafe_text",
+        [
+            "I've handled that for you.",
+            "Your email is on its way.",
+            "Got it — your request is fulfilled.",
+        ],
+    )
+    async def test_non_pending_generated_ack_uses_safe_default(
+        self, monkeypatch, unsafe_text
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_fallback="Done"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(return_value=_aux_response(unsafe_text)),
+        )
+
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+
+        assert ack == bluebubbles._QUICK_ACK_DEFAULT_FALLBACK
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+
+    @pytest.mark.asyncio
+    async def test_parent_cancellation_cancels_quick_ack_child(self, monkeypatch):
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        generation_started = asyncio.Event()
+        generation_cancelled = asyncio.Event()
+
+        async def cancellable_generation(**_kwargs):
+            generation_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                generation_cancelled.set()
+                raise
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm", cancellable_generation
+        )
+        ack_task = asyncio.create_task(
+            runner._maybe_send_bluebubbles_quick_ack(
+                event, source, event.text, []
+            )
+        )
+        await generation_started.wait()
+        ack_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await ack_task
+        await asyncio.wait_for(generation_cancelled.wait(), timeout=0.1)
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deadline_does_not_wait_for_generation_cancellation_cleanup(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_QUICK_ACK_MIN_TIMEOUT_SECONDS", 0.01)
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(
+                quick_ack_timeout_seconds=0.06,
+                quick_ack_fallback="Got it — I’m checking.",
+            ),
+        )
+
+        async def cancellation_delayed_generation(**_kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.15)
+                raise
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            cancellation_delayed_generation,
+        )
+        started = asyncio.get_running_loop().time()
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert ack == "Got it — I’m checking."
+        assert elapsed < 0.11
+        adapter.send.assert_awaited_once_with(source.chat_id, ack)
+
+    @pytest.mark.asyncio
+    async def test_generation_timeout_still_sends_fallback_with_reserved_budget(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_QUICK_ACK_MIN_TIMEOUT_SECONDS", 0.01)
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(
+                quick_ack_timeout_seconds=0.08,
+                quick_ack_fallback="Checking now.",
+            ),
+        )
+
+        async def hung_generation(**_kwargs):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", hung_generation)
+        started = asyncio.get_running_loop().time()
+        ack = await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, []
+        )
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert ack == "Checking now."
+        assert elapsed < 0.12
+        adapter.send.assert_awaited_once_with(source.chat_id, "Checking now.")
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_timeout_bounds_hung_send_without_fallback_retry(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_QUICK_ACK_MIN_TIMEOUT_SECONDS", 0.01)
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(quick_ack_timeout_seconds=0.05),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(return_value=_aux_response("I’ll inspect this now.")),
+        )
+
+        async def hung_send(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        adapter.send.side_effect = hung_send
+        started = asyncio.get_running_loop().time()
+        ack = await asyncio.wait_for(
+            runner._maybe_send_bluebubbles_quick_ack(
+                event, source, event.text, []
+            ),
+            timeout=0.15,
+        )
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert ack is None
+        assert elapsed < 0.15
+        assert adapter.send.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fallback_send_uses_only_deadline_remaining_after_generation_failure(
+        self, monkeypatch
+    ):
+        import gateway.platforms.bluebubbles as bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "_QUICK_ACK_MIN_TIMEOUT_SECONDS", 0.01)
+        runner, adapter, event, source = _quick_ack_runner(
+            monkeypatch,
+            _quick_ack_config(
+                quick_ack_timeout_seconds=0.06,
+                quick_ack_fallback="Got it — I’m checking.",
+            ),
+        )
+
+        async def delayed_generation_failure(**_kwargs):
+            await asyncio.sleep(0.04)
+            raise RuntimeError("aux unavailable")
+
+        async def hung_send(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm", delayed_generation_failure
+        )
+        adapter.send.side_effect = hung_send
+        started = asyncio.get_running_loop().time()
+        ack = await asyncio.wait_for(
+            runner._maybe_send_bluebubbles_quick_ack(
+                event, source, event.text, []
+            ),
+            timeout=0.12,
+        )
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert ack is None
+        assert elapsed < 0.11
+        assert adapter.send.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_proxy_mode_receives_turn_notes_without_mutating_user_message(
+        self, monkeypatch
+    ):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=False)
+        monkeypatch.setattr(runner, "_get_proxy_url", lambda: "http://proxy.test")
+        captured = {}
+
+        async def fake_proxy(**kwargs):
+            captured.update(kwargs)
+            return {"final_response": "ok"}
+
+        monkeypatch.setattr(runner, "_run_agent_via_proxy", fake_proxy)
+        result = await runner._run_agent(
+            message="original user text",
+            context_prompt="base context",
+            history=[],
+            source=SimpleNamespace(),
+            session_id="session-id",
+            session_key="session-key",
+            turn_sidecar_notes=["visible quick acknowledgment: checking now"],
+        )
+
+        assert result == {"final_response": "ok"}
+        assert captured["message"] == "original user text"
+        assert captured["context_prompt"].startswith("base context")
+        assert "visible quick acknowledgment" in captured["context_prompt"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [RuntimeError("boom"), asyncio.CancelledError()])
+    async def test_turn_local_ack_context_cannot_leak_after_failed_run(
+        self, monkeypatch, failure
+    ):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=False)
+        forwarded = []
+
+        async def fake_inner(*_args, turn_sidecar_notes=None, **_kwargs):
+            forwarded.append(list(turn_sidecar_notes or []))
+            if len(forwarded) == 1:
+                raise failure
+            return {"final_response": "ok"}
+
+        monkeypatch.setattr(runner, "_run_agent_inner", fake_inner)
+        common = {
+            "message": "message",
+            "context_prompt": "context",
+            "history": [],
+            "source": SimpleNamespace(),
+            "session_id": "session-id",
+            "session_key": "session-key",
+        }
+
+        with pytest.raises(type(failure)):
+            await runner._run_agent(
+                **common,
+                turn_sidecar_notes=["visible quick acknowledgment: first-turn"],
+            )
+        result = await runner._run_agent(**common, turn_sidecar_notes=[])
+
+        assert result == {"final_response": "ok"}
+        assert forwarded == [
+            ["visible quick acknowledgment: first-turn"],
+            [],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_visible_ack_is_one_shot_sidecar_not_user_authored_text(self, monkeypatch):
+        """The ack note changes no role/content history and is consumed once.
+
+        It is composed onto the API copy of this user turn, preserving strict
+        alternation and the persisted clean user text while keeping later prompt
+        prefixes byte-stable through the existing api_content sidecar.
+        """
+        from agent.turn_context import compose_user_api_content
+
+        runner, _adapter, event, source = _quick_ack_runner(
+            monkeypatch, _quick_ack_config()
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.async_call_llm",
+            AsyncMock(return_value=_aux_response("I’ll compare both carefully.")),
+        )
+        original_user_text = event.text
+        notes = []
+
+        await runner._maybe_send_bluebubbles_quick_ack(
+            event, source, event.text, notes
+        )
+        api_content = compose_user_api_content(
+            original_user_text, "", "\n\n".join(notes)
+        )
+
+        assert event.text == original_user_text
+        assert len(notes) == 1
+        assert "visible quick acknowledgment" in notes[0]
+        assert "I’ll compare both carefully." in api_content
+        assert api_content.startswith(original_user_text)
+
+
 class TestBlueBubblesGuidResolution:
     def test_raw_guid_returned_as_is(self, monkeypatch):
         """If target already contains ';' it's a raw GUID — return unchanged."""
@@ -658,19 +1948,19 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url keeps local callbacks on explicit IPv4 loopback."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → safe local registration target.
+        assert "127.0.0.1" in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
     @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
     def test_local_hosts_normalized(self, monkeypatch, host):
         adapter = _make_adapter(monkeypatch, webhook_host=host)
-        assert adapter._webhook_url.startswith("http://localhost:")
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
 
     def test_custom_host_preserved(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
@@ -763,6 +2053,52 @@ class TestBlueBubblesWebhookRegistration:
         assert len(result) == 1
         assert result[0]["id"] == 1
 
+    def test_find_registered_webhooks_treats_loopback_aliases_as_equivalent(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        canonical = adapter._webhook_register_url
+        alias = (
+            canonical.replace("127.0.0.1", "localhost")
+            if "127.0.0.1" in canonical
+            else canonical.replace("localhost", "127.0.0.1")
+        )
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": canonical, "events": ["new-message", "updated-message"]},
+                {"id": 2, "url": alias, "events": ["new-message", "updated-message"]},
+            ]}
+        )
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._find_registered_webhooks(canonical)
+        )
+
+        assert [item["id"] for item in result] == [1, 2]
+
+    def test_webhook_equivalence_preserves_userinfo_and_query_order(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        canonical = (
+            "http://127.0.0.1:8645/bluebubbles-webhook"
+            "?password=secret&event=new-message&event=updated-message"
+        )
+        alias = canonical.replace("127.0.0.1", "localhost")
+        with_userinfo = alias.replace("http://", "http://user@")
+        reordered = (
+            "http://localhost:8645/bluebubbles-webhook"
+            "?event=updated-message&event=new-message&password=secret"
+        )
+
+        assert adapter._normalized_webhook_url(alias) == adapter._normalized_webhook_url(canonical)
+        assert adapter._normalized_webhook_url(with_userinfo) != adapter._normalized_webhook_url(canonical)
+        assert adapter._normalized_webhook_url(reordered) != adapter._normalized_webhook_url(canonical)
+
+    def test_webhook_normalization_preserves_custom_ipv6_brackets(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        url = "http://[2001:db8::1]:8645/bluebubbles-webhook?password=secret"
+
+        assert adapter._normalized_webhook_url(url) == url
+
     def test_find_registered_webhooks_empty_when_none(self, monkeypatch):
         import asyncio
         adapter = _make_adapter(monkeypatch)
@@ -824,7 +2160,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message"]},
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
             ]},
         )
 
@@ -842,6 +2178,56 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
+
+    @pytest.mark.asyncio
+    async def test_register_collapses_duplicate_equivalent_webhooks(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        canonical = adapter._webhook_register_url
+        alias = canonical.replace("127.0.0.1", "localhost")
+        delete_response = SimpleNamespace(raise_for_status=lambda: None)
+        adapter.client = SimpleNamespace(
+            delete=AsyncMock(return_value=delete_response),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_find_registered_webhooks",
+            AsyncMock(return_value=[
+                {"id": 7, "url": canonical, "events": ["new-message", "updated-message"]},
+                {"id": 8, "url": alias, "events": ["new-message", "updated-message"]},
+            ]),
+        )
+        post = AsyncMock(return_value={"status": 200, "data": {"id": 9}})
+        monkeypatch.setattr(adapter, "_api_post", post)
+
+        assert await adapter._register_webhook() is True
+        client = adapter.client
+        assert client is not None
+        client.delete.assert_awaited_once()
+        assert client.delete.await_args.args[0].endswith("/api/v1/webhook/8?password=secret")
+        post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_register_post_failure_preserves_existing_alias(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        alias = adapter._webhook_register_url.replace("127.0.0.1", "localhost")
+        adapter.client = SimpleNamespace(delete=AsyncMock())
+        monkeypatch.setattr(
+            adapter,
+            "_find_registered_webhooks",
+            AsyncMock(return_value=[
+                {"id": 8, "url": alias, "events": ["new-message", "updated-message"]},
+            ]),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_api_post",
+            AsyncMock(return_value={"status": 500, "message": "server error"}),
+        )
+
+        assert await adapter._register_webhook() is False
+        client = adapter.client
+        assert client is not None
+        client.delete.assert_not_awaited()
 
     def test_register_returns_false_without_client(self, monkeypatch):
         import asyncio

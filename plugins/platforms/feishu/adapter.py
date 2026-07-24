@@ -3284,8 +3284,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 inbound_type = MessageType.COMMAND
 
         # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
-        if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
+        # Also catches non-TEXT types (sticker, unrecognised message, failed image parse,
+        # etc.) that yield neither text nor media. Bedrock substitutes a non-empty
+        # whitespace block for blank content (bedrock_adapter.py:500-541), so the
+        # real risk is an empty unsupported event propagating into dispatch unchecked;
+        # this guard keeps it out entirely.
+        if not text and not media_urls:
+            logger.debug("[Feishu] Ignoring empty message id=%s (type=%s)", message_id, inbound_type.value)
             return
 
         if inbound_type != MessageType.COMMAND:

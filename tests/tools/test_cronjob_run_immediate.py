@@ -42,8 +42,9 @@ class TestCronjobRunExecutesImmediately:
         """
         order = []
         ran = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+        claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
              patch("cron.scheduler.run_one_job",
                    side_effect=lambda *a, **kw: order.append("run") or True), \
              patch("tools.cronjob_tools.get_job", return_value=ran), \
@@ -61,8 +62,9 @@ class TestCronjobRunExecutesImmediately:
         """A claimed direct run advances next_run_at at claim time, so the
         provider must be reconciled even when the execution itself fails."""
         failed = {"id": "job-run-1", "last_status": "error", "last_error": "provider 500"}
+        claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
              patch("cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
              patch("tools.cronjob_tools.mark_job_run"), \
              patch("tools.cronjob_tools.get_job", return_value=failed), \

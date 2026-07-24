@@ -26,6 +26,7 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
+from hermes_cli.plugins import collect_hook_block_reasons
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 
 logger = logging.getLogger(__name__)
@@ -89,10 +90,16 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is
-    rejected. MCP stdio servers are user-chosen local commands, so this blocks
-    shell+egress payloads rather than whitelisting command families.
+    rejected, or when a ``pre_mcp_add`` hook returns a block reason (e.g. a
+    security-scan verdict). MCP stdio servers are user-chosen local commands,
+    so this blocks shell+egress payloads rather than whitelisting command families.
     """
     issues = validate_mcp_server_entry(name, server_config)
+    # collect_hook_block_reasons also loads the trusted plugin registry — this
+    # runs from built-in commands that skip startup discovery.
+    issues.extend(
+        collect_hook_block_reasons("pre_mcp_add", name=name, server_config=server_config)
+    )
     if issues:
         for issue in issues:
             _warning(issue)
@@ -137,6 +144,11 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
             issues.append(f"Server '{name}': expected an object")
             continue
         issues.extend(validate_mcp_server_entry(name, cfg))
+        # Same pre_mcp_add gate as _save_mcp_server — dashboard whole-map
+        # edits land here, not through the per-key upsert.
+        issues.extend(
+            collect_hook_block_reasons("pre_mcp_add", name=name, server_config=cfg)
+        )
 
     if issues:
         return False, issues
@@ -476,6 +488,12 @@ def cmd_mcp_add(args):
         server_config["connect_timeout"] = raw_connect_timeout
 
     issues = validate_mcp_server_entry(name, server_config)
+    # Fire the install gate BEFORE discovery: `_probe_single_server` below
+    # connects to (and for stdio, launches) the untrusted server, so a
+    # save-time-only gate would run only after that execution.
+    issues.extend(
+        collect_hook_block_reasons("pre_mcp_add", name=name, server_config=server_config)
+    )
     if issues:
         for issue in issues:
             _warning(issue)

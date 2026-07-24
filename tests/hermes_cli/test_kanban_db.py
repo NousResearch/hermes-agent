@@ -876,6 +876,15 @@ def _exited_status(code: int) -> int:
     return code << 8
 
 
+def _signaled_status(sig: int, core: bool = False) -> int:
+    """Raw wait-status for a WIFSIGNALED child killed by ``sig``.
+
+    Low 7 bits carry the signal number; 0x80 is the core-dump flag. This is
+    the encoding ``os.WIFSIGNALED`` / ``os.WTERMSIG`` decode.
+    """
+    return sig | (0x80 if core else 0)
+
+
 def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
     import hermes_cli.kanban_db as _kb
 
@@ -979,6 +988,156 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
         assert task.status == "blocked", (
             f"genuine crashes should still trip the breaker, got {task.status}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Deploy / gateway-restart carve-out: a worker killed by a graceful-
+# termination signal (SIGTERM / SIGINT) was torn down by an infrastructure
+# event (a systemd unit stop/restart during a deploy or cv-hermes-update, or
+# an operator Ctrl-C), NOT by a task failure. Because the dispatcher is
+# embedded in a gateway unit, a fleet-wide restart SIGTERMs the in-flight
+# workers AND the dispatcher together; on restart the dispatcher must not
+# score those graceful kills as crashes, or a single deploy window that
+# catches a task mid-run twice permanently ``gave_up``s an otherwise-healthy
+# card. Regression coverage for the 2026-07-20 deploy incident (a productive
+# skill-revise card parked after two SIGTERMs inside failure_limit=2).
+# ---------------------------------------------------------------------------
+
+
+def test_classify_worker_exit_recognizes_graceful_termination_signals(
+    kanban_home,
+):
+    import hermes_cli.kanban_db as _kb
+
+    # SIGTERM (15) and SIGINT (2) → interrupted, with or without a core bit.
+    for sig in (15, 2):
+        pid = 41000 + sig
+        _kb._record_worker_exit(pid, _signaled_status(sig))
+        assert _kb._classify_worker_exit(pid) == ("interrupted", sig)
+
+    # Genuine crash signals stay ``signaled`` and still count as crashes:
+    # SIGKILL (9, what the OOM killer sends), SIGSEGV (11), SIGABRT (6).
+    for sig in (9, 11, 6):
+        pid = 42000 + sig
+        _kb._record_worker_exit(pid, _signaled_status(sig, core=True))
+        assert _kb._classify_worker_exit(pid) == ("signaled", sig)
+
+
+def test_graceful_termination_requeues_without_counting_failure(
+    kanban_home, monkeypatch,
+):
+    """A SIGTERM/SIGINT kill releases the task to ``ready`` and leaves
+    ``consecutive_failures`` untouched — a deploy/restart window must never
+    trip the breaker, even when it catches the same task more times than
+    ``failure_limit``."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="deploy-kill", assignee="a")
+
+        # More SIGTERMs than DEFAULT_FAILURE_LIMIT (2). If any counted as a
+        # failure the task would be blocked well before the loop ends —
+        # exactly the incident being fixed.
+        for i in range(5):
+            pid = 50000 + i
+            kb.claim_task(conn, tid, claimer=f"{host}:w{i}")
+            conn.execute(
+                "UPDATE tasks SET worker_pid=?, consecutive_failures=? "
+                "WHERE id=?",
+                (pid, 0, tid),
+            )
+            conn.commit()
+            # Alternate SIGTERM / SIGINT to prove both are carved out.
+            sig = 15 if i % 2 == 0 else 2
+            _kb._record_worker_exit(pid, _signaled_status(sig))
+
+            crashed = kb.detect_crashed_workers(conn)
+            # Interrupts are NOT crashes.
+            assert tid not in crashed
+            interrupted = getattr(
+                _kb.detect_crashed_workers, "_last_interrupted", []
+            )
+            assert tid in interrupted
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"kill {i}: should requeue ready, got {task.status}"
+            )
+            assert task.consecutive_failures == 0, (
+                f"kill {i}: graceful termination must not count a failure, "
+                f"got {task.consecutive_failures}"
+            )
+
+        # An ``interrupted`` run outcome was recorded (never ``crashed``).
+        outcomes = [
+            r["outcome"] for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert "interrupted" in outcomes
+        assert "crashed" not in outcomes
+
+
+def test_respawn_guard_allows_interrupted_task_immediately(
+    kanban_home, monkeypatch,
+):
+    """An interrupt requeue carries no cooldown and no auth-blocker text, so
+    the respawn guard lets the dispatcher re-spawn on the next healthy tick
+    (unlike a rate-limit requeue, which defers on a cooldown)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="deploy-kill-guard", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:w")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=? WHERE id=?", (51000, tid),
+        )
+        conn.commit()
+        _kb._record_worker_exit(51000, _signaled_status(15))  # SIGTERM
+
+        kb.detect_crashed_workers(conn)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        # The stamped last_failure_error must not match the quota/auth
+        # blocker regex (which would defer the task forever with no failure
+        # counter to free it).
+        assert task.last_failure_error
+        assert not _kb._RESPAWN_BLOCKER_RE.search(task.last_failure_error)
+        # No rate-limit cooldown and no auth blocker → respawnable now.
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_dispatch_result_surfaces_interrupted(kanban_home, monkeypatch):
+    """``dispatch_once`` populates ``DispatchResult.interrupted`` for graceful
+    kills and keeps them out of ``crashed``/``rate_limited``."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="dispatch-interrupt", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:w")
+        conn.execute(
+            "UPDATE tasks SET worker_pid=? WHERE id=?", (52000, tid),
+        )
+        conn.commit()
+        _kb._record_worker_exit(52000, _signaled_status(15))  # SIGTERM
+
+        # Stub spawn so the freed task isn't immediately re-claimed this tick.
+        result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
+        assert tid in result.interrupted
+        assert tid not in result.crashed
+        assert tid not in result.rate_limited
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

@@ -258,6 +258,20 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
 
 
+# Signals that mean "gracefully asked to stop", NOT "the task failed".
+# A worker reaped as killed by one of these was almost certainly torn down
+# by systemd on a unit stop/restart (deploy, cv-hermes-update, operator
+# `systemctl restart`) or Ctrl-C'd from a parent shell — an infrastructure
+# event, not a task-logic failure. ``detect_crashed_workers`` releases such
+# tasks back to ``ready`` WITHOUT counting a failure (like the rate-limit
+# carve-out) so one restart window can't trip the circuit breaker and park an
+# otherwise-healthy card. Genuine crash signals (SIGKILL from the OOM killer,
+# SIGSEGV, SIGABRT, SIGBUS, SIGFPE, …) are deliberately EXCLUDED and still
+# count. SIGTERM==15, SIGINT==2 on every POSIX platform; hardcode so the set
+# is importable without a `signal` module dependency at module load.
+_GRACEFUL_TERMINATION_SIGNALS = frozenset({15, 2})  # SIGTERM, SIGINT
+
+
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
 
@@ -6605,6 +6619,17 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    interrupted: list[str] = field(default_factory=list)
+    """Task ids whose workers were killed by a graceful-termination signal
+    (SIGTERM / SIGINT — see ``_GRACEFUL_TERMINATION_SIGNALS``) and were
+    released back to ``ready`` WITHOUT counting a failure. This is the
+    infrastructure-kill carve-out: a systemd unit stop/restart (deploy,
+    ``cv-hermes-update``, operator ``systemctl restart``) SIGTERMs both the
+    in-flight workers and the embedded dispatcher, so on restart the
+    dispatcher would otherwise score every torn-down worker as ``crashed``
+    and, on the second such kill inside ``failure_limit``, permanently
+    ``gave_up`` an otherwise-healthy card. Genuine crashes (SIGKILL/OOM,
+    SIGSEGV, …) are NOT in this bucket and still count."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -6663,15 +6688,31 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       provider rate-limited / exhausted quota, NOT because the task failed.
       ``detect_crashed_workers`` releases the task back to ``ready`` without
       counting a failure, so a long quota window can't trip the breaker.
+    * ``"interrupted"`` — ``WIFSIGNALED`` by a *graceful-termination* signal
+      (``SIGTERM`` / ``SIGINT``, see ``_GRACEFUL_TERMINATION_SIGNALS``). This
+      is overwhelmingly an infrastructure event — a systemd unit stop/restart
+      (a deploy, ``cv-hermes-update``, an operator ``systemctl restart``), or
+      a parent shell ``Ctrl-C`` — NOT a task-logic failure. The dispatcher is
+      itself embedded in a gateway unit, so a fleet-wide restart SIGTERMs both
+      the workers and the dispatcher; when the dispatcher comes back it must
+      not count those graceful kills against the task's failure budget, or a
+      single deploy window that catches a task mid-run twice would permanently
+      ``gave_up`` it (regression: a 2026-07-20 deploy parked a productive
+      skill-revise card after two SIGTERMs inside ``failure_limit=2``).
+      ``detect_crashed_workers`` releases the task back to ``ready`` without
+      counting a failure, exactly like ``rate_limited``.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
-    * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
+    * ``"signaled"`` — ``WIFSIGNALED`` by any *other* signal (OOM killer /
+      ``SIGKILL``, ``SIGSEGV``, ``SIGABRT``, ``SIGBUS``, ``SIGFPE``, …). A
+      genuine crash: still counts toward the breaker. The OOM killer uses
+      ``SIGKILL``, so out-of-memory deaths correctly stay in this bucket.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
       something else, or died between reap tick and liveness check). Fall
       back to existing crashed-counter behavior.
 
     ``code`` is the exit status (for ``clean_exit`` / ``rate_limited`` /
-    ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
-    for ``unknown``.
+    ``nonzero_exit``) or the signal number (for ``signaled`` /
+    ``interrupted``), or ``None`` for ``unknown``.
     """
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
@@ -6686,7 +6727,10 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("rate_limited", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
+            sig = os.WTERMSIG(raw)
+            if sig in _GRACEFUL_TERMINATION_SIGNALS:
+                return ("interrupted", sig)
+            return ("signaled", sig)
     except Exception:
         pass
     return ("unknown", None)
@@ -7311,6 +7355,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    interrupted: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -7344,6 +7389,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            interrupted_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
@@ -7391,6 +7437,34 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "claimer": row["claim_lock"],
                     "exit_code": code,
                 }
+            elif kind == "interrupted":
+                # Worker was killed by a graceful-termination signal
+                # (SIGTERM / SIGINT). This is an infrastructure event — a
+                # systemd unit stop/restart (deploy, cv-hermes-update,
+                # operator ``systemctl restart``) or a parent-shell Ctrl-C —
+                # NOT a task failure. Because the dispatcher is embedded in a
+                # gateway unit, a fleet restart SIGTERMs the workers AND the
+                # dispatcher together; without this carve-out the restarted
+                # dispatcher scores every torn-down worker as ``crashed`` and
+                # a second such kill inside ``failure_limit`` permanently
+                # ``gave_up``s an otherwise-healthy card (2026-07-20 deploy
+                # incident). Release back to ``ready`` and do NOT count a
+                # failure (skip ``_record_task_failure``), exactly like the
+                # rate-limit carve-out. Genuine crashes (SIGKILL/OOM, SIGSEGV,
+                # …) are classified ``signaled`` and still count.
+                protocol_violation = False
+                interrupted_exit = True
+                error_text = (
+                    f"pid {pid} killed by signal {code} "
+                    f"(graceful termination — likely deploy/gateway restart) — "
+                    f"requeued without counting a failure"
+                )
+                event_kind = "interrupted"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "signal": code,
+                }
             else:
                 protocol_violation = False
                 if kind == "nonzero_exit":
@@ -7413,10 +7487,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 (row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
-                # Rate-limited requeues are a clean release, not a crash —
-                # record the run outcome as ``rate_limited`` so the board
-                # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                # Rate-limited requeues and graceful-termination interrupts
+                # are clean releases, not crashes — record a matching run
+                # outcome so the board history doesn't show a phantom crash
+                # for a quota wall or a deploy/restart.
+                if rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                elif interrupted_exit:
+                    _run_outcome = "interrupted"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -7428,17 +7508,23 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
-                if rate_limited_exit:
-                    # Stamp the failure-error column so ``check_respawn_guard``
-                    # recognizes this as a quota blocker and defers the
-                    # respawn until the window clears — WITHOUT touching
-                    # ``consecutive_failures`` (that's the whole point: no
-                    # breaker trip on a throttle).
+                if rate_limited_exit or interrupted_exit:
+                    # No-fault release: stamp last_failure_error for board/
+                    # operator visibility, but crucially do NOT touch
+                    # ``consecutive_failures`` — a quota window (rate-limit) or
+                    # a deploy/restart window (interrupt) must never trip the
+                    # breaker. The respawn guard reads this column; the
+                    # rate-limit text triggers a cooldown, while the interrupt
+                    # text is benign (no quota/auth blocker match) so the task
+                    # is immediately re-spawnable on the next healthy tick.
                     conn.execute(
                         "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                         (error_text[:500], row["id"]),
                     )
-                    rate_limited.append(row["id"])
+                    if rate_limited_exit:
+                        rate_limited.append(row["id"])
+                    else:
+                        interrupted.append(row["id"])
                 else:
                     if protocol_violation:
                         # Stamp the failure error now: a below-budget
@@ -7548,6 +7634,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    # Same side-channel for graceful-termination interrupts (SIGTERM/SIGINT,
+    # e.g. a deploy/gateway restart) — also released without counting a
+    # failure and kept out of the ``crashed`` return.
+    detect_crashed_workers._last_interrupted = interrupted  # type: ignore[attr-defined]
     return crashed
 
 
@@ -8106,6 +8196,15 @@ def _dispatch_once_locked(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
+    # Graceful-termination interrupts (SIGTERM/SIGINT — deploy / gateway
+    # restart, no failure counted) — surface for telemetry / tests. These
+    # tasks went back to ``ready`` and are immediately re-spawnable once the
+    # host settles; unlike rate-limits they carry no cooldown.
+    _crash_interrupted = getattr(
+        detect_crashed_workers, "_last_interrupted", []
+    )
+    if _crash_interrupted:
+        result.interrupted.extend(_crash_interrupted)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 

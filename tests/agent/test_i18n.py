@@ -41,12 +41,23 @@ def test_all_locales_exist():
         assert (LOCALES_DIR / f"{lang}.yaml").is_file(), f"missing locales/{lang}.yaml"
 
 
+# Subtrees that are allowed to be missing from a non-English catalog.
+# gateway.personality.names.* holds display names for the built-in
+# personalities, translated opportunistically (en/zh/zh-hant so far); t()
+# falls back to the English name everywhere else.  Untranslated locales must
+# not carry English copies -- that would hide the gap from translators.
+# Extra keys (a name en.yaml lacks) are still an error.
+_FALLBACK_OK_PREFIXES = ("gateway.personality.names.",)
+
+
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
 def test_catalog_keys_match_english(lang: str):
     """Every non-English catalog must have exactly the same key set as English."""
     en_keys = set(_flatten(_load_raw("en")).keys())
     lang_keys = set(_flatten(_load_raw(lang)).keys())
-    missing = en_keys - lang_keys
+    missing = {
+        k for k in en_keys - lang_keys if not k.startswith(_FALLBACK_OK_PREFIXES)
+    }
     extra = lang_keys - en_keys
     assert not missing, f"{lang}.yaml missing keys: {sorted(missing)}"
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"

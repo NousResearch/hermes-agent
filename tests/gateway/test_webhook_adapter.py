@@ -28,7 +28,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
     WebhookAdapter,
@@ -1495,6 +1495,100 @@ class TestDeliverCrossPlatformThreadId:
         await adapter._deliver_cross_platform("telegram", "hello", delivery)
         mock_target.send.assert_awaited_once_with(
             "12345", "hello", metadata=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_home_channel_thread_id_used_when_chat_id_missing(self):
+        """Bare platform delivery preserves the configured home channel thread."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        adapter.gateway_runner.config.get_home_channel.return_value = HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            name="Ops Topic",
+            thread_id="home-topic",
+        )
+        delivery = {"deliver_extra": {}}
+
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+
+        mock_target.send.assert_awaited_once_with(
+            "home-chat", "hello", metadata={"thread_id": "home-topic"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_deliver_extra_thread_id_overrides_home_thread_id(self):
+        """Explicit webhook thread_id wins over the home channel thread_id."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        adapter.gateway_runner.config.get_home_channel.return_value = HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            name="Ops Topic",
+            thread_id="home-topic",
+        )
+        delivery = {"deliver_extra": {"thread_id": "explicit-topic"}}
+
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+
+        mock_target.send.assert_awaited_once_with(
+            "home-chat", "hello", metadata={"thread_id": "explicit-topic"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_home_channel_thread_metadata_uses_runner_builder(self):
+        """Home fallback uses gateway metadata so Telegram DM topics keep routing keys."""
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+        calls = {}
+
+        class RunnerWithMetadataBuilder:
+            def __init__(self):
+                self.adapters = {Platform.TELEGRAM: mock_target}
+                self.config = MagicMock()
+                self.config.get_home_channel.return_value = HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="home-chat",
+                    name="Ops Topic",
+                    thread_id="777",
+                )
+
+            def _thread_metadata_for_target(
+                self,
+                platform,
+                chat_id,
+                thread_id,
+                *,
+                adapter=None,
+                chat_type=None,
+                reply_to_message_id=None,
+            ):
+                calls["target"] = (platform, chat_id, thread_id, adapter)
+                return {
+                    "thread_id": thread_id,
+                    "telegram_dm_topic_reply_fallback": True,
+                    "direct_messages_topic_id": thread_id,
+                }
+
+        adapter.gateway_runner = RunnerWithMetadataBuilder()
+
+        await adapter._deliver_cross_platform(
+            "telegram", "hello", {"deliver_extra": {}}
+        )
+
+        assert calls["target"] == (
+            Platform.TELEGRAM,
+            "home-chat",
+            "777",
+            mock_target,
+        )
+        mock_target.send.assert_awaited_once_with(
+            "home-chat",
+            "hello",
+            metadata={
+                "thread_id": "777",
+                "telegram_dm_topic_reply_fallback": True,
+                "direct_messages_topic_id": "777",
+            },
         )
 
 

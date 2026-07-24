@@ -21,7 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
@@ -118,6 +118,42 @@ class TestDeliverOnlyBypassesAgent:
         chat_id_arg, content_arg = call_args.args[0], call_args.args[1]
         assert chat_id_arg == "12345"
         assert content_arg == "alice matched with bob!"
+
+    @pytest.mark.asyncio
+    async def test_home_channel_thread_id_used_when_chat_id_missing(self):
+        """deliver_only bare platform targets preserve the home channel thread."""
+        routes = {
+            "ops-alert": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {},
+                "prompt": "Build {build.number}: {build.status}",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        adapter.gateway_runner.config.get_home_channel.return_value = HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="home-chat",
+            name="Ops Topic",
+            thread_id="home-topic",
+        )
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ops-alert",
+                json={"build": {"number": 77, "status": "FAILED"}},
+                headers={"X-GitHub-Delivery": "d-home-topic-1"},
+            )
+            assert resp.status == 200
+
+        mock_target.send.assert_awaited_once_with(
+            "home-chat",
+            "Build 77: FAILED",
+            metadata={"thread_id": "home-topic"},
+        )
 
     @pytest.mark.asyncio
     async def test_template_rendering_works(self):

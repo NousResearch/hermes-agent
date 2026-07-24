@@ -1319,9 +1319,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 error=f"Platform {platform_name} not connected",
             )
 
-        # Use home channel if no specific chat_id in deliver_extra
+        # Use home channel if no specific chat_id in deliver_extra.
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
+        home = None
         if not chat_id:
             home = self.gateway_runner.config.get_home_channel(target_platform)
             if home:
@@ -1332,10 +1333,29 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
+        # Pass thread_id from deliver_extra so Telegram forum topics work.
+        # If the target falls back to a thread-aware home channel, preserve
+        # that thread too so bare webhook targets behave like cron/startup
+        # delivery targets.
         metadata = None
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}
+        elif home is not None:
+            home_thread_id = getattr(home, "thread_id", None)
+            if home_thread_id is not None and str(home_thread_id) != "":
+                metadata_builder = getattr(
+                    type(self.gateway_runner), "_thread_metadata_for_target", None
+                )
+                if callable(metadata_builder):
+                    metadata = metadata_builder(
+                        self.gateway_runner,
+                        target_platform,
+                        chat_id,
+                        home_thread_id,
+                        adapter=adapter,
+                    )
+                if metadata is None:
+                    metadata = {"thread_id": home_thread_id}
 
         return await adapter.send(chat_id, content, metadata=metadata)

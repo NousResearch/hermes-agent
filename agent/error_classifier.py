@@ -649,6 +649,41 @@ def classify_api_error(
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
+    # Generic custom-provider Responses WebSocket transport errors. Preserve
+    # their replay semantics:
+    # - NotStarted may retry/fallback
+    # - Started is retryable only when the transport marked it so (no committed
+    #   output yet). Partial-output Started errors stay non-retryable.
+    # - Rejected follows its own status/retryable flags.
+    if error_type in {
+        "GenericWsNotStartedError",
+        "GenericWsStartedError",
+        "GenericWsRejectedError",
+    }:
+        if error_type == "GenericWsNotStartedError":
+            return _result(
+                FailoverReason.timeout,
+                retryable=bool(getattr(error, "retryable", True)),
+                should_fallback=True,
+            )
+        if error_type == "GenericWsRejectedError":
+            if status_code == 429:
+                return _result(FailoverReason.rate_limit, retryable=True, should_fallback=True)
+            if status_code in {401, 403}:
+                return _result(FailoverReason.auth, retryable=False, should_fallback=True)
+            return _result(
+                FailoverReason.format_error if status_code and 400 <= status_code < 500 else FailoverReason.server_error,
+                retryable=bool(getattr(error, "retryable", False)),
+                should_fallback=True,
+            )
+        # GenericWsStartedError: honor transport-level retryable flag.
+        started_retryable = bool(getattr(error, "retryable", False))
+        return _result(
+            FailoverReason.timeout if started_retryable else FailoverReason.server_error,
+            retryable=started_retryable,
+            should_fallback=True,
+        )
+
     # Provider content-policy / safety-filter block. The provider has made a
     # deterministic refusal decision about THIS prompt — retrying unchanged
     # just reproduces the same refusal and burns paid attempts. Must run

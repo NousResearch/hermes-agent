@@ -993,6 +993,35 @@ def test_run_codex_stream_surfaces_failed_status_in_final_response(monkeypatch):
     assert response.error == error_payload
 
 
+def test_run_codex_stream_surfaces_cancelled_status_in_final_response(monkeypatch):
+    """A cancelled-only stream must terminate cleanly through the shared consumer."""
+    agent = _build_agent(monkeypatch)
+    cancelled_event = SimpleNamespace(
+        type="response.canceled",  # US spelling from some backends
+        response=SimpleNamespace(
+            status="canceled",
+            id="resp_cancelled_1",
+            usage=None,
+            error=None,
+        ),
+    )
+
+    def _fake_create(**kwargs):
+        return _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            cancelled_event,
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "cancelled"
+    assert response.id == "resp_cancelled_1"
+    assert response.output == []
+
+
 def test_run_codex_stream_parses_create_stream_events(monkeypatch):
     """The primary path consumes ``responses.create(stream=True)`` events directly."""
     agent = _build_agent(monkeypatch)

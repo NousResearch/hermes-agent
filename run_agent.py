@@ -494,6 +494,9 @@ class AIAgent:
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
+        responses_transport: str = "sse",
+        responses_ws_url: str = None,
+        responses_transport_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -571,6 +574,9 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            responses_transport=responses_transport,
+            responses_ws_url=responses_ws_url,
+            responses_transport_provider=responses_transport_provider,
         )
 
     def _get_session_db_for_recall(self):

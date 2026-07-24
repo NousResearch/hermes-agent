@@ -131,13 +131,16 @@ def test_inline_pastes_leaves_plain_text_untouched():
     assert cli_obj._skip_paste_collapse is False
 
 
-def test_inline_pastes_missing_file_keeps_placeholder(tmp_path):
+def test_inline_pastes_missing_file_keeps_placeholder(tmp_path, caplog):
     """A recalled reference whose file is gone stays as the placeholder."""
     cli_obj = _make_cli()
     placeholder = f"[Pasted text #1: 2 lines \u2192 {tmp_path / 'gone.txt'}]"
     buffer = _FakeBuffer(text=placeholder)
 
-    cli_obj._inline_pastes(buffer)
+    import logging
+    with caplog.at_level(logging.DEBUG):
+        cli_obj._inline_pastes(buffer)
 
     assert buffer.text == placeholder
     assert cli_obj._skip_paste_collapse is False
+    assert "Paste file gone or unreadable" in caplog.text

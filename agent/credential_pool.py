@@ -41,6 +41,13 @@ from hermes_cli.auth import (
 
 logger = logging.getLogger(__name__)
 
+# Max consecutive hint_failed rotations before falling through to mark
+# the current credential exhausted.  Prevents an unbounded 401 retry
+# loop when the OAuth token fails, the api_key_hint never matches a
+# pool entry (OAuth runtime keys can diverge), and every rotation
+# returns the same entry (#70401).
+MAX_HINT_FAILED_ROTATIONS = 5
+
 
 def _load_config_safe() -> Optional[dict]:
     """Load config.yaml read-only, returning None on any error.
@@ -594,6 +601,13 @@ class CredentialPool:
         # Re-armed to None on every successful selection so a recover→re-exhaust
         # transition logs promptly instead of being swallowed by a stale window.
         self._last_no_entries_log_at: Optional[float] = None
+        # Monotonic counter of consecutive hint_failed rotations.  Reset to 0
+        # on every successful mark_exhausted_and_rotate that actually marks an
+        # entry exhausted.  When this reaches MAX_HINT_FAILED_ROTATIONS the
+        # identity_supplied branch falls through to the normal exhaustion path
+        # instead of returning a fresh credential, breaking the unbounded 401
+        # retry loop (#70401).
+        self._consecutive_hint_failed_rotations: int = 0
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -1809,27 +1823,53 @@ class CredentialPool:
                 # (rotated away, or a wrapper whose runtime key differs).
                 # Falling through to current()/_select_unlocked() would mark an
                 # innocent healthy key exhausted for the full cooldown TTL.
-                logger.info(
-                    "credential pool: failed credential identity matched no %s "
-                    "entry; rotating without marking any credential exhausted",
-                    self.provider,
-                )
-                self._current_id = None
-                next_entry = self._select_unlocked()
-                if next_entry is not None and len(self._available_entries()) == 1:
-                    # A single-entry pool cannot rotate. Returning its only
-                    # entry reports a successful recovery without changing
-                    # the credential, so the caller retries the same 401
-                    # indefinitely. Let fallback/error propagation proceed.
+                #
+                # Bound consecutive hint_failed rotations: after N mismatches
+                # in a row, the pool falls through to the normal exhaustion
+                # path instead of returning another credential for the caller
+                # to retry.  This prevents an unbounded 401 retry loop when
+                # an OAuth token's runtime_api_key never matches a pool entry
+                # (#70401).
+                self._consecutive_hint_failed_rotations += 1
+                if self._consecutive_hint_failed_rotations >= MAX_HINT_FAILED_ROTATIONS:
+                    logger.warning(
+                        "credential pool: %d consecutive hint_failed rotations "
+                        "for %s — falling through to mark current credential "
+                        "exhausted to break retry loop (#70401)",
+                        self._consecutive_hint_failed_rotations,
+                        self.provider,
+                    )
+                    # Reset the counter so the next legitimate call starts
+                    # fresh, then fall through to the normal exhaustion path.
+                    self._consecutive_hint_failed_rotations = 0
+                else:
+                    logger.info(
+                        "credential pool: failed credential identity matched no %s "
+                        "entry (attempt %d/%d); rotating without marking any "
+                        "credential exhausted",
+                        self.provider,
+                        self._consecutive_hint_failed_rotations,
+                        MAX_HINT_FAILED_ROTATIONS,
+                    )
                     self._current_id = None
-                    return None
-                return next_entry
+                    next_entry = self._select_unlocked()
+                    if next_entry is not None and len(self._available_entries()) == 1:
+                        # A single-entry pool cannot rotate. Returning its only
+                        # entry reports a successful recovery without changing
+                        # the credential, so the caller retries the same 401
+                        # indefinitely. Let fallback/error propagation proceed.
+                        self._current_id = None
+                        return None
+                    return next_entry
             if entry is None:
                 entry = self._current_unlocked() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
             self._mark_exhausted(entry, status_code, error_context)
+            # A successful mark resets the consecutive hint_failed counter so
+            # the next hint_failed rotation starts fresh (#70401).
+            self._consecutive_hint_failed_rotations = 0
             # A 402/429/401 is an API-key–level failure: the account is out of
             # balance, rate-limited, or its key is rejected.  The same key can
             # back more than one pool entry (e.g. an explicit pool entry plus a

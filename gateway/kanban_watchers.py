@@ -24,6 +24,18 @@ from agent.i18n import t
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
 
+KANBAN_NOTIFICATION_HANDOFF_MAX_CHARS = 3500
+
+
+def _notification_excerpt(text: Any, label: str) -> str:
+    """Preserve actionable handoffs and mark the rare bounded message."""
+    value = str(text or "").strip()
+    if len(value) <= KANBAN_NOTIFICATION_HANDOFF_MAX_CHARS:
+        return value
+    suffix = f" …[truncated — full {label} on the card]"
+    keep = KANBAN_NOTIFICATION_HANDOFF_MAX_CHARS - len(suffix)
+    return value[:keep].rstrip() + suffix
+
 
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
@@ -361,22 +373,28 @@ class GatewayKanbanWatchersMixin:
                             payload_summary = None
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
+                            # A completion summary is the worker's handoff —
+                            # deliver it whole, like block reasons below: cap
+                            # well under Telegram's 4096 limit with a marker +
+                            # pointer to the card instead of a silent mid-word
+                            # cut at 200 chars.
                             if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
+                                handoff = f"\n{_notification_excerpt(payload_summary, 'summary')}"
                             elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
+                                handoff = f"\n{_notification_excerpt(task.result, 'result')}"
                             msg = (
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
+                            # A block reason (esp. kind=needs_input) IS the
+                            # actionable payload the subscriber must answer, so
+                            # deliver it near-whole. Cap well under Telegram's
+                            # 4096 limit, with a marker + pointer to the card
+                            # when a pathologically long reason is clipped.
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                reason = f": {_notification_excerpt(ev.payload['reason'], 'reason')}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""

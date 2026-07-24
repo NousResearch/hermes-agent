@@ -79,6 +79,100 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
 
 @pytest.mark.asyncio
+async def test_notifier_preserves_multiline_completion_handoff(kanban_home):
+    """The completion event must not clip the handoff before notification delivery."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    summary = (
+        "QA is GO for merge. Architecture and migration gates passed.\n"
+        "Verification: build clean; unit 8/8; Playwright 3/3; runtime smoke passed.\n"
+        + "Residual risk and rollback details: "
+        + ("x" * 500)
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="full handoff", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result=summary, summary=summary)
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(runner._kanban_notifier_watcher(interval=1), timeout=10.0)
+
+    delivered = fake_adapter.send.call_args[0][1]
+    assert summary in delivered
+    assert "Residual risk and rollback details" in delivered
+
+
+@pytest.mark.asyncio
+async def test_notifier_preserves_actionable_block_reason(kanban_home):
+    """A needs-input question set must reach the subscriber intact."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    reason = "Choose a deployment target:\n" + "\n".join(
+        f"Option {index}: details and trade-offs" for index in range(20)
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="decision", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(runner._kanban_notifier_watcher(interval=1), timeout=10.0)
+
+    delivered = fake_adapter.send.call_args[0][1]
+    assert reason in delivered
+    assert "Option 19" in delivered
+
+
+def test_notification_excerpt_bounds_total_length_with_marker():
+    from gateway.kanban_watchers import (
+        KANBAN_NOTIFICATION_HANDOFF_MAX_CHARS,
+        _notification_excerpt,
+    )
+
+    excerpt = _notification_excerpt("x" * 5000, "summary")
+    assert len(excerpt) == KANBAN_NOTIFICATION_HANDOFF_MAX_CHARS
+    assert excerpt.endswith("…[truncated — full summary on the card]")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ["gave_up", "crashed", "timed_out"])
 async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     """

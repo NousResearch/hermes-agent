@@ -627,6 +627,21 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "… [truncated]"
 
 
+def _truncate_judge_response(text: str, limit: int) -> str:
+    """Keep the response head and tail without exceeding the judge budget."""
+    if not text or limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    marker = "\n\n… [response middle truncated] …\n\n"
+    available = limit - len(marker)
+    if available < 2:
+        return text[:limit]
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return f"{text[:head_chars]}{marker}{text[-tail_chars:]}"
+
+
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with ``pid`` is currently alive.
 
@@ -920,7 +935,7 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             contract_block=_truncate(contract_block, 2500),
-            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            response=_truncate_judge_response(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             current_time=current_time,
         )
@@ -931,14 +946,14 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             subgoals_block=_truncate(subgoals_block, 2000),
-            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            response=_truncate_judge_response(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             current_time=current_time,
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
-            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            response=_truncate_judge_response(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
             background_block=background_block,
             current_time=current_time,
         )

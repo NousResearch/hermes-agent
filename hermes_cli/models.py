@@ -4424,6 +4424,20 @@ def validate_requested_model(
         }
 
     if normalized == "custom" or normalized.startswith("custom:"):
+        # Mistral API /models endpoint is not reliably reachable. Trust the
+        # model name when the base URL's HOST is api.mistral.ai — host match,
+        # not substring, so a lookalike host or path segment doesn't bypass
+        # probing.
+        from utils import base_url_host_matches
+
+        if base_url and base_url_host_matches(base_url, "api.mistral.ai"):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(api_key, base_url, api_mode=api_mode)

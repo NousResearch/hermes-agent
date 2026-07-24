@@ -396,3 +396,45 @@ class TestHardenImportPath:
             sys.path[:] = original
             if original_env is not None:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
+
+
+class TestSuppressPlatformVerConsole:
+    """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
+
+    def test_noop_on_posix(self, monkeypatch):
+        import platform
+        hb = _fresh_import()
+        original = getattr(platform, "_syscmd_ver", None)
+        monkeypatch.setattr(hb, "_IS_WINDOWS", False)
+        hb.suppress_platform_ver_console()
+        assert getattr(platform, "_syscmd_ver", None) is original
+
+    def test_stub_applied_when_windows(self, monkeypatch):
+        import platform
+        hb = _fresh_import()
+        original = getattr(platform, "_syscmd_ver", None)
+        try:
+            monkeypatch.setattr(hb, "_IS_WINDOWS", True)
+            hb.suppress_platform_ver_console()
+            stubbed = platform._syscmd_ver
+            assert stubbed is not original
+            # Stub returns its inputs — win32_ver()'s documented fallback path.
+            assert stubbed("s", "r", "v") == ("s", "r", "v")
+            # No-arg call (how Lib/platform.py invokes it in the fallback
+            # probe) must not raise — the rejected PR #69522 wrapper
+            # TypeError'd here.
+            assert stubbed() == ("", "", "")
+        finally:
+            if original is not None:
+                platform._syscmd_ver = original
+
+    def test_never_raises(self, monkeypatch):
+        hb = _fresh_import()
+        monkeypatch.setattr(hb, "_IS_WINDOWS", True)
+        import platform
+        original = platform._syscmd_ver
+        try:
+            monkeypatch.delattr(platform, "_syscmd_ver")
+            hb.suppress_platform_ver_console()  # hasattr guard → silent no-op
+        finally:
+            platform._syscmd_ver = original

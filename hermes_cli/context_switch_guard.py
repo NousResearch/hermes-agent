@@ -117,6 +117,11 @@ def merge_preflight_compression_warning(
     )
     if not new_ctx:
         return
+    # Apply the global max_context_length ceiling so the preflight warning
+    # reflects the effective cap rather than the model's raw window size.
+    _global_max = getattr(agent, "_max_context_length", None) if agent else None
+    if _global_max:
+        new_ctx = min(new_ctx, _global_max)
 
     estimate = _estimate_tokens(agent, messages)
     if estimate is None:

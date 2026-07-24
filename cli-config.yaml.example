@@ -64,6 +64,17 @@ model:
   #
   # context_length: 131072
   #
+  # max_context_length: GLOBAL ceiling that persists across model switches.
+  #   Unlike context_length (which is cleared when you change models), this cap
+  #   is stored separately and restored after every /model switch.  Use it to
+  #   keep Hermes from silently expanding to a 1M-token window whenever you
+  #   switch to a large-context model (Claude Sonnet/Opus, Gemini 3.x, etc.).
+  #   Absent or null → no ceiling; existing auto-detect behaviour is unchanged.
+  #   Models whose native window is already smaller than this value are
+  #   unaffected (min() keeps the smaller value).
+  #
+  # max_context_length: 200000
+  #
   # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
   #   Unrelated to how long your conversation history can be.
   #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native

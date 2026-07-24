@@ -46,6 +46,116 @@ const ESC = '\u001b'
 const hasDecstbm = (text: string) => new RegExp(`${ESC}\\[\\d+;\\d+r`).test(text)
 
 describe('LogUpdate.render diff contract', () => {
+  it.each([
+    ['adds a combining mark', 'ร', 'ร้', 0],
+    ['removes a combining mark', 'ร้', 'ร', 1],
+    ['replaces a combining mark', 'ร้', 'ร่', 2]
+  ])('clears a narrow grapheme cell before it %s', (_label, before, after, x) => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+
+    setCellAt(prev, x, 0, {
+      char: before,
+      styleId: stylePool.none,
+      width: CellWidth.Narrow,
+      hyperlink: undefined
+    })
+    setCellAt(next, x, 0, {
+      char: after,
+      styleId: stylePool.none,
+      width: CellWidth.Narrow,
+      hyperlink: undefined
+    })
+    next.damage = { x, y: 0, width: 1, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+    const writeIndex = diff.findIndex(part => part.type === 'stdout' && part.content === after)
+
+    expect(writeIndex).toBeGreaterThan(0)
+    expect(diff.slice(0, writeIndex)).toContainEqual({ type: 'stdout', content: ' ' })
+    expect(diff.slice(0, writeIndex)).toContainEqual({ type: 'cursorTo', col: x + 1 })
+  })
+
+  it('does not clear before replacing ordinary single-codepoint text', () => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+    paint(prev, 0, 'a')
+    paint(next, 0, 'b')
+    next.damage = { x: 0, y: 0, width: 1, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+
+    expect(stdoutOnly(diff)).toBe('b')
+    expect(diff.some(part => part.type === 'cursorTo')).toBe(false)
+    expect(diff.some(part => part.type === 'stdout' && part.content === ' ')).toBe(false)
+  })
+
+  it('does not clear before painting a grapheme into an empty cell', () => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+
+    setCellAt(next, 1, 0, {
+      char: 'ร้',
+      styleId: stylePool.none,
+      width: CellWidth.Narrow,
+      hyperlink: undefined
+    })
+    next.damage = { x: 1, y: 0, width: 1, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+
+    expect(stdoutOnly(diff)).toBe('ร้')
+    expect(diff.some(part => part.type === 'cursorTo')).toBe(false)
+  })
+
+  it('does not clear when only a grapheme cell style changes', () => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+    const style = stylePool.intern([{ code: '\u001b[32m', endCode: '\u001b[39m' }])
+
+    setCellAt(prev, 1, 0, { char: 'ร้', styleId: stylePool.none, width: CellWidth.Narrow, hyperlink: undefined })
+    setCellAt(next, 1, 0, { char: 'ร้', styleId: style, width: CellWidth.Narrow, hyperlink: undefined })
+    next.damage = { x: 1, y: 0, width: 1, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+
+    expect(stdoutOnly(diff)).toBe('ร้')
+    expect(diff.some(part => part.type === 'cursorTo')).toBe(false)
+  })
+
+  it('resets active hyperlink and style before pre-clearing a grapheme cell', () => {
+    const prev = mkScreen(4, 1)
+    const next = mkScreen(4, 1)
+    const oldStyle = stylePool.intern([{ code: '\u001b[31m', endCode: '\u001b[39m' }])
+    const newStyle = stylePool.intern([{ code: '\u001b[32m', endCode: '\u001b[39m' }])
+
+    setCellAt(prev, 0, 0, { char: 'x', styleId: stylePool.none, width: CellWidth.Narrow, hyperlink: undefined })
+    setCellAt(next, 0, 0, { char: 'y', styleId: oldStyle, width: CellWidth.Narrow, hyperlink: 'https://old.example' })
+    setCellAt(prev, 1, 0, { char: 'ร้', styleId: oldStyle, width: CellWidth.Narrow, hyperlink: 'https://old.example' })
+    setCellAt(next, 1, 0, { char: 'ร', styleId: newStyle, width: CellWidth.Narrow, hyperlink: undefined })
+    next.damage = { x: 0, y: 0, width: 2, height: 1 }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, 4, 1), mkFrame(next, 4, 1), true, false)
+    const writeIndex = diff.findIndex(part => part.type === 'stdout' && part.content === 'ร')
+    const clearIndex = diff.findIndex(part => part.type === 'stdout' && part.content === ' ')
+    const resetStyle = stylePool.transition(oldStyle, stylePool.none)
+    const styleResetIndex = diff.findIndex(part => part.type === 'styleStr' && part.str === resetStyle)
+    const closeIndex = diff.findIndex(part => part.type === 'hyperlink' && part.uri === '')
+
+    expect(writeIndex).toBeGreaterThan(clearIndex)
+    expect(clearIndex).toBeGreaterThan(-1)
+    expect(styleResetIndex).toBeGreaterThan(-1)
+    expect(styleResetIndex).toBeLessThan(clearIndex)
+    expect(closeIndex).toBeGreaterThan(-1)
+    expect(closeIndex).toBeLessThan(clearIndex)
+    expect(diff.slice(clearIndex, writeIndex)).toContainEqual({ type: 'cursorTo', col: 2 })
+  })
+
   it('emits only changed cells when most rows match', () => {
     const w = 20
     const h = 4

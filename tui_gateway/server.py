@@ -3445,6 +3445,17 @@ def _apply_model_switch(
         current_model = getattr(agent, "model", "") or ""
         current_base_url = getattr(agent, "base_url", "") or ""
         current_api_key = getattr(agent, "api_key", "") or ""
+    elif isinstance(session.get("model_override"), dict):
+        # When there is no in-process agent (slash_worker mode), honour
+        # the per-session model_override that a prior /model switch or
+        # Desktop --provider already stored.  Without this, the worker
+        # rebuild falls through to _resolve_model() which reads the
+        # global profile default, ignoring the session's choice.
+        _mo = session["model_override"]
+        current_model = str(_mo.get("model", "") or "")
+        current_provider = str(_mo.get("provider", "") or "")
+        current_base_url = str(_mo.get("base_url", "") or "")
+        current_api_key = _mo.get("api_key", "")
     else:
         current_model = _resolve_model()
         current_provider = explicit_provider.strip()
@@ -3560,7 +3571,6 @@ def _apply_model_switch(
                 f"Model switch to {result.new_model} failed ({exc}); "
                 f"staying on {getattr(agent, 'model', current_model)}."
             ) from exc
-        _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
         _append_model_switch_marker(
@@ -3595,6 +3605,13 @@ def _apply_model_switch(
         }
     if persist_global:
         _persist_model_switch(result)
+    # Restart the slash worker (if any) so it picks up the new model/provider.
+    # When there's no in-process agent (slash_worker mode — agent is None), the
+    # actual agent lives in the worker subprocess and must be rebuilt via its
+    # session_key + updated model_override / config to reflect the switch.
+    # When agent is present, the in-place swap already updated it above; this
+    # call creates a fresh worker that will read the new model on next commands.
+    _restart_slash_worker(sid, session)
     return {
         "value": result.new_model,
         "warning": result.warning_message or "",

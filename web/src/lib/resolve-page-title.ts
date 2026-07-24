@@ -30,7 +30,9 @@ export function resolvePageTitle(
   }
   const key = BUILTIN[normalized];
   if (key) {
-    return t.app.nav[key];
+    // Some nav keys are optional in non-English locales; fall back to the
+    // key name capitalized when a translation is missing.
+    return t.app.nav[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
   }
   // Derive title from pathname: "/profiles" → "Profiles"
   const segment = normalized.slice(1);

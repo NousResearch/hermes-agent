@@ -14,7 +14,8 @@ export type Locale =
   | "ga"
   | "pt"
   | "ru"
-  | "hu";
+  | "hu"
+  | "nl";
 
 export interface Translations {
   // ── Common ──
@@ -99,6 +100,14 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      // Optional: non-English locales fall back to the English literal until
+      // a translation is supplied (matches the gateway/gatewayHint pattern).
+      files?: string;
+      mcp?: string;
+      channels?: string;
+      webhooks?: string;
+      pairing?: string;
+      system?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;

@@ -2142,6 +2142,18 @@ def _business_contact_web_tool_names() -> set[str]:
     return {"web_search", "web_extract"}
 
 
+def _business_agent_inputs(
+    *,
+    external_safe_mode: bool,
+    combined_prompt: str,
+    prefill_messages: Any,
+) -> tuple[str, Any]:
+    """Select constructor inputs at the external Business trust boundary."""
+    if external_safe_mode:
+        return _EXTERNAL_TELEGRAM_BUSINESS_SAFE_PROMPT, None
+    return combined_prompt, prefill_messages
+
+
 def _restrict_agent_to_tool_names(agent: Any, allowed_names: set[str]) -> None:
     filtered = []
     for tool in getattr(agent, "tools", []) or []:
@@ -21071,24 +21083,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Combine platform context, YAML channel_prompts hint for this chat,
             # channel_overrides system_prompt (or global ephemeral), and gateway
             # ephemeral prompt from _get_system_prompt_for_channel.
-            combined_ephemeral = context_prompt or ""
-            event_channel_prompt = (channel_prompt or "").strip()
-            if event_channel_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-            cfg_channel_prompt = self._get_system_prompt_for_channel(
-                source.platform,
-                source.chat_id or "",
-                thread_id=getattr(source, "thread_id", None),
-                parent_id=getattr(source, "parent_chat_id", None),
-            )
-            if cfg_channel_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
             if external_business_contact_safe_mode:
-                combined_ephemeral = (
-                    combined_ephemeral
-                    + "\n\n"
-                    + _EXTERNAL_TELEGRAM_BUSINESS_SAFE_PROMPT
-                ).strip()
+                combined_ephemeral, agent_prefill_messages = _business_agent_inputs(
+                    external_safe_mode=True,
+                    combined_prompt=context_prompt or "",
+                    prefill_messages=self._prefill_messages,
+                )
+            else:
+                combined_ephemeral = context_prompt or ""
+                event_channel_prompt = (channel_prompt or "").strip()
+                if event_channel_prompt:
+                    combined_ephemeral = (
+                        combined_ephemeral + "\n\n" + event_channel_prompt
+                    ).strip()
+                cfg_channel_prompt = self._get_system_prompt_for_channel(
+                    source.platform,
+                    source.chat_id or "",
+                    thread_id=getattr(source, "thread_id", None),
+                    parent_id=getattr(source, "parent_chat_id", None),
+                )
+                if cfg_channel_prompt:
+                    combined_ephemeral = (
+                        combined_ephemeral + "\n\n" + cfg_channel_prompt
+                    ).strip()
+                combined_ephemeral, agent_prefill_messages = _business_agent_inputs(
+                    external_safe_mode=False,
+                    combined_prompt=combined_ephemeral,
+                    prefill_messages=self._prefill_messages,
+                )
 
             max_iterations = _current_max_iterations()
 
@@ -21459,7 +21481,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
-                    prefill_messages=self._prefill_messages or None,
+                    prefill_messages=agent_prefill_messages or None,
                     skip_context_files=external_business_contact_safe_mode,
                     skip_memory=external_business_contact_safe_mode,
                     reasoning_config=reasoning_config,

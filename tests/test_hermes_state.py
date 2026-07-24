@@ -7235,3 +7235,65 @@ class TestDisplayMetadataPersistence:
         assert len(switched) == 1
         assert switched[0]["display_metadata"] == meta
 
+    # Regression tests for #70586: display_metadata is stored as JSON TEXT and
+    # must be hydrated to a dict by every read path, mirroring the existing
+    # tool_calls handling. Before the fix, get_messages/get_messages_around/
+    # get_anchored_view returned the raw string, which crashed the desktop
+    # renderer's `'task_count' in message.display_metadata` check on reload.
+
+    def test_get_messages_hydrates_display_metadata(self, db):
+        db.create_session("s1", source="cli")
+        meta = {"delegation_id": "deleg_1", "task_count": 5, "completed_count": 5}
+        db.append_message(
+            "s1", "assistant", "done",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        msg = db.get_messages("s1")[0]
+        assert isinstance(msg["display_metadata"], dict)
+        assert msg["display_metadata"] == meta
+
+    def test_get_messages_around_hydrates_display_metadata(self, db):
+        db.create_session("s1", source="cli")
+        meta = {"delegation_id": "deleg_1", "task_count": 5, "completed_count": 5}
+        db.append_message("s1", "user", "before")
+        anchor_id = db.append_message(
+            "s1", "assistant", "done",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        db.append_message("s1", "user", "after")
+        result = db.get_messages_around("s1", anchor_id, window=2)
+        anchored = [m for m in result["window"] if m["id"] == anchor_id][0]
+        assert isinstance(anchored["display_metadata"], dict)
+        assert anchored["display_metadata"] == meta
+
+    def test_get_anchored_view_hydrates_display_metadata(self, db):
+        db.create_session("s1", source="cli")
+        meta = {"delegation_id": "deleg_1", "task_count": 5, "completed_count": 5}
+        db.append_message("s1", "user", "before")
+        anchor_id = db.append_message(
+            "s1", "assistant", "done",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        db.append_message("s1", "user", "after")
+        result = db.get_anchored_view("s1", anchor_id, window=2, bookend=2)
+        all_rows = result["window"] + result["bookend_start"] + result["bookend_end"]
+        anchored = [m for m in all_rows if m.get("id") == anchor_id]
+        assert anchored, "anchor message missing from anchored view"
+        assert isinstance(anchored[0]["display_metadata"], dict)
+        assert anchored[0]["display_metadata"] == meta
+
+    def test_get_messages_drops_corrupt_display_metadata(self, db, caplog):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", "assistant", "done", display_kind="model_switch")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE session_id = ?",
+                ("{not valid json", "s1"),
+            )
+            db._conn.commit()
+        msg = db.get_messages("s1")[0]
+        assert msg["display_metadata"] is None
+

@@ -6054,6 +6054,18 @@ def decompose_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    # Snapshot pid+claim before the DB update clears them, so we can
+    # terminate the worker process even after those columns are NULLed.
+    row = conn.execute(
+        "SELECT worker_pid, claim_lock FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    prev_pid = row["worker_pid"] if row else None
+    prev_lock = row["claim_lock"] if row else None
+    # Terminate the worker process first (same order as reclaim_task).
+    # If the task wasn't running on this host, this is a safe no-op.
+    termination = _terminate_reclaimed_worker(prev_pid, prev_lock)
+
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -6071,7 +6083,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        payload = {}
+        payload.update(termination)
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.

@@ -403,6 +403,7 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.warning("Honcho init failed: %s", e)
             self._manager = None
+            self._init_error = str(e)
 
     def _resolve_session_key(self, cfg, session_id: str, **kwargs) -> str:
         """Resolve the Honcho session key without touching the network."""
@@ -576,6 +577,7 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             self._manager = None
             self._session_initialized = False
+            self._init_error = str(e)
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
 
@@ -1430,7 +1432,8 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
-                return tool_error("Honcho session could not be initialized.")
+                detail = f" — {self._init_error}" if self._init_error else ""
+                return tool_error(f"Honcho session could not be initialized{detail}.")
 
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")

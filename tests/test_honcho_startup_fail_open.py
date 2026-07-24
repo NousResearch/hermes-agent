@@ -402,7 +402,39 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
 
     result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
     assert "could not be initialized" in result["error"]
+    # Error detail from _ensure_session exception is surfaced to the caller
+    assert "boom" in result["error"]
     assert provider._manager is None
+
+
+def test_honcho_background_init_error_surfaces_in_tool_call(monkeypatch):
+    """Background init failure detail is surfaced in tool error response."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    def failing_session_init(self, cfg, session_id, **kwargs):
+        raise RuntimeError("pydantic validation error: unexpected keyword argument 'workspace'")
+
+    monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", failing_session_init)
+
+    # Hybrid mode: init happens in background thread with short wait
+    provider.initialize("session-1", platform="cli")
+    # Wait for background thread to finish
+    if provider._init_thread:
+        provider._init_thread.join(timeout=5)
+
+    assert provider._session_initialized is False
+    assert provider._init_error != ""
+
+    # Trigger lazy init which will fail and set _init_error
+    result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
+    assert "could not be initialized" in result["error"]
+    assert "pydantic validation error" in result["error"]
 
 
 def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):

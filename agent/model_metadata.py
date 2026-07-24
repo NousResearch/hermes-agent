@@ -79,11 +79,7 @@ _OLLAMA_TAG_PATTERN = re.compile(
 )
 
 
-# Tailscale's CGNAT range (RFC 6598). `ipaddress.is_private` excludes this
-# block, so without an explicit check Ollama reached over Tailscale (e.g.
-# `http://100.77.243.5:11434`) wouldn't be treated as local and its stream
-# read / stale timeouts wouldn't get auto-bumped. Built once at import time.
-_TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
+from agent.networks import CGNAT_NETWORK
 
 
 def _strip_provider_prefix(model: str) -> str:
@@ -678,7 +674,7 @@ def is_local_endpoint(base_url: str) -> bool:
         addr = ipaddress.ip_address(host)
         if addr.is_private or addr.is_loopback or addr.is_link_local:
             return True
-        if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT:
+        if isinstance(addr, ipaddress.IPv4Address) and addr in CGNAT_NETWORK:
             return True
     except ValueError:
         pass

@@ -10628,10 +10628,11 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
-// A docs/dashboard "Send to App" button opens this URL; we route it into the
-// running app's chat composer. Three delivery paths: macOS 'open-url',
-// Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
+// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00,
+// hermes://chat/new?cwd=/abs/path&profile=default&sticky=slot).
+// Payload is generic { kind, name, params }; renderer decides (blueprint insert
+// vs chat/new session). Delivery: macOS 'open-url', Win/Linux second-instance
+// argv, cold-start argv.
 // ---------------------------------------------------------------------------
 const HERMES_PROTOCOL = 'hermes'
 let _pendingDeepLink = null

@@ -1,9 +1,31 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import {
+  clearStickySessionId,
+  cwdLooksSane,
+  normalizeStickySlot,
+  readStickySessionId,
+  setStickyPending,
+  takeStickyPending,
+  writeStickySessionId
+} from '@/lib/deeplink-chat-new'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { $activeGatewayProfile } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  ensureGatewayProfile,
+  newSessionInProfile,
+  requestFreshSession
+} from '@/store/profile'
+import {
+  $projectTree,
+  $projects,
+  enterProject,
+  projectIdForCwd,
+  requestStartWorkSession
+} from '@/store/projects'
 import {
   $sessions,
   getRememberedRoute,
@@ -18,6 +40,43 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+
+/** Resolve hermes://chat/new?project= id or slug/name → absolute cwd from live project caches. */
+function resolveProjectCwd(projectKey: string): { cwd: string; projectId: null | string } | null {
+  const key = projectKey.trim()
+  if (!key) return null
+
+  const lower = key.toLowerCase()
+  for (const p of $projects.get()) {
+    const id = String(p.id || '').trim()
+    const name = String(p.name || '').trim()
+    const slug = String(p.slug || name.toLowerCase().replace(/\s+/g, '-')).trim()
+    if (id === key || name === key || slug === key || slug.toLowerCase() === lower || name.toLowerCase() === lower) {
+      const folders = Array.isArray(p.folders) ? p.folders : []
+      const folderPath = folders.map(f => String((f as { path?: string }).path || '').trim()).find(Boolean) || ''
+      const cwd = String(p.primary_path || folderPath || '').trim()
+      if (cwd) return { cwd, projectId: id || null }
+    }
+  }
+
+  for (const node of $projectTree.get()) {
+    const id = String(node.id || '').trim()
+    const label = String(node.label || '').trim()
+    const slug = label.toLowerCase().replace(/\s+/g, '-')
+    if (id === key || label === key || slug === lower || label.toLowerCase() === lower) {
+      const cwd = String(node.path || node.repos?.find(r => r.path)?.path || '').trim()
+      if (cwd) return { cwd, projectId: id || null }
+    }
+  }
+
+  return null
+}
+
+function sessionIdKnown(sessionId: string): boolean {
+  const id = sessionId.trim()
+  if (!id) return false
+  return $sessions.get().some(s => String(s.id || '').trim() === id)
+}
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -69,12 +128,17 @@ export function useDesktopIntegrations({
   // non-overlay route (a page like /skills, or a session route) so a relaunch
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
+  // Also binds deeplink sticky= slots once a real session mounts.
   useEffect(() => {
     if (routedSessionId) {
       setRememberedSessionId(
         routedSessionId,
         rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
       )
+      const pendingSticky = takeStickyPending()
+      if (pendingSticky) {
+        writeStickySessionId(pendingSticky, routedSessionId)
+      }
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
@@ -142,10 +206,93 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links -> a reviewable /blueprint command in the composer.
+  // hermes:// deep links:
+  //  - blueprint/<name>?slots → reviewable /blueprint command in composer
+  //  - chat/new?cwd=&profile=&project=&prompt=&sticky= → fresh (or sticky) session
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      if (!payload || !payload.kind) {
+        return
+      }
+
+      // hermes://chat/new?cwd=…&profile=…&project=…&prompt=…&sticky=…
+      // main delivers { kind: 'chat', name: 'new', params }
+      if (payload.kind === 'chat' && payload.name === 'new') {
+        const params = payload.params || {}
+        const profile = (params.profile || '').trim()
+        const prompt = (params.prompt || '').trim()
+        const projectKey = (params.project || '').trim()
+        const sticky = normalizeStickySlot(params.sticky)
+        let cwd = (params.cwd || '').trim()
+        let projectId: null | string = null
+
+        if (!cwd && projectKey) {
+          const hit = resolveProjectCwd(projectKey)
+          if (hit) {
+            cwd = hit.cwd
+            projectId = hit.projectId
+          }
+        }
+
+        if (cwd && !cwdLooksSane(cwd)) {
+          console.warn('[deeplink] chat/new refused unsafe cwd', cwd)
+          return
+        }
+
+        // sticky=<slot>: resume the same session instead of minting a new one.
+        if (sticky) {
+          const existing = readStickySessionId(sticky)
+          if (existing) {
+            const known = sessionIdKnown(existing)
+            // Empty session cache (boot race) → trust id once; loaded+missing → clear.
+            if (known || $sessions.get().length === 0) {
+              navigate(sessionRoute(existing))
+              requestComposerFocus('main')
+              if (prompt) {
+                requestComposerInsert(prompt, { mode: 'block', target: 'main' })
+              }
+              return
+            }
+            clearStickySessionId(sticky)
+          }
+          // First open (or cleared): create below and bind when routedSessionId lands.
+          setStickyPending(sticky)
+        }
+
+        if (profile) {
+          $newChatProfile.set(profile)
+          void ensureGatewayProfile(profile)
+          // Prefer newSessionInProfile when we do not yet have a cwd path — it
+          // forces fresh. When cwd is set, requestStartWorkSession owns the
+          // fresh draft with workspace target (avoids double fresh race).
+          if (!cwd) {
+            newSessionInProfile(profile)
+          } else {
+            requestFreshSession()
+          }
+        } else if (!cwd) {
+          requestFreshSession()
+        }
+
+        if (cwd) {
+          const matched = projectId || projectIdForCwd(cwd)
+          if (matched) {
+            enterProject(matched)
+          }
+          // Same path as sidebar "new session in worktree/project"
+          requestStartWorkSession(cwd, prompt || undefined)
+        } else {
+          navigate(NEW_CHAT_ROUTE)
+          if (prompt) {
+            requestComposerInsert(prompt, { mode: 'block', target: 'main' })
+          }
+        }
+
+        requestComposerFocus('main')
+        return
+      }
+
+      if (payload.kind !== 'blueprint' || !payload.name) {
         return
       }
 
@@ -165,7 +312,7 @@ export function useDesktopIntegrations({
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [])
+  }, [navigate])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

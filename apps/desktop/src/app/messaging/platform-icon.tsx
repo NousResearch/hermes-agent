@@ -6,6 +6,7 @@ import {
   SiHomeassistant,
   SiMatrix,
   SiMattermost,
+  SiNextcloud,
   SiQq,
   SiSignal,
   SiTelegram,
@@ -41,6 +42,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   // Slack removed from Simple Icons by Salesforce request — letter monogram.
   slack: { color: '#4A154B', kind: 'brand', monogram: 'S' },
   mattermost: { Icon: SiMattermost, color: '#0058CC', kind: 'brand' },
+  nextcloud_talk: { Icon: SiNextcloud, color: '#0082C9', kind: 'brand' },
   matrix: { Icon: SiMatrix, color: '#000000', kind: 'brand' },
   signal: { Icon: SiSignal, color: '#3A76F0', kind: 'brand' },
   whatsapp: { Icon: SiWhatsapp, color: '#25D366', kind: 'brand' },

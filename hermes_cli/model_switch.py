@@ -698,6 +698,28 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     suffix = suffix_buf.lower().strip("-_.")
     suffix = suffix.strip()
 
+    # Post-process: extract trailing version numbers from the suffix.
+    # The single-pass state machine above cannot recover from in_suffix
+    # back to in_version, so models where the version appears AFTER a
+    # suffix qualifier (e.g. "mimo-flash-v2", "qwen-pro-v3.5",
+    # "nova-lite-v1:0", "claude-haiku-4-6") lose their version
+    # information.  Scan the suffix backwards for "-v<num>" or "-<num>"
+    # components and promote them into the version list.
+    if suffix:
+        _parts = suffix.rsplit("-")
+        _keep: list[str] = []
+        for _p in reversed(_parts):
+            _m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", _p)
+            if _m:
+                try:
+                    nums.append(float(_m.group(1)))
+                except ValueError:
+                    _keep.append(_p)
+                else:
+                    continue
+            _keep.append(_p)
+        suffix = "-".join(reversed(_keep)).strip("-_")
+
     # Negate versions so higher → sorts first
     version_key = tuple(-n for n in nums)
 

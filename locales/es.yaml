@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **Perfil:** `{profile}`"
     home:                  "📂 **Inicio:** `{home}`"
+    picker_title:          "👤 **Elige un perfil**\n\nActual: `{current}`\n\nToca para cambiar este chat (en vivo):"
 
   reasoning:
     level_default:             "medium (predeterminado)"

@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Ana dizin:** `{home}`"
+    picker_title:          "👤 **Bir profil seçin**\n\nMevcut: `{current}`\n\nBu sohbeti canlı değiştirmek için dokunun:"
 
   reasoning:
     level_default:             "medium (varsayılan)"

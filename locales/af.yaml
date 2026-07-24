@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **Profiel:** `{profile}`"
     home:                  "📂 **Tuiste:** `{home}`"
+    picker_title:          "👤 **Kies 'n profiel**\n\nHuidig: `{current}`\n\nTik om hierdie gesprek lewendig te wissel:"
 
   reasoning:
     level_default:             "medium (verstek)"

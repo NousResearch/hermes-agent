@@ -183,6 +183,7 @@ gateway:
   profile:
     header:                "👤 **配置文件：** `{profile}`"
     home:                  "📂 **主目录：** `{home}`"
+    picker_title:          "👤 **选择配置文件**\n\n当前：`{current}`\n\n点按即可切换此聊天（实时）："
 
   reasoning:
     level_default:             "medium（默认）"

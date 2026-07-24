@@ -170,6 +170,33 @@ class TestEnvFileParsing:
     def test_missing_file_returns_empty(self, tmp_path):
         assert ss.load_env_file(tmp_path / "nope.env") == {}
 
+    def test_strips_utf8_bom_from_first_key(self, tmp_path):
+        """Windows editors often save .env as UTF-8 with BOM (EF BB BF).
+
+        Plain utf-8 keeps U+FEFF on the first key name, so get_secret('NAME')
+        misses under an installed scope. utf-8-sig strips the leading BOM.
+        """
+        env = tmp_path / ".env"
+        env.write_bytes(
+            b"\xef\xbb\xbfANTHROPIC_API_KEY=sk-x\nOPENAI_API_KEY=sk-y\n"
+        )
+        out = ss.load_env_file(env)
+        assert out == {
+            "ANTHROPIC_API_KEY": "sk-x",
+            "OPENAI_API_KEY": "sk-y",
+        }
+        assert "\ufeffANTHROPIC_API_KEY" not in out
+
+        scope = ss.build_profile_secret_scope(tmp_path)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(scope)
+        try:
+            assert ss.get_secret("ANTHROPIC_API_KEY") == "sk-x"
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-y"
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
     def test_build_profile_secret_scope(self, tmp_path):
         (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-profile\n")
         assert ss.build_profile_secret_scope(tmp_path) == {

@@ -3058,6 +3058,12 @@ def intent_ack_continuation_enabled(agent) -> bool:
 
 
 
+def _preserves_gemma4_reasoning_replay(agent) -> bool:
+    """Return True when the active model uses Gemma 4 reasoning replay."""
+    model = str(getattr(agent, "model", "") or "").strip().lower()
+    return bool(re.search(r"(?:^|[/_.:-])gemma[-_.]?4(?:$|[/_.:-])", model))
+
+
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Copy provider-facing reasoning fields onto an API replay message."""
     if source_msg.get("role") != "assistant":
@@ -3085,7 +3091,9 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # covers the already-built api_messages path. Refs #45655.
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
-        if not needs_thinking_pad:
+        if _preserves_gemma4_reasoning_replay(agent) and existing.strip():
+            api_msg["reasoning_content"] = existing
+        elif not needs_thinking_pad:
             api_msg.pop("reasoning_content", None)
         elif existing == "":
             api_msg["reasoning_content"] = " "
@@ -3174,6 +3182,7 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     removed.
     """
     needs_pad = agent._needs_thinking_reasoning_pad()
+    preserves_gemma4_replay = _preserves_gemma4_reasoning_replay(agent)
     changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
@@ -3184,10 +3193,14 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
             copy_reasoning_content_for_api(agent, api_msg, api_msg)
             if api_msg.get("reasoning_content"):
                 changed += 1
-        else:
+        elif not preserves_gemma4_replay:
             # Strict provider — strip any stale reasoning_content pad left
             # over from a reasoning primary so the fallback request doesn't
             # 400/422 on it.
+            if "reasoning_content" in api_msg:
+                api_msg.pop("reasoning_content", None)
+                changed += 1
+        elif not str(api_msg.get("reasoning_content") or "").strip():
             if "reasoning_content" in api_msg:
                 api_msg.pop("reasoning_content", None)
                 changed += 1

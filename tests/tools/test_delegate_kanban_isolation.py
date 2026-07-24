@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -622,3 +623,125 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     assert task.status == "running"
     assert run.status == "running"
     assert workspace.is_dir()
+
+
+# ── ContextVar-based kanban ownership (#70809) ───────────────────────────────
+
+
+def test_kanban_worker_owner_not_set_by_default():
+    """``is_kanban_worker_owner()`` returns False without a prior call to
+    ``set_kanban_worker_owner()``, even if HERMES_KANBAN_TASK is in the env."""
+    from agent.delegation_context import is_kanban_worker_owner
+
+    os.environ["HERMES_KANBAN_TASK"] = "t_test_owned"
+    try:
+        assert is_kanban_worker_owner() is False
+    finally:
+        os.environ.pop("HERMES_KANBAN_TASK", None)
+
+
+def test_set_kanban_worker_owner_makes_is_owner_true():
+    """After calling ``set_kanban_worker_owner()``, ``is_kanban_worker_owner()``
+    returns True, regardless of whether the env var is set."""
+    from agent.delegation_context import is_kanban_worker_owner, set_kanban_worker_owner
+
+    set_kanban_worker_owner()
+    assert is_kanban_worker_owner() is True
+
+
+def test_kanban_worker_owner_does_not_propagate_to_subprocess():
+    """A subprocess spawned after ``set_kanban_worker_owner()`` must NOT
+    inherit the ContextVar — it starts with a clean context."""
+    import subprocess
+
+    from agent.delegation_context import set_kanban_worker_owner
+
+    set_kanban_worker_owner()
+
+    repo_root = Path(__file__).resolve().parents[2]
+    code = (
+        "from agent.delegation_context import is_kanban_worker_owner; "
+        "print(is_kanban_worker_owner(), flush=True)"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID")
+            },
+            "PYTHONPATH": str(repo_root),
+        },
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    output = result.stdout.strip()
+    assert output == "False", (
+        f"subprocess should see is_kanban_worker_owner=False, got {output!r}"
+    )
+
+
+def test_nested_cli_with_inherited_env_not_owned():
+    """Simulate a nested ``hermes chat`` subprocess that inherited
+    ``HERMES_KANBAN_TASK`` from the parent but whose query does NOT match the
+    dispatcher marker — the ``set_kanban_worker_owner`` guard at the CLI entry
+    point must NOT fire."""
+
+    # Simulate the exact gate logic from cli.py lines 16418-16427:
+    #   _raw_query = isinstance(query, str) and query.strip()
+    #   _tid = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    #   if _raw_query and _tid:
+    #       if _raw_query == f"work kanban task {_tid}":
+    #           set_kanban_worker_owner()
+    from agent.delegation_context import is_kanban_worker_owner, set_kanban_worker_owner
+
+    # ── Case 1: matching query → owner ──
+    os.environ["HERMES_KANBAN_TASK"] = "t_42"
+    _raw_query = "work kanban task t_42"
+    _tid = "t_42"
+    if _raw_query == f"work kanban task {_tid}":
+        set_kanban_worker_owner()
+    assert is_kanban_worker_owner() is True, "matching query must set ownership"
+    os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    # Reset ContextVar for next case (fresh token via new thread-like context)
+    # We can't truly reset without a ContextVar.reset(token), so we demonstrate
+    # via subprocess isolation.
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+
+    # Simulate a nested subprocess that inherited the env var with a different query
+    code = textwrap.dedent(
+        """
+        import os
+        from agent.delegation_context import is_kanban_worker_owner, set_kanban_worker_owner
+
+        # Inherited env, but query is arbitrary — NOT the dispatcher marker
+        os.environ.setdefault("HERMES_KANBAN_TASK", "t_parent")
+        _raw_query = "tell me a joke"
+        _tid = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if _raw_query and _tid:
+            if _raw_query == f"work kanban task {_tid}":
+                set_kanban_worker_owner()
+        print(f"owned={is_kanban_worker_owner()}", flush=True)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "owned=False" in result.stdout, (
+        f"nested process must NOT inherit ownership, got: {result.stdout}"
+    )

@@ -48,6 +48,21 @@ def _is_delegated_child_context() -> bool:
         return False
 
 
+def _is_kanban_worker_owner() -> bool:
+    """Return True when this process has verified dispatcher ownership.
+
+    Uses the ContextVar set at the CLI boundary rather than raw env so a
+    nested ``hermes chat`` subprocess that inherited ``HERMES_KANBAN_*``
+    env vars is never treated as the parent worker (#70809).
+    """
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+
+        return is_kanban_worker_owner()
+    except Exception:
+        return bool(os.environ.get("HERMES_KANBAN_TASK"))
+
+
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
@@ -330,7 +345,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
-            bool(os.environ.get("HERMES_KANBAN_TASK")),
+            bool(_is_kanban_worker_owner()),
             bool(skip_tool_search_assembly),
             _is_delegated_child_context(),
         )
@@ -377,7 +392,7 @@ def _compute_tool_definitions(
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
         if (
-            os.environ.get("HERMES_KANBAN_TASK")
+            _is_kanban_worker_owner()
             and not _is_delegated_child_context()
             and "kanban" not in effective_enabled_toolsets
         ):

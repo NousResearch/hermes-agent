@@ -120,7 +120,15 @@ def _is_kanban_worker_env_gate(item: dict) -> bool:
     """Return True when Kanban is unavailable only because this is not a worker process."""
     if item.get("name") != "kanban":
         return False
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    # Use ContextVar so a nested subprocess with inherited env vars
+    # is not treated as a kanban worker (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+
+        _is_wk = is_kanban_worker_owner()
+    except Exception:
+        _is_wk = bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if _is_wk:
         return False
 
     tools = item.get("tools") or []
@@ -129,7 +137,15 @@ def _is_kanban_worker_env_gate(item: dict) -> bool:
 
 def _doctor_tool_availability_detail(toolset: str) -> str:
     """Optional explanatory suffix for toolsets whose doctor status needs context."""
-    if toolset == "kanban" and not os.environ.get("HERMES_KANBAN_TASK"):
+    # Use ContextVar so a nested subprocess with inherited env vars
+    # is not treated as a kanban worker (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner
+
+        _is_wk = is_kanban_worker_owner()
+    except Exception:
+        _is_wk = bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if toolset == "kanban" and not _is_wk:
         return "(runtime-gated; loaded only for dispatcher-spawned workers)"
     return ""
 

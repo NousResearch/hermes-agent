@@ -16031,6 +16031,15 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """
     import os as _os
 
+    # Gate on ContextVar so a nested subprocess that inherited
+    # HERMES_KANBAN_* env vars never enters the goal loop (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner as _goal_owner
+        if not _goal_owner():
+            return
+    except Exception:
+        pass
+
     task_id = (_os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     if not task_id:
         return
@@ -16368,7 +16377,15 @@ def main(
         # first so the final debug trace isn't lost; SIGALRM deadman guards
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
-        if os.environ.get("HERMES_KANBAN_TASK"):
+        # Use the verified ContextVar instead of raw env so a nested
+        # subprocess that inherited HERMES_KANBAN_* env vars never
+        # triggers os._exit(0) on signal (#70809).
+        try:
+            from agent.delegation_context import is_kanban_worker_owner as _sig_owner
+            _is_kanban = _sig_owner()
+        except Exception:
+            _is_kanban = bool(os.environ.get("HERMES_KANBAN_TASK"))
+        if _is_kanban:
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
@@ -16405,6 +16422,27 @@ def main(
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)
+
+            # ── Derive Kanban worker ownership at the CLI boundary (#70809) ──
+            # The dispatcher spawns workers with:
+            #   hermes chat -q "work kanban task <task_id>"
+            # A nested ``hermes chat`` subprocess inherits HERMES_KANBAN_* env
+            # vars but its query won't match this marker — it is NOT the
+            # dispatcher-owned worker.  Verify once here and store the result
+            # in a ContextVar so lifecycle code (heartbeat, goal loop, signal
+            # handler, stop-nudge) reads the verified identity instead of
+            # re-reading os.environ.
+            _raw_query = isinstance(query, str) and query.strip()
+            _tid = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+            if _raw_query and _tid:
+                try:
+                    from agent.delegation_context import set_kanban_worker_owner as _set_owner
+
+                    if _raw_query == f"work kanban task {_tid}":
+                        _set_owner()
+                except Exception:
+                    pass
+
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
             # the actual task description lives in the task body. Mirror the
             # gateway/CLI behaviour for inbound images by scanning the body for
@@ -16412,36 +16450,45 @@ def main(
             # worker's first turn. Without this, users who paste a screenshot
             # path or URL into a kanban task body never get it routed to the
             # model's vision input.
+            # Guard with the ContextVar so a nested subprocess with inherited
+            # env vars doesn't try to read the kanban DB (#70809).
             single_query_image_urls: list[str] = []
             _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
             if _kanban_task_id:
                 try:
-                    from hermes_cli import kanban_db as _kb
-                    from agent.image_routing import extract_image_refs as _extract_refs
+                    from agent.delegation_context import is_kanban_worker_owner as _is_owner
 
-                    _conn = _kb.connect()
-                    try:
-                        _task = _kb.get_task(_conn, _kanban_task_id)
-                    finally:
+                    _should_enrich = _is_owner()
+                except Exception:
+                    _should_enrich = True
+                if _should_enrich:
                         try:
-                            _conn.close()
-                        except Exception:
-                            pass
-                    _body = getattr(_task, "body", "") if _task is not None else ""
-                    if _body:
-                        _kb_paths, _kb_urls = _extract_refs(_body)
-                        if _kb_paths:
-                            # Dedupe against any --image the user already passed.
-                            _seen = {str(p) for p in single_query_images}
-                            for _p in _kb_paths:
-                                if _p not in _seen:
-                                    _seen.add(_p)
-                                    single_query_images.append(Path(_p))
-                        if _kb_urls:
-                            single_query_image_urls.extend(_kb_urls)
-                except Exception as _exc:
-                    # Best-effort enrichment; never block worker startup on it.
-                    logger.debug("kanban image-ref extraction failed: %s", _exc)
+                            from hermes_cli import kanban_db as _kb
+                            from agent.image_routing import extract_image_refs as _extract_refs
+
+                            _conn = _kb.connect()
+                            try:
+                                _task = _kb.get_task(_conn, _kanban_task_id)
+                            finally:
+                                try:
+                                    _conn.close()
+                                except Exception:
+                                    pass
+                            _body = getattr(_task, "body", "") if _task is not None else ""
+                            if _body:
+                                _kb_paths, _kb_urls = _extract_refs(_body)
+                            if _kb_paths:
+                                # Dedupe against any --image the user already passed.
+                                _seen = {str(p) for p in single_query_images}
+                                for _p in _kb_paths:
+                                    if _p not in _seen:
+                                        _seen.add(_p)
+                                        single_query_images.append(Path(_p))
+                            if _kb_urls:
+                                single_query_image_urls.extend(_kb_urls)
+                        except Exception as _exc:
+                            # Best-effort enrichment; never block worker startup on it.
+                            logger.debug("kanban image-ref extraction failed: %s", _exc)
             if quiet:
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
@@ -16584,7 +16631,16 @@ def main(
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                        # Use the verified ContextVar instead of raw env so
+                        # a nested subprocess with inherited HERMES_KANBAN_*
+                        # env vars doesn't get the rate-limit exit code on
+                        # someone else's task (#70809).
+                        try:
+                            from agent.delegation_context import is_kanban_worker_owner as _exit_owner
+                            _exit_wk = _exit_owner()
+                        except Exception:
+                            _exit_wk = bool(os.environ.get("HERMES_KANBAN_TASK"))
+                        if _exit_wk and result.get(
                                 "failure_reason"
                             ) in ("rate_limit", "billing"):
                                 try:

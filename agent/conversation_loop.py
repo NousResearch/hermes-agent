@@ -6368,9 +6368,8 @@ def run_conversation(
                     })
                     agent._session_messages = messages
                     logger.info(
-                        "kanban stop-loop nudge issued (attempt %d) task=%s",
+                        "kanban stop-loop nudge issued (attempt %d)",
                         agent._kanban_stop_nudges,
-                        os.environ.get("HERMES_KANBAN_TASK", ""),
                     )
                     agent._emit_status(
                         "⚠️ Kanban worker tried to exit without "

@@ -246,13 +246,22 @@ def _detect_environment(env: str) -> bool:
 
     result = True
     if env == "kanban":
-        # Kanban is "active" either as a dispatcher-spawned worker (the
-        # dispatcher sets ``HERMES_KANBAN_TASK`` / ``HERMES_KANBAN_BOARD`` in the
-        # worker env) or as an orchestrator profile that has opted into the
-        # kanban toolset. Mirror the same signals the kanban tools themselves
-        # gate on (``tools/kanban_tools.py``) so the offer filter agrees with
+        # Kanban is "active" either as a dispatcher-spawned worker (verified
+        # at the CLI boundary and stored in a ContextVar) or as an
+        # orchestrator profile that has opted into the kanban toolset.
+        # Mirror the same signals the kanban tools themselves gate on
+        # (``tools/kanban_tools.py``) so the offer filter agrees with
         # tool availability.
-        if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
+        # Uses ContextVar instead of raw env so a nested subprocess that
+        # inherited ``HERMES_KANBAN_*`` env vars is not treated as a
+        # kanban worker (#70809).
+        try:
+            from agent.delegation_context import is_kanban_worker_owner
+
+            _is_owner = is_kanban_worker_owner()
+        except Exception:
+            _is_owner = bool(os.getenv("HERMES_KANBAN_TASK"))
+        if _is_owner or os.getenv("HERMES_KANBAN_BOARD"):
             result = True
         else:
             try:

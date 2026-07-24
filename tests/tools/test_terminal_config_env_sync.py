@@ -5,7 +5,7 @@ terminal_tool._get_env_config() reads ALL terminal settings from os.environ
 at startup, by THREE separate code paths:
 
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
-  2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
+  2. gateway/run.py    -> ``_TERMINAL_ENV_BRIDGE_MAP`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:set_config_value
                        -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
@@ -35,10 +35,17 @@ def _extract_dict_values(source: str, dict_name: str) -> set[str]:
     """
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        targets = [t for t in node.targets if isinstance(t, ast.Name)]
-        if not any(t.id == dict_name for t in targets):
+        # Plain ``NAME = {...}`` assignment.
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            if not any(t.id == dict_name for t in targets):
+                continue
+        # Annotated ``NAME: T = {...}`` (PEP 526 / ``dict[str, str]`` style).
+        elif isinstance(node, ast.AnnAssign) and isinstance(
+            node.target, ast.Name
+        ) and node.target.id == dict_name:
+            targets = [node.target]
+        else:
             continue
         if not isinstance(node.value, ast.Dict):
             continue
@@ -55,10 +62,17 @@ def _extract_dict_keys(source: str, dict_name: str) -> set[str]:
     """Return the set of *key* strings in `dict_name = { "KEY": "v", ... }`."""
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        targets = [t for t in node.targets if isinstance(t, ast.Name)]
-        if not any(t.id == dict_name for t in targets):
+        # Plain ``NAME = {...}`` assignment.
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            if not any(t.id == dict_name for t in targets):
+                continue
+        # Annotated ``NAME: T = {...}`` (PEP 526 / ``dict[str, str]`` style).
+        elif isinstance(node, ast.AnnAssign) and isinstance(
+            node.target, ast.Name
+        ) and node.target.id == dict_name:
+            targets = [node.target]
+        else:
             continue
         if not isinstance(node.value, ast.Dict):
             continue
@@ -83,7 +97,12 @@ def _gateway_env_map_keys() -> set[str]:
     # function), so inspect the whole module source.
     import gateway.run as gr
     source = inspect.getsource(gr)
-    return _extract_dict_keys(source, "_terminal_env_map")
+    # PR #70767 Part B consolidated the inline dict literal previously named
+    # ``_terminal_env_map`` into a module-level ``_TERMINAL_ENV_BRIDGE_MAP``
+    # so the startup bridge and the per-turn ``_bridge_terminal_config_to_env``
+    # (called from ``_profile_runtime_scope``) share one source of truth.
+    # The cross-bridge invariant test must therefore read from the new name.
+    return _extract_dict_keys(source, "_TERMINAL_ENV_BRIDGE_MAP")
 
 
 def _save_config_env_sync_keys() -> set[str]:
@@ -322,3 +341,145 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+# ── Per-turn profile-scoped bridge (#69575) ──────────────────────────
+
+
+def _write_profile_config(profile_home, terminal_cfg: dict) -> None:
+    """Write a profile-style ``config.yaml`` with the given ``terminal`` block.
+
+    Mirrors the actual on-disk layout the desktop / gateway multiplex path
+    reads (single ``terminal:`` mapping at the root of the per-profile
+    ``config.yaml``).  No project-level fallback, no defaults — just the
+    block under test.
+    """
+    import yaml
+
+    (profile_home / "config.yaml").write_text(
+        yaml.safe_dump({"terminal": terminal_cfg}),
+        encoding="utf-8",
+    )
+
+
+def test_profile_runtime_scope_bridges_docker_volumes_per_turn(tmp_path):
+    """Regression pin for #69575's multiplex profile flow.
+
+    In a multi-profile gateway (``gateway.multiplex_profiles: true``), the
+    startup bridge reads the *default* profile's ``config.yaml`` and writes
+    its ``terminal.*`` keys to ``TERMINAL_*`` env vars at module load.  When
+    a turn later runs under ``_profile_runtime_scope(profile_home)`` for a
+    *secondary* profile, ``get_hermes_home()`` correctly returns the
+    profile's home (the contextvar override works) — but the env vars are
+    NOT re-bridged, so ``tools/terminal_tool._get_env_config()`` reads the
+    default profile's stale ``TERMINAL_DOCKER_VOLUMES`` instead of the
+    active profile's.  The container comes up missing its bind mounts.
+
+    PR #70767 Part B adds a per-turn bridge that re-reads the active
+    profile's ``config.yaml`` on entry to ``_profile_runtime_scope`` and
+    restores the previous env on exit.  This test simulates the
+    ``_profile_runtime_scope`` enter/exit cycle with two profiles that set
+    *different* ``terminal.docker_volumes``, and asserts the env var
+    correctly reflects the active profile for the duration of the scope.
+    """
+    import gateway.run as gr
+
+    default_profile = tmp_path / "default"
+    named_profile = tmp_path / "named"
+    default_profile.mkdir()
+    named_profile.mkdir()
+
+    _write_profile_config(
+        default_profile,
+        {"backend": "docker", "docker_volumes": ["/default-host:/container"]},
+    )
+    _write_profile_config(
+        named_profile,
+        {"backend": "docker", "docker_volumes": ["/named-host:/container"]},
+    )
+
+    # Snapshot pre-test state and pre-seed env with the default profile's
+    # value (mimics what the startup bridge already wrote).
+    import os
+    saved_docker_volumes = os.environ.get("TERMINAL_DOCKER_VOLUMES")
+    saved_env = os.environ.get("TERMINAL_ENV")
+    gr._BRIDGED_TERMINAL_ENV_STACK.clear()
+    try:
+        # Step 1: simulate the startup bridge for the default profile.
+        gr._bridge_terminal_config_to_env(default_profile)
+        assert os.environ.get("TERMINAL_DOCKER_VOLUMES") == '["/default-host:/container"]'
+
+        # Step 2: enter the named profile's scope (mirrors what
+        # _profile_runtime_scope now does after PR #70767 Part B).
+        gr._bridge_terminal_config_to_env(named_profile)
+        try:
+            # Inside the scope, the named profile's value must be live.
+            assert os.environ.get("TERMINAL_DOCKER_VOLUMES") == '["/named-host:/container"]'
+
+            # tools.terminal_tool._get_env_config() must consume it back.
+            from tools.terminal_tool import _get_env_config
+            cfg = _get_env_config()
+            assert cfg["docker_volumes"] == ["/named-host:/container"], (
+                f"profile-scoped docker_volumes not consumed by "
+                f"_get_env_config(): {cfg['docker_volumes']!r}"
+            )
+        finally:
+            # Step 3: exit the scope — env must revert to the default
+            # profile's value (the "outer" scope's prior state).
+            gr._restore_bridge_terminal_env()
+
+        assert os.environ.get("TERMINAL_DOCKER_VOLUMES") == '["/default-host:/container"]', (
+            "scope exit must restore the previous bridge value, not leave "
+            "the named profile's value lingering"
+        )
+    finally:
+        # Restore test-clean state for subsequent tests.
+        gr._BRIDGED_TERMINAL_ENV_STACK.clear()
+        if saved_docker_volumes is None:
+            os.environ.pop("TERMINAL_DOCKER_VOLUMES", None)
+        else:
+            os.environ["TERMINAL_DOCKER_VOLUMES"] = saved_docker_volumes
+        if saved_env is None:
+            os.environ.pop("TERMINAL_ENV", None)
+        else:
+            os.environ["TERMINAL_ENV"] = saved_env
+
+
+def test_profile_runtime_scope_is_stack_nestable(tmp_path):
+    """Nested profile scopes (one multiplexer turn calling another) must each
+    see their own ``TERMINAL_*`` values on entry and restore on exit, in
+    LIFO order — guards against a future refactor of the bridge flattening
+    the stack and leaking the inner scope's values past the outer exit.
+    """
+    import gateway.run as gr
+    import os
+
+    outer = tmp_path / "outer"
+    inner = tmp_path / "inner"
+    outer.mkdir()
+    inner.mkdir()
+
+    _write_profile_config(outer, {"docker_volumes": ["/outer:/c"]})
+    _write_profile_config(inner, {"docker_volumes": ["/inner:/c"]})
+
+    saved = os.environ.get("TERMINAL_DOCKER_VOLUMES")
+    gr._BRIDGED_TERMINAL_ENV_STACK.clear()
+    try:
+        gr._bridge_terminal_config_to_env(outer)
+        assert os.environ.get("TERMINAL_DOCKER_VOLUMES") == '["/outer:/c"]'
+
+        gr._bridge_terminal_config_to_env(inner)
+        try:
+            assert os.environ.get("TERMINAL_DOCKER_VOLUMES") == '["/inner:/c"]'
+        finally:
+            gr._restore_bridge_terminal_env()
+
+        # Outer scope's value must be live again, not the original pre-outer
+        # state (which would only apply if the stack were a flat override).
+        assert os.environ.get("TERMINAL_DOCKER_VOLUMES") == '["/outer:/c"]'
+    finally:
+        gr._BRIDGED_TERMINAL_ENV_STACK.clear()
+        if saved is None:
+            os.environ.pop("TERMINAL_DOCKER_VOLUMES", None)
+        else:
+            os.environ["TERMINAL_DOCKER_VOLUMES"] = saved

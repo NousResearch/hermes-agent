@@ -1696,6 +1696,145 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
+# Map from config.yaml ``terminal.*`` keys to ``TERMINAL_*`` env vars.  Defined
+# at module scope so the startup bridge (below) and the per-turn
+# ``_bridge_terminal_config_to_env`` (called from ``_profile_runtime_scope``)
+# share one source of truth and can't drift.  See
+# ``tests/tools/test_terminal_config_env_sync.py`` for the cross-bridge
+# invariant tests; that file's source-inspection checks cover this map too.
+_TERMINAL_ENV_BRIDGE_MAP: dict[str, str] = {
+    "backend": "TERMINAL_ENV",
+    "cwd": "TERMINAL_CWD",
+    "timeout": "TERMINAL_TIMEOUT",
+    "home_mode": "TERMINAL_HOME_MODE",
+    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+    "docker_image": "TERMINAL_DOCKER_IMAGE",
+    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+    "modal_image": "TERMINAL_MODAL_IMAGE",
+    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "ssh_host": "TERMINAL_SSH_HOST",
+    "ssh_user": "TERMINAL_SSH_USER",
+    "ssh_port": "TERMINAL_SSH_PORT",
+    "ssh_key": "TERMINAL_SSH_KEY",
+    "container_cpu": "TERMINAL_CONTAINER_CPU",
+    "container_memory": "TERMINAL_CONTAINER_MEMORY",
+    "container_disk": "TERMINAL_CONTAINER_DISK",
+    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+    "docker_env": "TERMINAL_DOCKER_ENV",
+    "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+    "docker_network": "TERMINAL_DOCKER_NETWORK",
+    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+    "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
+    "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+}
+
+
+# Stack of per-scope env-var backups. Each ``_bridge_terminal_config_to_env``
+# call pushes a dict; ``_restore_bridge_terminal_env`` pops the most recent
+# and restores ``os.environ`` to the state it was in before the push.  This
+# makes nested profile scopes (one multiplexer turn calling another) and
+# interleaved bridges safe.
+_BRIDGED_TERMINAL_ENV_STACK: list[dict[str, str | None]] = []
+
+
+def _bridge_terminal_config_to_env(profile_home: "Path") -> None:
+    """Read ``terminal.*`` from ``{profile_home}/config.yaml`` and write the
+    values to ``TERMINAL_*`` env vars, saving the previous values for later
+    restoration.
+
+    The startup bridge (lines ~1794-1877) reads the process-level default
+    profile's config once at module load and writes its ``TERMINAL_*`` env
+    vars.  When the multiplexer later enters ``_profile_runtime_scope`` for a
+    *different* profile, those env vars are stale and the secondary profile's
+    ``terminal.docker_volumes`` (and friends) silently drop — the secondary
+    profile's container comes up without its configured bind mounts (#69575).
+
+    This function re-reads ``profile_home/config.yaml`` for the active profile
+    and re-bridges every ``_TERMINAL_ENV_BRIDGE_MAP`` key the profile sets,
+    using the same ``json.dumps``/``str`` rules as the startup bridge so
+    ``tools/terminal_tool._get_env_config()`` parses the result identically.
+    The cwd / tilde handling matches the startup bridge so a profile's
+    ``terminal.cwd: "~/project"`` doesn't get expanded twice.
+
+    Pushes one entry onto ``_BRIDGED_TERMINAL_ENV_STACK``; the matching
+    ``_restore_bridge_terminal_env`` pops and restores.  If the profile has no
+    ``config.yaml`` (or no ``terminal`` section, or any read/parse error),
+    the backup is empty and the env is left unchanged.
+    """
+    backup: dict[str, str | None] = {}
+    config_path = Path(profile_home) / "config.yaml"
+    if not config_path.exists():
+        _BRIDGED_TERMINAL_ENV_STACK.append(backup)
+        return
+    try:
+        import yaml as _yaml
+        with open(config_path, encoding="utf-8") as _f:
+            _cfg = _yaml.safe_load(_f) or {}
+        # Mirror the startup bridge: expand ${ENV_VAR} references before
+        # bridging so a profile that points at ``${FOO}`` gets the same
+        # post-expansion value the startup bridge would have written.
+        from hermes_cli.config import _expand_env_vars
+        _cfg = _expand_env_vars(_cfg)
+    except Exception:
+        _BRIDGED_TERMINAL_ENV_STACK.append(backup)
+        return
+
+    _terminal_cfg = _cfg.get("terminal", {})
+    if not isinstance(_terminal_cfg, dict):
+        _BRIDGED_TERMINAL_ENV_STACK.append(backup)
+        return
+
+    _terminal_backend = str(
+        _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
+    ).strip().lower()
+    for _cfg_key, _env_var in _TERMINAL_ENV_BRIDGE_MAP.items():
+        if _cfg_key not in _terminal_cfg:
+            continue
+        _val = _terminal_cfg[_cfg_key]
+        # Same cwd placeholder skip as the startup bridge.
+        if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
+            continue
+        # Same tilde expansion rule as the startup bridge so the runtime
+        # consumer (terminal_tool) and the gateway agree on what ``~`` means.
+        if _cfg_key == "cwd" and isinstance(_val, str):
+            from tools.terminal_tool import _is_ssh_remote_tilde_cwd
+            if not _is_ssh_remote_tilde_cwd(_terminal_backend, _val.strip()):
+                _val = os.path.expanduser(_val)
+        # Save the pre-existing value (may be None if the env var was unset)
+        # so the matching restore call returns the env to its prior state.
+        backup[_env_var] = os.environ.get(_env_var)
+        if isinstance(_val, (list, dict)):
+            os.environ[_env_var] = json.dumps(_val)
+        else:
+            os.environ[_env_var] = str(_val)
+
+    _BRIDGED_TERMINAL_ENV_STACK.append(backup)
+
+
+def _restore_bridge_terminal_env() -> None:
+    """Pop the most recent ``_bridge_terminal_config_to_env`` backup and
+    restore ``os.environ`` to the state it was in before that bridge call.
+
+    Unset env vars (absent before the bridge) are removed again rather than
+    left as empty strings — matches the startup bridge's behavior of only
+    touching keys that ``terminal.*`` actually set.  Idempotent on an empty
+    stack (no-op) so a buggy caller can't corrupt ``os.environ``.
+    """
+    if not _BRIDGED_TERMINAL_ENV_STACK:
+        return
+    backup = _BRIDGED_TERMINAL_ENV_STACK.pop()
+    for _env_var, _prev_val in backup.items():
+        if _prev_val is None:
+            os.environ.pop(_env_var, None)
+        else:
+            os.environ[_env_var] = _prev_val
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -1708,6 +1847,15 @@ def _profile_runtime_scope(profile_home: "Path"):
          authoritative credential source, so ``get_secret`` reads this profile's
          keys and never the process-global ``os.environ`` (which in a
          multiplexer may hold another profile's values).
+      3. ``_bridge_terminal_config_to_env(profile_home)`` — re-bridges the
+         profile's ``terminal.*`` config to ``TERMINAL_*`` env vars so
+         ``tools/terminal_tool._get_env_config()`` picks up the profile's
+         ``docker_volumes``, ``docker_env``, etc. instead of the
+         process-level default-profile's stale values. Without this, secondary
+         multiplexed profiles silently lose their terminal config (#69575).
+         The module-level bridge at startup only reads the default profile's
+         config; the per-turn bridge reads each profile's config and is
+         stack-restored on exit so nested scopes and re-entry are safe.
 
     Only used on the multiplexed inbound path. Single-profile gateways never
     enter this scope, so their behavior is unchanged. Loading the profile's
@@ -1724,9 +1872,11 @@ def _profile_runtime_scope(profile_home: "Path"):
 
     home_token = set_hermes_home_override(str(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+    _bridge_terminal_config_to_env(Path(profile_home))
     try:
         yield
     finally:
+        _restore_bridge_terminal_env()
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
@@ -1822,37 +1972,12 @@ if _config_path.exists():
             _terminal_backend = str(
                 _terminal_cfg.get("backend") or os.environ.get("TERMINAL_ENV") or ""
             ).strip().lower()
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "home_mode": "TERMINAL_HOME_MODE",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
-                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-                "docker_network": "TERMINAL_DOCKER_NETWORK",
-                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-                "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
-                "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
+            # Shared with the per-turn ``_bridge_terminal_config_to_env``
+            # (see ``_TERMINAL_ENV_BRIDGE_MAP``) so the startup bridge and
+            # the profile-scoped bridge can't drift.  See
+            # ``tests/tools/test_terminal_config_env_sync.py`` for the
+            # cross-bridge invariant tests.
+            for _cfg_key, _env_var in _TERMINAL_ENV_BRIDGE_MAP.items():
                 if _cfg_key in _terminal_cfg:
                     _val = _terminal_cfg[_cfg_key]
                     # Skip cwd placeholder values (".", "auto", "cwd") — the

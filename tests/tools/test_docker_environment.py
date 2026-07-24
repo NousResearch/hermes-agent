@@ -1840,3 +1840,155 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     result = env.execute("badcmd")
     assert result.get("returncode") == 127
     assert "command not found" in result.get("output", "")
+
+
+# ── End-to-end: profile-style HERMES_HOME -> fresh container mount (#69575) ──
+
+
+def test_profile_config_docker_volumes_appear_in_fresh_container_run(
+    monkeypatch, tmp_path,
+):
+    """Regression test for issue #69575's fresh-container repro.
+
+    Reviewer feedback on the stale-reuse guard pointed out that the patch
+    only exercised the cross-process *reuse* path.  The original bug was
+    reported as: after ``docker rm -f`` on all profile containers, the next
+    container is fresh (<1 minute old) but the configured
+    ``terminal.docker_volumes`` mount is still absent.  This test pins the
+    full pipeline end-to-end:
+
+      profile HERMES_HOME + ``config.yaml`` ``terminal.docker_volumes``
+        -> config-bridge writes ``TERMINAL_DOCKER_VOLUMES`` to env
+        -> ``_get_env_config()`` parses it as JSON
+        -> ``DockerEnvironment(volumes=...)`` is constructed fresh
+        -> the resulting ``docker run`` argv contains ``-v <host>:<container>``
+
+    No reusable container exists (we disable cross-process persistence), so
+    the only path that can produce the mount is the ``volume_args`` loop in
+    ``__init__`` — the very path the reviewer flagged as untested.  The
+    subprocess mock is identical to the one used by the existing volume
+    tests so the assertion format matches the rest of the suite.
+    """
+    import json
+    import os
+
+    # 1. Profile-style HERMES_HOME: fresh tmp dir with a config.yaml that
+    #    declares a single docker_volumes entry plus the docker backend so
+    #    the env-var bridge + consumer both fire.
+    profile_home = tmp_path / "profile-home"
+    profile_home.mkdir()
+    cfg_path = profile_home / "config.yaml"
+    cfg_path.write_text(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_volumes:\n"
+        "    - /host:/container\n",
+        encoding="utf-8",
+    )
+
+    # 2. Force cli.load_cli_config() to read our profile config.  This mimics
+    #    what gateway/run.py does at module load (lines 1792-1877) — read
+    #    HERMES_HOME/config.yaml, expand env refs, bridge ``terminal.*`` keys
+    #    to TERMINAL_* env vars via json.dumps for list values.  The cli.py
+    #    bridge is the one used when a user invokes ``hermes`` against a
+    #    profile (desktop chat path is the same gateway bridge; same shape).
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    import cli as _cli
+    monkeypatch.setattr(_cli, "_hermes_home", profile_home)
+    # Clear stale env so the bridge writes fresh values rather than no-op'ing
+    # because TERMINAL_DOCKER_VOLUMES is already set.
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    _cli.load_cli_config()
+
+    # 3. Sanity: the bridge actually wrote TERMINAL_DOCKER_VOLUMES as JSON.
+    assert json.loads(os.environ.get("TERMINAL_DOCKER_VOLUMES", "[]")) == [
+        "/host:/container"
+    ], "cli config bridge failed to emit TERMINAL_DOCKER_VOLUMES as JSON"
+    assert os.environ.get("TERMINAL_ENV") == "docker"
+
+    # 4. Consumer side: _get_env_config() must parse it back into a list.
+    from tools.terminal_tool import _get_env_config, _create_environment
+    cfg = _get_env_config()
+    assert cfg["env_type"] == "docker"
+    assert cfg["docker_volumes"] == ["/host:/container"]
+
+    # 5. Fresh-container path: disable cross-process reuse so __init__ has no
+    #    pre-existing container to attach to — the only way -v host:container
+    #    can land in the run argv is through volume_args.
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    container_config = {
+        "container_cpu": cfg["container_cpu"],
+        "container_memory": cfg["container_memory"],
+        "container_disk": cfg["container_disk"],
+        "container_persistent": cfg["container_persistent"],
+        "modal_mode": cfg["modal_mode"],
+        "docker_volumes": cfg["docker_volumes"],
+        "docker_mount_cwd_to_workspace": cfg["docker_mount_cwd_to_workspace"],
+        "docker_forward_env": cfg["docker_forward_env"],
+        "docker_env": cfg["docker_env"],
+        "docker_run_as_host_user": cfg["docker_run_as_host_user"],
+        "docker_extra_args": cfg["docker_extra_args"],
+        "docker_network": cfg["docker_network"],
+        "docker_persist_across_processes": False,
+        "docker_orphan_reaper": False,
+    }
+    _create_environment(
+        env_type="docker",
+        image="python:3.11",
+        cwd=cfg["cwd"],
+        timeout=cfg["timeout"],
+        container_config=container_config,
+        task_id="e2e-fresh-vol-test",
+    )
+
+    run_calls = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_calls, "fresh-container path must invoke docker run"
+    run_args = run_calls[0][0]
+    run_args_str = " ".join(run_args)
+    # The actual reviewer claim was: "the configured mount is still absent"
+    # on a fresh container.  The -v /host:/container pair must be present.
+    assert "-v" in run_args, (
+        f"docker run argv has no -v flags at all (volume_args empty): {run_args}"
+    )
+    assert "/host:/container" in run_args_str, (
+        f"profile terminal.docker_volumes /host:/container not in docker run "
+        f"argv: {run_args}"
+    )
+
+
+def test_user_docker_volumes_appear_in_fresh_container_run(monkeypatch, tmp_path):
+    """Unit-level pin for the volume_args loop on a fresh container.
+
+    Complements the profile-flow E2E test above by exercising the same path
+    but with the volumes list passed directly to DockerEnvironment (no env
+    var parsing involved).  If the volume_args loop ever silently drops
+    entries, this fails immediately — the profile-flow test would catch it
+    later but only after a longer setup chain.
+    """
+    host_dir = tmp_path / "shared"
+    host_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        volumes=[f"{host_dir}:/shared"],
+        persist_across_processes=False,  # fresh container — no reuse possible
+    )
+
+    run_calls = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_calls, "fresh container path must invoke docker run"
+    run_args = run_calls[0][0]
+    run_args_str = " ".join(run_args)
+    assert f"{host_dir}:/shared" in run_args_str, (
+        f"user-supplied volume not in fresh docker run argv: {run_args}"
+    )

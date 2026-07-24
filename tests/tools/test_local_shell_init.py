@@ -116,6 +116,39 @@ class TestPrependShellInit:
         # quote is escaped as '\'' rather than breaking the outer quoting.
         assert "o'\\''malley" in wrapped
 
+    def test_repins_hermes_bin_dir_after_rc_sources(self):
+        """The re-pin export must come AFTER the source lines so it wins
+        over any PATH prepend an rc file performed (first-occurrence-wins).
+        """
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value="/opt/hermes-venv/bin",
+        ):
+            wrapped = _prepend_shell_init("echo hi", ["/tmp/a.sh"])
+
+        assert "export PATH='/opt/hermes-venv/bin':\"$PATH\"" in wrapped
+        assert wrapped.index("/tmp/a.sh") < wrapped.index("/opt/hermes-venv/bin")
+        # The command itself still follows the prelude.
+        assert wrapped.rstrip().endswith("echo hi")
+
+    def test_repin_skipped_when_bin_dir_unresolved(self):
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value=None,
+        ):
+            wrapped = _prepend_shell_init("echo hi", ["/tmp/a.sh"])
+
+        assert "export PATH=" not in wrapped
+
+    def test_repin_escapes_single_quotes_in_bin_dir(self):
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value="/opt/o'malley/bin",
+        ):
+            wrapped = _prepend_shell_init("echo hi", ["/tmp/a.sh"])
+
+        assert "o'\\''malley" in wrapped
+
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash"),
@@ -224,3 +257,44 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+    def test_rc_path_prepend_cannot_shadow_running_hermes(
+        self, tmp_path, monkeypatch
+    ):
+        """Reproduces the multi-instance shadowing case.
+
+        Two fake installs each ship a ``hermes`` shim. The gateway runs from
+        install A while ``~/.bashrc`` prepends install B's bin dir — a common
+        leftover on machines that ran an older per-instance install (e.g.
+        ``export PATH="$HOME/.hermes/hermes-agent/venv/bin:$PATH"``). Without
+        the post-source re-pin, the login snapshot captures B first and bare
+        ``hermes`` resolves to the wrong install for every terminal call.
+        """
+        ours = tmp_path / "ours" / "bin"
+        theirs = tmp_path / "theirs" / "bin"
+        for bin_dir, tag in ((ours, "OURS"), (theirs, "THEIRS")):
+            bin_dir.mkdir(parents=True)
+            shim = bin_dir / "hermes"
+            shim.write_text(f"#!/bin/sh\necho {tag}\n")
+            shim.chmod(0o755)
+
+        bashrc = tmp_path / ".bashrc"
+        bashrc.write_text(f'export PATH="{theirs}:$PATH"\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ), patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value=str(ours),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            try:
+                result = env.execute('command -v hermes; hermes')
+            finally:
+                env.cleanup()
+
+        output = result.get("output", "")
+        assert "OURS" in output
+        assert "THEIRS" not in output

@@ -7770,22 +7770,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Also dump stacks to a rotating file for off-line analysis when
         # the gateway is running under a service manager that doesn't
         # capture stderr.
-        try:
-            _log_dir = getattr(self.config, "log_dir", None) or os.path.join(
-                os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
-                "logs",
-            )
-            _faulthandler_path = os.path.join(_log_dir, "gateway_faulthandler.log")
-            os.makedirs(_log_dir, exist_ok=True)
-            _fh = open(_faulthandler_path, "a", encoding="utf-8")
-            faulthandler.register(
-                signal.SIGUSR2,
-                file=_fh,
-                all_threads=True,
-                chain=True,
-            )
-        except Exception:
-            logger.debug("Could not set up faulthandler file logging", exc_info=True)
+        # faulthandler.register() and SIGUSR2 are POSIX-only; skip the
+        # signal-triggered file dump on Windows (faulthandler.enable()
+        # above still covers fatal-error dumps there).
+        _sigusr2 = getattr(signal, "SIGUSR2", None)
+        if _sigusr2 is not None and hasattr(faulthandler, "register"):
+            try:
+                _log_dir = getattr(self.config, "log_dir", None) or os.path.join(
+                    os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
+                    "logs",
+                )
+                _faulthandler_path = os.path.join(_log_dir, "gateway_faulthandler.log")
+                os.makedirs(_log_dir, exist_ok=True)
+                _fh = open(_faulthandler_path, "a", encoding="utf-8")
+                faulthandler.register(
+                    _sigusr2,
+                    file=_fh,
+                    all_threads=True,
+                    chain=True,
+                )
+            except Exception:
+                logger.debug("Could not set up faulthandler file logging", exc_info=True)
 
         try:
             self._gateway_loop = asyncio.get_running_loop()

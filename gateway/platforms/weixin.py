@@ -939,6 +939,35 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _coerce_numeric_config(
+    extra: Dict[str, Any],
+    *,
+    key: str,
+    env_var: str,
+    default: Any,
+    cast: Any,
+) -> Any:
+    """Coerce numeric config from ``extra``/env while preserving explicit zeroes."""
+    raw = extra.get(key)
+    source = f"config.extra.{key}"
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = os.getenv(env_var)
+        source = env_var
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "weixin: invalid %s value %r from %s; using default %r",
+            key,
+            raw,
+            source,
+            default,
+        )
+        return default
+
+
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
@@ -1166,15 +1195,26 @@ class WeixinAdapter(BasePlatformAdapter):
         self._cdn_base_url = str(
             extra.get("cdn_base_url") or get_secret("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
         ).strip().rstrip("/")
-        self._send_chunk_delay_seconds = float(
-            extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
+        self._send_chunk_delay_seconds = _coerce_numeric_config(
+            extra,
+            key="send_chunk_delay_seconds",
+            env_var="WEIXIN_SEND_CHUNK_DELAY_SECONDS",
+            default=1.5,
+            cast=float,
         )
-        self._send_chunk_retries = int(
-            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "4")
+        self._send_chunk_retries = _coerce_numeric_config(
+            extra,
+            key="send_chunk_retries",
+            env_var="WEIXIN_SEND_CHUNK_RETRIES",
+            default=4,
+            cast=int,
         )
-        self._send_chunk_retry_delay_seconds = float(
-            extra.get("send_chunk_retry_delay_seconds")
-            or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
+        self._send_chunk_retry_delay_seconds = _coerce_numeric_config(
+            extra,
+            key="send_chunk_retry_delay_seconds",
+            env_var="WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS",
+            default=1.0,
+            cast=float,
         )
         self._send_text_gate = asyncio.Lock()
         self._rate_limit_circuit_threshold = max(

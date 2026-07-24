@@ -238,6 +238,74 @@ class TestWeixinConfig:
 
         assert config.get_connected_platforms() == []
 
+    def test_adapter_ignores_invalid_chunk_env_values_and_uses_defaults(self):
+        with patch.dict(
+            os.environ,
+            {
+                "WEIXIN_SEND_CHUNK_DELAY_SECONDS": "abc",
+                "WEIXIN_SEND_CHUNK_RETRIES": "xyz",
+                "WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS": "NaNnope",
+            },
+            clear=False,
+        ), patch.object(weixin.logger, "warning") as warning_mock:
+            adapter = WeixinAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="test-token",
+                    extra={"account_id": "test-account"},
+                )
+            )
+
+        assert adapter._send_chunk_delay_seconds == 1.5
+        assert adapter._send_chunk_retries == 4
+        assert adapter._send_chunk_retry_delay_seconds == 1.0
+        assert warning_mock.call_count == 3
+
+    def test_adapter_preserves_explicit_zero_chunk_settings(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "send_chunk_delay_seconds": 0,
+                    "send_chunk_retries": 0,
+                    "send_chunk_retry_delay_seconds": 0,
+                },
+            )
+        )
+
+        assert adapter._send_chunk_delay_seconds == 0.0
+        assert adapter._send_chunk_retries == 0
+        assert adapter._send_chunk_retry_delay_seconds == 0.0
+
+    def test_adapter_explicit_zero_chunk_settings_override_env_values(self):
+        with patch.dict(
+            os.environ,
+            {
+                "WEIXIN_SEND_CHUNK_DELAY_SECONDS": "9.5",
+                "WEIXIN_SEND_CHUNK_RETRIES": "7",
+                "WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS": "2.5",
+            },
+            clear=False,
+        ):
+            adapter = WeixinAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="test-token",
+                    extra={
+                        "account_id": "test-account",
+                        "send_chunk_delay_seconds": 0,
+                        "send_chunk_retries": 0,
+                        "send_chunk_retry_delay_seconds": 0,
+                    },
+                )
+            )
+
+        assert adapter._send_chunk_delay_seconds == 0.0
+        assert adapter._send_chunk_retries == 0
+        assert adapter._send_chunk_retry_delay_seconds == 0.0
+
 
 class TestWeixinStatePersistence:
     def test_save_weixin_account_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):

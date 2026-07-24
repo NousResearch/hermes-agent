@@ -611,6 +611,253 @@ class TestCallbackPortReservation:
 
 
 # ---------------------------------------------------------------------------
+# Callback listener thread/socket cleanup
+#
+# mcp_tool.py's initial-connect retry ladder catches a bare asyncio.TimeoutError
+# from `asyncio.wait_for(session.initialize(), timeout=connect_timeout)` (not
+# classified as an OAuth error by _is_auth_error) and retries, reusing the SAME
+# cached OAuthClientProvider/callback port. Before this fix, the callback
+# HTTPServer's listener thread blocked forever in handle_request() (server.timeout
+# defaults to None), so server_close() from the cancelled coroutine did not free
+# the port — the retry's _wait() collided with OSError: Address already in use.
+# ---------------------------------------------------------------------------
+
+class TestCallbackListenerCleanup:
+    """A timed-out/cancelled callback waiter must release its thread and port
+    before returning, so a same-provider retry never hits 'address already
+    in use'."""
+
+    @staticmethod
+    def _port_is_free(port: int) -> bool:
+        """Can a *new* listener bind here the way production retries do?
+
+        SO_REUSEADDR (matching server.allow_reuse_address in mcp_oauth.py)
+        so an expected, harmless TIME_WAIT from the just-served client
+        connection of a successful callback doesn't register as "in use" —
+        only an actively bound/LISTENing socket should fail this probe.
+        """
+        import socket as sock
+        s = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+        s.setsockopt(sock.SOL_SOCKET, sock.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
+
+    @staticmethod
+    def _listener_threads():
+        import threading
+        return [t for t in threading.enumerate() if t.name.startswith("oauth-callback-")]
+
+    @staticmethod
+    def _nothing_listening(port: int) -> bool:
+        """True if no LISTENer accepts new connections on this port.
+
+        Unlike a bind() probe, this is unaffected by the harmless TIME_WAIT a
+        just-served client connection leaves behind on the same local port
+        (bind() with SO_REUSEADDR can still legitimately fail against that
+        TIME_WAIT on some kernels) — a connect() attempt only succeeds if
+        something is actively LISTENing, which is the invariant that
+        actually matters for "did the listener leak".
+        """
+        import socket as sock
+        s = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+        s.settimeout(0.2)
+        try:
+            s.connect(("127.0.0.1", port))
+            return False  # something accepted us — still listening
+        except (ConnectionRefusedError, OSError):
+            return True
+        finally:
+            s.close()
+
+    def _wait_for_listener_threads_to_exit(self, timeout: float = 3.0) -> None:
+        import time
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and any(t.is_alive() for t in self._listener_threads()):
+            time.sleep(0.05)
+
+    def test_timeout_terminates_listener_thread(self, monkeypatch):
+        """Item 1: a timed-out waiter's HTTP listener thread must not outlive it."""
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))  # EOF, no paste
+
+        port = mod._reserve_callback_port()
+        waiter = mod._make_callback_waiter(port)
+
+        async def drive():
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(waiter(), timeout=0.6)
+
+        asyncio.run(drive())
+        self._wait_for_listener_threads_to_exit()
+
+        assert not any(t.is_alive() for t in self._listener_threads()), (
+            "OAuth callback listener thread leaked past cancellation"
+        )
+
+    def test_port_reusable_after_timeout(self, monkeypatch):
+        """Item 2: the port must be bindable again shortly after the waiter exits."""
+        import time
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
+
+        port = mod._reserve_callback_port()
+        waiter = mod._make_callback_waiter(port)
+
+        async def drive():
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(waiter(), timeout=0.6)
+
+        asyncio.run(drive())
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not self._port_is_free(port):
+            time.sleep(0.05)
+
+        assert self._port_is_free(port), "callback port still bound after waiter exited"
+
+    def test_retry_reuses_same_port_without_collision(self, monkeypatch):
+        """Items 3 & 4: mirrors mcp_tool.py's initial-connect retry, which reuses
+        the SAME cached OAuthClientProvider (hence the same _make_callback_waiter
+        closure/port) after the outer connect_timeout fires. The second attempt
+        must not raise OSError('Address already in use')."""
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
+
+        port = mod._reserve_callback_port()
+        waiter = mod._make_callback_waiter(port)  # one closure, like one cached provider
+
+        async def drive():
+            # Attempt 1 — simulates the outer 60s connect_timeout firing.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(waiter(), timeout=0.6)
+            # Attempt 2 — the generic retry, same port/closure. Must NOT be an
+            # OSError/OAuthNonInteractiveError("already in use"); a further
+            # timeout is fine since no real callback is ever delivered here.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(waiter(), timeout=0.6)
+
+        asyncio.run(drive())
+
+    def test_cached_token_does_not_create_callback_listener(self, tmp_path, monkeypatch):
+        """Item 5: building a provider with a valid cached token must not create
+        any oauth-callback listener thread as a side effect."""
+        pytest.importorskip("mcp.client.auth")
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        monkeypatch.setattr(mod.sys, "stdin", mock_stdin)
+
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "atlassian.json").write_text(json.dumps({
+            "access_token": "cached", "token_type": "Bearer",
+        }))
+
+        auth = build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
+        assert auth is not None
+        assert self._listener_threads() == []
+
+    def test_successful_callback_still_works(self, monkeypatch):
+        """Item 6: a real callback hit still completes normally and still cleans
+        up its thread/port afterward."""
+        import threading
+        import time
+        import urllib.request
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+
+        port = mod._reserve_callback_port()
+        waiter = mod._make_callback_waiter(port)
+
+        async def drive():
+            task = asyncio.create_task(waiter())
+            await asyncio.sleep(0.2)
+
+            def hit():
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/callback?code=abc123&state=xyz", timeout=5,
+                )
+
+            threading.Thread(target=hit, daemon=True).start()
+            return await asyncio.wait_for(task, timeout=10)
+
+        code, state = asyncio.run(drive())
+        assert code == "abc123"
+        assert state == "xyz"
+
+        self._wait_for_listener_threads_to_exit()
+        assert not any(t.is_alive() for t in self._listener_threads())
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not self._nothing_listening(port):
+            time.sleep(0.05)
+        assert self._nothing_listening(port), "listener still accepting connections after success"
+
+    def test_pasted_callback_still_works(self, monkeypatch):
+        """Item 7: pasted redirect URL still resolves normally."""
+        import tools.mcp_oauth as mod
+
+        mod._oauth_port = mod._find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "http://127.0.0.1/callback?code=pasted42&state=st9\n"),
+        )
+
+        async def instant_sleep(_seconds):
+            pass
+
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            code, state = asyncio.run(_wait_for_callback())
+        assert code == "pasted42"
+        assert state == "st9"
+
+    def test_cancellation_and_timeout_perform_same_cleanup(self, monkeypatch):
+        """Item 8: explicit task.cancel() must trigger identical thread/port
+        cleanup as the natural timeout path."""
+        import time
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
+
+        port = mod._reserve_callback_port()
+        waiter = mod._make_callback_waiter(port)
+
+        async def drive():
+            task = asyncio.create_task(waiter())
+            await asyncio.sleep(0.3)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(drive())
+        self._wait_for_listener_threads_to_exit()
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not self._port_is_free(port):
+            time.sleep(0.05)
+
+        assert not any(t.is_alive() for t in self._listener_threads())
+        assert self._port_is_free(port)
+
+
+# ---------------------------------------------------------------------------
 # remove_oauth_tokens
 # ---------------------------------------------------------------------------
 

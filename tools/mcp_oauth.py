@@ -166,6 +166,12 @@ def _find_free_port() -> int:
 _reserved_sockets: "dict[int, socket.socket]" = {}
 _MAX_RESERVED_SOCKETS = 8
 
+# Bound on how long _wait()'s cleanup waits for the callback listener thread
+# to notice its stop signal and exit before giving up and logging a warning.
+# The thread itself checks in at most every poll_interval (0.5s), so this is
+# generous headroom, not the expected wait.
+_LISTENER_JOIN_TIMEOUT = 2.0
+
 
 def _reserve_callback_port() -> int:
     """Pick an ephemeral callback port and keep its socket bound.
@@ -803,6 +809,9 @@ def _make_callback_waiter(port: int):
 
         handler_cls, result = _make_callback_handler()
 
+        timeout = 300.0
+        poll_interval = 0.5
+
         # Start a temporary server on this flow's port, adopting the socket
         # reserved at port-selection time when one exists. Holding the bound
         # socket from _reserve_callback_port() until here closes the TOCTOU
@@ -815,6 +824,17 @@ def _make_callback_waiter(port: int):
             server = HTTPServer(
                 ("127.0.0.1", port), handler_cls, bind_and_activate=False
             )
+            # BaseServer.timeout defaults to None, so handle_request() blocks
+            # in an uninterruptible selector.select(timeout=None) forever if no
+            # request ever arrives. Bounding it to poll_interval lets the
+            # listener thread notice _stop_event on its own between requests —
+            # without this, closing the socket from the coroutine's cleanup does
+            # not wake a thread already blocked inside handle_request(), the
+            # port stays bound, and a same-provider retry (mcp_tool.py reusing
+            # the cached OAuthClientProvider/callback port after its outer
+            # connect_timeout fires) collides with OSError: address already in
+            # use. See the investigation behind this fix for the full trace.
+            server.timeout = poll_interval
             reserved = _reserved_sockets.pop(port, None)
             if reserved is not None:
                 # Adopt the reserved (already bound) socket and start listening.
@@ -832,13 +852,31 @@ def _make_callback_waiter(port: int):
             # collided. build_oauth_auth does not start its own callback server,
             # so there is nothing to poll here; surface a clear, actionable error
             # instead of a misleading "timed out".
+            try:
+                server.server_close()
+            except (NameError, OSError):
+                pass
             raise OAuthNonInteractiveError(
                 f"OAuth callback port {port} is already in use ({exc}). "
                 "Close any other in-progress login, or set a free `oauth.redirect_port` "
                 "in the server config, then retry."
             ) from exc
 
-        server_thread = threading.Thread(target=server.handle_request, daemon=True)
+        # stop_event lets the thread exit its own accord once this coroutine is
+        # done with it (success, error, timeout, or cancellation) instead of
+        # relying solely on server_close() to interrupt an in-flight
+        # handle_request() call from another thread (see server.timeout above).
+        stop_event = threading.Event()
+
+        def _serve_until_stopped() -> None:
+            while not stop_event.is_set():
+                if result["auth_code"] is not None or result["error"] is not None:
+                    return
+                server.handle_request()  # bounded by server.timeout, see above
+
+        server_thread = threading.Thread(
+            target=_serve_until_stopped, name=f"oauth-callback-{port}", daemon=True,
+        )
         server_thread.start()
 
         # Optional paste-fallback thread: only on interactive TTYs. Reads one
@@ -859,8 +897,6 @@ def _make_callback_waiter(port: int):
             )
             paste_thread.start()
 
-        timeout = 300.0
-        poll_interval = 0.5
         elapsed = 0.0
         try:
             while elapsed < timeout:
@@ -869,7 +905,27 @@ def _make_callback_waiter(port: int):
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
         finally:
+            # Deterministic cleanup on every exit path (success, OAuth error,
+            # pasted callback, timeout, CancelledError, or any other
+            # exception): signal the listener thread to stop, close the
+            # server, then join with a bounded timeout so the port is
+            # verifiably free before this coroutine returns control to a
+            # caller that might immediately retry (mcp_tool.py's initial-
+            # connect ladder does exactly this after a connect_timeout).
+            stop_event.set()
             server.server_close()
+            # join() is a blocking call — run it off the event loop thread so a
+            # slow-to-notice listener thread (bounded by server.timeout, not
+            # instant) cannot stall every other coroutine sharing this loop
+            # (e.g. Hermes's other concurrent MCP server connections).
+            await asyncio.to_thread(server_thread.join, _LISTENER_JOIN_TIMEOUT)
+            if server_thread.is_alive():
+                logger.warning(
+                    "MCP OAuth callback listener thread for port %s did not "
+                    "terminate within %.1fs; the port may remain unavailable "
+                    "for a subsequent retry.",
+                    port, _LISTENER_JOIN_TIMEOUT,
+                )
 
         if result["error"] == _USER_SKIPPED_SENTINEL:
             raise OAuthNonInteractiveError("user_skipped")

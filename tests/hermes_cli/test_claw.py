@@ -672,6 +672,42 @@ class TestPrintMigrationReport:
         assert "Migrated" in captured.out
         assert "Full report saved to" in captured.out
 
+    def test_execute_report_does_not_say_secrets_disabled_when_key_scan_found_nothing(self, capsys):
+        report = {
+            "summary": {"migrated": 1, "skipped": 1, "conflict": 0, "error": 0},
+            "items": [
+                {"kind": "soul", "status": "migrated", "destination": "/home/user/.hermes/SOUL.md"},
+                {"kind": "provider-keys", "status": "skipped", "reason": "No provider API keys found"},
+            ],
+            "output_dir": "/home/user/.hermes/migration/openclaw/20250312T120000",
+            "migrate_secrets": True,
+        }
+
+        claw_mod._print_migration_report(report, dry_run=False)
+        captured = capsys.readouterr()
+
+        assert "secrets migration is disabled" not in captured.out
+
+    def test_execute_report_warns_when_provider_keys_skipped_because_secrets_disabled(self, capsys):
+        report = {
+            "summary": {"migrated": 1, "skipped": 1, "conflict": 0, "error": 0},
+            "items": [
+                {"kind": "soul", "status": "migrated", "destination": "/home/user/.hermes/SOUL.md"},
+                {
+                    "kind": "provider-keys",
+                    "status": "skipped",
+                    "reason": "Secret migration disabled. Re-run with --migrate-secrets to import provider API keys.",
+                },
+            ],
+            "output_dir": "/home/user/.hermes/migration/openclaw/20250312T120000",
+            "migrate_secrets": False,
+        }
+
+        claw_mod._print_migration_report(report, dry_run=False)
+        captured = capsys.readouterr()
+
+        assert "secrets migration is disabled" in captured.out
+
     def test_empty_report(self, capsys):
         report = {
             "summary": {"migrated": 0, "skipped": 0, "conflict": 0, "error": 0},

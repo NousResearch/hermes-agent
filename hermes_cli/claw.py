@@ -792,10 +792,19 @@ def _print_migration_report(report: dict, dry_run: bool):
     elif migrated:
         print()
         print_success("Migration complete!")
-        # Warn if API keys were skipped (migrate_secrets not enabled)
+        # Warn only when provider keys were skipped because secret migration was
+        # disabled. A provider-keys skip can also mean the scan ran and found
+        # nothing new (or all values were already present), which should not tell
+        # the user to re-run with a flag they already supplied.
+        secrets_disabled = report.get("migrate_secrets") is False
         skipped_keys = [
             i for i in report.get("items", [])
-            if i.get("kind") == "provider-keys" and i.get("status") == "skipped"
+            if i.get("kind") == "provider-keys"
+            and i.get("status") == "skipped"
+            and (
+                secrets_disabled
+                or "Secret migration disabled" in str(i.get("reason", ""))
+            )
         ]
         if skipped_keys:
             print()

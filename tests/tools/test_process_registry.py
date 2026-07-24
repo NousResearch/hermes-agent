@@ -470,6 +470,34 @@ class TestStdinHelpers:
         pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
+    def test_submit_stdin_pty_mode_sends_cr(self, registry, monkeypatch):
+        """PTY Enter is \\r — what a real keyboard sends. Raw-mode TUIs bind
+        Enter to \\r and ignore \\n; canonical-mode children still see \\n via
+        the tty driver's ICRNL mapping.
+        """
+        monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        result = registry.submit_stdin(s.id, "hello")
+
+        pty.write.assert_called_once_with(b"hello\r")
+        assert result["status"] == "ok"
+
+    def test_submit_stdin_pipe_mode_sends_newline(self, registry):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        s = _make_session()
+        s.process = proc
+        registry._running[s.id] = s
+
+        result = registry.submit_stdin(s.id, "hello")
+
+        proc.stdin.write.assert_called_once_with("hello\n")
+        assert result["status"] == "ok"
+
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 

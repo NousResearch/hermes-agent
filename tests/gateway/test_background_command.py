@@ -5,6 +5,7 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -46,6 +47,42 @@ def _make_runner():
     runner.hooks = HookRegistry()
 
     return runner
+
+
+def _assert_same_file_path(actual: str, expected: str) -> None:
+    try:
+        if os.path.samefile(actual, expected):
+            return
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    assert os.path.normcase(os.path.normpath(actual)) == os.path.normcase(
+        os.path.normpath(expected)
+    )
+
+
+def test_same_file_path_assertion_accepts_windows_shortname_alias(monkeypatch):
+    """Path assertions should accept aliases that resolve to the same file."""
+
+    calls = []
+
+    def fake_samefile(actual: str, expected: str) -> bool:
+        calls.append((actual, expected))
+        return True
+
+    monkeypatch.setattr(os.path, "samefile", fake_samefile)
+
+    _assert_same_file_path(
+        r"C:\Users\IVANPE~1\AppData\Local\Temp\bg_media\clip.ogg",
+        r"C:\Users\Ivan Pervushin\AppData\Local\Temp\bg_media\clip.ogg",
+    )
+
+    assert calls == [
+        (
+            r"C:\Users\IVANPE~1\AppData\Local\Temp\bg_media\clip.ogg",
+            r"C:\Users\Ivan Pervushin\AppData\Local\Temp\bg_media\clip.ogg",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -352,13 +389,13 @@ class TestRunBackgroundTask:
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            _assert_same_file_path(mock_adapter.send_voice.call_args.kwargs["audio_path"], _ogg)
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            _assert_same_file_path(mock_adapter.send_video.call_args.kwargs["video_path"], _mp4)
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            _assert_same_file_path(mock_adapter.send_image_file.call_args.kwargs["image_path"], _png)
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            _assert_same_file_path(mock_adapter.send_document.call_args.kwargs["file_path"], _pdf)
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)

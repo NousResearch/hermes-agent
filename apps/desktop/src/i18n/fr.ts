@@ -1,0 +1,486 @@
+import { defineLocale } from './define-locale'
+
+export const fr = defineLocale({
+  common: {
+    apply: 'Appliquer',
+    back: 'Retour',
+    save: 'Enregistrer',
+    saving: 'Enregistrement…',
+    cancel: 'Annuler',
+    change: 'Modifier',
+    choose: 'Choisir',
+    clear: 'Effacer',
+    close: 'Fermer',
+    collapse: 'Réduire',
+    confirm: 'Confirmer',
+    connect: 'Connecter',
+    connecting: 'Connexion…',
+    continue: 'Continuer',
+    copied: 'Copié',
+    copy: 'Copier',
+    copyFailed: 'Échec de la copie',
+    delete: 'Supprimer',
+    docs: 'Documentation',
+    done: 'Terminé',
+    error: 'Erreur',
+    failed: 'Échec',
+    free: 'Gratuit',
+    loading: 'Chargement…',
+    notSet: 'Non défini',
+    refresh: 'Actualiser',
+    remove: 'Retirer',
+    replace: 'Remplacer',
+    retry: 'Réessayer',
+    run: 'Exécuter',
+    send: 'Envoyer',
+    set: 'Définir',
+    skip: 'Ignorer',
+    update: 'Mettre à jour',
+    on: 'Activé',
+    off: 'Désactivé'
+  },
+
+  boot: {
+    ready: 'Hermes Desktop est prêt',
+    desktopBootFailedWithMessage: message => `Le démarrage du bureau a échoué : ${message}`,
+    steps: {
+      connectingGateway: 'Connexion à la passerelle du bureau',
+      loadingSettings: 'Chargement des paramètres Hermes',
+      loadingSessions: 'Chargement des sessions récentes',
+      startingDesktopConnection: 'Démarrage de la connexion au bureau',
+      startingHermesDesktop: 'Démarrage de Hermes Desktop…'
+    },
+    errors: {
+      backgroundExited: 'Le processus Hermes en arrière-plan s’est arrêté.',
+      backgroundExitedDuringStartup: 'Le processus Hermes en arrière-plan s’est arrêté pendant le démarrage.',
+      backendStopped: 'Le backend s’est arrêté',
+      desktopBootFailed: 'Le démarrage du bureau a échoué',
+      gatewaySignInRequired: 'Connexion à la passerelle requise',
+      ipcBridgeUnavailable: 'Le pont IPC du bureau est indisponible.'
+    },
+    failure: {
+      title: 'Hermes n’a pas pu démarrer',
+      description:
+        'La passerelle en arrière-plan ne s’est pas lancée. Essayez l’une des étapes de récupération ci-dessous. Rien ici ne supprime vos discussions ou vos paramètres.',
+      remoteTitle: 'Connexion à la passerelle distante requise',
+      remoteDescription:
+        'Votre session de passerelle distante a expiré. Reconnectez-vous pour rétablir la connexion. Rien ici ne supprime vos discussions ou vos paramètres.',
+      retry: 'Réessayer',
+      repairInstall: 'Réparer l’installation',
+      useLocalGateway: 'Utiliser la passerelle locale',
+      openLogs: 'Ouvrir les journaux',
+      repairHint: 'La réparation relance l’installateur et peut prendre quelques minutes sur une machine fraîchement installée.',
+      remoteSignInHint:
+        'Ouvre la fenêtre de connexion de la passerelle. Utilisez la passerelle locale pour basculer vers le backend intégré.',
+      hideRecentLogs: 'Masquer les journaux récents',
+      showRecentLogs: 'Afficher les journaux récents',
+      signedInTitle: 'Connecté',
+      signedInMessage: 'Reconnexion à la passerelle distante…',
+      signInIncompleteTitle: 'Connexion incomplète',
+      signInIncompleteMessage: 'La fenêtre de connexion a été fermée avant la fin de l’authentification.',
+      signInFailed: 'Échec de la connexion',
+      signInToRemoteGateway: 'Se connecter à la passerelle distante',
+      signInWithProvider: provider => `Se connecter avec ${provider}`,
+      identityProvider: 'votre fournisseur d’identité'
+    }
+  },
+
+  notifications: {
+    region: 'Notifications',
+    hide: 'Masquer',
+    show: 'Afficher',
+    more: count => `${count} notification${count === 1 ? '' : 's'} de plus`,
+    clearAll: 'Tout effacer',
+    dismiss: 'Fermer la notification',
+    details: 'Détails',
+    copyDetail: 'Copier les détails',
+    copyDetailFailed: 'Échec de la copie des détails de la notification',
+    backendOutOfDateTitle: 'Backend obsolète',
+    backendOutOfDateMessage:
+      'Votre backend Hermes est plus ancien que cette version du bureau et peut ne pas fonctionner correctement. Mettez-le à jour pour les aligner.',
+    updateHermes: 'Mettre à jour Hermes',
+    updateReadyTitle: 'Mise à jour prête',
+    updateReadyMessage: count => `${count} nouvelle${count === 1 ? '' : 's'} mise à jour${count === 1 ? '' : 's'} disponible${count === 1 ? '' : 's'}.`,
+    seeWhatsNew: 'Voir les nouveautés',
+    errors: {
+      elevenLabsNeedsKey: 'Le STT ElevenLabs nécessite ELEVENLABS_API_KEY.',
+      elevenLabsRejectedKey: 'ElevenLabs a rejeté la clé API (401).',
+      methodNotAllowed:
+        'Le backend du bureau a rejeté cette requête (405 Méthode non autorisée). Veuillez redémarrer Hermes Desktop.',
+      microphonePermission: 'L’autorisation du microphone a été refusée.',
+      openaiRejectedApiKey: 'OpenAI a rejeté la clé API.',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI a rejeté la clé API (${status} invalid_api_key).`,
+      openaiTtsNeedsKey: 'Le TTS OpenAI nécessite VOICE_TOOLS_OPENAI_KEY ou OPENAI_API_KEY.'
+    },
+    voice: {
+      configureSpeechToText: 'Configurez la conversion parole→texte pour utiliser le mode vocal.',
+      couldNotStartSession: 'Impossible de démarrer la session vocale',
+      microphoneAccessDenied: 'Accès au microphone refusé.',
+      microphoneConstraintsUnsupported: 'Les contraintes du microphone ne sont pas prises en charge sur cet appareil.',
+      microphoneFailed: 'Échec du microphone',
+      microphoneInUse: 'Le microphone est déjà utilisé par une autre application.',
+      microphonePermissionDenied: 'L’autorisation du microphone a été refusée.',
+      microphoneStartFailed: 'Impossible de démarrer l’enregistrement du microphone.',
+      microphoneUnsupported: 'Cet environnement n’autorise pas l’enregistrement audio.',
+      noMicrophone: 'Aucun microphone trouvé.',
+      noSpeechDetected: 'Aucune parole détectée',
+      playbackFailed: 'Échec de la lecture vocale',
+      recordingFailed: 'Échec de l’enregistrement vocal',
+      transcriptionFailed: 'Échec de la transcription vocale',
+      transcriptionUnavailable: 'La transcription vocale n’est pas encore disponible.',
+      tryRecordingAgain: 'Essayez d’enregistrer à nouveau.',
+      unavailable: 'Voix indisponible'
+    },
+    native: {
+      approvalTitle: 'Approbation requise',
+      approveAction: 'Approuver',
+      rejectAction: 'Refuser',
+      inputTitle: 'Saisie requise',
+      inputBody: 'Hermes attend votre réponse.',
+      turnDoneTitle: 'Hermes a terminé',
+      turnDoneBody: 'La réponse est prête.',
+      turnErrorTitle: 'Échec du tour',
+      backgroundDoneTitle: 'Tâche en arrière-plan terminée',
+      backgroundFailedTitle: 'Tâche en arrière-plan en échec'
+    }
+  },
+
+  titlebar: {
+    hideSidebar: 'Masquer la barre latérale',
+    showSidebar: 'Afficher la barre latérale',
+    search: 'Rechercher',
+    searchTitle: 'Rechercher des sessions, vues et actions',
+    swapSidebarSides: 'Inverser les côtés de la barre latérale',
+    swapSidebarSidesTitle: 'Échanger les côtés des sessions et du navigateur de fichiers',
+    hideRightSidebar: 'Masquer la barre latérale droite',
+    showRightSidebar: 'Afficher la barre latérale droite',
+    muteHaptics: 'Couper les retours haptiques',
+    unmuteHaptics: 'Rétablir les retours haptiques',
+    openSettings: 'Ouvrir les paramètres',
+    openKeybinds: 'Raccourcis clavier'
+  },
+
+  keybinds: {
+    title: 'Raccourcis clavier',
+    subtitle: open => `Cliquez sur un raccourci pour le redéfinir · ${open} rouvre ce panneau.`,
+    rebind: 'Redéfinir',
+    reset: 'Rétablir la valeur par défaut',
+    resetAll: 'Tout réinitialiser',
+    pressKey: 'Appuyez sur une touche…',
+    set: 'définir',
+    conflictWith: label => `Également attribué à « ${label} »`,
+    categories: {
+      composer: 'Rédaction',
+      profiles: 'Profils',
+      session: 'Session',
+      navigation: 'Navigation',
+      view: 'Vue'
+    },
+    actions: {
+      'keybinds.openPanel': 'Ouvrir les raccourcis clavier',
+      'nav.commandPalette': 'Ouvrir la palette de commandes',
+      'nav.commandCenter': 'Ouvrir le centre de commande',
+      'nav.settings': 'Ouvrir les paramètres',
+      'nav.profiles': 'Ouvrir les profils',
+      'nav.skills': 'Ouvrir les compétences',
+      'nav.messaging': 'Ouvrir la messagerie',
+      'nav.artifacts': 'Ouvrir les artefacts',
+      'nav.cron': 'Ouvrir les tâches planifiées',
+      'nav.agents': 'Ouvrir les agents',
+      'session.new': 'Nouvelle session',
+      'session.next': 'Session suivante',
+      'session.prev': 'Session précédente',
+      'session.slot.1': 'Basculer vers la session récente 1',
+      'session.slot.2': 'Basculer vers la session récente 2',
+      'session.slot.3': 'Basculer vers la session récente 3',
+      'session.slot.4': 'Basculer vers la session récente 4',
+      'session.slot.5': 'Basculer vers la session récente 5',
+      'session.slot.6': 'Basculer vers la session récente 6',
+      'session.slot.7': 'Basculer vers la session récente 7',
+      'session.slot.8': 'Basculer vers la session récente 8',
+      'session.slot.9': 'Basculer vers la session récente 9',
+      'session.focusSearch': 'Rechercher des sessions',
+      'session.togglePin': 'Épingler / désépingler la session actuelle',
+      'composer.focus': 'Mettre le rédacteur au premier plan',
+      'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
+      'view.toggleSidebar': 'Afficher/masquer la barre des sessions',
+      'view.toggleRightSidebar': 'Afficher/masquer le navigateur de fichiers',
+      'view.showFiles': 'Afficher le navigateur de fichiers',
+      'view.showTerminal': 'Afficher le terminal',
+      'view.terminalSelection': 'Envoyer la sélection du terminal vers le rédacteur',
+      'view.closePreviewTab': 'Fermer l’onglet d’aperçu',
+      'view.flipPanes': 'Inverser les panneaux latéraux',
+      'appearance.toggleMode': 'Basculer entre clair et sombre',
+      'profile.default': 'Basculer vers le profil par défaut',
+      'profile.switch.1': 'Basculer vers le profil 1',
+      'profile.switch.2': 'Basculer vers le profil 2',
+      'profile.switch.3': 'Basculer vers le profil 3',
+      'profile.switch.4': 'Basculer vers le profil 4',
+      'profile.switch.5': 'Basculer vers le profil 5',
+      'profile.switch.6': 'Basculer vers le profil 6',
+      'profile.switch.7': 'Basculer vers le profil 7',
+      'profile.switch.8': 'Basculer vers le profil 8',
+      'profile.switch.9': 'Basculer vers le profil 9',
+      'profile.switch.10': 'Basculer vers le profil 10',
+      'profile.switch.11': 'Basculer vers le profil 11',
+      'profile.switch.12': 'Basculer vers le profil 12',
+      'profile.switch.13': 'Basculer vers le profil 13',
+      'profile.switch.14': 'Basculer vers le profil 14',
+      'profile.switch.15': 'Basculer vers le profil 15',
+      'profile.switch.16': 'Basculer vers le profil 16',
+      'profile.switch.17': 'Basculer vers le profil 17',
+      'profile.switch.18': 'Basculer vers le profil 18',
+      'profile.next': 'Profil suivant',
+      'profile.prev': 'Profil précédent',
+      'profile.toggleAll': 'Basculer l’affichage de tous les profils',
+      'profile.create': 'Créer un profil',
+      'composer.send': 'Envoyer le message',
+      'composer.newline': 'Insérer une nouvelle ligne',
+      'composer.steer': 'Guider le tour en cours',
+      'composer.sendQueued': 'Envoyer le prochain tour en file',
+      'composer.mention': 'Référencer des fichiers, dossiers, URL',
+      'composer.slash': 'Palette de commandes slash',
+      'composer.help': 'Aide rapide',
+      'composer.history': 'Faire défiler les bulles / l’historique',
+      'composer.cancel': 'Fermer la bulle · annuler le lancement'
+    }
+  },
+
+  language: {
+    label: 'Langue',
+    description: 'Choisissez la langue de l’interface du bureau.',
+    saving: 'Enregistrement de la langue…',
+    saveError: 'Échec de la mise à jour de la langue',
+    switchTo: 'Changer de langue',
+    searchPlaceholder: 'Rechercher une langue…',
+    noResults: 'Aucune langue trouvée'
+  },
+
+  settings: {
+    closeSettings: 'Fermer les paramètres',
+    exportConfig: 'Exporter la configuration',
+    importConfig: 'Importer la configuration',
+    resetToDefaults: 'Réinitialiser les valeurs par défaut',
+    resetConfirm: 'Réinitialiser tous les paramètres sur les valeurs Hermes par défaut ?',
+    exportFailed: 'Échec de l’exportation',
+    resetFailed: 'Échec de la réinitialisation',
+    nav: {
+      providers: 'Fournisseurs',
+      providerAccounts: 'Comptes',
+      providerApiKeys: 'Clés API',
+      gateway: 'Passerelle',
+      apiKeys: 'Clés et outils',
+      keysTools: 'Outils',
+      keysSettings: 'Paramètres',
+      mcp: 'MCP',
+      archivedChats: 'Discussions archivées',
+      about: 'À propos',
+      notifications: 'Notifications'
+    },
+    notifications: {
+      title: 'Notifications',
+      intro:
+        'Notifications natives du bureau, distinctes des toasts de l’application. Elles sont locales à l’appareil — chaque ordinateur conserve ses propres réglages.',
+      enableAll: 'Activer les notifications',
+      enableAllDesc: 'Interrupteur principal. Désactivez-le pour couper toutes les notifications ci-dessous.',
+      focusedHint: 'Les alertes de fin ne se déclenchent que lorsque Hermes est en arrière-plan.',
+      kinds: {
+        approval: {
+          label: 'Approbation requise',
+          description: 'Une commande attend votre approbation ou votre refus.'
+        },
+        input: {
+          label: 'Saisie requise',
+          description: 'Hermes a posé une question ou a besoin d’un mot de passe ou d’un secret.'
+        },
+        turnDone: {
+          label: 'Réponse prête',
+          description: 'Un tour s’est terminé pendant que Hermes était en arrière-plan.'
+        },
+        turnError: {
+          label: 'Tour en échec',
+          description: 'Un tour s’est terminé avec une erreur.'
+        },
+        backgroundDone: {
+          label: 'Tâche en arrière-plan terminée',
+          description: 'Une commande lancée en arrière-plan s’est terminée.'
+        }
+      },
+      test: 'Envoyer une notification de test',
+      testTitle: 'Hermes',
+      testBody: 'Les notifications fonctionnent.',
+      testSent:
+        'Test envoyé. Si rien n’apparaît, vérifiez les autorisations de notification du système ainsi que les modes Focus / Ne pas déranger.',
+      testUnsupported: 'Ce système ne prend pas en charge les notifications natives.',
+      completionSoundTitle: 'Son de fin',
+      completionSoundDesc:
+        'Joué lorsqu’un tour agent se termine. Choisissez un préréglage et prévisualisez-le ici.',
+      completionSoundPreview: 'Aperçu'
+    },
+    sections: {
+      model: 'Modèle',
+      chat: 'Discussion',
+      appearance: 'Apparence',
+      workspace: 'Espace de travail',
+      safety: 'Sécurité',
+      memory: 'Mémoire et contexte',
+      voice: 'Voix',
+      advanced: 'Avancé'
+    },
+    searchPlaceholder: {
+      about: 'À propos de Hermes Desktop',
+      config: 'Rechercher dans les paramètres…',
+      gateway: 'Connexion à la passerelle…',
+      keys: 'Rechercher des clés API…',
+      mcp: 'Rechercher des serveurs MCP…',
+      sessions: 'Rechercher des sessions archivées…'
+    },
+    modeOptions: {
+      light: { label: 'Clair', description: 'Surfaces de bureau lumineuses' },
+      dark: { label: 'Sombre', description: 'Espace de travail peu éblouissant' },
+      system: { label: 'Système', description: 'Suivre l’apparence du système' }
+    },
+    appearance: {
+      title: 'Apparence',
+      intro:
+        'Ces préférences concernent uniquement le bureau. Le mode contrôle la luminosité ; le thème contrôle la palette d’accent et le style de la surface de discussion.',
+      colorMode: 'Mode de couleur',
+      colorModeDesc: 'Choisissez un mode fixe ou laissez Hermes suivre le réglage de votre système.',
+      toolViewTitle: 'Affichage des appels d’outils',
+      toolViewDesc: 'Produit masque les charges utiles brutes des outils ; Technique affiche les entrées/sorties complètes.',
+      translucencyTitle: 'Translucidité de la fenêtre',
+      translucencyDesc: 'Voir votre bureau à travers toute la fenêtre. macOS et Windows uniquement.',
+      product: 'Produit',
+      productDesc: 'Activité d’outils lisible avec résumés concis.',
+      technical: 'Technique',
+      technicalDesc: 'Inclure les arguments/résultats bruts et les détails bas niveau.',
+      themeTitle: 'Thème',
+      themeDesc: 'Palettes du bureau uniquement. Le mode sélectionné s’applique par-dessus.',
+      themeProfileNote: profile => `Enregistré pour le profil ${profile} — chaque profil garde son propre thème.`,
+      installTitle: 'Installer depuis VS Code',
+      installDesc:
+        'Collez l’ID d’une extension Marketplace (par ex. dracula-theme.theme-dracula) pour convertir son thème couleur en palette de bureau.',
+      installPlaceholder: 'éditeur.extension',
+      installButton: 'Installer',
+      installing: 'Installation…',
+      installError: 'Impossible d’installer ce thème.',
+      installed: name => `« ${name} » installé.`,
+      removeTheme: 'Supprimer le thème',
+      importedBadge: 'Importé'
+    },
+    about: {
+      heading: 'Hermes Desktop',
+      version: value => `Version ${value}`,
+      versionUnavailable: 'Version indisponible',
+      updates: 'Mises à jour',
+      checkNow: 'Vérifier maintenant',
+      checking: 'Vérification…',
+      seeWhatsNew: 'Voir les nouveautés',
+      releaseNotes: 'Notes de version',
+      onLatest: 'Vous utilisez déjà la dernière version.',
+      installing: 'Une mise à jour est en cours d’installation.',
+      cantUpdate: "Cette version ne peut pas se mettre à jour depuis l’application.",
+      cantReach: "Impossible de joindre le serveur de mise à jour.",
+      tapCheck: 'Appuyez sur « Vérifier maintenant » pour chercher des mises à jour.',
+      updateReady: count => `Une nouvelle mise à jour est prête (${count} changement${count === 1 ? '' : 's'} inclus).`,
+      lastChecked: age => `Dernière vérification il y a ${age}`,
+      justNowSuffix: ' · à l’instant',
+      automaticUpdates: 'Mises à jour automatiques',
+      automaticUpdatesDesc:
+        'Hermes recherche automatiquement les mises à jour en arrière-plan et vous prévient lorsqu’elles sont prêtes.',
+      branchCommit: (branch, commit) => `Branche ${branch} · Commit ${commit}`,
+      never: 'jamais',
+      justNow: 'à l’instant',
+      minAgo: count => `il y a ${count} min`,
+      hoursAgo: count => `il y a ${count} h`,
+      daysAgo: count => `il y a ${count} j`
+    },
+    config: {
+      none: 'Aucun',
+      noneParen: '(aucun)',
+      notSet: 'Non défini',
+      commaSeparated: 'valeurs séparées par des virgules',
+      loading: 'Chargement de la configuration Hermes…',
+      emptyTitle: 'Rien à configurer',
+      emptyDesc: 'Cette section ne comporte aucun réglage ajustable.',
+      failedLoad: 'Échec du chargement des paramètres',
+      autosaveFailed: 'Échec de l’enregistrement automatique',
+      imported: 'Configuration importée',
+      invalidJson: 'JSON de configuration invalide'
+    },
+    credentials: {
+      pasteKey: 'Coller la clé',
+      pasteLabelKey: label => `Coller la clé ${label}`,
+      optional: 'Facultatif',
+      enterValueFirst: 'Saisissez d’abord une valeur.',
+      couldNotSave: 'Impossible d’enregistrer le secret.',
+      remove: 'Retirer',
+      or: 'ou',
+      escToCancel: 'Échap pour annuler',
+      getKey: 'Obtenir une clé',
+      saving: 'Enregistrement'
+    },
+    envActions: {
+      actionsFor: label => `Actions pour ${label}`,
+      credentialActions: 'Actions sur les secrets',
+      docs: 'Documentation',
+      hideValue: 'Masquer la valeur',
+      revealValue: 'Afficher la valeur',
+      replace: 'Remplacer',
+      set: 'Définir',
+      clear: 'Effacer'
+    },
+    gateway: {
+      loading: 'Chargement des paramètres de la passerelle…',
+      unavailableTitle: 'Paramètres de passerelle indisponibles',
+      unavailableDesc: 'Le pont IPC du bureau n’expose pas les paramètres de la passerelle.',
+      title: 'Connexion à la passerelle',
+      envOverride: 'remplacement via env',
+      intro:
+        'Hermes Desktop démarre par défaut sa propre passerelle locale. Utilisez une passerelle distante si vous voulez que cette application contrôle un backend Hermes déjà en cours d’exécution sur une autre machine ou derrière un proxy de confiance. Choisissez un profil ci-dessous pour lui donner son propre hôte distant.',
+      appliesTo: 'S’applique à',
+      allProfiles: 'Tous les profils',
+      defaultConnection: 'Connexion par défaut pour tous les profils qui n’ont pas leur propre remplacement.',
+      profileConnection: profile =>
+        `Connexion utilisée uniquement lorsque « ${profile} » est le profil actif. Réglez-la sur Local pour hériter du défaut.`,
+      envOverrideTitle: 'Des variables d’environnement contrôlent cette session de bureau.',
+      envOverrideDesc:
+        'Supprimez HERMES_DESKTOP_REMOTE_URL et HERMES_DESKTOP_REMOTE_TOKEN pour utiliser le réglage enregistré ci-dessous.',
+      localTitle: 'Passerelle locale',
+      localDesc: 'Démarrer un backend Hermes privé sur localhost. C’est le comportement par défaut et il fonctionne hors ligne.',
+      remoteTitle: 'Passerelle distante',
+      remoteDesc:
+        'Connecter cette interface de bureau à un backend Hermes distant. Les passerelles hébergées utilisent OAuth ou un identifiant et un mot de passe ; les solutions auto-hébergées peuvent utiliser un jeton de session.',
+      remoteUrlTitle: 'URL distante',
+      remoteUrlDesc:
+        'URL de base du backend distant du tableau de bord. Les préfixes de chemin sont pris en charge, par exemple /hermes.',
+      probing: 'Vérification du mode d’authentification de cette passerelle…',
+      probeError:
+        'Impossible de joindre cette passerelle pour le moment. Vérifiez l’URL — la méthode d’auth apparaîtra dès qu’elle répondra.',
+      signedIn: 'Connecté',
+      signIn: 'Se connecter',
+      signOut: 'Se déconnecter',
+      signInWith: provider => `Se connecter avec ${provider}`,
+      authTitle: 'Authentification',
+      authSignedInPassword:
+        'Cette passerelle utilise un identifiant et un mot de passe. Vous êtes connecté ; la session se rafraîchit automatiquement.',
+      authSignedInOauth:
+        'Cette passerelle utilise OAuth. Vous êtes connecté ; la session se rafraîchit automatiquement.',
+      authNeedsPassword:
+        'Cette passerelle utilise un identifiant et un mot de passe. Connectez-vous pour autoriser cette application de bureau.',
+      authNeedsOauth: provider => `Cette passerelle utilise OAuth. Connectez-vous avec ${provider} pour autoriser cette application de bureau.`,
+      tokenTitle: 'Jeton de session',
+      tokenDesc:
+        'Jeton de session du tableau de bord utilisé pour l’accès REST et WebSocket. Laissez vide pour conserver le jeton enregistré.',
+      existingToken: value => `Jeton existant ${value}`,
+      savedToken: 'enregistré',
+      pasteSessionToken: 'Coller le jeton de session',
+      testRemote: 'Tester la passerelle distante',
+      saveForRestart: 'Enregistrer pour le prochain redémarrage',
+      saveAndReconnect: 'Enregistrer et reconnecter',
+      diagnostics: 'Diagnostics',
+      diagnosticsDesc: 'Afficher desktop.log dans votre gestionnaire de fichiers — utile lorsque la passerelle ne démarre pas.',
+      openLogs: 'Ouvrir les journaux'
+    }
+  }
+})

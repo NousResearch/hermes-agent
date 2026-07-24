@@ -6,6 +6,7 @@ describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')
+    expect(normalizeLocale('fr-FR')).toBe('fr')
     expect(normalizeLocale('zh')).toBe('zh')
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh-Hans')).toBe('zh')
@@ -27,7 +28,9 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('zh-CN')).toBe(true)
     expect(isSupportedLocaleValue('zh-TW')).toBe(true)
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
+    expect(isSupportedLocaleValue('fr-FR')).toBe(true)
     expect(isSupportedLocaleValue('de')).toBe(false)
+    expect(isLocale('fr')).toBe(true)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
@@ -36,6 +39,7 @@ describe('desktop i18n languages', () => {
 
   it('returns the persisted config value for supported locales', () => {
     expect(localeConfigValue('en')).toBe('en')
+    expect(localeConfigValue('fr')).toBe('fr')
     expect(localeConfigValue('zh')).toBe('zh')
     expect(localeConfigValue('zh-hant')).toBe('zh-hant')
     expect(localeConfigValue('ja')).toBe('ja')

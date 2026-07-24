@@ -34,6 +34,9 @@ describe('desktop i18n runtime translator', () => {
 
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
+
+    setRuntimeI18nLocale('fr')
+    expect(translateNow('common.save')).toBe('Enregistrer')
   })
 
   it('translates settings copy for newly supported locales', () => {

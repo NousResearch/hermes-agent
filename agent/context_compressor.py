@@ -1245,6 +1245,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._anti_thrash_recovery_deadline = 0.0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1382,6 +1383,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._anti_thrash_recovery_deadline = 0.0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1408,6 +1410,7 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self._ineffective_compression_count = 0
+        self._anti_thrash_recovery_deadline = 0.0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
@@ -1779,6 +1782,15 @@ class ContextCompressor(ContextEngine):
     # rationale as the gpt-5.5/Codex 85% autoraise.
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
+    # Anti-thrash recovery window (#14694): once the ineffective/fallback
+    # breaker trips, automatic compaction stays blocked for this long, then
+    # ONE probe attempt is allowed (counters drop to 1 strike, so another
+    # ineffective pass re-trips immediately). Long enough that a genuinely
+    # incompressible session isn't compacting in a loop; short enough that a
+    # session which has since grown real compressible material recovers well
+    # before it rides into the provider's hard context limit.
+    _ANTI_THRASH_RECOVERY_SECONDS = 300.0
+
     @staticmethod
     def _coerce_max_tokens(value: Any) -> int | None:
         """Normalize a max_tokens value to a positive int or None.
@@ -2048,6 +2060,12 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Monotonic deadline after which a tripped anti-thrash guard grants
+        # one probation probe (#14694). 0.0 = clock not armed. Armed lazily on
+        # the first blocked evaluation; deliberately NOT durable, so a process
+        # restart with a persisted tripped counter (#69872) waits a full fresh
+        # window before probing (#54923: restart must never disarm a guard).
+        self._anti_thrash_recovery_deadline: float = 0.0
         # Consecutive completed deterministic-fallback boundaries. Unlike the
         # real-usage effectiveness counter, ordinary fitting responses must not
         # reset this breaker; only a healthy completed summary does.
@@ -2338,21 +2356,66 @@ class ContextCompressor(ContextEngine):
                     _cooldown_remaining,
                 )
             return True
-        # Anti-thrashing: back off if recent compressions were ineffective
+        # Anti-thrashing: back off if recent compressions were ineffective.
+        # The back-off must not be permanent (#14694): the tripped state was
+        # judged against the transcript as it existed THEN (e.g. a middle
+        # region too small to matter), but the conversation keeps growing and
+        # can accumulate plenty of compressible material later. Without a
+        # recovery path the session never auto-compacts again and rides into
+        # the provider's hard context limit. Recovery is a probation probe:
+        # after _ANTI_THRASH_RECOVERY_SECONDS of continuous block, allow ONE
+        # attempt by dropping the tripped counter(s) to 1 strike (persisted,
+        # so sibling agents on the same session row unblock too). If the probe
+        # is ineffective again the very next verdict re-trips the guard, so
+        # the worst case in the truly-incompressible state is one compaction
+        # attempt per recovery window — bounded, not thrash.
+        #
+        # The clock is armed lazily on the first BLOCKED evaluation rather
+        # than persisted at trip time: a fresh process that loads a durable
+        # tripped counter (#69872) therefore starts a full window blocked,
+        # preserving the restart-must-not-disarm contract (#54923).
         if (
             self._ineffective_compression_count >= 2
             or self._fallback_compression_streak >= 2
         ):
+            _now = time.monotonic()
+            if self._anti_thrash_recovery_deadline <= 0.0:
+                self._anti_thrash_recovery_deadline = (
+                    _now + self._ANTI_THRASH_RECOVERY_SECONDS
+                )
+            elif _now >= self._anti_thrash_recovery_deadline:
+                self._anti_thrash_recovery_deadline = 0.0
+                if self._ineffective_compression_count >= 2:
+                    self._record_ineffective_compression_verdict(1)
+                if self._fallback_compression_streak >= 2:
+                    self._fallback_compression_streak = 1
+                    self._persist_fallback_compression_streak()
+                if not self.quiet_mode:
+                    logger.info(
+                        "Anti-thrashing recovery: %.0fs elapsed since the "
+                        "guard tripped — allowing one compaction probe "
+                        "(ineffective=%d fallback=%d).",
+                        self._ANTI_THRASH_RECOVERY_SECONDS,
+                        self._ineffective_compression_count,
+                        self._fallback_compression_streak,
+                    )
+                return False
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped — repeated compaction attempts did not "
                     "restore healthy context. ineffective=%d fallback=%d. "
-                    "Consider /new to start fresh, or /compress <topic> for "
-                    "focused compression.",
+                    "Auto-compaction will retry once in %.0fs. Consider /new "
+                    "to start fresh, or /compress <topic> for focused "
+                    "compression.",
                     self._ineffective_compression_count,
                     self._fallback_compression_streak,
+                    max(0.0, self._anti_thrash_recovery_deadline - _now),
                 )
             return True
+        # Guard not tripped (counters were cleared by an effective compaction
+        # or a fitting real-usage reading) — disarm any pending recovery clock
+        # so a LATER trip starts its own full window.
+        self._anti_thrash_recovery_deadline = 0.0
         return False
 
     # ------------------------------------------------------------------

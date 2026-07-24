@@ -3,6 +3,7 @@ import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
+import { applyDesktopStatusbarFromConfig } from '@/store/desktop-statusbar'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -97,6 +98,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
+        applyDesktopStatusbarFromConfig(config)
         applyAutoSpeakFromConfig(config)
       } catch {
         // Config is nice-to-have; chat still works without it.

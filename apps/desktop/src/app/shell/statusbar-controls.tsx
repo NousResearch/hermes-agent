@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import type { DesktopStatusbarMode } from '@/store/desktop-statusbar'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
@@ -59,15 +61,32 @@ export type SetStatusbarItemGroup = (id: string, items: readonly StatusbarItem[]
 interface StatusbarControlsProps extends ComponentProps<'footer'> {
   leftItems?: readonly StatusbarItem[]
   items?: readonly StatusbarItem[]
+  mode?: DesktopStatusbarMode
 }
 
-export function StatusbarControls({ className, leftItems = [], items = [], ...props }: StatusbarControlsProps) {
+export function StatusbarControls({
+  className,
+  leftItems = [],
+  items = [],
+  mode = 'on',
+  ...props
+}: StatusbarControlsProps) {
+  const { t } = useI18n()
   const navigate = useNavigate()
 
-  return (
+  if (mode === 'off') {
+    return null
+  }
+
+  // Radix portals menu content under document.body, but its trigger remains in
+  // the footer with data-state="open". Key visibility off that local marker so
+  // moving focus or the pointer into the portal does not retract the bar.
+  const footer = (
     <footer
       className={cn(
         'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
+        mode === 'auto-hide' &&
+          'absolute inset-x-0 bottom-0 translate-y-full opacity-0 shadow-[0_-2px_8px_color-mix(in_srgb,var(--ui-bg-primary)_35%,transparent)] transition-[transform,opacity] duration-150 group-hover/statusbar:translate-y-0 group-hover/statusbar:opacity-100 group-focus-within/statusbar:translate-y-0 group-focus-within/statusbar:opacity-100 has-data-[state=open]:translate-y-0 has-data-[state=open]:opacity-100',
         className
       )}
       data-slot="statusbar"
@@ -93,6 +112,21 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
       </div>
     </footer>
   )
+
+  if (mode === 'auto-hide') {
+    return (
+      <div
+        aria-label={t.settings.appearance.statusbarReveal}
+        className="group/statusbar absolute inset-x-0 bottom-0 z-30 h-2 outline-none [-webkit-app-region:no-drag]"
+        data-slot="statusbar-reveal-zone"
+        tabIndex={0}
+      >
+        {footer}
+      </div>
+    )
+  }
+
+  return footer
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {

@@ -254,6 +254,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    desktop_statusbar?: string
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean

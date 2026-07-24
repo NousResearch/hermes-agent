@@ -247,6 +247,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  'display.desktop_statusbar': ['on', 'off', 'auto-hide'],
   // NOTE: memory.provider is intentionally NOT listed here. Its options are
   // discovery-driven and served by the backend config schema (merged
   // per-request in web_server._schema_with_dynamic_provider_options), so

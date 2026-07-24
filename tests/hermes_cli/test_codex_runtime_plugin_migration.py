@@ -309,6 +309,60 @@ class TestStripExistingManagedBlock:
 # ---- end-to-end migrate(, expose_hermes_tools=False) ----
 
 class TestMigrate:
+    def test_uses_codex_home_environment_by_default(self, tmp_path, monkeypatch):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        env_codex_home = tmp_path / "env-codex-home"
+        fallback_home = tmp_path / "fallback-home"
+        monkeypatch.setenv("CODEX_HOME", str(env_codex_home))
+        monkeypatch.setattr(crpm.Path, "home", lambda: fallback_home)
+
+        report = migrate(
+            {},
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=False,
+        )
+
+        assert report.target_path == env_codex_home / "config.toml"
+        assert report.written
+        assert report.target_path.is_file()
+
+    def test_explicit_codex_home_overrides_environment(self, tmp_path, monkeypatch):
+        env_codex_home = tmp_path / "env-codex-home"
+        explicit_codex_home = tmp_path / "explicit-codex-home"
+        monkeypatch.setenv("CODEX_HOME", str(env_codex_home))
+
+        report = migrate(
+            {},
+            codex_home=explicit_codex_home,
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=False,
+        )
+
+        assert report.target_path == explicit_codex_home / "config.toml"
+        assert report.target_path.is_file()
+        assert not env_codex_home.exists()
+
+    def test_blank_codex_home_environment_uses_user_default(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import codex_runtime_plugin_migration as crpm
+
+        monkeypatch.setenv("CODEX_HOME", "   ")
+        monkeypatch.setattr(crpm.Path, "home", lambda: tmp_path)
+
+        report = migrate(
+            {},
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=False,
+        )
+
+        assert report.target_path == tmp_path / ".codex" / "config.toml"
+        assert report.target_path.is_file()
+
     def test_no_servers_no_plugins_no_perms_writes_placeholder(self, tmp_path):
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,

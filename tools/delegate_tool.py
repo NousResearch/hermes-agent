@@ -1812,7 +1812,7 @@ def _run_single_child(
     import model_tools
 
     _saved_tool_names = getattr(
-        child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
+        child, "_delegate_saved_tool_names", list(model_tools._get_last_resolved_tool_names())
     )
 
     child_pool = getattr(child, "_credential_pool", None)
@@ -2380,7 +2380,7 @@ def _run_single_child(
 
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
+            model_tools._set_last_resolved_tool_names(list(saved_tool_names))
 
         # Remove child from active tracking
 
@@ -2581,7 +2581,7 @@ def delegate_task(
     # which overwrites model_tools._last_resolved_tool_names with child's toolset.
     import model_tools as _model_tools
 
-    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+    _parent_tool_names = list(_model_tools._get_last_resolved_tool_names())
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
@@ -2641,7 +2641,7 @@ def delegate_task(
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
-        _model_tools._last_resolved_tool_names = _parent_tool_names
+        _model_tools._set_last_resolved_tool_names(_parent_tool_names)
 
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,

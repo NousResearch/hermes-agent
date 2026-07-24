@@ -562,7 +562,7 @@ class TestToolNamePreservation(unittest.TestCase):
 
         parent = _make_mock_parent(depth=0)
         original_tools = ["terminal", "read_file", "web_search", "execute_code", "delegate_task"]
-        model_tools._last_resolved_tool_names = list(original_tools)
+        model_tools._set_last_resolved_tool_names(list(original_tools))
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
@@ -573,7 +573,7 @@ class TestToolNamePreservation(unittest.TestCase):
 
             delegate_task(goal="Test tool preservation", parent_agent=parent)
 
-        self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
+        self.assertEqual(model_tools._get_last_resolved_tool_names(), original_tools)
 
     def test_global_tool_names_restored_after_child_failure(self):
         """Even when the child agent raises, the global must be restored."""
@@ -581,7 +581,7 @@ class TestToolNamePreservation(unittest.TestCase):
 
         parent = _make_mock_parent(depth=0)
         original_tools = ["terminal", "read_file", "web_search"]
-        model_tools._last_resolved_tool_names = list(original_tools)
+        model_tools._set_last_resolved_tool_names(list(original_tools))
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
@@ -591,7 +591,7 @@ class TestToolNamePreservation(unittest.TestCase):
             result = json.loads(delegate_task(goal="Crash test", parent_agent=parent))
             self.assertEqual(result["results"][0]["status"], "error")
 
-        self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
+        self.assertEqual(model_tools._get_last_resolved_tool_names(), original_tools)
 
     def test_build_child_agent_does_not_raise_name_error(self):
         """Regression: _build_child_agent must not reference _saved_tool_names.
@@ -723,7 +723,7 @@ class TestToolNamePreservation(unittest.TestCase):
 
         parent = _make_mock_parent(depth=0)
         expected_tools = ["read_file", "web_search", "execute_code"]
-        model_tools._last_resolved_tool_names = list(expected_tools)
+        model_tools._set_last_resolved_tool_names(list(expected_tools))
 
         captured = {}
 

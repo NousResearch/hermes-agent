@@ -1286,6 +1286,7 @@ def init_agent(
         # client_kwargs is the same dict object as agent._client_kwargs, so
         # this mutation is reflected in the client built just below.
         agent._apply_user_default_headers()
+        agent._apply_kilo_organization_header(_effective_base)
 
         try:
             from hermes_cli.config import (

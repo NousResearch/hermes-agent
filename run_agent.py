@@ -4867,6 +4867,7 @@ class AIAgent:
     def _apply_client_headers_for_base_url(
         self,
         base_url: str,
+        credential=None,
         *,
         apply_user_headers: bool = True,
     ) -> None:
@@ -4913,6 +4914,7 @@ class AIAgent:
         # route. A credential swap to another endpoint must not inherit them.
         if apply_user_headers:
             self._apply_user_default_headers()
+        self._apply_kilo_organization_header(base_url, credential=credential)
 
         # Per-provider extra HTTP headers (providers.<name>.extra_headers /
         # custom_providers[].extra_headers) — applied last so the most
@@ -4929,6 +4931,33 @@ class AIAgent:
                 )
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
+
+    def _apply_kilo_organization_header(self, base_url: str, credential=None) -> None:
+        """Bind Kilo's organization header to the active pool credential."""
+        from hermes_cli.kilo_auth import KILO_ORG_HEADER, kilo_organization_header
+
+        headers = {
+            key: value
+            for key, value in dict(self._client_kwargs.get("default_headers") or {}).items()
+            if str(key).lower() != KILO_ORG_HEADER.lower()
+        }
+        if self.provider == "kilocode":
+            if credential is None and self._credential_pool is not None:
+                credential = self._credential_pool.current()
+            organization_id = None
+            if (
+                credential is not None
+                and getattr(credential, "provider", None) == "kilocode"
+            ):
+                extra = getattr(credential, "extra", None)
+                if isinstance(extra, dict):
+                    organization_id = extra.get("organization_id")
+            headers.update(kilo_organization_header(base_url, organization_id))
+
+        if headers:
+            self._client_kwargs["default_headers"] = headers
+        else:
+            self._client_kwargs.pop("default_headers", None)
 
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
@@ -5013,6 +5042,7 @@ class AIAgent:
             )
         self._apply_client_headers_for_base_url(
             self.base_url,
+            credential=entry,
             apply_user_headers=not route_changed,
         )
         self._replace_primary_openai_client(reason="credential_rotation")

@@ -17,6 +17,16 @@ from gateway.platforms.helpers import MessageDeduplicator
 class TestMessageDeduplicatorTTL:
     """TTL-based expiration must work regardless of cache size."""
 
+    def test_injected_clock_controls_exact_ttl_boundary(self):
+        now = [10.0]
+        dedup = MessageDeduplicator(ttl_seconds=3, clock=lambda: now[0])
+
+        assert dedup.is_duplicate("msg-1") is False
+        now[0] = 12.999
+        assert dedup.is_duplicate("msg-1") is True
+        now[0] = 13.0
+        assert dedup.is_duplicate("msg-1") is False
+
     def test_duplicate_within_ttl(self):
         """Same message within TTL window is duplicate."""
         dedup = MessageDeduplicator(ttl_seconds=60)

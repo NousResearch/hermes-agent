@@ -494,6 +494,58 @@ class TestShellFileOpsHelpers:
             "C:/Users/alice/notes.txt"
         ) == "'/c/Users/alice/notes.txt'"
 
+    def test_escape_native_exe_arg_keeps_windows_drive_forward_slash(self, monkeypatch, file_ops):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        # Native drive rewrite only applies to the local backend.
+        monkeypatch.setattr(file_ops, "_is_local_backend", lambda: True)
+        assert file_ops._escape_native_exe_arg(r"D:\Ivo\ai-costs.json") == "'D:/Ivo/ai-costs.json'"
+        assert file_ops._escape_native_exe_arg("D:/Ivo/ai-costs.json") == "'D:/Ivo/ai-costs.json'"
+        assert file_ops._escape_native_exe_arg("/d/Ivo/ai-costs.json") == "'D:/Ivo/ai-costs.json'"
+
+    def test_escape_native_exe_arg_preserves_non_local_backend_paths(self, monkeypatch, file_ops):
+        """A non-local backend (e.g. SSH) owns its own path namespace: a
+        POSIX path such as ``/mnt/d/project`` must NOT be reinterpreted as a
+        host Windows drive form even when the host is Windows (#67914)."""
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_ops, "_is_local_backend", lambda: False)
+        # /mnt/d/... matches an MSYS/WSL drive form but belongs to the
+        # remote namespace — it must pass through untouched.
+        assert (
+            file_ops._escape_native_exe_arg("/mnt/d/Projects/tools")
+            == "'/mnt/d/Projects/tools'"
+        )
+        # Plain POSIX paths were always safe and stay unchanged.
+        assert (
+            file_ops._escape_native_exe_arg("/home/user/project")
+            == "'/home/user/project'"
+        )
+
+    def test_search_with_rg_uses_native_windows_path(self, mock_env, monkeypatch):
+        """Absolute Windows paths must not be MSYS-rewritten for native rg (#67629)."""
+        import tools.environments.local as local_mod
+        from tools.file_operations import ShellFileOperations
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        ops = ShellFileOperations(mock_env)
+        ops._is_local_backend = lambda: True
+        ops._has_command = lambda cmd: cmd == "rg"
+        captured = {}
+
+        def _capture(command, cwd=None, timeout=None, stdin_data=None):
+            captured["cmd"] = command
+            from tools.file_operations import ExecuteResult
+            return ExecuteResult(stdout="", exit_code=1)
+
+        ops._exec = _capture
+        ops._search_with_rg("subscription", r"D:\Ivo\ai-costs.json", None, 10, 0, "content", 0)
+        assert "D:/Ivo/ai-costs.json" in captured["cmd"]
+        assert "/d/Ivo/ai-costs.json" not in captured["cmd"]
+
+
     def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
         import tools.environments.local as local_mod
 

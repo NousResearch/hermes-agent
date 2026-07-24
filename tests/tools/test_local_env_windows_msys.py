@@ -26,6 +26,7 @@ from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
     _bash_safe_path,
+    _native_windows_path_for_exe,
     _git_bash_bin_dirs,
     _make_run_env,
     _msys_to_windows_path,
@@ -510,3 +511,22 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+
+def test_native_windows_path_for_exe_rewrites_drive_to_forward_slash(monkeypatch):
+    import tools.environments.local as local_mod
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    assert _native_windows_path_for_exe(r"D:\Ivo\ai-costs.json") == "D:/Ivo/ai-costs.json"
+    assert _native_windows_path_for_exe("D:/Ivo/ai-costs.json") == "D:/Ivo/ai-costs.json"
+
+
+def test_native_windows_path_for_exe_rewrites_msys_form(monkeypatch):
+    import tools.environments.local as local_mod
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    assert _native_windows_path_for_exe("/d/Ivo/ai-costs.json") == "D:/Ivo/ai-costs.json"
+
+
+def test_native_windows_path_for_exe_leaves_relative(monkeypatch):
+    import tools.environments.local as local_mod
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    assert _native_windows_path_for_exe("Apps/The-Pulse") == "Apps/The-Pulse"

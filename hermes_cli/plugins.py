@@ -811,15 +811,12 @@ class PluginContext:
         ordering, mapped-vs-bulk precedence, conflict warnings, and
         provenance; the source only fetches.
 
-        NOTE ON TIMING: plugin discovery happens later in startup than
-        the first ``load_hermes_dotenv()`` call, so a plugin-registered
-        source is not consulted by the initial env load of the process
-        that discovers it.  It IS consulted by every subsequently
-        spawned Hermes process (gateway children, cron sessions,
-        subagents), and immediately after a
-        ``reset_secret_source_cache()`` re-pull.  Plugin sources are
-        therefore best for supplying credentials to the running fleet;
-        the bundled sources cover first-process bootstrap.
+        NOTE ON TIMING: ``load_hermes_dotenv()`` usually runs at import
+        *before* plugin discovery.  After discovery completes, the plugin
+        manager re-pulls enabled plugin secret sources (``reset_secret_source_cache``
+        + ``load_hermes_dotenv``) so the first process sees them (#64177).
+        Child processes that load env after plugins still work without that
+        re-pull.  Failed re-pulls never block startup.
 
         Contract requirements (rejected with a warning otherwise):
         inherit from ``SecretSource``, ``api_version`` matching
@@ -1310,9 +1307,74 @@ class PluginManager:
         self._discovered = True
         try:
             self._discover_and_load_inner()
+            # Plugin secret sources register during discover; the initial
+            # load_hermes_dotenv() already ran at import time. Re-pull so the
+            # first process sees plugin backends (tracking #64177).
+            self._refresh_secret_sources_after_discovery()
         except BaseException:
             self._discovered = False
             raise
+
+    def _refresh_secret_sources_after_discovery(self) -> None:
+        """If any plugin secret source is enabled, reset cache and re-apply.
+
+        Enablement is delegated to each source's ``is_enabled(cfg)`` — the
+        same contract the orchestrator uses (``registry._ordered_enabled_sources``)
+        — so a source with custom activation logic is honored, not just
+        ``secrets.<name>.enabled``.
+
+        No-op when only bundled sources exist or none are enabled.
+        Fail-open: never raise into discover_and_load.
+        """
+        try:
+            from agent.secret_sources.registry import (
+                BUILTIN_SOURCE_NAMES,
+                list_sources,
+            )
+            from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+        except Exception:
+            return
+        try:
+            sources = list_sources()
+        except Exception:
+            return
+        plugin_sources = [
+            s for s in sources if getattr(s, "name", "") not in BUILTIN_SOURCE_NAMES
+        ]
+        if not plugin_sources:
+            return
+        # Load the secrets config once; hand each source its own section and
+        # let its is_enabled() decide (honours custom activation extensions).
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config() or {}
+            secrets = cfg.get("secrets") or {}
+        except Exception:
+            secrets = {}
+        enabled_names = []
+        for source in plugin_sources:
+            name = getattr(source, "name", "")
+            section = secrets.get(name)
+            section = section if isinstance(section, dict) else {}
+            try:
+                if source.is_enabled(section):
+                    enabled_names.append(name)
+            except Exception:
+                # A source whose is_enabled() raises is skipped, mirroring
+                # the orchestrator's defensive posture.
+                continue
+        if not enabled_names:
+            return
+        try:
+            reset_secret_source_cache()
+            load_hermes_dotenv()
+            logger.debug(
+                "Re-applied secret sources after plugin discovery for: %s",
+                ", ".join(sorted(enabled_names)),
+            )
+        except Exception as exc:
+            logger.debug("secret source re-apply after discovery failed: %s", exc)
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""

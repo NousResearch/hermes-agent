@@ -15,7 +15,10 @@ export const MIME_MAP = {
 
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Baileys may represent an account as `number:device@jid`, while quote
+  // metadata uses `number@jid`. Drop the device suffix rather than turning it
+  // into a second `@`, so both forms compare as the same WhatsApp account.
+  return String(value).replace(/:[^@]+(?=@)/, '');
 }
 
 export function getMessageContent(msg) {

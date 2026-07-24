@@ -90,6 +90,27 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status")) is True
 
 
+def test_group_reply_to_bot_accepts_device_suffixed_bot_jid():
+    """Baileys may report our socket identity as ``number:device@jid``."""
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "replying without an @mention",
+            quotedParticipant="15551230000@s.whatsapp.net",
+            botIds=["15551230000:42@s.whatsapp.net"],
+        )
+    ) is True
+    # The device suffix must not turn a reply to a human into a bot reply.
+    assert adapter._should_process_message(
+        _group_message(
+            "replying to a human without an @mention",
+            quotedParticipant="15559990000@s.whatsapp.net",
+            botIds=["15551230000:42@s.whatsapp.net"],
+        )
+    ) is False
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(
         require_mention=True,

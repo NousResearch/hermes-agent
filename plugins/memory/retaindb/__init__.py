@@ -491,6 +491,23 @@ class RetainDBMemoryProvider(MemoryProvider):
         api_key = os.environ.get("RETAINDB_API_KEY", "")
         base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL", _DEFAULT_BASE_URL))
 
+        # Self-hosted RetainDB is allowed on LAN/loopback, but cloud-metadata
+        # and other always-blocked targets must never become the API base
+        # (salvage of incomplete #4984 which incorrectly used full is_safe_url
+        # and would break intentional private deployments).
+        try:
+            from tools.url_safety import is_always_blocked_url
+
+            if is_always_blocked_url(base_url):
+                logger.warning(
+                    "RETAINDB_BASE_URL '%s' targets an always-blocked address; "
+                    "resetting to the default endpoint.",
+                    base_url,
+                )
+                base_url = _DEFAULT_BASE_URL
+        except Exception as exc:
+            logger.debug("RetainDB base URL always-blocked check skipped: %s", exc)
+
         # Project resolution: RETAINDB_PROJECT > hermes-<profile> > "default"
         # If unset, the API auto-creates and uses the "default" project — no config required.
         explicit = os.environ.get("RETAINDB_PROJECT")

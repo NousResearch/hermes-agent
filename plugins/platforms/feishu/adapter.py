@@ -174,6 +174,14 @@ _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+_MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MARKDOWN_BOLD_RE = re.compile(r"\*\*([^*\n](?:.*?[^*\n])?)\*\*")
+_MARKDOWN_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*|\s)([^*\n]+?)(?<!\s)\*(?!\*)")
+_MARKDOWN_STRIKE_RE = re.compile(r"~~([^~\n]+)~~")
+_MARKDOWN_UNDERLINE_RE = re.compile(r"<u>(.*?)</u>")
+_MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.*)$")
+_MARKDOWN_HR_RE = re.compile(r"^\s*---+\s*$")
+_MARKDOWN_UNORDERED_LIST_RE = re.compile(r"^(\s*)[-*]\s+(.*)$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -488,8 +496,15 @@ def _to_boolean(value: Any) -> bool:
     return value is True or value == 1 or value == "true"
 
 
-def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
+def _is_style_enabled(style: Any, key: str) -> bool:
     if not style:
+        return False
+    aliases = {
+        "strikethrough": {"strikethrough", "lineThrough", "line_through"},
+    }.get(key, {key})
+    if isinstance(style, (list, tuple, set)):
+        return any(str(item) in aliases for item in style)
+    if not isinstance(style, dict):
         return False
     return _to_boolean(style.get(key))
 
@@ -508,21 +523,20 @@ def _sanitize_fence_language(language: str) -> str:
 def _render_text_element(element: Dict[str, Any]) -> str:
     text = str(element.get("text", "") or "")
     style = element.get("style")
-    style_dict = style if isinstance(style, dict) else None
 
-    if _is_style_enabled(style_dict, "code"):
+    if _is_style_enabled(style, "code"):
         return _wrap_inline_code(text)
 
     rendered = _escape_markdown_text(text)
     if not rendered:
         return ""
-    if _is_style_enabled(style_dict, "bold"):
+    if _is_style_enabled(style, "bold"):
         rendered = f"**{rendered}**"
-    if _is_style_enabled(style_dict, "italic"):
+    if _is_style_enabled(style, "italic"):
         rendered = f"*{rendered}*"
-    if _is_style_enabled(style_dict, "underline"):
+    if _is_style_enabled(style, "underline"):
         rendered = f"<u>{rendered}</u>"
-    if _is_style_enabled(style_dict, "strikethrough"):
+    if _is_style_enabled(style, "strikethrough"):
         rendered = f"~~{rendered}~~"
     return rendered
 
@@ -634,6 +648,169 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+def _build_native_markdown_post_payload(content: str) -> str:
+    rows = _build_native_markdown_post_rows(content)
+    return json.dumps(
+        {
+            "zh_cn": {
+                "content": rows,
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_text_post_element(text: str, *styles: str) -> Dict[str, Any]:
+    element: Dict[str, Any] = {"tag": "text", "text": text}
+    if styles:
+        element["style"] = list(dict.fromkeys(styles))
+    return element
+
+
+def _build_link_post_element(label: str, href: str) -> Dict[str, str]:
+    return {"tag": "a", "text": label, "href": href}
+
+
+def _sanitize_feishu_post_href(url: str) -> str:
+    stripped = url.strip()
+    scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
+    return stripped if scheme in {"http", "https"} else ""
+
+
+def _merge_post_styles(element: Dict[str, Any], styles: Sequence[str]) -> Dict[str, Any]:
+    if not styles or element.get("tag") != "text":
+        return element
+    merged = list(dict.fromkeys([*element.get("style", []), *styles]))
+    styled = dict(element)
+    styled["style"] = merged
+    return styled
+
+
+def _find_next_inline_markdown(text: str) -> Optional[tuple[int, int, str, re.Match[str]]]:
+    patterns: Sequence[tuple[str, re.Pattern[str]]] = (
+        ("link", _MARKDOWN_LINK_RE),
+        ("code", _MARKDOWN_INLINE_CODE_RE),
+        ("bold", _MARKDOWN_BOLD_RE),
+        ("strike", _MARKDOWN_STRIKE_RE),
+        ("underline", _MARKDOWN_UNDERLINE_RE),
+        ("italic", _MARKDOWN_ITALIC_RE),
+    )
+    best: Optional[tuple[int, int, str, re.Match[str]]] = None
+    for kind, pattern in patterns:
+        match = pattern.search(text)
+        if not match:
+            continue
+        candidate = (match.start(), match.end(), kind, match)
+        if best is None or candidate[:2] < best[:2]:
+            best = candidate
+    return best
+
+
+def _parse_inline_markdown_to_post_elements(text: str, styles: Sequence[str] = ()) -> List[Dict[str, Any]]:
+    elements: List[Dict[str, Any]] = []
+    remaining = text
+    while remaining:
+        match_info = _find_next_inline_markdown(remaining)
+        if not match_info:
+            if remaining:
+                elements.append(_build_text_post_element(remaining, *styles))
+            break
+
+        start, end, kind, match = match_info
+        if start > 0:
+            elements.append(_build_text_post_element(remaining[:start], *styles))
+
+        if kind == "link":
+            label = _strip_markdown_to_plain_text(match.group(1)).strip()
+            href = _sanitize_feishu_post_href(match.group(2))
+            if href and label:
+                elements.append(_merge_post_styles(_build_link_post_element(label, href), styles))
+            else:
+                elements.append(_build_text_post_element(match.group(0), *styles))
+        elif kind == "code":
+            elements.append(_build_text_post_element(match.group(1), *styles, "code"))
+        elif kind == "bold":
+            elements.extend(_parse_inline_markdown_to_post_elements(match.group(1), (*styles, "bold")))
+        elif kind == "strike":
+            elements.extend(_parse_inline_markdown_to_post_elements(match.group(1), (*styles, "lineThrough")))
+        elif kind == "underline":
+            elements.extend(_parse_inline_markdown_to_post_elements(match.group(1), (*styles, "underline")))
+        elif kind == "italic":
+            elements.extend(_parse_inline_markdown_to_post_elements(match.group(1), (*styles, "italic")))
+
+        remaining = remaining[end:]
+
+    return elements or [_build_text_post_element("", *styles)]
+
+
+def _build_native_markdown_line_row(line: str) -> List[Dict[str, Any]]:
+    heading = _MARKDOWN_HEADING_RE.match(line)
+    if heading:
+        return _parse_inline_markdown_to_post_elements(heading.group(1), ("bold",))
+
+    unordered = _MARKDOWN_UNORDERED_LIST_RE.match(line)
+    if unordered:
+        return [
+            _build_text_post_element(f"{unordered.group(1)}• "),
+            *_parse_inline_markdown_to_post_elements(unordered.group(2)),
+        ]
+
+    return _parse_inline_markdown_to_post_elements(line)
+
+
+def _build_native_markdown_post_rows(content: str) -> List[List[Dict[str, Any]]]:
+    if not content:
+        return [[_build_text_post_element("")]]
+
+    rows: List[List[Dict[str, Any]]] = []
+    in_code_block = False
+    code_language = ""
+    code_lines: List[str] = []
+
+    for raw_line in content.replace("\r\n", "\n").split("\n"):
+        stripped_line = raw_line.strip()
+        if in_code_block:
+            if _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line):
+                rows.append([
+                    {
+                        "tag": "code_block",
+                        "language": _sanitize_fence_language(code_language),
+                        "text": "\n".join(code_lines),
+                    }
+                ])
+                code_language = ""
+                code_lines = []
+                in_code_block = False
+            else:
+                code_lines.append(raw_line)
+            continue
+
+        fence_open = _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        if fence_open:
+            in_code_block = True
+            code_language = fence_open.group(1)
+            code_lines = []
+            continue
+
+        if _MARKDOWN_HR_RE.match(stripped_line):
+            rows.append([{"tag": "hr"}])
+        elif not stripped_line:
+            rows.append([_build_text_post_element("")])
+        else:
+            rows.append(_build_native_markdown_line_row(raw_line))
+
+    if in_code_block:
+        rows.append([
+            {
+                "tag": "code_block",
+                "language": _sanitize_fence_language(code_language),
+                "text": "\n".join(code_lines),
+            }
+        ])
+
+    return rows or [[_build_text_post_element(content)]]
 
 
 def parse_feishu_post_payload(
@@ -1918,12 +2095,21 @@ class FeishuAdapter(BasePlatformAdapter):
         # decision at the whole-message level so every chunk consistently
         # uses ``post``. See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
+        # Feishu's ``md``-tag post element renders raw markdown source when the
+        # message is a direct or thread/topic reply, even though the same
+        # element renders correctly for non-reply sends. Build native
+        # ``text``/``a``/``code_block`` post elements for replies instead; the
+        # reply-target resolution here mirrors ``_send_raw_message``'s
+        # ``effective_reply_to`` so both paths agree on what counts as a reply.
+        is_reply = bool(reply_to) or bool(
+            (metadata or {}).get("thread_id") and (metadata or {}).get("reply_to_message_id")
+        )
         last_response = None
 
         try:
             for chunk in chunks:
                 msg_type, payload = self._build_outbound_payload(
-                    chunk, prefer_post=prefer_post,
+                    chunk, prefer_post=prefer_post, native_post=is_reply,
                 )
                 try:
                     response = await self._feishu_send_with_retry(
@@ -4577,7 +4763,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(
-        self, content: str, *, prefer_post: bool = False,
+        self, content: str, *, prefer_post: bool = False, native_post: bool = False,
     ) -> tuple[str, str]:
         # Empirically (issue #52786), current Feishu clients render markdown
         # tables inside ``post``-type ``md`` elements natively. The previous
@@ -4591,6 +4777,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
         # mis-classify a plain-prose chunk as ``text``. See #26841.
         if prefer_post or _MARKDOWN_HINT_RE.search(content):
+            if native_post:
+                return "post", _build_native_markdown_post_payload(content)
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

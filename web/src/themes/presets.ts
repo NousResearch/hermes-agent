@@ -15,11 +15,11 @@ import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 // Shared typography / layout presets
 // ---------------------------------------------------------------------------
 
-/** Default system stack — neutral, safe fallback for every platform. */
-const SYSTEM_SANS =
-  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
-const SYSTEM_MONO =
-  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+/** Default system stacks — neutral, safe fallbacks for every platform. */
+export const SYSTEM_SANS =
+  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", sans-serif';
+export const SYSTEM_MONO =
+  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "D2Coding", "Noto Sans Mono CJK KR", monospace';
 
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
   fontSans: SYSTEM_SANS,
@@ -77,6 +77,52 @@ export const midnightTheme: DashboardTheme = {
     ...DEFAULT_LAYOUT,
     radius: "0.75rem",
   },
+};
+
+export const clarityTheme: DashboardTheme = {
+  name: "clarity",
+  label: "Clarity Dark",
+  description: "Readable dark mode with neutral fonts and stronger contrast",
+  palette: {
+    background: { hex: "#101114", alpha: 1 },
+    midground: { hex: "#f4f4f5", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(125, 211, 252, 0.16)",
+    noiseOpacity: 0,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontDisplay: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    baseSize: "16px",
+    lineHeight: "1.6",
+    letterSpacing: "0",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.375rem",
+  },
+  colorOverrides: {
+    card: "#17181d",
+    cardForeground: "#f4f4f5",
+    popover: "#17181d",
+    popoverForeground: "#f4f4f5",
+    muted: "#202127",
+    mutedForeground: "#d4d4d8",
+    border: "#3f3f46",
+    input: "#3f3f46",
+    ring: "#93c5fd",
+  },
+  terminalBackground: "#0b0c0f",
+  terminalForeground: "#f4f4f5",
+  seriesColors: {
+    inputTokenAccent: "#93c5fd",
+    outputTokenAccent: "#86efac",
+  },
+  swatchColors: ["#101114", "#f4f4f5", "#93c5fd"],
 };
 
 export const emberTheme: DashboardTheme = {
@@ -232,6 +278,7 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
   "nous-blue": nousBlueTheme,
+  clarity: clarityTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

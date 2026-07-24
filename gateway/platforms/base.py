@@ -63,6 +63,14 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     synthetic/resumed sends that have no reply anchor fall back to Telegram's
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
+    business_connection_id = getattr(source, "business_connection_id", None)
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and business_connection_id:
+        metadata = {"business_connection_id": str(business_connection_id)}
+        if getattr(source, "external_safe_mode", False):
+            metadata["external_safe_mode"] = True
+            metadata["telegram_business_external_contact"] = True
+        return metadata
+
     thread_id = getattr(source, "thread_id", None)
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
     # Slack workspace identity is durable routing state, not ephemeral event

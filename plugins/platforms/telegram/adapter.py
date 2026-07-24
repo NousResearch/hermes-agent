@@ -220,6 +220,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import BusinessConnectionHandler, BusinessMessagesDeletedHandler
+    except ImportError:
+        BusinessConnectionHandler = BusinessMessagesDeletedHandler = None
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -235,6 +239,8 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    BusinessConnectionHandler = Any
+    BusinessMessagesDeletedHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -376,6 +382,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global BusinessConnectionHandler, BusinessMessagesDeletedHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -397,6 +404,13 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import (
+                BusinessConnectionHandler as _BCH,
+                BusinessMessagesDeletedHandler as _BMDH,
+            )
+        except ImportError:
+            _BCH = _BMDH = None
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -411,6 +425,8 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    BusinessConnectionHandler = _BCH
+    BusinessMessagesDeletedHandler = _BMDH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -1151,27 +1167,31 @@ class TelegramAdapter(BasePlatformAdapter):
         DM topic fallback sends while preserving the ``message_thread_id`` so
         the message still lands in the correct topic.
         """
+        def routed(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+            kwargs.update(cls._business_kwargs(metadata))
+            return kwargs
+
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
             if reply_to_mode == "off":
-                return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+                return routed({"message_thread_id": cls._message_thread_id_for_send(thread_id)})
             if reply_to_message_id is None:
                 reply_to_message_id = cls._metadata_reply_to_message_id(metadata)
             if reply_to_message_id is None:
                 direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
                 if direct_topic_id is not None:
-                    return {
+                    return routed({
                         "message_thread_id": None,
                         "direct_messages_topic_id": int(direct_topic_id),
-                    }
-                return {}
-            return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+                    })
+                return routed({})
+            return routed({"message_thread_id": cls._message_thread_id_for_send(thread_id)})
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
         if direct_topic_id is not None:
-            return {
+            return routed({
                 "message_thread_id": None,
                 "direct_messages_topic_id": int(direct_topic_id),
-            }
-        return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+            })
+        return routed({"message_thread_id": cls._message_thread_id_for_send(thread_id)})
 
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -1969,6 +1989,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = self._metadata_thread_id(metadata)
         if thread_id is not None:
             payload["message_thread_id"] = int(thread_id)
+        payload.update(self._business_kwargs(metadata))
         try:
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
             return bool(ok)
@@ -3599,6 +3620,19 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            business_filter = getattr(getattr(filters, "UpdateType", None), "BUSINESS_MESSAGE", None)
+            if business_filter is not None:
+                self._app.add_handler(
+                    TelegramMessageHandler(business_filter, self._handle_business_message)
+                )
+            if BusinessConnectionHandler is not None:
+                self._app.add_handler(
+                    BusinessConnectionHandler(self._handle_business_connection)
+                )
+            if BusinessMessagesDeletedHandler is not None:
+                self._app.add_handler(
+                    BusinessMessagesDeletedHandler(self._handle_business_messages_deleted)
+                )
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -4293,7 +4327,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
-                                thread_kwargs = {"message_thread_id": None}
+                                thread_kwargs = {
+                                    "message_thread_id": None,
+                                    **self._business_kwargs(metadata),
+                                }
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
@@ -4540,6 +4577,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=content,
+                    **self._business_kwargs(metadata),
                 )
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
@@ -4552,6 +4590,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     message_id=int(message_id),
                     text=formatted,
                     parse_mode=ParseMode.MARKDOWN_V2,
+                    **self._business_kwargs(metadata),
                 )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
@@ -4569,6 +4608,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=_plain,
+                    **self._business_kwargs(metadata),
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -4597,6 +4637,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=truncated,
+                    **self._business_kwargs(metadata),
                 )
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
@@ -4622,6 +4663,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=normalize_telegram_chat_id(chat_id),
                         message_id=int(message_id),
                         text=content,
+                        **self._business_kwargs(metadata),
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
@@ -4729,6 +4771,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         message_id=int(message_id),
                         text=formatted,
                         parse_mode=ParseMode.MARKDOWN_V2,
+                        **self._business_kwargs(metadata),
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
@@ -4741,12 +4784,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             chat_id=normalize_telegram_chat_id(chat_id),
                             message_id=int(message_id),
                             text=_strip_mdv2(first_chunk),
+                            **self._business_kwargs(metadata),
                         )
             else:
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     message_id=int(message_id),
                     text=first_chunk,
+                    **self._business_kwargs(metadata),
                 )
         except Exception as e:
             err_str = str(e).lower()
@@ -4989,6 +5034,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
             if thread_id is not None:
                 kwargs["message_thread_id"] = thread_id
+            kwargs.update(self._business_kwargs(metadata))
 
             try:
                 ok = await self._bot.send_message_draft(**kwargs)
@@ -7149,6 +7195,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id=normalize_telegram_chat_id(chat_id),
                 action="typing",
                 message_thread_id=message_thread_id,
+                **self._business_kwargs(metadata),
             )
             self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         except Exception as e:
@@ -7160,6 +7207,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self._bot.send_chat_action(
                         chat_id=normalize_telegram_chat_id(chat_id),
                         action="typing",
+                        **self._business_kwargs(metadata),
                     )
                     self._telegram_typing_cooldown_until.pop(str(chat_id), None)
                     return
@@ -7575,11 +7623,27 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("[%s] Loaded %d Telegram mention pattern(s)", self.name, len(compiled))
         return compiled
 
+    @staticmethod
+    def _normalized_chat_type(chat: Any) -> str:
+        raw = getattr(chat, "type", "") if chat else ""
+        normalized = str(raw).split(".")[-1].lower()
+        if normalized in {"group", "supergroup", "private", "channel"}:
+            return normalized
+        if raw == getattr(ChatType, "SUPERGROUP", object()):
+            return "supergroup"
+        if raw == getattr(ChatType, "GROUP", object()):
+            return "group"
+        if raw == getattr(ChatType, "CHANNEL", object()):
+            return "channel"
+        if raw == getattr(ChatType, "PRIVATE", object()):
+            return "private"
+        return normalized
+
     def _is_group_chat(self, message: Message) -> bool:
         chat = getattr(message, "chat", None)
         if not chat:
             return False
-        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = self._normalized_chat_type(chat)
         return chat_type in {"group", "supergroup"}
 
     @classmethod
@@ -7595,7 +7659,7 @@ class TelegramAdapter(BasePlatformAdapter):
         outbound routing must all agree on the same normalized value.
         """
         chat = getattr(message, "chat", None)
-        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower() if chat else ""
+        chat_type = cls._normalized_chat_type(chat)
         raw = getattr(message, "message_thread_id", None)
         is_topic_message = bool(getattr(message, "is_topic_message", False))
         is_forum_group = chat_type in ("group", "supergroup") and getattr(chat, "is_forum", False) is True
@@ -8235,6 +8299,149 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    @staticmethod
+    def _business_kwargs(metadata: Optional[Dict[str, Any]]) -> Dict[str, str]:
+        """Extract the Bot API business route, accepting the pre-release alias."""
+        metadata = metadata or {}
+        connection_id = (
+            metadata.get("business_connection_id")
+            or metadata.get("telegram_business_connection_id")
+        )
+        return (
+            {"business_connection_id": str(connection_id)}
+            if connection_id not in (None, "")
+            else {}
+        )
+
+    def _business_config(self) -> Dict[str, Any]:
+        raw = self.config.extra.get("business", {})
+        return _normalize_business_config(raw)
+
+    def _business_trigger_text(self, message: Message) -> Optional[str]:
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        if not text:
+            return None
+        for word in self._business_config()["trigger_words"]:
+            match = re.match(
+                rf"^{re.escape(word)}(?=$|[\s,.:;!?—–-])[\s,.:;!?—–-]*(.*)$",
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def _is_business_trusted_actor(self, message: Message) -> bool:
+        actor_id = str(getattr(getattr(message, "from_user", None), "id", "")).strip()
+        if not actor_id:
+            return False
+        for env_name in ("TELEGRAM_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
+            explicit = {
+                value.strip()
+                for value in os.getenv(env_name, "").split(",")
+                if value.strip() and value.strip() != "*"
+            }
+            if actor_id in explicit:
+                return True
+        pairing_store = getattr(self, "pairing_store", None)
+        if pairing_store is None:
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            pairing_store = getattr(runner, "pairing_store", None)
+        if pairing_store is not None:
+            try:
+                return bool(pairing_store.is_approved(Platform.TELEGRAM.value, actor_id))
+            except Exception:
+                logger.warning(
+                    "[%s] Telegram Business pairing lookup failed closed for actor %s",
+                    self.name,
+                    actor_id,
+                    exc_info=True,
+                )
+        return False
+
+    def _business_reply_or_mention_triggered(self, message: Message) -> bool:
+        reply = getattr(message, "reply_to_message", None)
+        reply_actor = getattr(reply, "from_user", None)
+        bot_id = getattr(self._bot, "id", None)
+        if reply_actor is not None and bot_id is not None and getattr(reply_actor, "id", None) == bot_id:
+            return True
+        username = str(getattr(self._bot, "username", "") or "").strip()
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "")
+        return bool(username and re.search(rf"(?<!\w)@{re.escape(username)}\b", text, re.IGNORECASE))
+
+    async def _handle_business_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route an explicitly-triggered Telegram Business customer message."""
+        cfg = self._business_config()
+        if not cfg["enabled"]:
+            return
+        message = getattr(update, "business_message", None)
+        if not message or not getattr(message, "business_connection_id", None):
+            return
+        raw_text = getattr(message, "text", None) or getattr(message, "caption", None)
+        if not raw_text:
+            return
+        actor = getattr(message, "from_user", None)
+        if (
+            actor is None
+            or bool(getattr(actor, "is_bot", False))
+            or self._is_own_message(message)
+        ):
+            return
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if cfg["allowed_chats"] and chat_id not in cfg["allowed_chats"]:
+            return
+        triggered_text = self._business_trigger_text(message)
+        alternate_trigger = self._business_reply_or_mention_triggered(message)
+        if triggered_text is None and not alternate_trigger:
+            return
+        text = triggered_text if triggered_text is not None else str(raw_text).strip()
+        username = str(getattr(self._bot, "username", "") or "").strip()
+        if username:
+            text = re.sub(
+                rf"(?<!\w)@{re.escape(username)}\b[\s,.:;!?—–-]*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            ).strip()
+        trusted = self._is_business_trusted_actor(message)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=(
+                getattr(getattr(message, "chat", None), "title", None)
+                or getattr(getattr(message, "chat", None), "full_name", None)
+            ),
+            chat_type="dm",
+            user_id=str(getattr(actor, "id", "")) or None,
+            user_name=getattr(actor, "full_name", None),
+            thread_id=(
+                str(message.message_thread_id)
+                if getattr(message, "message_thread_id", None) is not None
+                else None
+            ),
+            message_id=str(getattr(message, "message_id", "")) or None,
+            is_bot=False,
+        )
+        source.business_connection_id = str(message.business_connection_id)
+        source.external_safe_mode = not trusted
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=message,
+            message_id=str(getattr(message, "message_id", "")) or None,
+            platform_update_id=getattr(update, "update_id", None),
+            timestamp=getattr(message, "date", None),
+        )
+        result = self.handle_message(event)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _handle_business_connection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.info("[%s] Telegram Business connection lifecycle update observed", self.name)
+
+    async def _handle_business_messages_deleted(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.info("[%s] Telegram Business deletion lifecycle update observed", self.name)
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
@@ -9078,7 +9285,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
-        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        telegram_chat_type = self._normalized_chat_type(chat)
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
@@ -9419,6 +9626,29 @@ def interactive_setup() -> None:
     _setup_mod._setup_telegram()
 
 
+def _normalize_business_config(raw: Any) -> Dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+
+    def _items(value: Any) -> List[str]:
+        values = value if isinstance(value, (list, tuple, set)) else [value]
+        return [
+            normalized
+            for item in values
+            if item is not None and (normalized := str(item).strip())
+        ]
+
+    enabled = raw.get("enabled", False)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = bool(enabled)
+    return {
+        "enabled": enabled,
+        "allowed_chats": _items(raw.get("allowed_chats", [])),
+        "trigger_words": _items(raw.get("trigger_words", [])),
+    }
+
+
 def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     """Translate config.yaml telegram: keys into TELEGRAM_* env vars and
     PlatformConfig.extra entries.
@@ -9430,6 +9660,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     """
     import json as _json
     extras: dict = {}
+    business = _normalize_business_config(telegram_cfg.get("business"))
+    extras["business"] = business
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])

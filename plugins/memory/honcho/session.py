@@ -7,6 +7,7 @@ import queue
 import re
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
+_CONTEXT_PREFETCH_DRAIN_TIMEOUT_S = 10.0
 _PEER_ID_HASH_LEN = 8
 _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
 
@@ -116,6 +118,9 @@ class HonchoSessionManager:
         # one source of truth; see __init__.py _do_session_init for the prewarm.
         self._context_cache: dict[str, dict] = {}
         self._prefetch_cache_lock = threading.Lock()
+        self._context_prefetch_threads: set[threading.Thread] = set()
+        self._context_prefetch_threads_lock = threading.Lock()
+        self._context_prefetch_shutting_down = False
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
         )
@@ -546,11 +551,36 @@ class HonchoSessionManager:
                     break
 
     def shutdown(self) -> None:
-        """Gracefully shut down the async writer thread."""
+        """Gracefully shut down context prefetch and async writer threads."""
+        self._drain_context_prefetch_threads()
         if self._async_queue is not None and self._async_thread is not None:
             self.flush_all()
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
+
+    def _drain_context_prefetch_threads(self) -> None:
+        """Stop new context prefetches and wait boundedly for active HTTP calls."""
+        deadline = time.monotonic() + _CONTEXT_PREFETCH_DRAIN_TIMEOUT_S
+        with self._context_prefetch_threads_lock:
+            self._context_prefetch_shutting_down = True
+
+        while True:
+            with self._context_prefetch_threads_lock:
+                active = [t for t in self._context_prefetch_threads if t.is_alive()]
+            if not active:
+                return
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "Honcho context prefetch shutdown timed out after %.1fs; "
+                    "%d request(s) remain active",
+                    _CONTEXT_PREFETCH_DRAIN_TIMEOUT_S,
+                    len(active),
+                )
+                return
+            for thread in active:
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
@@ -680,12 +710,31 @@ class HonchoSessionManager:
         a synchronous HTTP round-trip blocking every response.
         """
         def _run():
-            result = self.get_prefetch_context(session_key, user_message)
-            if result:
-                self.set_context_result(session_key, result)
+            try:
+                result = self.get_prefetch_context(session_key, user_message)
+                if result:
+                    self.set_context_result(session_key, result)
+            finally:
+                with self._context_prefetch_threads_lock:
+                    self._context_prefetch_threads.discard(threading.current_thread())
 
-        t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
-        t.start()
+        # Non-daemon is intentional. Provider shutdown joins these calls boundedly;
+        # if an HTTP request outlives that bound, Python must not finalize under
+        # a live native/socket stack.
+        thread = threading.Thread(
+            target=_run,
+            name="honcho-context-prefetch",
+            daemon=False,
+        )
+        with self._context_prefetch_threads_lock:
+            if self._context_prefetch_shutting_down:
+                return
+            self._context_prefetch_threads.add(thread)
+            try:
+                thread.start()
+            except Exception:
+                self._context_prefetch_threads.discard(thread)
+                raise
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:
         """Store a prefetched context result in a thread-safe way."""

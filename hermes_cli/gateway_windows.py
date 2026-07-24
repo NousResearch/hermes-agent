@@ -53,7 +53,9 @@ _FALLBACK_PATTERNS = re.compile(
     r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
     re.IGNORECASE,
 )
-_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+_ACCESS_DENIED_PATTERN = re.compile(
+    r"(access is denied|acceso denegado|přístup byl odepřen)", re.IGNORECASE
+)
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
@@ -197,6 +199,112 @@ def _is_running_as_admin() -> bool:
         return False
 
 
+def _shell_execute_elevated_and_wait(
+    executable: str,
+    parameters: str,
+    *,
+    cwd: str,
+    timeout_s: float,
+) -> tuple[int, str]:
+    """Run one executable through UAC, wait, and return its exit code.
+
+    ``ShellExecuteW`` only reports whether the handoff started. Update-time
+    Scheduled Task control needs a stronger contract: the parent must know
+    that ``schtasks`` finished before it mutates the checkout or venv. Use
+    ``ShellExecuteExW`` with a process handle so cancellation, timeout, and a
+    nonzero child exit all remain visible to the caller.
+    """
+    _assert_windows()
+    from ctypes import wintypes
+
+    class _ShellExecuteInfoW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.ULONG),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", wintypes.LPVOID),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIconOrMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    shell32 = ctypes.windll.shell32
+    kernel32 = ctypes.windll.kernel32
+    execute = shell32.ShellExecuteExW
+    execute.argtypes = [ctypes.POINTER(_ShellExecuteInfoW)]
+    execute.restype = wintypes.BOOL
+    wait_for_process = kernel32.WaitForSingleObject
+    wait_for_process.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait_for_process.restype = wintypes.DWORD
+    terminate_process = kernel32.TerminateProcess
+    terminate_process.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    terminate_process.restype = wintypes.BOOL
+    get_exit_code = kernel32.GetExitCodeProcess
+    get_exit_code.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    get_exit_code.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    info = _ShellExecuteInfoW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = "runas"
+    info.lpFile = executable
+    info.lpParameters = parameters
+    info.lpDirectory = cwd
+    info.nShow = 0  # SW_HIDE
+
+    if not execute(ctypes.byref(info)):
+        error_code = int(kernel32.GetLastError())
+        if error_code == 1223:  # ERROR_CANCELLED
+            return (1223, "UAC prompt was cancelled")
+        return (error_code or 1, f"ShellExecuteExW failed with error {error_code}")
+    if not info.hProcess:
+        return (1, "ShellExecuteExW returned no process handle")
+
+    try:
+        timeout_ms = max(1, int(max(timeout_s, 0.001) * 1000))
+        wait_result = int(wait_for_process(info.hProcess, timeout_ms))
+        if wait_result == 0x00000102:  # WAIT_TIMEOUT
+            # A stuck schtasks child must not outlive the update attempt.
+            terminate_process(info.hProcess, 124)
+            wait_for_process(info.hProcess, 1000)
+            return (124, f"elevated process timed out after {timeout_s:g}s")
+        if wait_result != 0x00000000:  # WAIT_OBJECT_0
+            return (1, f"WaitForSingleObject failed with result {wait_result}")
+
+        exit_code = wintypes.DWORD()
+        if not get_exit_code(info.hProcess, ctypes.byref(exit_code)):
+            error_code = int(kernel32.GetLastError())
+            return (error_code or 1, f"GetExitCodeProcess failed with error {error_code}")
+        return (int(exit_code.value), "")
+    finally:
+        close_handle(info.hProcess)
+
+
+def _exec_schtasks_elevated(args: list[str]) -> tuple[int, str]:
+    """Run ``schtasks.exe`` through UAC and wait for the exact result."""
+    _assert_windows()
+    schtasks = shutil.which("schtasks")
+    if schtasks is None:
+        return (1, "schtasks.exe not found on PATH")
+    return _shell_execute_elevated_and_wait(
+        schtasks,
+        subprocess.list2cmdline(args),
+        cwd=str(Path(__file__).resolve().parent.parent),
+        timeout_s=_SCHTASKS_TIMEOUT_S,
+    )
+
+
 def _current_profile_cli_args() -> list[str]:
     """Return CLI args that preserve the current Hermes profile."""
     from hermes_cli.gateway import _profile_arg
@@ -287,6 +395,13 @@ def _launch_elevated_uninstall() -> bool:
 # Paths: where we stash our task script and where Startup lives
 # ---------------------------------------------------------------------------
 
+def task_name_for_profile(profile: str) -> str:
+    """Return the Scheduled Task name for one validated profile name."""
+    if profile == "default":
+        return _TASK_NAME_DEFAULT
+    return f"{_TASK_NAME_DEFAULT}_{profile}"
+
+
 def get_task_name() -> str:
     """Scheduled Task name, scoped per profile.
 
@@ -299,8 +414,8 @@ def get_task_name() -> str:
 
     suffix = _profile_suffix()
     if not suffix:
-        return _TASK_NAME_DEFAULT
-    return f"{_TASK_NAME_DEFAULT}_{suffix}"
+        return task_name_for_profile("default")
+    return task_name_for_profile(suffix)
 
 
 def _sanitize_filename(value: str) -> str:

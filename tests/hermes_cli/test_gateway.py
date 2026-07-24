@@ -1062,15 +1062,23 @@ def test_find_gateway_pids_includes_restart_managers_without_systemd(monkeypatch
     monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda **_k: [])
 
-    def fake_scan(exclude_pids, all_profiles=False, include_restart_managers=False):
-        calls.append((set(exclude_pids), all_profiles, include_restart_managers))
+    def fake_scan(
+        exclude_pids,
+        all_profiles=False,
+        include_restart_managers=False,
+        seed_pids=None,
+    ):
+        calls.append(
+            (set(exclude_pids), all_profiles, include_restart_managers, list(seed_pids or []))
+        )
         return [708] if include_restart_managers else []
 
     monkeypatch.setattr(gateway, "_scan_gateway_pids", fake_scan)
 
     assert gateway.find_gateway_pids(all_profiles=True) == [708]
-    assert calls == [(set(), True, True)]
+    assert calls == [(set(), True, True, [])]
 
 
 def test_reap_unsupervised_orphans_noop_on_systemd_hosts(monkeypatch):
@@ -1140,6 +1148,188 @@ def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch)
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
+
+
+def _fake_psutil_process_iter(records):
+    """Build a minimal psutil.process_iter stand-in for gateway scan tests."""
+
+    class _AccessDenied(Exception):
+        pass
+
+    class _Proc:
+        def __init__(self, info):
+            self.info = info
+
+        def cmdline(self):
+            if self.info.get("cmdline_raises"):
+                raise _AccessDenied("AccessDenied")
+            return list(self.info.get("cmdline") or [])
+
+        def exe(self):
+            if self.info.get("exe_raises"):
+                raise _AccessDenied("AccessDenied")
+            return self.info.get("exe")
+
+        def username(self):
+            if self.info.get("username_raises"):
+                raise _AccessDenied("AccessDenied")
+            return self.info.get("username")
+
+        def ppid(self):
+            return self.info.get("ppid")
+
+    class _Psutil:
+        AccessDenied = _AccessDenied
+
+        @staticmethod
+        def process_iter(attrs):
+            for record in records:
+                yield _Proc(record)
+
+    return _Psutil()
+
+
+def test_scan_gateway_pids_windows_psutil_when_cim_hides_cmdline(monkeypatch):
+    """CIM often returns empty CommandLine for SYSTEM gateways (#63743)."""
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(
+        gateway.shutil,
+        "which",
+        lambda name: "powershell.exe" if name == "powershell" else None,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "powershell.exe":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "CommandLine=\n"
+                    "ProcessId=4242\n\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    fake_psutil = _fake_psutil_process_iter(
+        [
+            {
+                "pid": 4242,
+                "cmdline": [
+                    "pythonw.exe",
+                    "-m",
+                    "hermes_cli.main",
+                    "gateway",
+                    "run",
+                ],
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [4242]
+
+
+def test_scan_gateway_pids_windows_psutil_only_when_no_wmic_or_powershell(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway.shutil, "which", lambda _name: None)
+    fake_psutil = _fake_psutil_process_iter(
+        [
+            {
+                "pid": 5150,
+                "cmdline": [
+                    "C:\\Hermes\\venv\\Scripts\\pythonw.exe",
+                    "-m",
+                    "hermes_cli.main",
+                    "gateway",
+                    "run",
+                ],
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [5150]
+
+
+def test_scan_gateway_pids_windows_psutil_exe_when_cmdline_access_denied(monkeypatch, tmp_path):
+    """SYSTEM boundary: cmdline denied, but exe under install venv is readable."""
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    exe = scripts / "pythonw.exe"
+    exe.write_bytes(b"")
+
+    fake_psutil = _fake_psutil_process_iter(
+        [
+            {
+                "pid": 7777,
+                "cmdline": [],
+                "cmdline_raises": True,
+                "exe": str(exe),
+                "username": r"NT AUTHORITY\SYSTEM",
+                "ppid": 4,
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [7777]
+
+
+def test_scan_gateway_pids_windows_psutil_empty_cmdline_needs_system_or_seed(
+    monkeypatch, tmp_path
+):
+    """User-owned venv python with empty cmdline must not match without a seed."""
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    exe = scripts / "python.exe"
+    exe.write_bytes(b"")
+
+    fake_psutil = _fake_psutil_process_iter(
+        [
+            {
+                "pid": 8888,
+                "cmdline": [],
+                "exe": str(exe),
+                "username": "Alice",
+                "ppid": 1,
+            }
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == []
+    # Parent already known via PID file → attach the launcher stub.
+    assert gateway._scan_gateway_pids(set(), all_profiles=True, seed_pids=[1]) == [8888]
+
+
+def test_find_gateway_pids_all_profiles_includes_pid_files(monkeypatch, tmp_path):
+    """Update sweep must see SYSTEM gateways via gateway.pid when scan is blind."""
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(
+        gateway,
+        "find_profile_gateway_processes",
+        lambda exclude_pids=None: [
+            gateway.ProfileGatewayProcess(
+                profile="default", path=tmp_path, pid=4242
+            )
+        ],
+    )
+
+    assert gateway.find_gateway_pids(all_profiles=True) == [4242]
 
 
 # ---------------------------------------------------------------------------

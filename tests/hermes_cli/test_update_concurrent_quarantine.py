@@ -494,6 +494,13 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
         "terminate_pid",
         lambda pid, force=False: terminated.append((pid, force)),
     )
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (1, "", "ERROR: The system cannot find the file specified."),
+    )
 
     token = cli_main._pause_windows_gateways_for_update()
 
@@ -507,8 +514,9 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
                 "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
             }
         ],
+        "scheduled_tasks": [],
     }
-    assert waited_for == [101]
+    assert waited_for == [101, 202]
     assert terminated == [(202, True)]
 
     marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
@@ -521,6 +529,159 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     # An unmapped PID whose argv we captured is respawnable, so we must NOT
     # tell the user to restart it manually.
     assert "Restart manually after update" not in captured
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_ends_scheduled_task_before_taskkill(
+    _winp,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    """SYSTEM Scheduled Task gateways need schtasks /End; taskkill often denies."""
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [303])
+    monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr(
+        cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, *, timeout: set()
+    )
+    monkeypatch.setattr(gateway_mod, "_capture_gateway_argv", lambda pid: None)
+
+    schtasks_calls = []
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+
+    def fake_schtasks(args):
+        schtasks_calls.append(list(args))
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+
+    terminated = []
+    monkeypatch.setattr(
+        status_mod,
+        "terminate_pid",
+        lambda pid, force=False: terminated.append((pid, force)),
+    )
+
+    token = cli_main._pause_windows_gateways_for_update()
+
+    assert token["unmapped_pids"] == [303]
+    assert schtasks_calls == [
+        ["/Query", "/TN", "Hermes_Gateway"],
+        ["/End", "/TN", "Hermes_Gateway"],
+    ]
+    assert terminated == []
+    assert token["scheduled_tasks"] == [
+        {
+            "name": "Hermes_Gateway",
+            "profiles": [],
+            "pids": [303],
+            "elevated": False,
+            "restart_after_update": True,
+        }
+    ]
+    assert "Paused Windows gateway Scheduled Task(s)" in capsys.readouterr().out
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_elevates_protected_system_task(
+    _winp,
+    monkeypatch,
+):
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [404])
+    monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr(gateway_mod, "_capture_gateway_argv", lambda pid: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (1, "", "ERROR: Access is denied."),
+    )
+    elevated = []
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks_elevated",
+        lambda args: elevated.append(list(args)) or (0, ""),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_wait_for_windows_update_gateway_exit",
+        lambda pids, *, timeout: set(),
+    )
+    terminated = []
+    monkeypatch.setattr(
+        status_mod,
+        "terminate_pid",
+        lambda pid, force=False: terminated.append((pid, force)),
+    )
+
+    token = cli_main._pause_windows_gateways_for_update()
+
+    assert elevated == [["/End", "/TN", "Hermes_Gateway"]]
+    assert terminated == []
+    assert token["scheduled_tasks"] == [
+        {
+            "name": "Hermes_Gateway",
+            "profiles": [],
+            "pids": [404],
+            "elevated": True,
+            "restart_after_update": True,
+        }
+    ]
+    assert "pause_error" not in token
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_windows_gateways_fails_closed_when_uac_cannot_stop_system_task(
+    _winp,
+    monkeypatch,
+):
+    import gateway.status as status_mod
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [505])
+    monkeypatch.setattr(gateway_mod, "find_profile_gateway_processes", lambda **_k: [])
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    monkeypatch.setattr(gateway_mod, "_capture_gateway_argv", lambda pid: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (1, "", "ERROR: Access is denied."),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks_elevated",
+        lambda args: (1223, "UAC prompt was cancelled"),
+    )
+
+    waits = iter([set(), {505}, {505}])
+    monkeypatch.setattr(
+        cli_main,
+        "_wait_for_windows_update_gateway_exit",
+        lambda pids, *, timeout: next(waits),
+    )
+
+    def deny_terminate(pid, force=False):
+        raise PermissionError("Access is denied")
+
+    monkeypatch.setattr(status_mod, "terminate_pid", deny_terminate)
+
+    token = cli_main._pause_windows_gateways_for_update()
+
+    assert "UAC prompt was cancelled" in token["pause_error"]
+    assert "gateway PID(s) still running: 505" in token["pause_error"]
+    assert token["scheduled_tasks"][0]["restart_after_update"] is False
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -595,6 +756,99 @@ def test_resume_windows_gateways_after_update_respawns_unmapped_by_cmdline(
     assert by_cmdline == [(7560, scheduled_argv)]
     out = capsys.readouterr().out
     assert "Restarting 1 unmapped Windows gateway process(es)" in out
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_windows_gateways_runs_protected_task_without_user_respawn(
+    _winp,
+    monkeypatch,
+    capsys,
+):
+    import hermes_cli.gateway as gateway_mod
+    from hermes_cli import gateway_windows
+
+    normal_calls = []
+    elevated_calls = []
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: normal_calls.append(list(args))
+        or (1, "", "ERROR: Access is denied."),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks_elevated",
+        lambda args: elevated_calls.append(list(args)) or (0, ""),
+    )
+    profile_restarts = []
+    cmdline_restarts = []
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, old_pid: profile_restarts.append((profile, old_pid)) or True,
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "launch_detached_gateway_restart_by_cmdline",
+        lambda old_pid, argv: cmdline_restarts.append((old_pid, argv)) or True,
+    )
+
+    token = {
+        "resume_needed": True,
+        "profiles": {"default": 606},
+        "unmapped_pids": [606],
+        "unmapped": [
+            {
+                "pid": 606,
+                "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+            }
+        ],
+        "scheduled_tasks": [
+            {
+                "name": "Hermes_Gateway",
+                "profiles": ["default"],
+                "pids": [606],
+                "elevated": True,
+            }
+        ],
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert normal_calls == [["/Run", "/TN", "Hermes_Gateway"]]
+    assert elevated_calls == [["/Run", "/TN", "Hermes_Gateway"]]
+    assert profile_restarts == []
+    assert cmdline_restarts == []
+    assert "Restarted Windows gateway Scheduled Task(s): Hermes_Gateway" in capsys.readouterr().out
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_resume_skips_task_that_never_stopped(_winp, monkeypatch):
+    from hermes_cli import gateway_windows
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: pytest.fail("still-running task must not be started again"),
+    )
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped": [],
+        "scheduled_tasks": [
+            {
+                "name": "Hermes_Gateway",
+                "profiles": [],
+                "pids": [707],
+                "elevated": True,
+                "restart_after_update": False,
+            }
+        ],
+    }
+
+    cli_main._resume_windows_gateways_after_update(token)
+
+    assert token["resume_needed"] is False
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -714,6 +968,58 @@ def test_resume_cold_start_skips_when_gateway_already_running(
 # ---------------------------------------------------------------------------
 # cmd_update integration — concurrent-instance gate
 # ---------------------------------------------------------------------------
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cmd_update_aborts_before_mutation_when_gateway_pause_fails(
+    _winp,
+    monkeypatch,
+):
+    import atexit
+
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped": [],
+        "scheduled_tasks": [],
+        "pause_error": "gateway PID(s) still running: 707",
+    }
+    resumed = []
+    registered = []
+    monkeypatch.setattr(cli_main, "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(
+        cli_main, "_pause_windows_gateways_for_update", lambda: token
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_resume_windows_gateways_after_update",
+        lambda value: resumed.append(value),
+    )
+    monkeypatch.setattr(
+        atexit,
+        "register",
+        lambda func, value: registered.append((func, value)),
+    )
+    monkeypatch.setattr(
+        cli_main.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("update mutation started"),
+    )
+
+    args = SimpleNamespace(
+        yes=True,
+        force=True,
+        force_venv=True,
+        backup=False,
+        no_backup=True,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main._cmd_update_impl(args, gateway_mode=False)
+
+    assert exc_info.value.code == 2
+    assert resumed == [token]
+    assert registered == [(cli_main._resume_windows_gateways_after_update, token)]
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)

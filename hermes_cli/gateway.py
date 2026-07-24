@@ -333,22 +333,171 @@ def _append_unique_pid(
     pids.append(pid)
 
 
+def _is_install_venv_python_exe(exe: str | None) -> bool:
+    """Return True when ``exe`` is this install's ``venv\\Scripts\\python(w).exe``."""
+    if not exe:
+        return False
+    try:
+        exe_path = Path(exe).resolve()
+    except (OSError, ValueError):
+        exe_path = Path(str(exe))
+    if exe_path.name.lower() not in {"python.exe", "pythonw.exe"}:
+        return False
+    try:
+        venv_scripts = (PROJECT_ROOT / "venv" / "Scripts").resolve()
+    except OSError:
+        venv_scripts = PROJECT_ROOT / "venv" / "Scripts"
+    try:
+        return exe_path.parent == venv_scripts or venv_scripts in exe_path.parents
+    except Exception:
+        return str(exe_path).lower().startswith(str(venv_scripts).lower() + os.sep)
+
+
+def _psutil_username_is_system(username: str | None) -> bool:
+    """True for Windows SYSTEM / LocalSystem process owners."""
+    if not username:
+        return False
+    normalized = username.strip().upper().replace("/", "\\")
+    return (
+        normalized == "SYSTEM"
+        or normalized.endswith("\\SYSTEM")
+        or normalized == "NT AUTHORITY\\SYSTEM"
+        or normalized.endswith("\\LOCALSYSTEM")
+    )
+
+
+def _scan_gateway_pids_windows_psutil(
+    pids: list[int],
+    exclude_pids: set[int],
+    *,
+    all_profiles: bool,
+    matches_gateway_runtime,
+    matches_current_profile,
+    known_pids: set[int] | None = None,
+) -> None:
+    """Supplement wmic/CIM with psutil for cross-session gateways (#63743).
+
+    ``Get-CimInstance Win32_Process`` often returns an empty ``CommandLine``
+    for processes in another session (e.g. a Scheduled Task gateway running as
+    SYSTEM) when queried from a non-elevated user. psutil can still often read
+    ``exe`` across that boundary even when ``cmdline`` is empty or
+    ``AccessDenied``. Without this pass the update flow fails to pause the
+    gateway but still refuses with "Other Hermes processes are running".
+
+    Strict identity when cmdline is unavailable:
+    - install ``venv\\Scripts\\python(w).exe`` **and** SYSTEM owner, or
+    - install venv python whose parent/child is already a known gateway PID
+      (PID-file / prior scan hit) so launcher stubs join the tree.
+    """
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return
+
+    try:
+        proc_iter = psutil.process_iter(["pid", "cmdline", "exe", "username", "ppid"])
+    except Exception:
+        return
+
+    known = {int(pid) for pid in pids}
+    if known_pids:
+        known.update(int(pid) for pid in known_pids)
+
+    try:
+        for proc in proc_iter:
+            try:
+                info = proc.info
+            except Exception:
+                continue
+            pid = info.get("pid")
+            if pid is None:
+                continue
+            pid_i = int(pid)
+
+            cmdline_parts = info.get("cmdline") or []
+            if not cmdline_parts:
+                try:
+                    cmdline_parts = list(proc.cmdline() or [])
+                except Exception:
+                    # AccessDenied / empty across the SYSTEM session boundary.
+                    cmdline_parts = []
+
+            if cmdline_parts:
+                command = " ".join(str(part) for part in cmdline_parts)
+                if matches_gateway_runtime(command) and (
+                    all_profiles or matches_current_profile(command)
+                ):
+                    _append_unique_pid(pids, pid_i, exclude_pids)
+                    known.add(pid_i)
+                continue
+
+            # No readable cmdline: require exe + a strict corroborating signal.
+            exe = info.get("exe")
+            if not exe:
+                try:
+                    exe = proc.exe()
+                except Exception:
+                    continue
+            if not _is_install_venv_python_exe(exe):
+                continue
+
+            username = info.get("username")
+            if not username:
+                try:
+                    username = proc.username()
+                except Exception:
+                    username = None
+
+            ppid = info.get("ppid")
+            if ppid is None:
+                try:
+                    ppid = proc.ppid()
+                except Exception:
+                    ppid = None
+            try:
+                ppid_i = int(ppid) if ppid is not None else None
+            except (TypeError, ValueError):
+                ppid_i = None
+
+            system_owned = _psutil_username_is_system(username)
+            tree_hit = pid_i in known or (ppid_i is not None and ppid_i in known)
+            if not system_owned and not tree_hit:
+                continue
+            # SYSTEM-owned install python is only safe as a gateway candidate
+            # for the update-wide (all_profiles) sweep — profile scoping needs
+            # cmdline or a PID-file hit collected elsewhere.
+            if system_owned and not all_profiles and not tree_hit:
+                continue
+
+            _append_unique_pid(pids, pid_i, exclude_pids)
+            known.add(pid_i)
+    except Exception:
+        return
+
+
 def _scan_gateway_pids(
     exclude_pids: set[int],
     all_profiles: bool = False,
     include_restart_managers: bool = False,
+    seed_pids: list[int] | None = None,
 ) -> list[int]:
     """Best-effort process-table scan for gateway PIDs.
 
     This supplements the profile-scoped PID file so status views can still spot
     a live gateway when the PID file is stale/missing, and ``--all`` sweeps can
     discover gateways outside the current profile.
+
+    ``seed_pids`` carries PIDs already established by PID-file / service
+    discovery so the Windows psutil pass can attach launcher-stub parents when
+    cmdline is unreadable across the SYSTEM session boundary. Seeds are not
+    re-emitted in the return value — callers already hold them.
     """
     # Exclude the entire ancestor chain so the CLI process that invoked this
     # scan (e.g. ``hermes gateway status``) is never mistaken for a running
     # gateway.  See #13242.
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
+    known_seeds = {int(pid) for pid in (seed_pids or ()) if pid is not None}
     # Strict command-line matcher shared with gateway.status: requires the
     # actual ``gateway run`` subcommand (or the dedicated entrypoints), so this
     # scan no longer false-matches ``gateway status``/``dashboard`` siblings or
@@ -408,7 +557,6 @@ def _scan_gateway_pids(
 
             _no_window = {"creationflags": windows_hide_flags()}
             wmic_path = shutil.which("wmic")
-            used_fallback = False
             result = None
             if wmic_path is not None:
                 try:
@@ -433,46 +581,55 @@ def _scan_gateway_pids(
                 # Fallback: PowerShell Get-CimInstance, emit LIST-style output
                 # so the downstream parser below doesn't need to branch.
                 powershell = shutil.which("powershell") or shutil.which("pwsh")
-                if powershell is None:
-                    return []
-                ps_cmd = (
-                    "Get-CimInstance Win32_Process | "
-                    "ForEach-Object { "
-                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
-                    "  'ProcessId=' + $_.ProcessId; "
-                    "  '' "
-                    "}"
-                )
-                try:
-                    result = subprocess.run(
-                        [powershell, "-NoProfile", "-Command", ps_cmd],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="ignore",
-                        timeout=15,
-                        **_no_window,
+                if powershell is not None:
+                    ps_cmd = (
+                        "Get-CimInstance Win32_Process | "
+                        "ForEach-Object { "
+                        "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                        "  'ProcessId=' + $_.ProcessId; "
+                        "  '' "
+                        "}"
                     )
-                except (OSError, subprocess.TimeoutExpired):
-                    return []
-                used_fallback = True
-            if result.returncode != 0 or result.stdout is None:
-                return []
-            current_cmd = ""
-            for line in result.stdout.split("\n"):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine=") :]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId=") :]
-                    if _matches_gateway_runtime(current_cmd) and (
-                        all_profiles or _matches_current_profile(current_cmd)
-                    ):
-                        try:
-                            _append_unique_pid(pids, int(pid_str), exclude_pids)
-                        except ValueError:
-                            pass
-                    current_cmd = ""
+                    try:
+                        result = subprocess.run(
+                            [powershell, "-NoProfile", "-Command", ps_cmd],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="ignore",
+                            timeout=15,
+                            **_no_window,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        result = None
+            if (
+                result is not None
+                and result.returncode == 0
+                and result.stdout is not None
+            ):
+                current_cmd = ""
+                for line in result.stdout.split("\n"):
+                    line = line.strip()
+                    if line.startswith("CommandLine="):
+                        current_cmd = line[len("CommandLine=") :]
+                    elif line.startswith("ProcessId="):
+                        pid_str = line[len("ProcessId=") :]
+                        if _matches_gateway_runtime(current_cmd) and (
+                            all_profiles or _matches_current_profile(current_cmd)
+                        ):
+                            try:
+                                _append_unique_pid(pids, int(pid_str), exclude_pids)
+                            except ValueError:
+                                pass
+                        current_cmd = ""
+            _scan_gateway_pids_windows_psutil(
+                pids,
+                exclude_pids,
+                all_profiles=all_profiles,
+                matches_gateway_runtime=_matches_gateway_runtime,
+                matches_current_profile=_matches_current_profile,
+                known_pids=known_seeds,
+            )
         else:
             # Try /proc first (works in Docker without procps installed),
             # fall back to ps -A eww.
@@ -538,7 +695,8 @@ def _scan_gateway_pids(
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        if not pids:
+            return []
 
     # Windows-specific: collapse venv launcher stubs.  A venv-built
     # ``pythonw.exe`` in ``<venv>/Scripts/`` is a ~100 KB launcher exe
@@ -600,6 +758,11 @@ def find_gateway_pids(
             needs this because a code update affects every profile.
             When ``False`` (default), only PIDs belonging to the current
             Hermes profile are returned.
+
+    When ``all_profiles`` is set, profile ``gateway.pid`` records are included
+    first. Cross-session SYSTEM gateways often have an empty CIM command line
+    and a denied psutil cmdline, but the PID file + lock still identify them
+    (#63743) — process-table scans alone are not enough.
     """
     _exclude = set(exclude_pids or set())
     pids: list[int] = []
@@ -608,6 +771,13 @@ def find_gateway_pids(
             from gateway.status import get_running_pid
 
             _append_unique_pid(pids, get_running_pid(), _exclude)
+        except Exception:
+            pass
+    else:
+        # PID-file-aware discovery for update / multi-profile sweeps.
+        try:
+            for proc in find_profile_gateway_processes(exclude_pids=_exclude):
+                _append_unique_pid(pids, proc.pid, _exclude)
         except Exception:
             pass
     for pid in _get_service_pids():
@@ -620,6 +790,7 @@ def find_gateway_pids(
         _exclude,
         all_profiles=all_profiles,
         include_restart_managers=include_restart_managers,
+        seed_pids=pids,
     ):
         _append_unique_pid(pids, pid, _exclude)
     return pids

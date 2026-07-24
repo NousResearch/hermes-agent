@@ -10431,35 +10431,175 @@ def _pause_windows_gateways_for_update() -> dict | None:
             logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
         unmapped.append({"pid": int(pid), "argv": argv})
 
+    # Preserve Task Scheduler ownership across the update. A legacy gateway
+    # task may run as SYSTEM and deny Query/End/Run to a non-elevated updater.
+    # Query every task that can own one of the discovered PIDs, elevate only
+    # when its ACL requires it, and remember the exact task for resume.
+    scheduled_tasks: list[dict] = []
+    task_control_failures: list[str] = []
+    task_candidates: dict[str, dict] = {}
+    try:
+        from hermes_cli import gateway_windows
+
+        for profile, pid in profiles.items():
+            name = gateway_windows.task_name_for_profile(str(profile))
+            entry = task_candidates.setdefault(
+                name, {"name": name, "profiles": set(), "pids": set()}
+            )
+            entry["profiles"].add(str(profile))
+            entry["pids"].add(int(pid))
+        if unmapped_pids:
+            name = gateway_windows.get_task_name()
+            entry = task_candidates.setdefault(
+                name, {"name": name, "profiles": set(), "pids": set()}
+            )
+            entry["pids"].update(int(pid) for pid in unmapped_pids)
+
+        alive_before_task_control = set(survivors).union(unmapped_pids)
+        for candidate in task_candidates.values():
+            task_name = str(candidate["name"])
+            task_pids = {int(pid) for pid in candidate["pids"]}
+            task_alive = bool(task_pids.intersection(alive_before_task_control))
+            query_code, query_out, query_err = gateway_windows._exec_schtasks(
+                ["/Query", "/TN", task_name]
+            )
+            query_detail = "\n".join(part for part in (query_out, query_err) if part)
+            protected = gateway_windows._is_access_denied(query_detail)
+            if query_code != 0 and not protected:
+                continue
+
+            managed = False
+            elevated = False
+            control_code = 0
+            control_detail = ""
+            if protected:
+                # An ACL-denied query is the signal the old SYSTEM task still
+                # owns this profile. Record it even when the planned-stop
+                # marker already drained the PID, so resume uses /Run under
+                # the original task identity instead of a current-user spawn.
+                managed = True
+                if task_alive:
+                    elevated = True
+                    control_code, control_detail = (
+                        gateway_windows._exec_schtasks_elevated(
+                            ["/End", "/TN", task_name]
+                        )
+                    )
+            elif task_alive:
+                control_code, _end_out, end_err = gateway_windows._exec_schtasks(
+                    ["/End", "/TN", task_name]
+                )
+                if control_code == 0:
+                    managed = True
+                elif gateway_windows._is_access_denied(end_err):
+                    managed = True
+                    elevated = True
+                    control_code, control_detail = (
+                        gateway_windows._exec_schtasks_elevated(
+                            ["/End", "/TN", task_name]
+                        )
+                    )
+                elif "not running" not in (end_err or "").lower():
+                    logger.debug(
+                        "schtasks /End before update returned %s for %s: %s",
+                        control_code,
+                        task_name,
+                        (end_err or "").strip(),
+                    )
+
+            if not managed:
+                continue
+            scheduled_tasks.append(
+                {
+                    "name": task_name,
+                    "profiles": sorted(candidate["profiles"]),
+                    "pids": sorted(task_pids),
+                    "elevated": elevated or protected,
+                }
+            )
+            if control_code != 0:
+                detail = control_detail or f"schtasks exited with code {control_code}"
+                task_control_failures.append(f"{task_name}: {detail}")
+    except Exception as exc:
+        logger.debug("Could not control Windows gateway Scheduled Task before update: %s", exc)
+
+    kill_targets = set(survivors).union(unmapped_pids)
+    if scheduled_tasks:
+        # /End is asynchronous. Give Task Scheduler time to reap the process
+        # before falling back to taskkill, which cannot cross a SYSTEM ACL.
+        kill_targets = _wait_for_windows_update_gateway_exit(
+            sorted(kill_targets), timeout=5.0
+        )
+
     force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids)):
+    kill_denied = []
+    for pid in sorted(kill_targets):
         try:
             terminate_pid(int(pid), force=True)
             force_killed.append(int(pid))
-        except (ProcessLookupError, PermissionError, OSError):
+        except ProcessLookupError:
             pass
+        except PermissionError:
+            kill_denied.append(int(pid))
+        except OSError as exc:
+            # taskkill surfaces access-denied as OSError with stderr text.
+            details = str(exc).lower()
+            if "access is denied" in details or "denied" in details:
+                kill_denied.append(int(pid))
+            else:
+                logger.debug("taskkill failed for gateway PID %s: %s", pid, exc)
+
+    remaining_pids = _wait_for_windows_update_gateway_exit(
+        sorted(kill_targets), timeout=5.0
+    )
+    for task in scheduled_tasks:
+        task_pids = {int(pid) for pid in task.get("pids", [])}
+        task["restart_after_update"] = not bool(task_pids.intersection(remaining_pids))
 
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
+    if scheduled_tasks:
+        names = ", ".join(entry["name"] for entry in scheduled_tasks)
+        print(f"  → Paused Windows gateway Scheduled Task(s): {names}")
     if force_killed:
         print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
+    pause_errors = list(task_control_failures)
+    if remaining_pids:
+        pause_errors.append(
+            "gateway PID(s) still running: "
+            + ", ".join(str(pid) for pid in sorted(remaining_pids))
+        )
+    elif kill_denied:
+        # Access denied is harmless only when the task stop already removed
+        # the process before the final liveness check.
+        logger.debug("taskkill access denied after gateway already exited: %s", kill_denied)
 
     if unmapped_pids:
-        respawnable = sum(1 for u in unmapped if u.get("argv"))
+        scheduled_pids = {
+            int(pid)
+            for task in scheduled_tasks
+            for pid in task.get("pids", [])
+        }
+        unmanaged = [u for u in unmapped if int(u.get("pid", 0)) not in scheduled_pids]
+        respawnable = sum(1 for u in unmanaged if u.get("argv"))
         print(
             f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping"
         )
-        if respawnable < len(unmapped_pids):
+        if respawnable < len(unmanaged):
             # Some had no recoverable command line (psutil missing, access
             # denied, already gone): those still need a manual restart.
             print("    Restart manually after update: hermes gateway run")
 
-    return {
+    token = {
         "resume_needed": True,
         "profiles": profiles,
         "unmapped_pids": unmapped_pids,
         "unmapped": unmapped,
+        "scheduled_tasks": scheduled_tasks,
     }
+    if pause_errors:
+        token["pause_error"] = "; ".join(pause_errors)
+    return token
 
 
 def _cold_start_windows_gateway_after_update() -> None:
@@ -10569,9 +10709,76 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     if not _is_windows():
         return
 
-    profiles = token.get("profiles") or {}
-    unmapped = token.get("unmapped") or []
+    profiles = dict(token.get("profiles") or {})
+    unmapped = list(token.get("unmapped") or [])
+    scheduled_tasks = list(token.get("scheduled_tasks") or [])
+    tasks_to_restart = [
+        task
+        for task in scheduled_tasks
+        if task.get("restart_after_update", True)
+    ]
     cold_start = bool(token.get("cold_start_if_installed"))
+
+    task_profiles = {
+        str(profile)
+        for task in scheduled_tasks
+        for profile in task.get("profiles", [])
+    }
+    task_pids = {
+        int(pid)
+        for task in scheduled_tasks
+        for pid in task.get("pids", [])
+    }
+    profiles = {
+        profile: pid
+        for profile, pid in profiles.items()
+        if str(profile) not in task_profiles
+    }
+    unmapped = [
+        entry for entry in unmapped if int(entry.get("pid", 0)) not in task_pids
+    ]
+
+    restarted_tasks = []
+    failed_tasks = []
+    if tasks_to_restart:
+        try:
+            from hermes_cli import gateway_windows
+
+            for task in tasks_to_restart:
+                task_name = str(task.get("name") or "")
+                if not task_name:
+                    continue
+                code, out, err = gateway_windows._exec_schtasks(
+                    ["/Run", "/TN", task_name]
+                )
+                detail = "\n".join(part for part in (out, err) if part)
+                if code != 0 and gateway_windows._is_access_denied(detail):
+                    code, detail = gateway_windows._exec_schtasks_elevated(
+                        ["/Run", "/TN", task_name]
+                    )
+                if code == 0:
+                    restarted_tasks.append(task_name)
+                else:
+                    failed_tasks.append((task_name, detail or f"exit code {code}"))
+        except Exception as exc:
+            logger.debug("Could not restart Windows Scheduled Task after update: %s", exc)
+            failed_tasks.extend(
+                (str(task.get("name") or "unknown"), str(exc))
+                for task in tasks_to_restart
+            )
+
+    if restarted_tasks:
+        print()
+        print(
+            "  ✓ Restarted Windows gateway Scheduled Task(s): "
+            + ", ".join(restarted_tasks)
+        )
+    if failed_tasks:
+        print()
+        print("  ⚠ Could not restart Windows gateway Scheduled Task(s):")
+        for task_name, detail in failed_tasks:
+            print(f"    - {task_name}: {detail}")
+
     if not profiles and not any(u.get("argv") for u in unmapped):
         if cold_start:
             _cold_start_windows_gateway_after_update()
@@ -10790,6 +10997,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _resume_windows_gateways_after_update,
             _windows_gateway_resume,
         )
+        if _windows_gateway_resume.get("pause_error"):
+            print("✗ Cannot safely update while a Windows gateway is still active.")
+            print(f"  {_windows_gateway_resume['pause_error']}")
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(2)
 
     # With gateways paused, anything still running from the venv interpreter
     # (most commonly the Desktop app's `hermes serve` backend) will keep .pyd

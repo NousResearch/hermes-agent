@@ -891,6 +891,9 @@ class CLICommandsMixin:
         Copies the full conversation history to a new session so the user can
         explore a different approach without losing the original session state.
         Inspired by Claude Code's /branch command.
+
+        Gateway-only flags (``--here``) are stripped so they never become titles.
+        CLI always branches in-place (no platform threads).
         """
         from cli import _cprint, _sync_process_session_id
         if not self.conversation_history:
@@ -903,7 +906,10 @@ class CLICommandsMixin:
             return
 
         parts = cmd_original.split(None, 1)
-        branch_name = parts[1].strip() if len(parts) > 1 else ""
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        from gateway.slash_commands import _parse_branch_command_args
+        # stay_here ignored on CLI — always in-place; just strip known flags.
+        _stay_here, branch_name = _parse_branch_command_args(raw_args)
 
         # Generate the new session ID
         now = datetime.now()

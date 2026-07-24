@@ -31,6 +31,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import contextvars
 import importlib.util
 import json
 import logging
@@ -171,14 +172,35 @@ _sudo_password_cache_lock = threading.Lock()
 # the per-session queue in tools.approval, not through these callbacks,
 # so it's unaffected.
 _callback_tls = threading.local()
+_CALLBACK_TASK_OVERRIDE_UNSET = object()
+_callback_task_override: contextvars.ContextVar[object] = contextvars.ContextVar(
+    "terminal_callback_task_override",
+    default=_CALLBACK_TASK_OVERRIDE_UNSET,
+)
 
 
 def _get_sudo_password_callback():
+    task_override = _callback_task_override.get()
+    if task_override is not _CALLBACK_TASK_OVERRIDE_UNSET:
+        return task_override[1]
     return getattr(_callback_tls, "sudo_password", None)
 
 
 def _get_approval_callback():
+    task_override = _callback_task_override.get()
+    if task_override is not _CALLBACK_TASK_OVERRIDE_UNSET:
+        return task_override[0]
     return getattr(_callback_tls, "approval", None)
+
+
+def _set_task_callback_override(approval_cb, sudo_cb):
+    """Bind callback lookups to the current async task context."""
+    return _callback_task_override.set((approval_cb, sudo_cb))
+
+
+def _reset_task_callback_override(token) -> None:
+    """Restore the callback lookup context that preceded *token*."""
+    _callback_task_override.reset(token)
 
 
 def set_sudo_password_callback(cb):

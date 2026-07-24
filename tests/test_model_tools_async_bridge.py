@@ -180,7 +180,7 @@ class TestRunAsyncWorkerThread:
 
 
 class TestRunAsyncWithRunningLoop:
-    """When a loop is already running, _run_async falls back to a thread."""
+    """When a loop is already running, _run_async uses the bridge loop."""
 
     @pytest.mark.asyncio
     async def test_run_async_from_async_context(self):
@@ -191,29 +191,19 @@ class TestRunAsyncWithRunningLoop:
         async def _simple():
             return 42
 
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, _run_async, _simple()
-        )
+        result = _run_async(_simple())
         assert result == 42
 
     @pytest.mark.asyncio
-    async def test_timeout_uses_nonblocking_executor_shutdown(self, monkeypatch):
-        """A timeout in the running-loop branch must not block the caller.
-
-        If shutdown ever waits for a stuck worker, a tool coroutine that
-        ignores (or can't observe) cancellation would hang the whole agent.
-        Guard: the caller must raise TimeoutError and pool.shutdown must be
-        called with wait=False. The worker's own event loop handles cleanup
-        (cancellation is scheduled via call_soon_threadsafe before the
-        caller returns).
-        """
+    async def test_timeout_cancels_bridge_future(self, monkeypatch):
+        """A timeout in the running-loop branch should cancel the bridge task."""
         import concurrent.futures
+        import model_tools
         from model_tools import _run_async
 
         events = {
+            "cancelled": False,
             "result_timeout": None,
-            "shutdown_calls": [],
-            "submitted_fn": None,
         }
 
         class TimeoutFuture:
@@ -222,81 +212,43 @@ class TestRunAsyncWithRunningLoop:
                 raise concurrent.futures.TimeoutError()
 
             def cancel(self):
+                events["cancelled"] = True
                 return True
-
-        class FakeExecutor:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.shutdown(wait=True)
-                return False
-
-            def submit(self, fn, *args, **kwargs):
-                # Record which function got submitted -- should be the
-                # in-function worker wrapper, not bare asyncio.run, so we
-                # know _run_async is using a loop it owns and can cancel.
-                events["submitted_fn"] = getattr(fn, "__name__", repr(fn))
-                return TimeoutFuture()
-
-            def shutdown(self, wait=True, cancel_futures=False):
-                events["shutdown_calls"].append((wait, cancel_futures))
 
         async def _never_finishes():
             await asyncio.sleep(999)
 
-        monkeypatch.setattr(
-            concurrent.futures,
-            "ThreadPoolExecutor",
-            FakeExecutor,
-        )
+        class DummyLoop:
+            def is_closed(self):
+                return False
+
+            def call_soon_threadsafe(self, callback, *args):
+                callback(*args)
+
+        dummy_loop = DummyLoop()
+
+        def fake_run_coroutine_threadsafe(coro, loop):
+            assert loop is dummy_loop
+            coro.close()
+            return TimeoutFuture()
+
+        monkeypatch.setattr(model_tools, "_get_async_bridge_loop", lambda: dummy_loop)
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
 
         with pytest.raises(concurrent.futures.TimeoutError):
             _run_async(_never_finishes())
 
         assert events["result_timeout"] == 300
-        # The worker wrapper creates its own event loop so _run_async can
-        # cancel the task on timeout — this must NOT be bare asyncio.run.
-        assert events["submitted_fn"] != "run", (
-            "_run_async submitted asyncio.run directly — it must submit a "
-            "worker wrapper that owns the event loop so timeouts can cancel "
-            "the task"
-        )
-        # Critical: shutdown must NOT wait. If wait=True, a stuck coroutine
-        # would freeze the caller (converts a thread leak into a hang).
-        assert events["shutdown_calls"], "shutdown was never called"
-        for wait, _cancel in events["shutdown_calls"]:
-            assert wait is False, (
-                f"shutdown called with wait={wait} — a stuck tool coroutine "
-                f"would hang the caller indefinitely"
-            )
+        assert events["cancelled"] is True
 
     @pytest.mark.asyncio
-    async def test_timeout_cancels_coroutine_in_worker_loop(self, monkeypatch):
-        """On timeout, the worker's event loop must receive a cancel request
-        so the coroutine stops and the thread exits — not leaked.
+    async def test_timeout_cancels_coroutine_in_bridge_loop(self, monkeypatch):
+        """On timeout, the bridge loop task must receive cancellation."""
+        from model_tools import _run_async, shutdown_async_bridge_loop
 
-        Before the fix, future.cancel() on a running ThreadPoolExecutor
-        future is a no-op, so the worker thread kept running the coroutine
-        to completion (leaking one thread per tool-timeout).
-        """
-        from model_tools import _run_async
-
-        # Shrink the 300s internal timeout by patching future.result.
-        # We do this surgically: let everything else run for real so the
-        # worker loop actually exists and can observe cancellation.
         import concurrent.futures as _cf
+        import time as _time
 
-        real_pool_cls = _cf.ThreadPoolExecutor
-
-        class FastTimeoutPool(real_pool_cls):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-
-        # Patch future.result to time out after 1s instead of 300s.
         real_result = _cf.Future.result
 
         def fast_result(self, timeout=None):
@@ -313,27 +265,546 @@ class TestRunAsyncWithRunningLoop:
                 cancel_observed.set()
                 raise
 
-        import time as _time
         t0 = _time.time()
-        with pytest.raises(_cf.TimeoutError):
-            _run_async(_slow_cancellable())
-        elapsed = _time.time() - t0
+        try:
+            with pytest.raises(_cf.TimeoutError):
+                _run_async(_slow_cancellable())
+            elapsed = _time.time() - t0
 
-        # Caller must return fast (no hang waiting for the coro).
-        assert elapsed < 3.0, (
-            f"_run_async blocked caller for {elapsed:.1f}s — should return "
-            f"on timeout regardless of whether the coroutine has finished"
+            assert elapsed < 3.0, (
+                f"_run_async blocked caller for {elapsed:.1f}s — should return "
+                f"on timeout regardless of whether the coroutine has finished"
+            )
+
+            deadline = _time.time() + 5
+            while not cancel_observed.is_set() and _time.time() < deadline:
+                _time.sleep(0.05)
+            assert cancel_observed.is_set(), (
+                "Coroutine never received CancelledError — the bridge task "
+                "must be cancelled when future.result(timeout=...) expires"
+            )
+        finally:
+            shutdown_async_bridge_loop()
+
+    @pytest.mark.asyncio
+    async def test_timeout_retires_stuck_bridge_loop_for_next_call(self, monkeypatch):
+        """After a stuck bridge call times out, later calls should use a fresh loop."""
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        blocker = threading.Event()
+        started = threading.Event()
+        stuck_loop = None
+        stuck_thread = None
+
+        async def _blocks_bridge_loop():
+            nonlocal stuck_loop, stuck_thread
+            stuck_loop = asyncio.get_running_loop()
+            stuck_thread = threading.current_thread()
+            started.set()
+            blocker.wait()
+            return "unblocked"
+
+        async def _simple():
+            return "fresh-ok"
+
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_TIMEOUT", 0.05)
+
+        try:
+            with pytest.raises(TimeoutError):
+                _run_async(_blocks_bridge_loop())
+
+            assert started.is_set()
+
+            assert _run_async(_simple()) == "fresh-ok"
+            assert model_tools._async_bridge_loop is not stuck_loop
+        finally:
+            blocker.set()
+            shutdown_async_bridge_loop()
+            if (
+                stuck_loop is not None
+                and stuck_loop is not model_tools._async_bridge_loop
+                and not stuck_loop.is_closed()
+            ):
+                try:
+                    stuck_loop.call_soon_threadsafe(stuck_loop.stop)
+                except RuntimeError:
+                    pass
+            if stuck_thread is not None:
+                stuck_thread.join(timeout=1)
+            if (
+                stuck_thread is not None
+                and not stuck_thread.is_alive()
+                and stuck_loop is not None
+                and not stuck_loop.is_closed()
+            ):
+                stuck_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_retired_bridge_loop_closes_after_thread_exits(self, monkeypatch):
+        """A retired unhealthy bridge loop should close when its thread exits."""
+        import time as _time
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        blocker = threading.Event()
+        started = threading.Event()
+        stuck_loop = None
+        stuck_thread = None
+
+        async def _blocks_bridge_loop():
+            nonlocal stuck_loop, stuck_thread
+            stuck_loop = asyncio.get_running_loop()
+            stuck_thread = threading.current_thread()
+            started.set()
+            blocker.wait()
+
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_TIMEOUT", 0.05)
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_HEALTH_PROBE_TIMEOUT", 0.01)
+
+        try:
+            with pytest.raises(TimeoutError):
+                _run_async(_blocks_bridge_loop())
+
+            assert started.is_set()
+            assert stuck_loop is not None
+            assert stuck_thread is not None and stuck_thread.is_alive()
+            assert model_tools._async_bridge_loop is None
+
+            blocker.set()
+            deadline = _time.monotonic() + 2
+            while stuck_thread.is_alive() and _time.monotonic() < deadline:
+                stuck_thread.join(timeout=0.05)
+
+            assert not stuck_thread.is_alive()
+            assert stuck_loop.is_closed(), (
+                "Retired bridge loop thread exited but left its event loop open"
+            )
+        finally:
+            blocker.set()
+            shutdown_async_bridge_loop()
+            if (
+                stuck_thread is not None
+                and stuck_thread.is_alive()
+                and stuck_loop is not None
+                and not stuck_loop.is_closed()
+            ):
+                try:
+                    stuck_loop.call_soon_threadsafe(stuck_loop.stop)
+                except RuntimeError:
+                    pass
+                stuck_thread.join(timeout=1)
+            if (
+                stuck_thread is not None
+                and not stuck_thread.is_alive()
+                and stuck_loop is not None
+                and not stuck_loop.is_closed()
+            ):
+                stuck_loop.close()
+
+    def test_timeout_does_not_stop_healthy_bridge_submission(self, monkeypatch):
+        """A timed-out call must not stop another in-flight bridge submission."""
+        import concurrent.futures as _cf
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        real_result = _cf.Future.result
+        thread_timeouts = threading.local()
+
+        def per_thread_result(self, timeout=None):
+            return real_result(
+                self,
+                timeout=getattr(thread_timeouts, "timeout", timeout),
+            )
+
+        monkeypatch.setattr(_cf.Future, "result", per_thread_result)
+
+        slow_started = threading.Event()
+        healthy_started = threading.Event()
+        slow_done = threading.Event()
+        healthy_done = threading.Event()
+        results = {}
+        bridge_loop = None
+        bridge_thread = None
+
+        async def _slow():
+            slow_started.set()
+            await asyncio.sleep(60)
+
+        async def _healthy():
+            healthy_started.set()
+            await asyncio.sleep(0.2)
+            return "healthy-ok"
+
+        def _run_in_async_context(name, coro_factory, timeout):
+            thread_timeouts.timeout = timeout
+
+            async def _call_run_async():
+                return _run_async(coro_factory())
+
+            try:
+                results[name] = asyncio.run(_call_run_async())
+            except BaseException as exc:
+                results[name] = exc
+            finally:
+                if name == "slow":
+                    slow_done.set()
+                else:
+                    healthy_done.set()
+
+        slow_thread = threading.Thread(
+            target=_run_in_async_context,
+            args=("slow", _slow, 0.05),
+            daemon=True,
+            name="test-slow-bridge-caller",
+        )
+        healthy_thread = threading.Thread(
+            target=_run_in_async_context,
+            args=("healthy", _healthy, 0.4),
+            daemon=True,
+            name="test-healthy-bridge-caller",
         )
 
-        # Worker thread must cancel the task (not leak).
-        deadline = _time.time() + 5
-        while not cancel_observed.is_set() and _time.time() < deadline:
-            _time.sleep(0.05)
-        assert cancel_observed.is_set(), (
-            "Coroutine never received CancelledError — worker thread leaked "
-            "(ThreadPoolExecutor.cancel() is a no-op on a running future; "
-            "_run_async must cancel the task inside its worker loop)"
+        try:
+            slow_thread.start()
+            assert slow_started.wait(timeout=1)
+
+            healthy_thread.start()
+            assert healthy_started.wait(timeout=1)
+            bridge_loop = model_tools._async_bridge_loop
+            bridge_thread = model_tools._async_bridge_thread
+
+            assert slow_done.wait(timeout=1)
+            assert isinstance(results["slow"], _cf.TimeoutError)
+
+            assert healthy_done.wait(timeout=1)
+            assert results["healthy"] == "healthy-ok"
+        finally:
+            slow_thread.join(timeout=1)
+            healthy_thread.join(timeout=1)
+            shutdown_async_bridge_loop(timeout=1)
+            if (
+                bridge_loop is not None
+                and bridge_loop is not model_tools._async_bridge_loop
+                and not bridge_loop.is_closed()
+            ):
+                try:
+                    bridge_loop.call_soon_threadsafe(bridge_loop.stop)
+                except RuntimeError:
+                    pass
+            if bridge_thread is not None:
+                bridge_thread.join(timeout=1)
+            if (
+                bridge_thread is not None
+                and not bridge_thread.is_alive()
+                and bridge_loop is not None
+                and not bridge_loop.is_closed()
+            ):
+                bridge_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_async_context_reuses_persistent_bridge_loop(self):
+        """Direct calls from an already-running loop should reuse one bridge loop."""
+        from model_tools import _run_async
+
+        loop1 = _run_async(_get_current_loop())
+        loop2 = _run_async(_get_current_loop())
+
+        assert loop1 is loop2, (
+            "_run_async() created a new bridge loop for the second async-context "
+            "call — cached async clients will accumulate across gateway turns"
         )
+        assert not loop1.is_closed(), (
+            "The async-context bridge loop was closed after returning — cached "
+            "async clients become orphaned and leak descriptors in gateway mode"
+        )
+
+    def test_concurrent_submissions_isolate_profile_and_callbacks(self, tmp_path):
+        """Shared bridge tasks must retain each caller's profile and callbacks."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        import model_tools
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            _get_sudo_password_callback,
+            set_approval_callback,
+            set_sudo_password_callback,
+        )
+
+        profiles = {
+            "a": tmp_path / "profile-a",
+            "b": tmp_path / "profile-b",
+        }
+        callbacks = {
+            "a": (object(), object()),
+            "b": (object(), object()),
+        }
+        caller_barrier = threading.Barrier(2)
+        bridge_barrier = asyncio.Barrier(2)
+
+        async def _observe_context():
+            def _snapshot():
+                return (
+                    str(get_hermes_home()),
+                    _get_approval_callback(),
+                    _get_sudo_password_callback(),
+                    asyncio.get_running_loop(),
+                    threading.get_ident(),
+                )
+
+            before = _snapshot()
+            await asyncio.wait_for(bridge_barrier.wait(), timeout=2)
+            await asyncio.sleep(0)
+            return before, _snapshot()
+
+        async def _driver():
+            return model_tools._run_async(_observe_context())
+
+        def _submit(key):
+            approval_cb, sudo_cb = callbacks[key]
+            token = set_hermes_home_override(profiles[key])
+            set_approval_callback(approval_cb)
+            set_sudo_password_callback(sudo_cb)
+            try:
+                caller_barrier.wait(timeout=2)
+                observed = asyncio.run(_driver())
+                caller_callbacks = (
+                    _get_approval_callback(),
+                    _get_sudo_password_callback(),
+                )
+                return observed, caller_callbacks
+            finally:
+                set_approval_callback(None)
+                set_sudo_password_callback(None)
+                reset_hermes_home_override(token)
+
+        model_tools.shutdown_async_bridge_loop()
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                submitted = {key: pool.submit(_submit, key) for key in profiles}
+                results = {key: future.result(timeout=5) for key, future in submitted.items()}
+
+            bridge_loops = set()
+            bridge_threads = set()
+            for key, (observed, caller_callbacks) in results.items():
+                approval_cb, sudo_cb = callbacks[key]
+                expected = (str(profiles[key]), approval_cb, sudo_cb)
+                before, after = observed
+                assert before[:3] == expected
+                assert after[:3] == expected
+                assert caller_callbacks == (approval_cb, sudo_cb)
+                bridge_loops.add(id(before[3]))
+                bridge_threads.add(before[4])
+                assert before[3] is after[3]
+                assert before[4] == after[4]
+
+            assert len(bridge_loops) == 1
+            assert len(bridge_threads) == 1
+
+            previous_approval = _get_approval_callback()
+            previous_sudo = _get_sudo_password_callback()
+            set_approval_callback(None)
+            set_sudo_password_callback(None)
+
+            async def _read_unbound_callbacks():
+                return _get_approval_callback(), _get_sudo_password_callback()
+
+            async def _unbound_driver():
+                return model_tools._run_async(_read_unbound_callbacks())
+
+            try:
+                assert asyncio.run(_unbound_driver()) == (None, None)
+            finally:
+                set_approval_callback(previous_approval)
+                set_sudo_password_callback(previous_sudo)
+        finally:
+            model_tools.shutdown_async_bridge_loop()
+
+    def test_nested_bridge_fallback_preserves_profile_and_callbacks(self, tmp_path):
+        """The one-off nested fallback must inherit the bridge task's context."""
+        import model_tools
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.terminal_tool import (
+            _get_approval_callback,
+            _get_sudo_password_callback,
+            set_approval_callback,
+            set_sudo_password_callback,
+        )
+
+        profile = tmp_path / "nested-profile"
+        approval_cb = object()
+        sudo_cb = object()
+
+        async def _inner():
+            return (
+                str(get_hermes_home()),
+                _get_approval_callback(),
+                _get_sudo_password_callback(),
+            )
+
+        async def _outer():
+            return model_tools._run_async(_inner())
+
+        async def _driver():
+            return model_tools._run_async(_outer())
+
+        previous_approval = _get_approval_callback()
+        previous_sudo = _get_sudo_password_callback()
+        token = set_hermes_home_override(profile)
+        set_approval_callback(approval_cb)
+        set_sudo_password_callback(sudo_cb)
+        try:
+            assert asyncio.run(_driver()) == (str(profile), approval_cb, sudo_cb)
+        finally:
+            set_approval_callback(previous_approval)
+            set_sudo_password_callback(previous_sudo)
+            reset_hermes_home_override(token)
+            model_tools.shutdown_async_bridge_loop()
+
+    def test_nested_call_from_bridge_loop_uses_worker_loop(self, monkeypatch):
+        """Calling _run_async from the bridge loop itself must not deadlock."""
+        import concurrent.futures as _cf
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        real_result = _cf.Future.result
+
+        def fast_bridge_thread_result(self, timeout=None):
+            if (
+                threading.current_thread().name == "model-tools-async-bridge"
+                and timeout == 300
+            ):
+                return real_result(self, timeout=0.05)
+            return real_result(self, timeout=timeout)
+
+        async def _inner():
+            return "nested-ok"
+
+        async def _outer():
+            return _run_async(_inner())
+
+        monkeypatch.setattr(_cf.Future, "result", fast_bridge_thread_result)
+
+        try:
+            bridge_loop = model_tools._get_async_bridge_loop()
+            future = asyncio.run_coroutine_threadsafe(_outer(), bridge_loop)
+
+            assert future.result(timeout=2) == "nested-ok"
+        finally:
+            shutdown_async_bridge_loop()
+
+    def test_nested_bridge_loop_timeout_cancels_oneoff_task(self, monkeypatch):
+        """Timed-out nested bridge-loop calls must cancel the one-off task."""
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        cancel_observed = threading.Event()
+        release_uncancelled = threading.Event()
+        oneoff_finished = threading.Event()
+
+        async def _inner_waits_for_cancellation():
+            try:
+                await asyncio.to_thread(release_uncancelled.wait)
+            except asyncio.CancelledError:
+                cancel_observed.set()
+                raise
+            finally:
+                oneoff_finished.set()
+
+        async def _outer_runs_on_bridge_loop():
+            with pytest.raises(TimeoutError):
+                _run_async(_inner_waits_for_cancellation())
+            return cancel_observed.wait(timeout=1)
+
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_TIMEOUT", 0.05)
+
+        try:
+            bridge_loop = model_tools._get_async_bridge_loop()
+            future = asyncio.run_coroutine_threadsafe(
+                _outer_runs_on_bridge_loop(),
+                bridge_loop,
+            )
+
+            assert future.result(timeout=2), (
+                "Nested one-off coroutine never received CancelledError after "
+                "the bridge-loop fallback timed out"
+            )
+        finally:
+            release_uncancelled.set()
+            oneoff_finished.wait(timeout=1)
+            shutdown_async_bridge_loop()
+
+    def test_bridge_loop_startup_failure_closes_and_resets(self, monkeypatch):
+        """A failed bridge-thread startup should not publish a dead loop."""
+        import model_tools
+
+        class NeverReadyEvent:
+            def set(self):
+                pass
+
+            def wait(self, timeout=None):
+                return False
+
+        class NeverStartedThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return False
+
+        created_loops = []
+        original_new_event_loop = asyncio.new_event_loop
+
+        def fake_new_event_loop():
+            loop = original_new_event_loop()
+            created_loops.append(loop)
+            return loop
+
+        model_tools.shutdown_async_bridge_loop()
+        monkeypatch.setattr(model_tools, "_async_bridge_loop", None)
+        monkeypatch.setattr(model_tools, "_async_bridge_thread", None)
+        monkeypatch.setattr(threading, "Event", NeverReadyEvent)
+        monkeypatch.setattr(threading, "Thread", NeverStartedThread)
+        monkeypatch.setattr(asyncio, "new_event_loop", fake_new_event_loop)
+
+        with pytest.raises(RuntimeError, match="async bridge loop"):
+            model_tools._get_async_bridge_loop()
+
+        assert model_tools._async_bridge_loop is None
+        assert model_tools._async_bridge_thread is None
+        assert created_loops and created_loops[0].is_closed()
+
+    def test_shutdown_async_bridge_loop_stops_thread_and_closes_loop(self):
+        """The process cleanup path should stop and close the bridge loop."""
+        import model_tools
+
+        loop = model_tools._get_async_bridge_loop()
+        thread = model_tools._async_bridge_thread
+        assert thread is not None and thread.is_alive()
+
+        model_tools.shutdown_async_bridge_loop()
+
+        assert model_tools._async_bridge_loop is None
+        assert model_tools._async_bridge_thread is None
+        assert loop.is_closed()
+        assert not thread.is_alive()
 
 
 # ---------------------------------------------------------------------------

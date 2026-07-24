@@ -7203,6 +7203,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cli_visible_print()
         return True
 
+    def _show_previous_session_recap(self) -> None:
+        """Print a one-line reminder of the last CLI session on a fresh start.
+
+        Only for a genuinely new session — /resume already shows the full
+        prior transcript via _display_resumed_history, so this would be
+        redundant there. Best-effort: any failure is swallowed so it can
+        never block startup.
+        """
+        try:
+            from tools.ansi_strip import sanitize_display_text
+            from hermes_cli.main import _relative_time
+
+            prior = self._list_recent_sessions(limit=1)
+            if not prior:
+                return
+            session = prior[0]
+            label = sanitize_display_text((session.get("title") or "").strip())
+            if not label:
+                label = sanitize_display_text((session.get("preview") or "").strip())
+            if not label:
+                return
+            if len(label) > 80:
+                label = label[:79] + "…"
+            when = _relative_time(session.get("last_active"))
+            _cli_visible_print(f'  Last time: "{label}" — {when}')
+        except Exception:
+            pass
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -13440,9 +13468,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._show_security_advisories()
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
+        # Otherwise, on a genuinely fresh session, remind the user what
+        # they were doing last time so they don't have to go dig for it.
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
+        else:
+            self._show_previous_session_recap()
 
         try:
             from hermes_cli.skin_engine import get_active_skin

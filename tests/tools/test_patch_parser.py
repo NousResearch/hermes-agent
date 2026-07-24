@@ -715,3 +715,180 @@ class TestV4ALspDiagnosticsPropagation:
         assert result.lsp_diagnostics is not None
         assert per_file["a.ts"] in result.lsp_diagnostics
         assert per_file["b.ts"] in result.lsp_diagnostics
+
+
+class TestParseEdgeCases:
+    """Cover parsing branches for \\-marker, implicit context, and MOVE after UPDATE."""
+
+    def test_no_newline_marker_skipped(self):
+        """The '\\ No newline at end of file' marker is silently skipped."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: f.py\n"
+            " ctx\n"
+            "-old\n"
+            "+new\n"
+            "\\ No newline at end of file\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        assert [
+            (line.prefix, line.content) for line in ops[0].hunks[0].lines
+        ] == [(" ", "ctx"), ("-", "old"), ("+", "new")]
+
+    def test_implicit_context_line(self):
+        """A hunk line without a recognized prefix is treated as context."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: f.py\n"
+            "@@ hint @@\n"
+            "unprefixed_line\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert ops[0].hunks[0].lines[0].prefix == " "
+        assert ops[0].hunks[0].lines[0].content == "unprefixed_line"
+
+    def test_move_after_update_flushes_previous_op(self):
+        """A MOVE following an UPDATE must flush the UPDATE's hunk correctly."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: a.py\n"
+            " ctx\n"
+            "-old\n"
+            "+new\n"
+            "*** Move File: a.py -> b.py\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 2
+        assert ops[0].operation == OperationType.UPDATE
+        assert len(ops[0].hunks) == 1
+        assert ops[1].operation == OperationType.MOVE
+        assert ops[1].new_path == "b.py"
+
+
+class TestApplyMove:
+    """Cover _apply_move and MOVE in apply_v4a_operations."""
+
+    def test_move_success(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Move File: old.py -> new.py\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            moved = None
+
+            def read_file_raw(self, path):
+                if path == "new.py":
+                    return SimpleNamespace(content=None, error="not found")
+                return SimpleNamespace(content="x", error=None)
+
+            def move_file(self, src, dst):
+                self.moved = (src, dst)
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True
+        assert file_ops.moved == ("old.py", "new.py")
+        assert "old.py -> new.py" in result.files_modified[0]
+
+    def test_move_failure(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Move File: old.py -> new.py\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                if path == "new.py":
+                    return SimpleNamespace(content=None, error="not found")
+                return SimpleNamespace(content="x", error=None)
+            def move_file(self, src, dst):
+                return SimpleNamespace(error="permission denied")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "Failed to move" in result.error
+
+
+class TestApplyAddDeleteErrors:
+    """Cover error paths in _apply_add and _apply_delete."""
+
+    def test_add_write_error(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: new.py\n"
+            "+content\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def write_file(self, path, content):
+                return SimpleNamespace(error="disk full")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "disk full" in result.error
+
+    def test_delete_delete_error(self):
+        patch = (
+            "*** Begin Patch\n"
+            "*** Delete File: gone.py\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content="content\n", error=None)
+            def delete_file(self, path):
+                return SimpleNamespace(error="permission denied")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "permission denied" in result.error
+
+
+class TestApplyUpdateWriteError:
+    """Cover _apply_update write failure."""
+
+    def test_update_write_error(self):
+        """_apply_update write failure is surfaced."""
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: f.py\n"
+            " ctx\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch"
+        )
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content="ctx\nold\n", error=None)
+            def write_file(self, path, content):
+                return SimpleNamespace(error="read-only filesystem")
+
+        result = apply_v4a_operations(ops, FakeFileOps())
+        assert result.success is False
+        assert "read-only filesystem" in result.error

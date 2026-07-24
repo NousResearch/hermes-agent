@@ -3028,6 +3028,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
+
+        A candidate must also not be *superseded*: a session_reset that
+        interrupts a mid-run agent can leave the old row dangling open
+        (``ended_at IS NULL``), and recovering it weeks later silently splices
+        its stale trailing user turn onto the next inbound message.  A row is
+        superseded when ANY newer session exists for the same peer, except
+        newer rows ended by the two known-bug reasons above — those never
+        represent the user deliberately moving on.
         """
         if not session_key:
             return None
@@ -3041,6 +3049,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions AS newer
+                      WHERE newer.session_key = sessions.session_key
+                        AND newer.source = sessions.source
+                        AND newer.started_at > sessions.started_at
+                        AND (newer.end_reason IS NULL
+                             OR newer.end_reason NOT IN ('agent_close', 'ws_orphan_reap'))
+                  )
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
@@ -3066,6 +3082,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions AS newer
+                      WHERE newer.source = sessions.source
+                        AND COALESCE(newer.user_id, '') = COALESCE(sessions.user_id, '')
+                        AND COALESCE(newer.chat_id, '') = COALESCE(sessions.chat_id, '')
+                        AND COALESCE(newer.chat_type, '') = COALESCE(sessions.chat_type, '')
+                        AND COALESCE(newer.thread_id, '') = COALESCE(sessions.thread_id, '')
+                        AND newer.started_at > sessions.started_at
+                        AND (newer.end_reason IS NULL
+                             OR newer.end_reason NOT IN ('agent_close', 'ws_orphan_reap'))
+                  )
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,

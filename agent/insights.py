@@ -703,15 +703,23 @@ class InsightsEngine:
         # Reconcile against the aggregate row. This covers legacy sessions,
         # interrupted migrations, and absolute cumulative updates without
         # double-counting already-attributed route deltas.
+
+        def _safe_int(val):
+            """Coerce to int, returning 0 for non-numeric values (defensive)."""
+            try:
+                return int(val) if val is not None else 0
+            except (ValueError, TypeError):
+                return 0
+
         for s in sessions:
             totals = usage_totals[s["id"]]
-            inp = max(0, (s.get("input_tokens") or 0) - totals["input_tokens"])
-            out = max(0, (s.get("output_tokens") or 0) - totals["output_tokens"])
+            inp = max(0, _safe_int(s.get("input_tokens")) - totals["input_tokens"])
+            out = max(0, _safe_int(s.get("output_tokens")) - totals["output_tokens"])
             cache_read = max(
-                0, (s.get("cache_read_tokens") or 0) - totals["cache_read_tokens"]
+                0, _safe_int(s.get("cache_read_tokens")) - totals["cache_read_tokens"]
             )
             cache_write = max(
-                0, (s.get("cache_write_tokens") or 0) - totals["cache_write_tokens"]
+                0, _safe_int(s.get("cache_write_tokens")) - totals["cache_write_tokens"]
             )
             residual_cost = max(
                 0.0, float(s.get("estimated_cost_usd") or 0.0)
@@ -722,7 +730,7 @@ class InsightsEngine:
                 - totals["actual_cost_usd"],
             )
             residual_calls = max(
-                0, (s.get("api_call_count") or 0) - totals["api_call_count"]
+                0, _safe_int(s.get("api_call_count")) - totals["api_call_count"]
             )
             if not (
                 inp or out or cache_read or cache_write or residual_cost

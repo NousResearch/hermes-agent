@@ -267,6 +267,11 @@ class TestDispatchMessage(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
+    def test_email_adapter_preserves_long_cron_reports(self):
+        """Cron live delivery must not apply the 4K chat truncation guard to email."""
+        adapter = self._make_adapter()
+        self.assertTrue(adapter.splits_long_messages)
+
     def test_self_message_filtered(self):
         """Messages from the agent's own address should be skipped."""
         import asyncio

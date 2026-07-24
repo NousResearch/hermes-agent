@@ -274,3 +274,52 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
     assert ok is False
     assert "deliver" not in order
     assert order == ["save-raise", "agent.close", "cleanup_stale"], order
+
+
+def test_run_one_job_contains_secondary_mark_failure(monkeypatch):
+    """PR #8290: when run_job fails AND the fallback mark_job_run() in the
+    except handler ALSO raises, the secondary error is contained — run_one_job
+    returns False instead of letting the exception escape and abort the
+    surrounding tick loop.
+    """
+    def boom_run(job, *, defer_agent_teardown=None):
+        raise RuntimeError("primary job failure")
+
+    def boom_mark(jid, ok, err=None, delivery_error=None):
+        raise RuntimeError("mark_job_run persistence failure")
+
+    monkeypatch.setattr(s, "run_job", boom_run)
+    monkeypatch.setattr(s, "mark_job_run", boom_mark)
+
+    # Must not raise despite BOTH the job and its failure-marking blowing up.
+    ok = s.run_one_job({"id": "j11", "name": "t"})
+
+    assert ok is False
+
+
+def test_tick_continues_when_mark_job_run_raises(monkeypatch):
+    """PR #8290: a secondary mark_job_run() failure must not abort tick's loop —
+    every due job is still attempted and tick returns normally.
+    """
+    processed = []
+
+    def boom_run(job, *, defer_agent_teardown=None):
+        processed.append(job["id"])
+        raise RuntimeError("primary job failure")
+
+    def boom_mark(jid, ok, err=None, delivery_error=None):
+        raise RuntimeError("mark_job_run persistence failure")
+
+    monkeypatch.setattr(s, "run_job", boom_run)
+    monkeypatch.setattr(s, "mark_job_run", boom_mark)
+    monkeypatch.setattr(
+        s, "get_due_jobs",
+        lambda: [{"id": "a", "name": "t"}, {"id": "b", "name": "t"}],
+    )
+    monkeypatch.setattr(s, "advance_next_run", lambda jid: True)
+
+    # tick must not raise even though both jobs and their failure-marking blow up.
+    count = s.tick(verbose=False, sync=True)
+
+    assert isinstance(count, int)
+    assert set(processed) == {"a", "b"}  # every due job was attempted

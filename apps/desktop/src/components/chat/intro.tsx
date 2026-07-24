@@ -1,5 +1,6 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
@@ -97,6 +98,7 @@ function parseIntroCopy(raw: string): Record<string, IntroCopy[]> {
       })
     } catch {
       // Bad generated copy should not break the whole desktop app.
+      continue
     }
   }
 
@@ -157,8 +159,10 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { locale, t } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const body = locale === 'en' ? copy.body : t.composer.introBody
 
   return (
     <div
@@ -177,7 +181,7 @@ export function Intro({ personality, seed }: IntroProps) {
           <span aria-hidden="true">{WORDMARK}</span>
         </p>
 
-        <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>
+        <p className="m-0 break-keep text-center leading-normal tracking-tight">{body}</p>
       </div>
     </div>
   )

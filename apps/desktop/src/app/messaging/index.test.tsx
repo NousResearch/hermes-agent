@@ -8,6 +8,7 @@ import type { MessagingPlatformInfo } from '@/types/hermes'
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
 const openExternalLink = vi.fn()
+const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMessagingPlatforms: () => getMessagingPlatforms(),
@@ -20,7 +21,7 @@ vi.mock('@/lib/external-link', () => ({
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
-  notifyError: vi.fn()
+  notifyError: (...args: unknown[]) => notifyError(...args)
 }))
 
 vi.mock('@/store/system-actions', () => ({
@@ -91,5 +92,15 @@ describe('MessagingView setup-guide link', () => {
     })
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
+  })
+})
+
+describe('MessagingView errors', () => {
+  it('notifies when platform loading rejects with a non-Error reason', async () => {
+    getMessagingPlatforms.mockRejectedValue('gateway offline')
+
+    await renderMessaging()
+
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith('gateway offline', expect.any(String)))
   })
 })

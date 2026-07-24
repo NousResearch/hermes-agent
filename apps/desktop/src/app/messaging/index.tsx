@@ -390,8 +390,8 @@ function PlatformDetail({
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
           </div>
-          <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {platform.description}
+          <p className="mt-1 break-keep text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {m.platformDescription[platform.id] || platform.description}
           </p>
           <PlatformHint platform={platform} />
         </div>
@@ -401,7 +401,7 @@ function PlatformDetail({
 
       <section>
         <SectionTitle>{m.getCredentials}</SectionTitle>
-        <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+        <p className="mt-1 break-keep text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
           {introCopy(platform, m)}
         </p>
         {platform.docs_url && (
@@ -632,7 +632,7 @@ function MessagingField({
           )}
         </div>
       }
-      description={copy.help}
+      description={<span className="break-keep">{copy.help}</span>}
       title={
         <span className="flex flex-wrap items-center gap-2">
           <label htmlFor={fieldId}>{copy.label}</label>

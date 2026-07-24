@@ -226,7 +226,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      // Pass the launch cwd so the gateway records it as the session's
+      // workspace (explicit_cwd). Without this, TUI sessions get cwd=NULL and
+      // the Desktop GUI groups them under "No workspace" instead of the
+      // directory the user launched `hermes --tui` from. HERMES_CWD is set by
+      // the Python launcher (main.py:_launch_tui) and falls back to
+      // process.cwd() so embedded- and standalone-TUI both work.
+      const launchCwd = process.env.HERMES_CWD || process.cwd()
+      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current, cwd: launchCwd })
 
       if (!r) {
         patchUiState({ status: 'ready' })

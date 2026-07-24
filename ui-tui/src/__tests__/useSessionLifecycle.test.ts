@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 
+import { renderSync } from '@hermes/ink'
+import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { turnController } from '../app/turnController.js'
@@ -12,6 +15,8 @@ import {
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
+  useSessionLifecycle,
+  type UseSessionLifecycleOptions,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
 
@@ -26,6 +31,84 @@ describe('fresh session boundary', () => {
     expect(signalFreshSessionBoundary('old-session', 'new-session')).toBe(false)
     expect(onFreshSessionStarted).toHaveBeenCalledOnce()
     expect(onFreshSessionStarted).toHaveBeenCalledWith('new-session')
+  })
+})
+
+const makeStreams = () => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+
+  Object.assign(stdout, { columns: 80, isTTY: false, rows: 20 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', () => {})
+
+  return { stderr, stdin, stdout }
+}
+
+function SessionLifecycleHarness({
+  expose,
+  options
+}: {
+  expose: { current: null | ReturnType<typeof useSessionLifecycle> }
+  options: UseSessionLifecycleOptions
+}) {
+  expose.current = useSessionLifecycle(options)
+
+  return null
+}
+
+describe('new session creation', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    resetUiState()
+  })
+
+  it('passes the launcher cwd to session.create', async () => {
+    const launchCwd = '/tmp/hermes-tui-launch-workspace'
+    const rpc = vi.fn(async (method: string) => (method === 'setup.status' ? { provider_configured: true } : null))
+    const expose = { current: null as null | ReturnType<typeof useSessionLifecycle> }
+    const streams = makeStreams()
+
+    vi.stubEnv('HERMES_CWD', launchCwd)
+    resetUiState()
+
+    const instance = renderSync(
+      React.createElement(SessionLifecycleHarness, {
+        expose,
+        options: {
+          colsRef: { current: 80 },
+          composerActions: { setPasteSnips: vi.fn() } as unknown as UseSessionLifecycleOptions['composerActions'],
+          gw: {} as UseSessionLifecycleOptions['gw'],
+          panel: vi.fn(),
+          rpc: rpc as unknown as UseSessionLifecycleOptions['rpc'],
+          scrollRef: { current: null },
+          setHistoryItems: vi.fn(),
+          setLastUserMsg: vi.fn(),
+          setSessionStartedAt: vi.fn(),
+          setStickyPrompt: vi.fn(),
+          setVoiceProcessing: vi.fn(),
+          setVoiceRecording: vi.fn(),
+          sys: vi.fn()
+        }
+      }),
+      {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await expose.current!.newSession()
+
+      expect(rpc).toHaveBeenCalledWith('session.create', { cols: 80, cwd: launchCwd })
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
   })
 })
 

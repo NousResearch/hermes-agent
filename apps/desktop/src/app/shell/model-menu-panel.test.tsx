@@ -70,6 +70,38 @@ function renderPanel(onSelectModel = vi.fn()) {
   return { onSelectModel, content }
 }
 
+describe('ModelMenuPanel provider order + connection badge', () => {
+  it('pins the current provider first and tags connected / needs-setup headers', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { name: 'OpenRouter', slug: 'openrouter', models: ['gpt-5.5'], authenticated: true },
+        { name: 'Anthropic', slug: 'anthropic', models: ['claude-sonnet-4'], authenticated: false },
+        { name: 'xAI', slug: 'xai-oauth', models: ['grok-4.5'], authenticated: true },
+        MOA_PROVIDER
+      ]
+    })
+    $currentProvider.set('xai-oauth')
+    $currentModel.set('grok-4.5')
+
+    const { content } = renderPanel()
+    await content.findByText('Grok 4.5')
+
+    // eslint-disable-next-line no-restricted-globals
+    const body = document.body.textContent || ''
+    const xaiAt = body.indexOf('xAI')
+    const openrouterAt = body.indexOf('OpenRouter')
+    const anthropicAt = body.indexOf('Anthropic')
+
+    expect(xaiAt).toBeGreaterThan(-1)
+    expect(openrouterAt).toBeGreaterThan(xaiAt)
+    expect(anthropicAt).toBeGreaterThan(openrouterAt)
+
+    // Connected badge appears for authenticated rows; Needs setup for deauthed.
+    expect(body).toContain('Connected')
+    expect(body).toContain('Needs setup')
+  })
+})
+
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {
     const { content, onSelectModel } = renderPanel()

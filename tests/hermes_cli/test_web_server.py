@@ -346,6 +346,61 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert calls["get_running_pid_cached"] == 1
 
+    def test_get_status_profile_scopes_gateway_state_reads(self, monkeypatch):
+        """?profile=<name> must read gateway identity files from the profile's
+        home (~/.hermes/profiles/<name>/), not the process-level HERMES_HOME.
+
+        Gateway PID/state readers resolve _get_process_hermes_home(), which
+        deliberately ignores the contextvar override _config_profile_scope
+        sets (issue #56986) — so the handler must pass explicit per-profile
+        paths (issue #69143).
+        """
+        import hermes_cli.web_server as web_server
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        seen = {}
+
+        def _pid(pid_path=None, **kw):
+            seen["pid_path"] = pid_path
+            return None
+
+        def _runtime(path=None):
+            seen["status_path"] = path
+            return {
+                "gateway_state": "running",
+                "platforms": {},
+                "updated_at": "2026-04-12T00:00:00+00:00",
+            }
+
+        def _runtime_pid(runtime=None, *, expected_home=None):
+            seen["expected_home"] = expected_home
+            return 4321
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", _pid)
+        monkeypatch.setattr(web_server, "read_runtime_status", _runtime)
+        monkeypatch.setattr(
+            web_server, "get_runtime_status_running_pid", _runtime_pid
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/status?profile=worker")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert seen["pid_path"] == worker_home / "gateway.pid"
+        assert seen["status_path"] == worker_home / "gateway_state.json"
+        assert seen["expected_home"] == worker_home
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 4321
+        assert data["gateway_state"] == "running"
+
+    def test_get_status_unknown_profile_404s(self):
+        resp = self.client.get("/api/status?profile=no-such-profile")
+        assert resp.status_code == 404
+
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control
 

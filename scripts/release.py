@@ -1418,6 +1418,7 @@ LEGACY_AUTHOR_MAP = {
     "bernylinville@devopsthink.org": "bernylinville",
     "brian@bde.io": "briandevans",
     "hubin_ll@qq.com": "LLQWQ",
+    "hubin-ll@foxmail.com": "LLQWQ",
     "memosr_email@gmail.com": "memosr",
     "jperlow@gmail.com": "perlowja",
     "jasonpette1783@gmail.com": "web-dev0521",

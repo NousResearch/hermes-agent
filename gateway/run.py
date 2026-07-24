@@ -2143,6 +2143,10 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # and run_sync) must not leak into a future conversation's first user
     # message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes",
+    # Staged-but-never-consumed native image paths (turn aborted or reset
+    # before run_conversation) must not leak into subsequent turns or
+    # new conversations on reused session keys.
+    "_pending_native_image_paths_by_session",
 )
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".

@@ -156,16 +156,15 @@ def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
 
     loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
     with (
-        patch(
-            "gateway.shutdown_watchdog._positive_int_env",
-            return_value=FinalStrikeLimit(),
-        ),
         patch("gateway.shutdown_watchdog.logger.critical") as critical,
         patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
         patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
     ):
         handle = start_loop_liveness_watchdog(
-            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
+            loop,
+            probe_interval=0.01,
+            probe_timeout=0.01,
+            max_strikes=FinalStrikeLimit(),
         )
         assert handle is not None
         handle_ref["handle"] = handle
@@ -282,41 +281,43 @@ def test_loop_liveness_watchdog_stop_exits_thread_and_stops_probes():
     assert loop.call_soon_threadsafe.call_count == calls_after_stop
 
 
-def test_loop_liveness_watchdog_env_can_disable(monkeypatch):
-    monkeypatch.setenv("HERMES_GATEWAY_LOOP_WATCHDOG", "0")
+def test_loop_liveness_guards_config_can_disable():
+    """gateway.loop_watchdog: false must skip arming both guards."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._loop_floor_timer_handle = None
+    runner._loop_liveness_watchdog = None
+    runner.config = MagicMock()
+    runner.config.loop_watchdog = False
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
-
-    handle = start_loop_liveness_watchdog(
-        loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
-    )
-
-    assert handle is None
-    loop.call_soon_threadsafe.assert_not_called()
-
-
-def test_loop_liveness_watchdog_env_overrides_probe_settings(monkeypatch):
-    monkeypatch.setenv("HERMES_GATEWAY_LOOP_WATCHDOG_INTERVAL", "0.01")
-    monkeypatch.setenv("HERMES_GATEWAY_LOOP_WATCHDOG_TIMEOUT", "0.01")
-    monkeypatch.setenv("HERMES_GATEWAY_LOOP_WATCHDOG_STRIKES", "1")
-    loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    fired = threading.Event()
 
     with (
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
-        patch(
-            "gateway.shutdown_watchdog.os._exit",
-            side_effect=lambda code: fired.set(),
-        ),
+        patch("gateway.run._arm_loop_floor_timer") as arm_floor,
+        patch("gateway.run.start_loop_liveness_watchdog") as start_watchdog,
     ):
-        handle = start_loop_liveness_watchdog(
-            loop, probe_interval=10.0, probe_timeout=10.0, max_strikes=10
-        )
-        assert handle is not None
-        assert fired.wait(timeout=2.0), "env overrides were not applied"
-        handle.join(timeout=1.0)
+        runner._start_loop_liveness_guards(loop)
 
-    assert not handle.is_alive()
-    assert loop.call_soon_threadsafe.call_count == 1
+    arm_floor.assert_not_called()
+    start_watchdog.assert_not_called()
+    assert runner._loop_floor_timer_handle is None
+    assert runner._loop_liveness_watchdog is None
+
+
+def test_gateway_config_loop_watchdog_round_trip():
+    """loop_watchdog is a config.yaml knob: default on, nested-gateway form honored."""
+    from gateway.config import GatewayConfig
+
+    assert GatewayConfig.from_dict({}).loop_watchdog is True
+    assert GatewayConfig.from_dict({"loop_watchdog": False}).loop_watchdog is False
+    assert (
+        GatewayConfig.from_dict(
+            {"gateway": {"loop_watchdog": "off"}}
+        ).loop_watchdog
+        is False
+    )
+    config = GatewayConfig.from_dict({"loop_watchdog": False})
+    assert config.to_dict()["loop_watchdog"] is False
 
 
 @pytest.mark.asyncio

@@ -107,24 +107,6 @@ def _arm_loop_floor_timer(
     return _LoopFloorTimerHandle(loop, resolved_interval)
 
 
-def _positive_float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    try:
-        value = float(raw) if raw else float(default)
-    except (TypeError, ValueError):
-        return float(default)
-    return value if value > 0 else float(default)
-
-
-def _positive_int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    try:
-        value = int(raw) if raw else int(default)
-    except (TypeError, ValueError):
-        return int(default)
-    return value if value > 0 else int(default)
-
-
 def start_loop_liveness_watchdog(
     loop: asyncio.AbstractEventLoop,
     *,
@@ -135,21 +117,14 @@ def start_loop_liveness_watchdog(
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes.
 
-    Environment overrides are intentionally read here, the owner module, like
-    other gateway runtime-only safety knobs. Set
-    ``HERMES_GATEWAY_LOOP_WATCHDOG=0`` to disable it.
+    The guard is on by default; operators opt out with
+    ``gateway.loop_watchdog: false`` in config.yaml (enforced by the caller,
+    ``GatewayRunner._start_loop_liveness_guards`` — this module stays
+    config-agnostic so bare-loop tests can drive it directly).
     """
-    enabled = os.environ.get("HERMES_GATEWAY_LOOP_WATCHDOG", "1").strip().lower()
-    if enabled in {"0", "false", "no", "off"}:
-        return None
-
-    interval = _positive_float_env(
-        "HERMES_GATEWAY_LOOP_WATCHDOG_INTERVAL", probe_interval
-    )
-    timeout = _positive_float_env("HERMES_GATEWAY_LOOP_WATCHDOG_TIMEOUT", probe_timeout)
-    strikes_limit = _positive_int_env(
-        "HERMES_GATEWAY_LOOP_WATCHDOG_STRIKES", max_strikes
-    )
+    interval = probe_interval
+    timeout = probe_timeout
+    strikes_limit = max_strikes
     stop_event = threading.Event()
 
     def _wait_for_probe(probe_event: threading.Event) -> Optional[bool]:

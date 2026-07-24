@@ -435,7 +435,8 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 500,
+                  add_line_numbers: bool = True) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -1082,7 +1083,8 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 500,
+                  add_line_numbers: bool = True) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
         
@@ -1090,6 +1092,8 @@ class ShellFileOperations(FileOperations):
             path: File path (absolute or relative to cwd)
             offset: Line number to start from (1-indexed, default 1)
             limit: Maximum lines to return (default 500, max 2000)
+            add_line_numbers: Whether to prefix each line with ``LINE_NUM|``.
+                Set to ``False`` when copying content to another file.
         
         Returns:
             ReadResult with content, metadata, or error info
@@ -1172,7 +1176,7 @@ class ShellFileOperations(FileOperations):
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
         
         return ReadResult(
-            content=self._add_line_numbers(read_output, offset),
+            content=self._add_line_numbers(read_output, offset) if add_line_numbers else read_output,
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,

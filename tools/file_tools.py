@@ -1106,8 +1106,9 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
-    """Read a file with pagination and line numbers."""
+def read_file_tool(path: str, offset: int = 1, limit: int = 500,
+                   add_line_numbers: bool = True, task_id: str = "default") -> str:
+    """Read a file with pagination and optional line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
 
@@ -1268,7 +1269,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(path, offset, limit, add_line_numbers=add_line_numbers)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -1952,7 +1953,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "add_line_numbers": {"type": "boolean", "description": "Add line number prefixes (default: true). Set false when copying content to another file.", "default": True}
         },
         "required": ["path"]
     }

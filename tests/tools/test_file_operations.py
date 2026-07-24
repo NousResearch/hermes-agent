@@ -632,6 +632,91 @@ class TestShellFileOpsHelpers:
         assert result.error is None
         assert result.content == "alpha\n"
 
+    def test_read_file_with_line_numbers_default(self, mock_env):
+        """Default behavior: line numbers are added."""
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "12\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "hello\nworld\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "hello\nworld\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "2\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.txt")
+
+        assert result.error is None
+        assert "1|hello" in result.content
+        assert "2|world" in result.content
+
+    def test_read_file_without_line_numbers(self, mock_env):
+        """add_line_numbers=False returns raw content."""
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "12\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "hello\nworld\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "hello\nworld\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "2\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.txt", add_line_numbers=False)
+
+        assert result.error is None
+        assert "1|" not in result.content
+        assert "2|" not in result.content
+        assert result.content == "hello\nworld\n"
+
+    def test_read_file_add_line_numbers_preserves_offset(self, mock_env):
+        """When add_line_numbers=True, offset is passed to _add_line_numbers."""
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "20\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "aaa\nbbb\nccc\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "bbb\nccc\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "3\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.txt", offset=2, limit=2, add_line_numbers=True)
+
+        assert result.error is None
+        assert "2|bbb" in result.content
+        assert "3|ccc" in result.content
+
+    def test_read_file_without_line_numbers_no_offset_prefix(self, mock_env):
+        """add_line_numbers=False with offset returns raw content without line prefixes."""
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "20\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "aaa\nbbb\nccc\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "bbb\nccc\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "3\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.txt", offset=2, limit=2, add_line_numbers=False)
+
+        assert result.error is None
+        assert result.content == "bbb\nccc\n"
+        assert "|" not in result.content
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""

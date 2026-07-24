@@ -4516,6 +4516,11 @@ def cmd_kanban(args):
 
 def cmd_project(args):
     """Manage projects (named, multi-folder workspaces)."""
+    from hermes_cli.projects_gate import projects_enabled, projects_disabled_message
+
+    if not projects_enabled():
+        print(projects_disabled_message(), file=sys.stderr)
+        return 1
     from hermes_cli.projects_cmd import projects_command
 
     return projects_command(args)
@@ -14638,6 +14643,9 @@ def main():
     # =========================================================================
     # project command — named, multi-folder workspaces
     # =========================================================================
+    # Issue #58588: registration is unconditional so the parser is always
+    # present; the gate lives in cmd_project() itself, so it survives any
+    # registration-mechanism refactor (frozenset, factory, plugin system).
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
 
     project_parser = _build_project_parser(subparsers)

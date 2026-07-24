@@ -6,17 +6,23 @@ import pytest
 
 
 @pytest.fixture
-def all_assignees_spawnable(monkeypatch):
+def all_assignees_spawnable(monkeypatch, tmp_path):
     """Pretend every assignee maps to a real Hermes profile.
 
     Most dispatcher tests use synthetic assignees ("alice", "bob") that
-    don't correspond to actual profile directories on disk. Without this
-    patch, the dispatcher's profile-exists guard (PR #20105) routes
-    those tasks into ``skipped_nonspawnable`` instead of spawning, which
+    don't correspond to actual profile directories on disk. Without these
+    patches, the dispatcher's installed-profile guards route those tasks into
+    ``skipped_nonspawnable`` instead of spawning, which
     would break tests that assert spawn behavior.
     """
-    from hermes_cli import profiles
+    from hermes_cli import kanban_db, profiles
+
+    installed_dir = tmp_path / "installed-profile"
+    installed_dir.mkdir()
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        kanban_db, "_installed_assignee_profile_dir", lambda name: installed_dir,
+    )
 
 
 @pytest.fixture(autouse=True)

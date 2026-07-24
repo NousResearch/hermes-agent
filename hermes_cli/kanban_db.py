@@ -9817,6 +9817,13 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _installed_assignee_profile_dir(assignee: str) -> Path:
+    """Return the only accepted on-disk location for a dispatch assignee."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "profiles" / assignee
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -10109,20 +10116,7 @@ def _dispatch_once_locked(
             _per_profile_running[prow["assignee"]] = int(prow["n"])
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
-    # We also resolve profile_exists once here for the same reason.
     _default_assignee = (default_assignee or "").strip() or None
-    _default_assignee_resolved = False
-    if _default_assignee:
-        try:
-            from hermes_cli.profiles import profile_exists as _pe
-            _default_assignee_resolved = bool(_pe(_default_assignee))
-        except Exception:
-            # Profiles module not importable (test stubs, exotic envs).
-            # Trust the operator's config and try the assignment; the
-            # downstream profile_exists check on the assigned row will
-            # bucket it as nonspawnable if the profile genuinely isn't
-            # there, with the existing diagnostic.
-            _default_assignee_resolved = True
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
@@ -10138,7 +10132,7 @@ def _dispatch_once_locked(
             # board state consistent: the task is now legitimately owned
             # by ``kanban.default_assignee``, not "unassigned but secretly
             # routed".
-            if _default_assignee and _default_assignee_resolved:
+            if _default_assignee:
                 # Dry-run: show what WOULD happen (auto-assign + spawn) without
                 # mutating the DB. Real run: mutate the row + emit the
                 # 'assigned' event so the board state matches what just happened.
@@ -10170,28 +10164,16 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
-        # Skip ready tasks whose assignee is not a real Hermes profile.
-        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
-        # with "Profile 'X' does not exist" when the assignee names a
-        # control-plane lane (e.g. an interactive Claude Code terminal
-        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
-        # profile. Those task lanes are pulled by terminals via
-        # ``claim_task`` directly and should NEVER auto-spawn — the
-        # subprocess would crash on startup, get reaped as a zombie,
-        # the task would loop back to ``ready`` on next tick, and we'd
-        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
-            # Bucket separately from skipped_unassigned: the operator
-            # cannot fix this by assigning a profile (the assignee IS the
-            # intended owner — a terminal lane). Health telemetry uses
-            # this distinction to suppress spurious "stuck" warnings on
-            # multi-lane setups where the ready queue is steadily full
-            # of human-pulled work.
-            result.skipped_nonspawnable.append(row["id"])
+        profile_dir = _installed_assignee_profile_dir(row_assignee)
+        if not profile_dir.is_dir():
+            reason = (
+                f"unknown-assignee: profile {row_assignee!r} is not installed "
+                f"at {profile_dir}"
+            )
+            if dry_run:
+                result.skipped_nonspawnable.append(row["id"])
+            elif block_task(conn, row["id"], reason=reason):
+                result.auto_blocked.append(row["id"])
             continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
@@ -10334,12 +10316,16 @@ def _dispatch_once_locked(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
-            result.skipped_nonspawnable.append(row["id"])
+        profile_dir = _installed_assignee_profile_dir(row["assignee"])
+        if not profile_dir.is_dir():
+            reason = (
+                f"unknown-assignee: profile {row['assignee']!r} is not installed "
+                f"at {profile_dir}"
+            )
+            if dry_run:
+                result.skipped_nonspawnable.append(row["id"])
+            elif block_task(conn, row["id"], reason=reason):
+                result.auto_blocked.append(row["id"])
             continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)

@@ -42,8 +42,8 @@ export PYTHONPATH="$(pwd)"
 "/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short -n 0
 ```
 
-(POSIX-only tests need skip guards — see the cross-platform guard list in the
-Contributor section below.)
+(POSIX-only tests need skip guards — see the cross-platform guard list in
+`references/contributor-guide.md`.)
 
 ### Path / Filesystem
 

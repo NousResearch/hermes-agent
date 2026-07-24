@@ -1,101 +1,110 @@
 # Slash Commands (In-Session)
 
-Type these during an interactive chat session. New commands land fairly
-often; if something below looks stale, run `/help` in-session for the
-authoritative list or see the [live slash commands reference](https://hermes-agent.nousresearch.com/docs/reference/slash-commands).
-The registry of record is `hermes_cli/commands.py` — every consumer
-(autocomplete, Telegram menu, Slack mapping, `/help`) derives from it.
+Registry of record: `hermes_cli/commands.py` (`COMMAND_REGISTRY`) — every
+consumer (autocomplete, `/help`, Telegram menu, Slack mapping) derives from
+it. New commands land often; `/help` in-session is always authoritative.
+(CLI) = interactive CLI/TUI only. (GW) = gateway platforms only.
 
-### Session Control
+### Session
 ```
-/new (/reset)        Fresh session
-/clear               Clear screen + new session (CLI)
-/retry               Resend last message
-/undo                Remove last exchange
-/title [name]        Name the session
-/compress            Manually compress context
-/stop                Kill background processes
-/rollback [N]        Restore filesystem checkpoint
-/snapshot [sub]      Create or restore state snapshots of Hermes config/state (CLI)
-/background <prompt> Run prompt in background
-/queue <prompt>      Queue for next turn
-/steer <prompt>      Inject a message after the next tool call without interrupting
-/agents (/tasks)     Show active agents and running tasks
-/resume [name]       Resume a named session
-/goal [text|sub]     Set a standing goal Hermes works on across turns until achieved
-                     (subcommands: status, pause, resume, clear)
-/redraw              Force a full UI repaint (CLI)
+/new (/reset) [name]     Fresh session
+/clear                   Clear screen + new session (CLI)
+/retry                   Resend last message
+/undo [N]                Back up N user turns and re-prompt
+/title [name]            Name the session
+/prompt (/compose)       Compose next prompt in $EDITOR (CLI)
+/compress (/compact)     Compress context ('here [N]' keeps N turns; --preview)
+/stop                    Kill background processes
+/rollback [N]            List/restore filesystem checkpoints
+/snapshot [sub]          Create/restore Hermes config+state snapshots (CLI)
+/background (/bg) <p>    Run prompt in background
+/queue (/q) <prompt>     Queue prompt for next turn
+/steer <prompt>          Inject a message after the next tool call
+/agents (/tasks)         Show active agents and running tasks
+/goal [text|sub]         Standing goal across turns (status|pause|resume|clear)
+/subgoal [text]          Add/manage criteria on the active goal
+/branch (/fork) [name]   Branch the session
+/resume [name]           Resume a named session
+/sessions                Browse and resume previous sessions
+/handoff <platform>      Hand live session off to a messaging platform (CLI)
+/status                  Session, model, token, and context info
+/redraw                  Force full UI repaint (CLI)
 ```
 
 ### Configuration
 ```
-/config              Show config (CLI)
-/model [name]        Show or change model
-/personality [name]  Set personality
-/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|max|ultra|show|hide)
-/verbose             Cycle: off → new → all → verbose
-/voice [on|off|tts]  Voice mode
-/yolo                Toggle approval bypass
-/busy [sub]          Control what Enter does while Hermes is working (CLI)
-                     (subcommands: queue, steer, interrupt, status)
-/indicator [style]   Pick the TUI busy-indicator style (CLI)
-                     (styles: kaomoji, emoji, unicode, ascii)
-/footer [on|off]     Toggle gateway runtime-metadata footer on final replies
-/skin [name]         Change theme (CLI)
-/statusbar           Toggle status bar (CLI)
+/config                  Show config (CLI)
+/model [name] [--global] Switch model (session-scoped by default)
+/personality [name]      Set a personality
+/reasoning [level|show|hide] Reasoning effort/display (none..xhigh|max|ultra)
+/fast [normal|fast]      Priority/fast processing tier
+/verbose                 Cycle tool progress: off → new → all → verbose → log (CLI)
+/voice [on|off|tts]      Voice mode
+/yolo                    Toggle approval bypass
+/busy [queue|steer|interrupt] What Enter does while working (CLI)
+/indicator [style]       TUI busy indicator: kaomoji|emoji|unicode|ascii (CLI)
+/footer [on|off]         Gateway runtime-metadata footer on replies
+/skin [name]             Change theme (CLI)
+/statusbar (/sb)         Toggle status bar (CLI)
+/battery [on|off]        Battery indicator in status bar (CLI)
+/timestamps (/ts) [on|off] Message timestamps (CLI)
+/codex-runtime [auto|codex_app_server] Codex runtime toggle
 ```
 
 ### Tools & Skills
 ```
-/tools               Manage tools (CLI)
-/toolsets            List toolsets (CLI)
-/skills              Search/install skills (CLI)
-/skill <name>        Load a skill into session
-/reload-skills       Re-scan ~/.hermes/skills/ for added/removed skills
-/reload              Reload .env variables into the running session (CLI)
-/reload-mcp          Reload MCP servers
-/cron                Manage cron jobs (CLI)
-/curator [sub]       Background skill maintenance (status, run, pin, archive, …)
-/kanban [sub]        Multi-profile collaboration board (tasks, links, comments)
-/plugins             List plugins (CLI)
+/tools [list|enable|disable] Manage tools (CLI)
+/toolsets                List toolsets (CLI)
+/skills                  Search/install/manage skills (CLI)
+/bundles                 List skill bundles (/<name> loads several skills)
+/learn <source>          Learn a reusable skill from dirs/URLs/this chat
+/memory [pending|approve|reject] Review pending memory writes / approval gate
+/pet [toggle|list|<slug>] Petdex mascot control (CLI)
+/hatch [description]     Generate a new pet from a description (CLI)
+/cron [sub]              Manage scheduled tasks (CLI)
+/suggestions (/suggest)  Review suggested automations
+/blueprint (/bp) [name]  Set up an automation from a blueprint
+/curator [sub]           Skill maintenance (status, run, pin, archive, …)
+/kanban [sub]            Multi-profile collaboration board
+/moa <prompt>            One prompt through the Mixture-of-Agents preset
+/reload                  Reload .env into the running session (CLI)
+/reload-mcp              Reload MCP servers
+/reload-skills           Re-scan skills directory
+/browser [connect|status] CDP connection to your live browser (CLI)
+/plugins                 List plugins (CLI)
 ```
 
 ### Gateway
 ```
-/approve             Approve a pending command (gateway)
-/deny                Deny a pending command (gateway)
-/restart             Restart gateway (gateway)
-/sethome             Set current chat as home channel (gateway)
-/update              Update Hermes to latest (gateway)
-/topic [sub]         Enable or inspect Telegram DM topic sessions (gateway)
-/platforms (/gateway) Show platform connection status (gateway)
-```
-
-### Utility
-```
-/branch (/fork)      Branch the current session
-/handoff <platform>  Hand the live session off to a messaging platform (CLI)
-/fast                Toggle priority/fast processing
-/browser             Open CDP browser connection
-/history             Show conversation history (CLI)
-/save                Save conversation to file (CLI)
-/copy [N]            Copy the last assistant response to clipboard (CLI)
-/paste               Attach clipboard image (CLI)
-/image               Attach local image file (CLI)
+/approve [session|always]  Approve a pending dangerous command (GW)
+/deny [all] [reason]       Deny a pending dangerous command (GW)
+/restart                   Restart gateway after draining active runs (GW)
+/sethome                   Set current chat as home channel (GW)
+/topic [off|help]          Telegram DM topic sessions (GW)
+/platform <pause|resume|list> Pause/resume a failing platform (GW)
+/commands [page]           Browse all commands, paginated (GW)
 ```
 
 ### Info
 ```
-/help                Show commands
-/commands [page]     Browse all commands (gateway)
-/usage               Token usage
-/insights [days]     Usage analytics
-/status              Session info (gateway)
-/profile             Active profile info
-/debug               Upload debug report (system info + logs) and get shareable links
+/help                    Show commands
+/usage [reset]           Token usage and rate limits
+/insights [days]         Usage analytics
+/whoami                  Slash-command access level (admin/user)
+/profile                 Active profile info
+/platforms (/gateway)    Platform connection status (CLI)
+/journey (/learning)     Learned skills + memories timeline (CLI)
+/subscription (/upgrade) Nous plan info (CLI)
+/topup                   Nous balance / billing
+/copy [N]                Copy last response to clipboard (CLI)
+/paste                   Attach clipboard image (CLI)
+/image <path>            Attach a local image file (CLI)
+/update                  Update Hermes to latest
+/version (/v)            Show version
+/debug [nous|local]      Upload debug report, get shareable links
 ```
 
 ### Exit
 ```
-/quit (/exit, /q)    Exit CLI
+/quit (/exit) [--delete] Exit CLI; --delete also removes session history
 ```

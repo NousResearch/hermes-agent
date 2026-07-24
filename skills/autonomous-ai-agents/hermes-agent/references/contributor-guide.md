@@ -96,8 +96,8 @@ scripts/run_tests.sh -v --tb=long             # pass-through pytest flags
 
 - Tests auto-redirect `HERMES_HOME` to temp dirs — never touch real `~/.hermes/`.
 - The script probes `.venv`, then `venv`, then the shared worktree venv.
-- **Windows:** the wrapper is POSIX-only; see the **Windows-Specific Quirks**
-  section above for the direct-pytest workaround.
+- **Windows:** the wrapper is POSIX-only; see `references/windows-quirks.md`
+  for the direct-pytest workaround.
 
 **Cross-platform test guards:** tests using POSIX-only syscalls need a skip marker. Common ones already in the codebase:
 - Symlink creation → `@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")` (see `tests/cron/test_cron_script.py`)

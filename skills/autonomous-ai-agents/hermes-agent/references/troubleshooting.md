@@ -24,7 +24,7 @@
 ### Skills not showing
 1. `hermes skills list` — verify installed
 2. `hermes skills config` — check platform enablement
-3. Load explicitly: `/skill name` or `hermes -s name`
+3. Load explicitly: `hermes -s name` (or the skill's own `/<name>` slash command)
 
 ### Gateway issues
 Check logs first:
@@ -40,7 +40,7 @@ Common gateway problems:
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.
-- **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, test suite, line endings): see the dedicated **Windows-Specific Quirks** section above.
+- **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, line endings): see `references/windows-quirks.md`.
 
 ### Auxiliary models not working
 If `auxiliary` tasks (vision, compression, session_search) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
@@ -48,4 +48,7 @@ If `auxiliary` tasks (vision, compression, session_search) fail silently, the `a
 hermes config set auxiliary.vision.provider <your_provider>
 hermes config set auxiliary.vision.model <model_name>
 ```
+
+### "Reset permissions" / auto-approving everything
+See `references/security-privacy.md` — wipe the "Always allow" stores, don't touch yolo mode.
 

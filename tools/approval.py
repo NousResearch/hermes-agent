@@ -1974,9 +1974,14 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
         return False
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    raw_temp_dir = os.path.abspath(tempfile.gettempdir())
+    temp_dir = os.path.realpath(raw_temp_dir)
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
+    canonical_operand = os.path.join(temp_dir, basename)
+    raw_operand = os.path.join(raw_temp_dir, basename)
+    if operand != canonical_operand and not (
+        operand == raw_operand and os.path.dirname(raw_temp_dir) == os.path.abspath(os.sep)
+    ):
         return False
 
     target = os.path.realpath(operand)

@@ -110,6 +110,108 @@ async def test_handshake_negotiates_descriptor(server):
 
 
 @pytest.mark.asyncio
+async def test_handshake_survives_reconnect_before_descriptor():
+    """Peer close after hello but before descriptor must not orphan handshake().
+
+    With reconnect=True, the supervisor re-dials and the new socket delivers a
+    descriptor. handshake() must resolve that descriptor instead of timing out
+    on a Future replaced by _dial_and_start during the re-dial.
+    """
+    connections = {"n": 0}
+    drop_once = {"n": 0}
+
+    async def handler(ws):
+        connections["n"] += 1
+        async for raw in ws:
+            for line in str(raw).split("\n"):
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                if frame.get("type") != "hello":
+                    continue
+                if drop_once["n"] == 0:
+                    drop_once["n"] += 1
+                    await ws.close()
+                    return
+                await ws.send(json.dumps({"type": "descriptor", "descriptor": DESCRIPTOR}) + "\n")
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = next(iter(server.sockets)).getsockname()[1]
+    url = f"ws://127.0.0.1:{port}"
+    t = WebSocketRelayTransport(
+        url,
+        "discord",
+        "appShared",
+        reconnect=True,
+        reconnect_backoff_s=0.05,
+        connect_timeout_s=2.0,
+    )
+    try:
+        await t.connect()
+        ready_before = t._descriptor_ready
+
+        async def _assert_future_reused():
+            for _ in range(100):
+                if connections["n"] >= 2:
+                    # Identity alone proves reuse; do not require not-done —
+                    # descriptor may already have completed between polls.
+                    assert t._descriptor_ready is ready_before
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError("reconnect did not dial a second connection")
+
+        probe = asyncio.create_task(_assert_future_reused())
+        desc = await t.handshake()
+        await probe
+        assert desc.platform == "discord"
+        assert connections["n"] >= 2
+        assert ready_before.done()
+    finally:
+        await t.disconnect()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_fails_in_flight_handshake():
+    """disconnect() must fail a pending handshake Future (same as outbound waiters)."""
+    hold_open = asyncio.Event()
+
+    async def handler(ws):
+        async for raw in ws:
+            for line in str(raw).split("\n"):
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                if frame.get("type") == "hello":
+                    # Never send a descriptor — leave handshake() waiting.
+                    await hold_open.wait()
+                    return
+
+    server = await websockets.serve(handler, "127.0.0.1", 0)
+    port = next(iter(server.sockets)).getsockname()[1]
+    url = f"ws://127.0.0.1:{port}"
+    t = WebSocketRelayTransport(url, "discord", "appShared", connect_timeout_s=5.0)
+    try:
+        await t.connect()
+        hs = asyncio.create_task(t.handshake())
+        ready = False
+        for _ in range(50):
+            if t._descriptor_ready is not None and not t._descriptor_ready.done():
+                ready = True
+                break
+            await asyncio.sleep(0.01)
+        assert ready, "expected in-flight _descriptor_ready before disconnect"
+        await t.disconnect()
+        with pytest.raises(RuntimeError, match="relay transport closed"):
+            await hs
+    finally:
+        hold_open.set()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
 async def test_inbound_frame_reaches_handler(server):
     server._to_push = [
         {

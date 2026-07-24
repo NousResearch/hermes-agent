@@ -397,9 +397,14 @@ class WebSocketRelayTransport:
         """Open the socket, start the reader, send hello. Used by connect() and
         by the reconnect supervisor on a re-dial."""
         loop = asyncio.get_running_loop()
-        self._descriptor_ready = loop.create_future()
-        # A fresh handshake is coming; clear any stale descriptor so handshake()
-        # awaits the new one (matters on a re-dial).
+        # Reuse an incomplete handshake Future across re-dials. Replacing it
+        # would orphan an in-flight handshake() that already captured the old
+        # Future, so reconnect could set _descriptor while handshake() still
+        # times out on the discarded waiter.
+        if self._descriptor_ready is None or self._descriptor_ready.done():
+            self._descriptor_ready = loop.create_future()
+        # Clear any stale descriptor so handshake() awaits (or keeps awaiting)
+        # the ready Future until the new dial delivers one.
         self._descriptor = None
         # scale-to-zero (D12): a successful (re-)dial ends any dormant state — we
         # are live again, so a subsequent UNEXPECTED close should reconnect on the
@@ -465,6 +470,8 @@ class WebSocketRelayTransport:
         self._pending.clear()
         if self._going_idle_ack is not None and not self._going_idle_ack.done():
             self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
+        if self._descriptor_ready is not None and not self._descriptor_ready.done():
+            self._descriptor_ready.set_exception(RuntimeError("relay transport closed"))
 
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:

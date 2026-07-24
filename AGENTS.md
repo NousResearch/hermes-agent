@@ -1283,16 +1283,18 @@ def profile_env(tmp_path, monkeypatch):
 
 ### Python
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
-hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
-on a 16+ core developer machine with API keys set diverges from CI in ways
-that have caused multiple "works locally, fails in CI" incidents (and the reverse).
+hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8)
+and runs every test file in a fresh subprocess. Its automatic pool uses one worker
+per reported CPU; `-j` or `HERMES_TEST_WORKERS` overrides that count. Direct `pytest`
+on a developer machine with API keys set diverges from CI in ways that have caused
+multiple "works locally, fails in CI" incidents (and the reverse).
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+scripts/run_tests.sh -j 16                           # override automatic parallelism
 ```
 
 **Flake policy:** the runner auto-retries a failing test FILE once in a fresh
@@ -1305,8 +1307,9 @@ negative-timing races).
 
 #### Subprocess-per-test-file isolation
 
-Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and
-ContextVars from one test file cannot leak into the next.
+Every test file runs in a freshly-spawned Python subprocess via
+`run_tests_parallel.py`. This means module-level dicts/sets and ContextVars from
+one test file cannot leak into the next.
 
 #### Why the wrapper
 

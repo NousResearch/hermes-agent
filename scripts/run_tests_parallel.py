@@ -645,6 +645,15 @@ def _slice_files(
     return target
 
 
+def _default_worker_count() -> int:
+    """Use one test subprocess per reported CPU unless explicitly overridden."""
+    configured = os.environ.get("HERMES_TEST_WORKERS")
+    if configured:
+        return int(configured)
+
+    return os.cpu_count() or 4
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -654,8 +663,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4) * 2),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count*2)",
+        default=_default_worker_count(),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count)",
     )
     parser.add_argument(
         "--paths",

@@ -110,6 +110,21 @@ export function ChatSessionList({
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
+  // Poll every 20 seconds so the list stays fresh after a new chat starts or
+  // a session ends without a manual refresh. Also re-fetch on visibilitychange
+  // so switching back to this tab catches up immediately.
+  useEffect(() => {
+    const interval = window.setInterval(() => reload(), 20_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") reload();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [reload]);
+
   // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
   // the terminal is a no-op (avoids a needless PTY teardown).
   const pick = useCallback(

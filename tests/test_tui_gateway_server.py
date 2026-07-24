@@ -9561,6 +9561,7 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     canonical.assert_called_once_with(
         base_url="http://127.0.0.1:11434/v1",
         config_provider="custom:local-ollama",
+        model="qwen3.6:35b-65k",
     )
 
 

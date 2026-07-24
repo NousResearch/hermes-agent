@@ -6,8 +6,9 @@ from hermes_cli.main import _resolve_last_session
 
 
 class _FakeDB:
-    def __init__(self, rows):
+    def __init__(self, rows, stale_ids=()):
         self._rows = rows
+        self._stale_ids = set(stale_ids)
         self.closed = False
 
     def search_sessions(self, source=None, limit=20, **_kw):
@@ -20,6 +21,9 @@ class _FakeDB:
 
     def close(self):
         self.closed = True
+
+    def archive_if_unreachable_local_endpoint(self, session_id):
+        return session_id in self._stale_ids
 
 
 def test_resolve_last_session_prefers_last_active_over_started_at(monkeypatch):
@@ -87,6 +91,17 @@ def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
 def test_resolve_last_session_returns_none_when_empty(monkeypatch):
     monkeypatch.setattr("hermes_state.SessionDB", lambda: _FakeDB([]))
     assert _resolve_last_session("cli") is None
+
+
+def test_resolve_last_session_skips_unreachable_local_candidate(monkeypatch):
+    rows = [
+        {"id": "stale", "source": "cli", "last_active": 20.0},
+        {"id": "healthy", "source": "cli", "last_active": 10.0},
+    ]
+    fake_db = _FakeDB(rows, stale_ids={"stale"})
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: fake_db)
+
+    assert _resolve_last_session("cli") == "healthy"
 
 
 def test_resolve_last_session_closes_db_on_search_error(monkeypatch):

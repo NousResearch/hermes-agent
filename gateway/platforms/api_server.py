@@ -7,6 +7,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
+- GET  /v1/account/usage           — normalized OpenAI/ChatGPT OAuth quota windows
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
@@ -129,6 +130,7 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 _COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+ACCOUNT_USAGE_CACHE_TTL_SECONDS = 300
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1041,6 +1043,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        # Profile-scoped normalized quota snapshots. External clients may poll
+        # this endpoint frequently; caching avoids repeatedly hitting ChatGPT's
+        # private usage API while keeping clients free of OAuth credentials.
+        self._account_usage_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+        self._account_usage_lock: Optional[asyncio.Lock] = None
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -1558,6 +1565,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/health/detailed", self._handle_health_detailed),
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
+            ("GET", "/v1/account/usage", self._handle_account_usage),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             ("GET", "/v1/skills", self._handle_skills),
             ("GET", "/v1/toolsets", self._handle_toolsets),
@@ -2070,6 +2078,97 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"object": "list", "data": models})
 
+    @staticmethod
+    def _account_usage_payload(snapshot: Any) -> Dict[str, Any]:
+        """Return the stable, credential-free account-usage API envelope."""
+        if snapshot is None:
+            return {
+                "ok": True,
+                "available": False,
+                "provider": "openai-codex",
+                "plan": None,
+                "source": None,
+                "fetched_at": None,
+                "windows": [],
+                "details": [],
+                "unavailable_reason": (
+                    "OpenAI/ChatGPT OAuth usage is unavailable. Verify "
+                    "openai-codex authentication on the Hermes API server and try again."
+                ),
+            }
+
+        windows = []
+        for window in snapshot.windows:
+            used_percent = (
+                None
+                if window.used_percent is None
+                else max(0.0, min(100.0, float(window.used_percent)))
+            )
+            windows.append({
+                "label": window.label,
+                "used_percent": used_percent,
+                "remaining_percent": (
+                    None if used_percent is None else max(0.0, 100.0 - used_percent)
+                ),
+                "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+                "detail": window.detail,
+            })
+
+        return {
+            "ok": True,
+            "available": snapshot.available,
+            "provider": snapshot.provider,
+            "plan": snapshot.plan,
+            "source": snapshot.source,
+            "fetched_at": snapshot.fetched_at.isoformat(),
+            "windows": windows,
+            "details": list(snapshot.details),
+            "unavailable_reason": snapshot.unavailable_reason,
+        }
+
+    async def _handle_account_usage(self, request: "web.Request") -> "web.Response":
+        """GET /v1/account/usage — expose server-side Codex OAuth quota safely.
+
+        OAuth access/refresh tokens and account identifiers stay inside Hermes.
+        The normalized response is cached per served profile because desktop
+        clients poll this route and ChatGPT's upstream usage endpoint is private.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        profile_key = _api_request_profile.get() or "__default__"
+
+        def cached_payload() -> Optional[Dict[str, Any]]:
+            cached = self._account_usage_cache.get(profile_key)
+            if cached and time.monotonic() - cached[0] < ACCOUNT_USAGE_CACHE_TTL_SECONDS:
+                return cached[1]
+            return None
+
+        payload = cached_payload()
+        if payload is not None:
+            return web.json_response(payload)
+
+        if self._account_usage_lock is None:
+            self._account_usage_lock = asyncio.Lock()
+        async with self._account_usage_lock:
+            payload = cached_payload()
+            if payload is None:
+                try:
+                    from agent.account_usage import fetch_account_usage
+
+                    snapshot = await asyncio.to_thread(
+                        fetch_account_usage,
+                        "openai-codex",
+                    )
+                except Exception:
+                    logger.exception("GET /v1/account/usage failed")
+                    snapshot = None
+                payload = self._account_usage_payload(snapshot)
+                self._account_usage_cache[profile_key] = (time.monotonic(), payload)
+
+        return web.json_response(payload)
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -2102,6 +2201,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
+                "account_usage": True,
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
@@ -2129,6 +2229,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "account_usage": {"method": "GET", "path": "/v1/account/usage"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},

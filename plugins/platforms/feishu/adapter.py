@@ -3446,13 +3446,17 @@ class FeishuAdapter(BasePlatformAdapter):
         default_ext: str,
         preferred_name: str,
     ) -> tuple[str, str]:
-        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
 
-        import httpx
-
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             response = await client.get(
                 file_url,
                 headers={
@@ -5516,7 +5520,7 @@ def interactive_setup() -> None:
     Replaces the central _setup_feishu in hermes_cli/gateway.py and the static
     _PLATFORMS["feishu"] dict. CLI helpers are lazy-imported.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import (
         prompt,
@@ -5667,10 +5671,17 @@ def interactive_setup() -> None:
         save_env_value("FEISHU_GROUP_POLICY", "disabled")
         print_info("Group chats disabled.")
 
-    home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False)
+    print_info(
+        "Leave blank to clear a previously saved home channel "
+        "(cron / notifications)."
+    )
+    home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
     if home_channel:
         save_env_value("FEISHU_HOME_CHANNEL", home_channel)
         print_success(f"Home channel set to {home_channel}")
+    else:
+        if remove_env_value("FEISHU_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
     print_success("🪽 Feishu / Lark configured!")
     print_info(f"App ID: {app_id}")

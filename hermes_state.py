@@ -31,7 +31,64 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
+try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
+    import psutil
+except ImportError:  # pragma: no cover - stripped/scaffold installs only
+    psutil = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+_COMPRESSION_LOCK_HOLDER_PID_RE = re.compile(r"(?:^|:)pid=(\d+)(?::|$)")
+
+
+def _compression_lock_holder_process_is_dead(holder: str) -> bool:
+    """Return True only when a structured lock holder's local PID is gone.
+
+    Compression locks are stored in a host-local SQLite database and holder
+    IDs created by ``conversation_compression`` start with ``pid=<n>``. A
+    process killed during gateway shutdown cannot release its lease, so waiting
+    for the full TTL makes every new turn repeatedly attempt compaction. Reclaim
+    only when the kernel proves that PID no longer exists; legacy/unstructured
+    holders, same-process holders, permission errors, and any probe doubt
+    remain protected until normal TTL expiry (conservative: PID reuse must
+    never steal a live lease, and a wrongly-kept lease self-heals via TTL).
+    """
+    # Windows stays TTL-only: stdlib os.kill(pid, 0) is NOT a no-op probe
+    # there (bpo-14484 — sig=0 maps to CTRL_C_EVENT and can kill the target's
+    # console group), and PID recycling semantics make liveness a weaker
+    # deadness signal. The 300s lease TTL remains the recovery path.
+    if os.name == "nt":
+        return False
+    match = _COMPRESSION_LOCK_HOLDER_PID_RE.search(holder or "")
+    if match is None:
+        return False
+    try:
+        pid = int(match.group(1))
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        # Same-process holder (e.g. another thread's live lease): never
+        # self-reclaim — the lease refresher and release path own it.
+        return False
+    if psutil is not None:
+        try:
+            # psutil is the canonical cross-platform liveness answer
+            # (CONTRIBUTING.md "Critical rules" #1). pid_exists() reports
+            # recycled PIDs as alive — conservative, the TTL still applies.
+            return not psutil.pid_exists(pid)
+        except Exception:
+            return False  # any doubt → keep the lease until TTL expiry
+    # Scaffold-phase fallback only (psutil missing). POSIX-only by the
+    # os.name gate above.
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — function early-returns on nt above
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError, OverflowError):
+        return False
+    return False
 
 
 def _scrub_surrogates(value: Any) -> Any:
@@ -186,6 +243,15 @@ MAX_FTS5_QUERY_CHARS = 2_048
 # Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
 # works on NFS.  Concurrency drops — concurrent readers are blocked during
 # a write — but the feature works.
+#
+# Separately, SQLite's WAL-reset bug can corrupt multi-process WAL databases
+# on unfixed library builds (issue #69784).  See:
+# https://sqlite.org/wal.html#walresetbug
+# Fixed in 3.51.3+ with backports 3.50.7 and 3.44.6.  On vulnerable builds we
+# refuse to *enable* WAL for fresh / non-WAL databases (prefer DELETE).  We do
+# NOT live-downgrade an on-disk WAL database — other gateway/cron/worker
+# connections may still hold it open, and flipping journal_mode under them is
+# unsafe (same invariant as the NFS path below).
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
@@ -206,6 +272,10 @@ _last_init_error_lock = threading.Lock()
 # filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+
+# Dedup WARNING for the WAL-reset vulnerability fallback (issue #69784).
+_wal_reset_bug_warned_paths: set[str] = set()
+_wal_reset_bug_warned_lock = threading.Lock()
 
 _FTS_TRIGGERS = (
     "messages_fts_insert",
@@ -409,6 +479,45 @@ def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
         pass
 
 
+def is_sqlite_wal_reset_vulnerable(
+    version_info: Optional[tuple] = None,
+) -> bool:
+    """Return True when the linked SQLite library has the WAL-reset bug.
+
+    Upstream documents the bug in versions 3.7.0 through 3.51.2, fixed in
+    3.51.3+, with backports 3.50.7 and 3.44.6:
+    https://sqlite.org/wal.html#walresetbug
+
+    Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
+    """
+    info = version_info if version_info is not None else sqlite3.sqlite_version_info
+    if info < (3, 7, 0):
+        return False
+    if info >= (3, 51, 3):
+        return False
+    # Backports of the same fix on older release lines.
+    if (3, 50, 7) <= info < (3, 51, 0):
+        return False
+    if (3, 44, 6) <= info < (3, 45, 0):
+        return False
+    return True
+
+
+def sqlite_source_id() -> str:
+    """Return ``sqlite_source_id()``, or an empty string when unavailable."""
+    try:
+        conn = sqlite3.connect(":memory:")
+        try:
+            row = conn.execute("SELECT sqlite_source_id()").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return ""
+    if not row or row[0] is None:
+        return ""
+    return str(row[0])
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -423,6 +532,11 @@ def apply_wal_with_fallback(
     back to DELETE mode — the pre-WAL default, which works on NFS — and
     log one WARNING explaining why.
 
+    On SQLite builds that still contain the WAL-reset corruption bug
+    (issue #69784), refuse to enable WAL on fresh / non-WAL databases
+    (prefer DELETE).  If the on-disk DB is already WAL, keep WAL and warn
+    — never live-downgrade under possible concurrent openers.
+
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
     on every kanban operation) log once per process, not once per call.
@@ -432,8 +546,14 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
 
-    Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
+    Never downgrades to DELETE if the on-disk DB header reports WAL — see
+    _on_disk_journal_mode.  That holds for both the NFS path and the
+    WAL-reset vulnerability path.
     """
+    # Vulnerable SQLite: do not enable WAL on new/non-WAL files.
+    if is_sqlite_wal_reset_vulnerable():
+        return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
+
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     try:
@@ -462,6 +582,70 @@ def apply_wal_with_fallback(
         _log_wal_fallback_once(db_label, exc)
         conn.execute("PRAGMA journal_mode=DELETE")
         return "delete"
+
+
+def _apply_delete_for_wal_reset_bug(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str,
+) -> str:
+    """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
+
+    - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
+    - Otherwise: set DELETE and warn.
+    """
+    current = ""
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        if row and row[0] is not None:
+            current = str(row[0]).strip().lower()
+    except sqlite3.OperationalError:
+        current = ""
+
+    if current == "wal":
+        # Do not TRUNCATE / journal_mode=DELETE while other processes may
+        # still hold this WAL DB open — same safety rule as the NFS path.
+        _log_wal_reset_bug_once(db_label, kept_wal=True)
+        _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
+        return "wal"
+
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+    except sqlite3.OperationalError:
+        # Best-effort: DELETE is usually already the default for new files.
+        pass
+    _log_wal_reset_bug_once(db_label, kept_wal=False)
+    return "delete"
+
+
+def _log_wal_reset_bug_once(
+    db_label: str,
+    *,
+    kept_wal: bool,
+) -> None:
+    """Log once per (process, db_label) about the WAL-reset vulnerability path."""
+    with _wal_reset_bug_warned_lock:
+        if db_label in _wal_reset_bug_warned_paths:
+            return
+        _wal_reset_bug_warned_paths.add(db_label)
+    action = (
+        "is already in WAL mode — leaving WAL in place (no live "
+        "downgrade under concurrent openers)"
+        if kept_wal
+        else "using journal_mode=DELETE instead of enabling WAL"
+    )
+    logger.warning(
+        "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
+        "bug (https://sqlite.org/wal.html#walresetbug) — %s. "
+        "Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); "
+        "`hermes update` alone may not change python-build-standalone's "
+        "embedded SQLite. See `hermes doctor`. This warning fires once "
+        "per process per database.",
+        db_label,
+        sqlite3.sqlite_version,
+        action,
+    )
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
@@ -913,6 +1097,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
+    compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
@@ -940,7 +1125,9 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
-    api_content TEXT
+    api_content TEXT,
+    display_kind TEXT,
+    display_metadata TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -3913,6 +4100,51 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def get_compression_ineffective_count(self, session_id: str) -> int:
+        """Return the persisted ineffective-compaction strike count.
+
+        Mirrors ``get_compression_fallback_streak``: this is the durable half
+        of the anti-thrash guard (``_ineffective_compression_count`` on the
+        built-in compressor), persisted so that a fresh compressor bound to a
+        resumed session inherits an armed/tripped guard instead of starting
+        from zero across process restarts (#54923).
+        """
+        if not session_id:
+            return 0
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return 0
+            row = conn.execute(
+                "SELECT compression_ineffective_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        value = (
+            row["compression_ineffective_count"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_compression_ineffective_count(self, session_id: str, count: int) -> None:
+        """Persist the ineffective-compaction strike count for one session."""
+        if not session_id:
+            return
+        normalized = max(0, int(count))
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_ineffective_count = ? WHERE id = ?",
+                (normalized, session_id),
+            )
+
+        self._execute_write(_do)
+
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
@@ -3977,10 +4209,10 @@ class SessionDB:
         MUST NOT proceed with compression in that case (its rotation would
         race against the holder's, splitting the session lineage).
 
-        Expired locks (``expires_at < now``) are reclaimed transparently:
-        the stale row is deleted and the new holder acquires it. This
-        prevents a crashed compressor from permanently blocking the
-        session.
+        Expired locks (``expires_at < now``) are reclaimed transparently.
+        Structured holders whose local ``pid=`` no longer exists are reclaimed
+        immediately, so a gateway killed during compression does not stall the
+        replacement process for the full lease TTL.
 
         Implementation: single-transaction DELETE-expired + INSERT-or-IGNORE,
         followed by a SELECT to confirm we got the row. SQLite serialises
@@ -3992,12 +4224,29 @@ class SessionDB:
         expires_at = now + ttl_seconds
 
         def _do(conn):
-            # First: reclaim any expired lock for this session_id.
-            conn.execute(
-                "DELETE FROM compression_locks "
-                "WHERE session_id = ? AND expires_at < ?",
-                (session_id, now),
-            )
+            reclaimed_holder = None
+            row = conn.execute(
+                "SELECT holder, expires_at FROM compression_locks "
+                "WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is not None:
+                current_holder = (
+                    row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+                )
+                current_expires_at = (
+                    row["expires_at"] if isinstance(row, sqlite3.Row) else row[1]
+                )
+                if (
+                    current_expires_at < now
+                    or _compression_lock_holder_process_is_dead(current_holder)
+                ):
+                    conn.execute(
+                        "DELETE FROM compression_locks "
+                        "WHERE session_id = ? AND holder = ?",
+                        (session_id, current_holder),
+                    )
+                    reclaimed_holder = current_holder
             # Then: try to insert. INSERT OR IGNORE returns no rowcount
             # difference — verify ownership via SELECT.
             conn.execute(
@@ -4010,12 +4259,21 @@ class SessionDB:
                 "SELECT holder FROM compression_locks WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
-            return row is not None and (
+            acquired = row is not None and (
                 row["holder"] if isinstance(row, sqlite3.Row) else row[0]
             ) == holder
+            return acquired, reclaimed_holder
 
         try:
-            return bool(self._execute_write(_do))
+            acquired, reclaimed_holder = self._execute_write(_do)
+            if reclaimed_holder:
+                logger.warning(
+                    "Reclaimed stale compression lock for session=%s "
+                    "(holder=%s)",
+                    session_id,
+                    reclaimed_holder,
+                )
+            return bool(acquired)
         except sqlite3.Error as exc:
             logger.warning(
                 "try_acquire_compression_lock(%s) failed: %s",
@@ -5471,6 +5729,8 @@ class SessionDB:
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
+        display_kind: Optional[str] = None,
+        display_metadata: Optional[Dict[str, Any]] = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -5492,6 +5752,9 @@ class SessionDB:
         from every outgoing payload anyway, so the scrubbed form IS the
         wire bytes).
         """
+        # Display metadata is presentation-only and never changes the model
+        # context role/content replayed to providers.
+        display_metadata_json = json.dumps(display_metadata) if display_metadata else None
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -5538,8 +5801,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -5560,6 +5823,8 @@ class SessionDB:
                     1 if observed else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    _scrub_surrogates(display_kind) if isinstance(display_kind, str) else None,
+                    display_metadata_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -5579,6 +5844,40 @@ class SessionDB:
             return msg_id
 
         return self._execute_write(_do)
+
+    def set_latest_matching_message_display_kind(
+        self, session_id: str, *, role: str, content: str, display_kind: str,
+        display_metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Stamp presentation metadata on this turn's freshly persisted row.
+
+        The model still receives ``role`` and ``content`` unchanged. Gateway and
+        CLI synthetic inputs call this immediately after their serial turn has
+        flushed, preserving producer provenance without classifying by content
+        during transcript rendering.
+        """
+        if not session_id or not content or not display_kind:
+            return False
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = ? "
+                "AND content = ? AND active = 1 ORDER BY id DESC LIMIT 1",
+                (session_id, role, self._encode_content(content)),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
+                (
+                    _scrub_surrogates(display_kind),
+                    json.dumps(display_metadata) if display_metadata else None,
+                    row[0],
+                ),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
@@ -5643,8 +5942,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, api_content, display_kind, display_metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -5665,6 +5964,8 @@ class SessionDB:
                     1 if msg.get("observed") else 0,
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
+                    json.dumps(msg["display_metadata"]) if msg.get("display_metadata") else None,
                 ),
             )
             inserted += 1
@@ -6194,7 +6495,7 @@ class SessionDB:
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-                "api_content "
+                "api_content, display_kind, display_metadata "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -6222,7 +6523,7 @@ class SessionDB:
         "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-        "api_content"
+        "api_content, display_kind, display_metadata"
     )
 
     def _rows_to_conversation(
@@ -6254,6 +6555,13 @@ class SessionDB:
             # re-introduce the divergence it exists to remove.
             if row["api_content"]:
                 msg["api_content"] = row["api_content"]
+            if row["display_kind"]:
+                msg["display_kind"] = row["display_kind"]
+            if row["display_metadata"]:
+                try:
+                    msg["display_metadata"] = json.loads(row["display_metadata"])
+                except (TypeError, json.JSONDecodeError):
+                    logger.warning("Ignoring invalid display metadata on message row")
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

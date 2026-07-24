@@ -129,6 +129,7 @@ export const zhHant = defineLocale({
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
+      gatewayAuthFailed: '閘道認證失敗 — 請檢查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',

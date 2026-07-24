@@ -493,6 +493,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -501,6 +502,7 @@ class AIAgent:
             base_url=base_url,
             api_key=api_key,
             provider=provider,
+            requested_provider=requested_provider,
             api_mode=api_mode,
             acp_command=acp_command,
             acp_args=acp_args,
@@ -928,6 +930,49 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _warn_context_overflow_blocked(
+        self, reason: str, preflight_tokens: int, threshold_tokens: int
+    ) -> None:
+        """Surface a deduped warning when the context is over the compression
+        threshold but compression is blocked (summary-LLM cooldown or
+        anti-thrashing).
+
+        Without this signal the session keeps growing until the model silently
+        stops answering — the conversation hits the hard provider token limit
+        with no explanation. Centralised here so every caller that checks
+        ``should_compress_info`` (turn-context preflight, conversation-loop
+        guards) shares identical dedup/reset logic.
+
+        Dedup is on the *kind* of block (``cooldown`` / ``ineffective``), not the
+        exact countdown string, so a cooldown ticking down 30→29→… doesn't
+        re-fire the warning every turn. The dedup key is cleared when the block
+        clears (see ``_clear_context_overflow_warn``), so the warning can fire
+        again on the next blocked-over-threshold turn.
+        """
+        _warn_kind = (reason or "unknown").split(":", 1)[0]
+        _warn_key = ("ctx_overflow_blocked", _warn_kind)
+        if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            from agent.conversation_compression import (
+                CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+            )
+            self._emit_warning(
+                CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+                    tokens=preflight_tokens,
+                    threshold=threshold_tokens,
+                    reason=reason,
+                )
+            )
+
+    def _clear_context_overflow_warn(self) -> None:
+        """Reset the dedup state for the blocked-overflow warning.
+
+        Call this whenever compression is no longer blocked while the context
+        is over threshold (e.g. the cooldown elapsed, or compression ran
+        successfully), so the warning can re-fire on the next blocked turn.
+        """
+        self._last_ctx_overflow_warn = None
 
     def _emit_notice(self, notice) -> None:
         """Fire a structured ``AgentNotice`` to the active driver (TUI / CLI).
@@ -2040,6 +2085,12 @@ class AIAgent:
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
+                    display_kind=(
+                        "hidden"
+                        if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                        and not msg.get("_compressed_summary_has_user_turn")
+                        else msg.get("display_kind")
+                    ),
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
@@ -6339,6 +6390,7 @@ class AIAgent:
         focus_topic: str = None,
         force: bool = False,
         defer_context_engine_notification: bool = False,
+        commit_fence=None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
 
@@ -6353,6 +6405,7 @@ class AIAgent:
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
             force=force,
             defer_context_engine_notification=defer_context_engine_notification,
+            commit_fence=commit_fence,
         )
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:

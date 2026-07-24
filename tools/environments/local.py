@@ -490,7 +490,24 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
+    sanitized = _scrub_delegated_child_kanban_env(sanitized)
+
     return sanitized
+
+
+def _scrub_delegated_child_kanban_env(env: dict[str, str]) -> dict[str, str]:
+    """Strip dispatcher-owned Kanban env from delegate_task child subprocesses."""
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_process_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_process_context():
+            return scrub_kanban_env(env)
+    except Exception:
+        pass
+    return env
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
@@ -611,6 +628,12 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # session's identity. Strip _UNSET session vars when engaged so that can't
     # happen; single uniform policy across every spawn surface.
     _inject_session_context_env(env)
+
+    # Non-terminal subprocess helpers (browser, lazy-deps, TUI/ACP hosts, etc.)
+    # also need the delegate_task child lineage marker.  Otherwise a child
+    # context that later imports Kanban DB code in the spawned process would
+    # still see the parent's HERMES_HOME but lose the DB mutation guard.
+    env = _scrub_delegated_child_kanban_env(env)
 
     return env
 
@@ -1173,6 +1196,8 @@ def _make_run_env(env: dict) -> dict:
         run_env.pop(_marker, None)
 
     _apply_windows_msys_bash_env_defaults(run_env)
+
+    run_env = _scrub_delegated_child_kanban_env(run_env)
 
     return run_env
 

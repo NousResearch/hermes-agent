@@ -407,6 +407,18 @@ compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
+
+  # Opt-in compression progress notices on chat platforms (default: false).
+  # By design, routine automatic compression is SILENT on human-facing chat
+  # gateways (Telegram, Discord, Slack, ...) — it happens in the background
+  # with server-side logging only. Set true to also deliver the routine
+  # progress statuses (compacting started, preflight/pre-API compression,
+  # idle compaction, retry progress, and the compaction-complete notice) to
+  # chat platforms. Unrelated operational noise (auxiliary model failures,
+  # provider retry chatter) stays suppressed either way, and compression
+  # FAILURE notices + manual /compress feedback are always visible
+  # regardless of this setting. (#52995)
+  progress_notices: false
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later

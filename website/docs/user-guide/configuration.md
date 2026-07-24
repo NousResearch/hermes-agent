@@ -743,6 +743,7 @@ All compression settings live in `config.yaml` (no environment variables).
 ```yaml
 compression:
   enabled: true                                     # Toggle compression on/off
+  progress_notices: false                           # Opt-in: deliver routine compression progress notices to chat platforms — see below
   threshold: 0.50                                   # Compress at this % of context limit
   threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
@@ -767,6 +768,8 @@ auxiliary:
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.
 :::
+
+`progress_notices` (default `false`) controls whether **routine** compression progress statuses reach chat platforms (Telegram, Discord, Slack, etc.). By design, automatic compression is silent on chat surfaces — it runs in the background with server-side logging only. Set `progress_notices: true` to opt into seeing the routine lifecycle on chat platforms: the "Compacting context…" start notice, preflight/pre-API compression triggers, idle compaction, retry progress ("Compressed 30 → 12 messages, retrying…"), and the "Context compaction complete" notice. The gate is scoped to compression statuses only — unrelated operational noise (auxiliary model failures, provider rate-limit/retry chatter) stays suppressed either way. Compression **failure** notices and manual `/compress` feedback are always visible regardless of this setting. Editing this value on a running gateway takes effect on the next message.
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 

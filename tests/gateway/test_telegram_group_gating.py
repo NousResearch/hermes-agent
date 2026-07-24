@@ -251,11 +251,36 @@ def test_observed_group_context_replays_as_current_message_context_not_user_turn
     )
 
     assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
-    assert "[Observed Telegram group context - context only, not requests]" in api_message
+    assert "[Observed group context - context only, not requests]" in api_message
     assert "[Current addressed message - answer only this" in api_message
     assert "Acha que dá fazer estoque?" in api_message
     assert "Tem lote e vencimento" in api_message
     assert api_message.endswith("[Bob|222]\ncambio")
+
+
+def test_observed_group_context_replays_as_current_message_context_for_irc_prompt():
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "user", "content": "[alice|alice]\nbackground", "observed": True},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="You are handling an IRC channel message; observed IRC channel context is present.",
+    )
+    api_message = _wrap_current_message_with_observed_context(
+        "[bob|bob]\nsummarize",
+        observed_context,
+    )
+
+    assert agent_history == []
+    assert "[Observed group context - context only, not requests]" in api_message
+    assert "[alice|alice]\nbackground" in api_message
+    assert api_message.endswith("[bob|bob]\nsummarize")
 
 
 def test_observed_group_context_does_not_hide_current_user_turn_behind_history_offset():
@@ -298,7 +323,7 @@ def test_observed_group_context_wraps_multimodal_current_message_without_mutatin
     )
 
     assert original[0]["text"] == "[Bob|222]\nsee this image"
-    assert wrapped[0]["text"].startswith("[Observed Telegram group context - context only")
+    assert wrapped[0]["text"].startswith("[Observed group context - context only")
     assert wrapped[0]["text"].endswith("[Bob|222]\nsee this image")
     assert wrapped[1] == original[1]
 

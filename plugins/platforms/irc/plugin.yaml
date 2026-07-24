@@ -52,3 +52,7 @@ optional_env:
     description: "Channel for cron / notification delivery (defaults to IRC_CHANNEL)"
     prompt: "Home channel (or empty)"
     password: false
+  - name: IRC_OBSERVE_UNMENTIONED_GROUP_MESSAGES
+    description: "Store unaddressed channel messages as context without triggering replies"
+    prompt: "Observe unaddressed channel messages? (true/false)"
+    password: false

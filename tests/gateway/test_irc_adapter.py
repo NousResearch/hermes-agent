@@ -20,6 +20,23 @@ register = _irc_mod.register
 _standalone_send = _irc_mod._standalone_send
 
 
+class _FakeSessionEntry:
+    session_id = "session-irc"
+
+
+class _FakeSessionStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return _FakeSessionEntry()
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message, skip_db))
+
+
 class TestIRCProtocolHelpers:
 
     def test_parse_simple_command(self):
@@ -253,6 +270,123 @@ class TestIRCAdapterMessageParsing:
 
         await adapter._handle_line(":user!u@host PRIVMSG #test :just talking")
         assert len(dispatched) == 0
+
+    @pytest.mark.asyncio
+    async def test_observes_unaddressed_channel_message_when_enabled(self, adapter):
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :just talking")
+
+        adapter.handle_message.assert_not_awaited()
+        assert len(store.sources) == 1
+        assert store.sources[0].chat_id == "#test"
+        assert store.sources[0].chat_type == "group"
+        assert store.sources[0].user_id is None
+        assert store.sources[0].thread_id == "observed-channel-context"
+        assert len(store.messages) == 1
+        session_id, message, skip_db = store.messages[0]
+        assert session_id == "session-irc"
+        assert skip_db is False
+        assert message["role"] == "user"
+        assert message["content"] == "[alice|alice]\njust talking"
+        assert message["observed"] is True
+
+    @pytest.mark.asyncio
+    async def test_addressed_channel_message_uses_observed_context_source(self, adapter):
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: summarize this")
+
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "[alice|alice]\nsummarize this"
+        assert event.source.chat_id == "#test"
+        assert event.source.chat_type == "group"
+        assert event.source.user_id == "alice"
+        assert event.source.thread_id == "observed-channel-context"
+        assert "observed IRC channel context" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_addressed_observed_channel_message_preserves_auth_user_and_shared_session(self, adapter):
+        from gateway.session import build_session_key
+
+        store = _FakeSessionStore()
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter._session_store = store
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":bob!u@host PRIVMSG #test :background")
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :hermes: summarize")
+
+        assert len(store.sources) == 1
+        assert len(handled) == 1
+        observed_source = store.sources[0]
+        addressed_source = handled[0].source
+        assert addressed_source.user_id == "alice"
+        assert build_session_key(observed_source) == build_session_key(addressed_source)
+
+    @pytest.mark.asyncio
+    async def test_addressed_observed_channel_approve_command_stays_command(self, adapter):
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :Hermes:/approve session")
+
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "/approve session"
+        assert event.is_command() is True
+        assert event.get_command() == "approve"
+        assert event.get_command_args() == "session"
+        assert event.source.thread_id == "observed-channel-context"
+        assert event.source.user_id == "alice"
+        assert event.channel_prompt is None
+
+    @pytest.mark.asyncio
+    async def test_addressed_observed_channel_deny_command_stays_command(self, adapter):
+        handled = []
+
+        async def capture_event(event):
+            handled.append(event)
+
+        adapter.observe_unmentioned_group_messages = True
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture_event
+
+        await adapter._handle_line(":alice!u@host PRIVMSG #test :Hermes:/deny all")
+
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "/deny all"
+        assert event.is_command() is True
+        assert event.get_command() == "deny"
+        assert event.get_command_args() == "all"
+        assert event.source.thread_id == "observed-channel-context"
+        assert event.source.user_id == "alice"
+        assert event.channel_prompt is None
 
     @pytest.mark.asyncio
     async def test_handle_dm(self, adapter):

@@ -80,6 +80,8 @@ class TransportSpec:
     command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
+    headers: Dict[str, str] = field(default_factory=dict)
+    url_env_overrides: Dict[str, str] = field(default_factory=dict)
     version: Optional[str] = None  # informational, pinned
     # Static environment variables for the stdio subprocess (e.g. telemetry
     # opt-outs, mode flags). NOT for secrets — credentials go through
@@ -192,6 +194,12 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    headers_raw = transport_raw.get("headers") or {}
+    if not isinstance(headers_raw, dict):
+        raise CatalogError(f"{path}: transport.headers must be a mapping")
+    url_env_overrides_raw = transport_raw.get("url_env_overrides") or {}
+    if not isinstance(url_env_overrides_raw, dict):
+        raise CatalogError(f"{path}: transport.url_env_overrides must be a mapping")
     env_raw = transport_raw.get("env") or {}
     if not isinstance(env_raw, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in env_raw.items()
@@ -204,6 +212,10 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
+        headers={str(k): str(v) for k, v in headers_raw.items()},
+        url_env_overrides={
+            str(k): str(v) for k, v in url_env_overrides_raw.items()
+        },
         version=transport_raw.get("version"),
         env=dict(env_raw),
     )
@@ -449,6 +461,22 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
+def _template_env_names(value: str) -> List[str]:
+    """Return ${ENV_VAR} placeholders referenced by a manifest string."""
+    return re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value or "")
+
+
+def _template_is_resolved(value: str) -> bool:
+    """True when every ${ENV_VAR} placeholder currently has a value."""
+    return all(get_env_value(name) for name in _template_env_names(value))
+
+
+def _env_selector_is_resolved(selector: str) -> bool:
+    """True when every env var in an override selector has a value."""
+    names = [part.strip() for part in selector.split("+") if part.strip()]
+    return bool(names) and all(get_env_value(name) for name in names)
+
+
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
     """Walk the env spec list, prompting the user for each. Writes secrets and
     non-secrets alike to ~/.hermes/.env via save_env_value()."""
@@ -487,7 +515,24 @@ def _build_server_config(
         if t.env:
             cfg["env"] = dict(t.env)
     elif t.type == "http":
-        cfg["url"] = t.url
+        url = t.url
+        override_items = sorted(
+            t.url_env_overrides.items(),
+            key=lambda item: len([part for part in item[0].split("+") if part.strip()]),
+            reverse=True,
+        )
+        for env_selector, override_url in override_items:
+            if _env_selector_is_resolved(env_selector):
+                url = override_url
+                break
+        cfg["url"] = url
+        headers = {
+            key: value
+            for key, value in t.headers.items()
+            if _template_is_resolved(value)
+        }
+        if headers:
+            cfg["headers"] = headers
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
     return cfg

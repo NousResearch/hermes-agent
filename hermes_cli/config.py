@@ -3670,6 +3670,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    34: ["YDC_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -4157,6 +4158,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Tavily API key",
         "url": "https://app.tavily.com/home",
         "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
+    "YDC_API_KEY": {
+        "description": "You.com API key for the You.com MCP server",
+        "prompt": "You.com API key",
+        "url": "https://you.com/platform",
+        "tools": ["mcp_youdotcom"],
         "password": True,
         "category": "tool",
     },
@@ -8573,6 +8582,7 @@ def show_config():
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
+        ("YDC_API_KEY", "You.com"),
         ("BROWSERBASE_API_KEY", "Browserbase"),
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
@@ -8992,7 +9002,6 @@ def set_config_value(key: str, value: str, force: bool = False):
             file=sys.stderr,
         )
         sys.exit(1)
-    # Check if it's an API key (goes to .env)
     if _is_env_config_key(key):
         # Unified lifecycle: also rotates any config.yaml mirror of the old
         # value so a stale higher-precedence copy can't win (#62269).

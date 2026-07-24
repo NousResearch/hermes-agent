@@ -12,7 +12,7 @@ Hermes Agent includes two model-callable web tools backed by multiple providers:
 - **`web_search`** — search the web and return ranked results
 - **`web_extract`** — fetch and extract readable content from one or more URLs
 
-Both are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`.
+Built-in providers are configured through a single backend selection via `hermes tools` or `config.yaml`. MCP-based providers install into `mcp_servers` and expose dedicated MCP tools instead.
 
 ## Backends
 
@@ -26,8 +26,11 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **You.com MCP** | `YDC_API_KEY` (optional) | ✔ (MCP) | ✔ with key (MCP) | 100 queries/day |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
+
+**MCP-based web search:** in addition to the built-in backends above, You.com is available as a remote MCP server from the optional catalog. It exposes its own tools (`mcp_youdotcom_you_search`, `mcp_youdotcom_you_contents`, `mcp_youdotcom_you_research`) rather than going through `web.backend` or the built-in `web_search` / `web_extract` tools. See [You.com MCP](#youcom-mcp) below.
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -79,7 +82,7 @@ If you specifically need raw, unsummarized page content — for example, you're 
 
 ### Quick setup via `hermes tools`
 
-Run `hermes tools`, navigate to **Web Search & Extract**, and pick a provider. The wizard prompts for the required URL or API key and writes it to your config.
+Run `hermes tools`, navigate to **Web Search & Extract**, and pick a provider. The wizard prompts for the required URL or API key and writes it to your config. MCP-backed rows, such as You.com MCP, install an MCP server entry instead of setting `web.backend`.
 
 ```bash
 hermes tools
@@ -334,6 +337,45 @@ web:
 :::caution Trust model
 Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-engine results, xAI is an LLM choosing which URLs to surface and writing the titles and descriptions itself. The *content* of the query influences the output, so a maliciously crafted query (e.g. injected via untrusted upstream input the agent picked up) can in principle steer Grok into emitting attacker-chosen URLs. Treat returned URLs the same way you'd treat any model-generated link — validate before fetching, especially if the query came from untrusted input.
 :::
+
+---
+
+### You.com MCP {#youcom-mcp}
+
+You.com is available as a **remote MCP server** from the optional MCP catalog. Unlike the built-in backends, it does not set `web.backend`. It exposes dedicated MCP tools (`mcp_youdotcom_you_search`, `mcp_youdotcom_you_contents`, `mcp_youdotcom_you_research`, and optionally `mcp_youdotcom_you_finance`) that the agent calls directly.
+
+**Free mode** (no API key) provides search-only via the `?profile=free` endpoint. It includes 100 queries per day and excludes livecrawl, content extraction, research, and finance tools. Setting `YDC_API_KEY` switches to the full endpoint and unlocks content extraction and research tools.
+
+Install from the catalog:
+
+```bash
+hermes mcp install youdotcom
+```
+
+Or select **You.com MCP** during `hermes setup` → Tools → Web Search & Extract.
+
+To unlock full mode, add your API key and reinstall:
+
+```bash
+# ~/.hermes/.env
+YDC_API_KEY=your-key-here
+```
+
+```bash
+hermes mcp install youdotcom
+```
+
+Get a key at [you.com/platform](https://you.com/platform). With an API key, You.com recommends using the [`tools` query parameter](https://you.com/docs/build-with-agents/mcp-server#using-the-tools-query-parameter-recommended) to choose which MCP tools are exposed. A bundled research skill (`skills/research/youdotcom`) documents how to use the MCP tools for cited multi-hop research.
+
+`you-finance` is optional and not included in You.com's default full endpoint. To enable it, set `YDC_ALLOWED_TOOLS` alongside `YDC_API_KEY`, then reinstall:
+
+```bash
+# ~/.hermes/.env
+YDC_API_KEY=your-key-here
+YDC_ALLOWED_TOOLS=you-search,you-research,you-contents,you-finance
+```
+
+You.com MCP is not part of the `web.backend`, `web.search_backend`, or `web.extract_backend` auto-detection chain. It is enabled when the `youdotcom` MCP server is installed and enabled in `mcp_servers`.
 
 ---
 

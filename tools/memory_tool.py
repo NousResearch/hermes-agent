@@ -139,9 +139,10 @@ def _read_failed_error(path: "Path") -> Dict[str, Any]:
         "error": (
             f"Refusing to write {path.name}: the file exists on disk but could "
             f"not be read right now (temporarily locked by another program, a "
-            f"permission change, or a filesystem error). Treating an unreadable "
-            f"file as empty and saving would wipe existing memory, so the write "
-            f"is refused. Nothing was changed — retry in a moment."
+            f"permission change, invalid/corrupt text encoding, or a filesystem "
+            f"error). Treating an unreadable file as empty and saving would wipe "
+            f"existing memory, so the write is refused. Nothing was changed — "
+            f"retry in a moment."
         ),
     }
 
@@ -344,12 +345,19 @@ class MemoryStore:
         rewriting, so existing content is never clobbered.
         """
         path = self._path_for(target)
-        fresh, read_ok = self._read_entries_checked(path)
+        raw, read_ok = self._read_raw_checked(path)
         if not read_ok:
             # Leave in-memory entries untouched and tell the caller to abort;
             # persisting over an unreadable file would destroy it.
             return _READ_FAILED
-        bak = None if skip_drift else self._detect_external_drift(target)
+        # Derive BOTH the drift check and the entry parse from the same raw
+        # snapshot. The drift guard used to re-read the file itself and treat
+        # a failed second read as "no drift" — so a read failure between the
+        # checked reload and the drift check let replace/remove/apply_batch
+        # rewrite the file from a stale view, silently discarding whatever an
+        # external writer had just added. One read, one snapshot, no window.
+        bak = None if skip_drift else self._detect_external_drift(target, raw)
+        fresh = self._parse_entries(raw)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
         return bak
@@ -741,34 +749,50 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
-    def _read_entries_checked(path: Path) -> Tuple[List[str], bool]:
-        """Read + parse a memory file, distinguishing unreadable from empty.
+    def _read_raw_checked(path: Path) -> Tuple[str, bool]:
+        """Read a memory file's raw text, distinguishing unreadable from empty.
 
-        Returns ``(entries, read_ok)``. ``read_ok`` is False ONLY when the file
-        EXISTS but could not be read — an absent or empty file is a clean
-        ``([], True)``. Read-modify-write callers must treat ``read_ok=False``
-        as "abort" rather than "empty store", or a transient read failure would
-        let them persist over — and wipe — the on-disk memory (issue #26045 is
-        about the same class: never rewrite a file from a view that isn't the
-        real one).
+        Returns ``(raw, read_ok)``. ``read_ok`` is False ONLY when the file
+        EXISTS but could not be read — an absent file is a clean ``("", True)``.
+        Invalid UTF-8 counts as unreadable too: the bytes on disk hold content
+        we cannot faithfully round-trip, so a rewrite would corrupt or discard
+        it just like a failed read. Read-modify-write callers must treat
+        ``read_ok=False`` as "abort" rather than "empty store", or a transient
+        read failure would let them persist over — and wipe — the on-disk
+        memory (issue #26045 is about the same class: never rewrite a file
+        from a view that isn't the real one).
 
         No file locking needed: _write_file uses atomic rename, so readers
         always see either the previous complete file or the new complete file.
         """
         if not path.exists():
-            return [], True
+            return "", True
         try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
-            return [], False
+            return path.read_text(encoding="utf-8"), True
+        except (OSError, IOError, UnicodeDecodeError):
+            return "", False
 
+    @staticmethod
+    def _parse_entries(raw: str) -> List[str]:
+        """Split raw memory-file text into stripped, non-empty entries."""
         if not raw.strip():
-            return [], True
-
+            return []
         # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
         # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e], True
+        return [e for e in entries if e]
+
+    @staticmethod
+    def _read_entries_checked(path: Path) -> Tuple[List[str], bool]:
+        """Read + parse a memory file, distinguishing unreadable from empty.
+
+        Returns ``(entries, read_ok)`` — see ``_read_raw_checked`` for the
+        ``read_ok`` contract.
+        """
+        raw, read_ok = MemoryStore._read_raw_checked(path)
+        if not read_ok:
+            return [], False
+        return MemoryStore._parse_entries(raw), True
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
@@ -777,13 +801,20 @@ class MemoryStore:
         Retained for read-only callers (``load_from_disk``) that build in-memory
         state without persisting; a failed read degrading to ``[]`` there is
         harmless because nothing is written back. Read-modify-write paths use
-        ``_read_entries_checked`` so they can refuse to overwrite an unreadable
+        ``_read_raw_checked`` so they can refuse to overwrite an unreadable
         file — see ``_reload_target``.
         """
         return MemoryStore._read_entries_checked(path)[0]
 
-    def _detect_external_drift(self, target: str) -> Optional[str]:
+    def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
+
+        *raw* is the file content already read by the caller's checked read
+        (``_read_raw_checked``). Drift detection MUST operate on that same
+        snapshot — an earlier version re-read the file here and treated a
+        failed second read as "no drift", which let a mutation proceed from a
+        stale first snapshot and rewrite away content an external writer added
+        between the two reads.
 
         The memory file is supposed to be a list of small entries the tool
         wrote, joined by §. Detect drift via two signals:
@@ -807,12 +838,6 @@ class MemoryStore:
         per-target char_limit for signal #2.
         """
         path = self._path_for(target)
-        if not path.exists():
-            return None
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
-            return None
         if not raw.strip():
             return None
 

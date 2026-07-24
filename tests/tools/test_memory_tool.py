@@ -934,6 +934,68 @@ class TestUnreadableFileDoesNotWipeMemory:
         assert "Fact one." in path.read_text(encoding="utf-8")
         assert "Fact two." in path.read_text(encoding="utf-8")
 
+    def test_user_store_add_refuses_on_read_failure(self, store, monkeypatch):
+        """USER.md shares the read-modify-write pattern and needs the same guard."""
+        store.add("user", "Name: Alice")
+        store.add("user", "Role: developer")
+        path = store._path_for("user")
+        before = path.read_text(encoding="utf-8")
+
+        self._fail_read_once(monkeypatch, path)
+        result = store.add("user", "Timezone: UTC")
+
+        assert result["success"] is False
+        assert "could not be read" in result["error"]
+        assert path.read_text(encoding="utf-8") == before
+
+    def test_invalid_utf8_file_refuses_write_instead_of_crashing(self, store):
+        """Undecodable bytes are 'unreadable', not a crash and not an empty store.
+
+        A MEMORY.md with invalid UTF-8 used to raise UnicodeDecodeError out of
+        the mutation path. It must instead produce the same preservation
+        refusal as a failed read — the on-disk bytes can't be round-tripped,
+        so rewriting would corrupt or discard them.
+        """
+        store.add("memory", "Entry before corruption.")
+        path = store._path_for("memory")
+        original_bytes = b"\xff\xfe invalid utf-8 \x80\x81 memory content"
+        path.write_bytes(original_bytes)
+
+        result = store.add("memory", "New entry.")
+
+        assert result["success"] is False
+        assert "could not be read" in result["error"]
+        assert path.read_bytes() == original_bytes  # nothing rewritten
+
+    def test_mutations_read_the_file_exactly_once(self, store, monkeypatch):
+        """Drift detection must use the SAME snapshot as the reload parse.
+
+        The drift guard used to re-read the file itself and swallow a failed
+        second read as "no drift" — a read failure between the checked reload
+        and the drift check let `replace` rewrite the file from a stale view,
+        discarding externally added entries. Pin the invariant structurally:
+        one mutation, one read.
+        """
+        store.add("memory", "Only entry.")
+        path = store._path_for("memory")
+
+        real = Path.read_text
+        counts = {"n": 0}
+
+        def counting(self, *a, **k):
+            if self == path:
+                counts["n"] += 1
+            return real(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", counting)
+        result = store.replace("memory", "Only entry", "Replaced entry.")
+
+        assert result["success"] is True
+        assert counts["n"] == 1, (
+            f"replace() read the memory file {counts['n']} times; drift "
+            f"detection must reuse the single checked-read snapshot"
+        )
+
 
 # =========================================================================
 # Load-time snapshot sanitization — promptware defense (#496)

@@ -40,6 +40,7 @@ or delay an actual send. Callers wrap every call in try/except.
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import json
 import logging
 import os
@@ -99,6 +100,28 @@ def _connect() -> sqlite3.Connection:
         )"""
     )
     return conn
+
+
+@contextlib.contextmanager
+def _transaction():
+    """Open a connection and guarantee it is closed on exit.
+
+    sqlite3.Connection's built-in context manager only commits/rollbacks the
+    transaction; it does NOT close the file descriptor. In long-lived
+    processes (gateway) every ``_connect()`` call would otherwise leak an FD.
+    """
+    conn = _connect()
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _owner_stamp() -> tuple[int, Optional[int]]:
@@ -166,7 +189,7 @@ def record_obligation(
     """Record a final response as owed to the platform (state='pending')."""
     now = time.time()
     pid, started = _owner_stamp()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
@@ -193,7 +216,7 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
 
 
 def _update_state(obligation_id: str, state: str, error: str = "") -> None:
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """UPDATE delivery_obligations
                SET state=?, updated_at=?, last_error=?
@@ -226,7 +249,7 @@ def sweep_recoverable(
     now = now if now is not None else time.time()
     pid, started = _owner_stamp()
     claimed: List[Dict[str, Any]] = []
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
                       content, state, attempts, created_at,
@@ -279,7 +302,7 @@ def _prune(now: Optional[float] = None) -> None:
     now = now if now is not None else time.time()
     cutoff = now - _RETENTION_SECONDS
     try:
-        with _connect() as conn:
+        with _transaction() as conn:
             conn.execute(
                 """DELETE FROM delivery_obligations
                    WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""",
@@ -323,7 +346,7 @@ def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
 
 def debug_rows(limit: int = 20) -> str:
     """Human-readable dump for ad-hoc inspection (sqlite3-free path)."""
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, state, attempts,
                       created_at, updated_at, last_error

@@ -1599,8 +1599,14 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
         Absolute path to the cached document file as a string.
 
     Raises:
-        ValueError: If the sanitized path escapes the cache directory.
+        ValueError: If the payload exceeds the inbound media size cap, or if
+            the sanitized path escapes the cache directory.
     """
+    # Enforce the inbound size cap on the real byte length, matching
+    # cache_image/audio/video_from_bytes. Without this, the document/file
+    # path on every adapter that reaches here can persist an unbounded
+    # attacker-supplied payload to the host document cache.
+    validate_inbound_media_size(len(data), media_type="document")
     cache_dir = get_document_cache_dir()
     # Sanitize: strip directory components, null bytes, and control characters
     safe_name = Path(filename).name if filename else "document"

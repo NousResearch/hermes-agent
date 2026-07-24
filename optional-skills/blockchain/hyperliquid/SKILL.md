@@ -16,9 +16,9 @@ metadata:
 Query Hyperliquid market and account data through the public `/info` endpoint.
 Read-only — no API key, no signing, no order placement.
 
-12 commands: `dexs`, `markets`, `spots`, `candles`, `funding`, `l2`, `state`,
-`spot-balances`, `fills`, `orders`, `review`, `export`. Stdlib only
-(`urllib`, `json`, `argparse`).
+13 commands: `dexs`, `markets`, `spots`, `candles`, `funding`, `l2`, `state`,
+`spot-balances`, `delegations`, `fills`, `orders`, `review`, `export`. Stdlib
+only (`urllib`, `json`, `argparse`).
 
 ---
 
@@ -73,14 +73,16 @@ hyperliquid_client.py funding <coin> [--hours 72] [--limit N]
 hyperliquid_client.py l2 <coin> [--levels N]
 hyperliquid_client.py state [address] [--dex DEX]
 hyperliquid_client.py spot-balances [address] [--limit N]
+hyperliquid_client.py delegations [address]
 hyperliquid_client.py fills [address] [--hours N] [--limit N] [--aggregate-by-time]
 hyperliquid_client.py orders [address] [--limit N]
 hyperliquid_client.py review [address] [--coin COIN] [--hours N] [--fills N]
 hyperliquid_client.py export <coin> [--interval 1h] [--hours N] [--output PATH]
 ```
 
-For `state`, `spot-balances`, `fills`, `orders`, and `review`, the address is
-optional when `HYPERLIQUID_USER_ADDRESS` is set in `${HERMES_HOME:-~/.hermes}/.env`.
+For `state`, `spot-balances`, `delegations`, `fills`, `orders`, and `review`,
+the address is optional when `HYPERLIQUID_USER_ADDRESS` is set in
+`${HERMES_HOME:-~/.hermes}/.env`.
 
 ---
 
@@ -133,11 +135,24 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 
 python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   spot-balances
+
+python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+  delegations
 ```
 
 `state` returns perp positions; `spot-balances` returns spot inventory.
 Use these for "how are my positions?", "what am I holding?", "how much is
 withdrawable?".
+
+Staked HYPE lives in a **separate staking account** and does not appear in
+`spot-balances` at all — not as `total`, not as `hold`. `spotClearinghouseState`
+only returns the spot account; its `hold` is spot HYPE locked at the spot level
+(e.g. open orders), which is unrelated to staking and does not equal the staked
+amount. Use `delegations` (the `delegatorSummary` endpoint) for the staking
+picture: `delegated` is current staked HYPE *including auto-compounded rewards*,
+`undelegated` is staked-account HYPE not yet delegated, and pending withdrawal
+reflects the 7-day unstaking queue. Reach for it on "how much HYPE am I
+staking?" / "what are my staking rewards?".
 
 ### 5. Review Fills and Orders
 
@@ -198,6 +213,12 @@ normalized candle rows, normalized funding rows, summary stats. Use
 - Spot aliases like `@107` are valid identifiers even when the UI shows
   a friendlier name.
 - `l2` is a point-in-time snapshot, not a time series.
+- Staked HYPE does not appear in `spot-balances` at all — it lives in a
+  separate staking account. The spot `hold` is unrelated to staking (it's spot
+  HYPE locked in open orders). Use `delegations` for staked totals.
+- `delegations` reports two distinct timers, do not conflate them: per-validator
+  undelegation has a 1-day lockup; the staking-to-spot withdrawal
+  (`Pending withdrawal`) has a separate 7-day unstaking queue.
 
 ---
 

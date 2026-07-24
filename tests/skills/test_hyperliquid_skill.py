@@ -326,6 +326,81 @@ def test_main_export_json_writes_expected_contract(tmp_path, capsys):
     assert len(saved["funding_history"]) == 2
 
 
+def test_normalize_delegator_summary_maps_camelcase_fields():
+    mod = load_module()
+
+    result = mod._normalize_delegator_summary(
+        {
+            "delegated": "423.32",
+            "undelegated": "1.5",
+            "totalPendingWithdrawal": "10",
+            "nPendingWithdrawals": 2,
+        }
+    )
+
+    assert result == {
+        "delegated": "423.32",
+        "undelegated": "1.5",
+        "total_pending_withdrawal": "10",
+        "n_pending_withdrawals": 2,
+    }
+
+
+def test_normalize_delegator_summary_defaults_for_non_dict():
+    mod = load_module()
+
+    assert mod._normalize_delegator_summary(None) == {
+        "delegated": "0",
+        "undelegated": "0",
+        "total_pending_withdrawal": "0",
+        "n_pending_withdrawals": 0,
+    }
+
+
+def test_main_delegations_json_surfaces_staked_hype(monkeypatch, capsys):
+    mod = load_module()
+    monkeypatch.setenv("HYPERLIQUID_USER_ADDRESS", "0xstaker")
+
+    summary = {
+        "delegated": "423.32",
+        "undelegated": "0.0",
+        "totalPendingWithdrawal": "0.0",
+        "nPendingWithdrawals": 0,
+    }
+
+    with patch.object(mod, "_post_info", return_value=summary) as mock_post:
+        exit_code = mod.main(["delegations", "--json"])
+
+    stdout = capsys.readouterr().out
+    rendered = json.loads(stdout)
+
+    assert exit_code == 0
+    assert mock_post.call_args[0][0] == {"type": "delegatorSummary", "user": "0xstaker"}
+    assert rendered["user"] == "0xstaker"
+    assert rendered["delegated"] == "423.32"
+    assert rendered["n_pending_withdrawals"] == 0
+
+
+def test_main_delegations_default_render_includes_staked(capsys):
+    mod = load_module()
+
+    summary = {
+        "delegated": "423.32",
+        "undelegated": "0",
+        "totalPendingWithdrawal": "0",
+        "nPendingWithdrawals": 0,
+    }
+
+    with patch.object(mod, "_post_info", return_value=summary):
+        exit_code = mod.main(["delegations", "0xabc"])
+
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Delegated (staked):" in stdout
+    assert "423.32" in stdout
+
+
 def test_main_export_json_skips_funding_for_spot(tmp_path, capsys):
     mod = load_module()
     output_path = tmp_path / "purr-usdc.json"

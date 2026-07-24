@@ -96,8 +96,15 @@ test.describe('session compression in progress', () => {
   test.beforeAll(async () => {
     fixture = await setupMockBackend({
       modelContextLength: 64_000,
+      // The trigger margin must not depend on system-prompt size: the prompt
+      // includes the bundled-skills listing, which grows/shrinks as skills are
+      // added or moved to optional-skills. A 22000 threshold with a ~4k-token
+      // trigger message left ~200 tokens of margin and broke when a skills
+      // restructure shrank the prompt (total 21.8k < 22k → compaction never
+      // fired, waitForHeldCompletion timed out). The ~16k-token trigger below
+      // plus this threshold keeps >8k tokens of margin on both sides.
       extraConfig: `compression:
-  threshold_tokens: 22000
+  threshold_tokens: 26000
   protect_first_n: 0
   protect_last_n: 1
 auxiliary:
@@ -126,7 +133,9 @@ auxiliary:
     await waitForTranscript(page, MOCK_REPLY)
     await pasteAndSend(page, 'E2E_COMPACTION_HISTORY_TWO '.repeat(5))
     await waitForTranscript(page, MOCK_REPLY)
-    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(500))
+    // 2000 repeats ≈ 16k tokens — large enough to cross the 26000 threshold
+    // on its own margin, independent of how big the system prompt happens to be.
+    await pasteAndSend(page, 'E2E_TRIGGER_AUTOMATIC_COMPACTION '.repeat(2000))
     await fixture.mock.waitForHeldCompletion()
     await expect(page.getByRole('status', { name: 'Summarizing thread' }).last()).toBeVisible()
 

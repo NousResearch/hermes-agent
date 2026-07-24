@@ -204,6 +204,55 @@ def register(ctx):
 
 Only one engine can be registered. A second plugin attempting to register is rejected with a warning.
 
+## Installing a third-party context engine
+
+If a third-party README tells you to set `context.engine: my-engine`, you must install that engine into one of Hermes' discovery locations first. Otherwise Hermes will keep falling back to the built-in `compressor`.
+
+### Directory-style engines
+
+Some projects ship the same layout as Hermes' built-in engines. Clone or copy those files into `$HERMES_HOME/hermes-agent/plugins/context_engine/<name>/`.
+
+- Default profile: `$HERMES_HOME` is `~/.hermes`
+- Named profile: `$HERMES_HOME` is `~/.hermes/profiles/<profile-name>`
+
+Example:
+
+```bash
+git clone https://github.com/example/my-engine \
+  ~/.hermes/hermes-agent/plugins/context_engine/my-engine
+```
+
+Profile-specific example:
+
+```bash
+git clone https://github.com/example/my-engine \
+  ~/.hermes/profiles/myprofile/hermes-agent/plugins/context_engine/my-engine
+```
+
+After installing, restart Hermes and select the engine via `hermes plugins` → Provider Plugins → Context Engine, or set it directly in `config.yaml`:
+
+```yaml
+context:
+  engine: "my-engine"
+```
+
+### General-plugin engines
+
+Other projects ship a normal Hermes plugin that calls `ctx.register_context_engine(...)` from its `register()` function. Install those into `$HERMES_HOME/plugins/<name>/` or use `hermes plugins install owner/repo`.
+
+Example:
+
+```bash
+hermes plugins install example/my-engine
+```
+
+Then set the engine name in `config.yaml`:
+
+```yaml
+context:
+  engine: "my-engine"
+```
+
 ## Lifecycle
 
 ```

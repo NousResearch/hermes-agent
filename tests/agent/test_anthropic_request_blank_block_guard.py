@@ -71,6 +71,22 @@ def test_blank_system_block_is_coerced():
     _assert_no_blank(system, result)
 
 
+def test_prepended_leading_user_turn_is_not_blank():
+    """The root cause: _ensure_leading_user_turn prepends a placeholder turn when
+    messages[0] is not a user turn (post-compaction histories start with an
+    assistant summary). That placeholder must be NON-whitespace — a bare " "
+    is itself a blank text block and 400s the whole request, wedging every turn.
+    Bedrock's equivalent already uses the shared placeholder.
+    """
+    messages = [
+        {"role": "assistant", "content": "summary of earlier turns"},
+        {"role": "user", "content": "continue"},
+    ]
+    system, result = convert_messages_to_anthropic(messages)
+    assert result[0]["role"] == "user", "a leading user turn must be prepended"
+    _assert_no_blank(system, result)
+
+
 def test_real_text_is_left_untouched():
     # A real, non-blank turn keeps its text verbatim and is never replaced by
     # the placeholder (the guard only touches blank blocks).

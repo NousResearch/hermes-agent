@@ -2459,9 +2459,17 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     Mirror the Bedrock Converse adapter, which unconditionally prepends a
     minimal user turn when the first message is not user
     (convert_messages_to_converse).
+
+    The placeholder text must be NON-whitespace. A bare " " here is itself a
+    blank text block, which Anthropic rejects with HTTP 400 "text content
+    blocks must contain non-whitespace text" — so the guard for #52160 would
+    trip the very error class it sits next to, wedging every request for a
+    history whose first message is not a user turn (e.g. after compaction
+    emits an assistant summary first). Bedrock already uses the shared
+    placeholder here; match it.
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]})
 
 
 def convert_messages_to_anthropic(

@@ -1394,7 +1394,14 @@ class TestConvertMessages:
 
         assert system == "You are helpful."
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Invariant, not a frozen literal: the prepended turn is a single text
+        # block whose text is NON-whitespace. Anthropic rejects blank text
+        # blocks ("text content blocks must contain non-whitespace text"), so a
+        # whitespace placeholder here would 400 the very request this guard is
+        # meant to make valid.
+        assert len(result[0]["content"]) == 1
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"].strip()
         assert result[1]["role"] == "assistant"
         assert any(
             m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
@@ -1418,7 +1425,11 @@ class TestConvertMessages:
 
         assert system is None
         assert result[0]["role"] == "user"
-        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        # Invariant: the prepended placeholder text must be non-whitespace (see
+        # the sibling test above) — a blank text block 400s the whole request.
+        assert len(result[0]["content"]) == 1
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["content"][0]["text"].strip()
         assert result[1]["role"] == "assistant"
         assert "Context compaction summary" in str(result[1]["content"])
 

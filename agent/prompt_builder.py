@@ -1688,6 +1688,27 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # ── Plugin-registered skills ───────────────────────────────────────
+    # Fold in skills registered by plugins (ctx.register_skill →
+    # 'plugin:skill'). Grouped under the plugin name as their category; the
+    # qualified name is shown so skill_view(name) resolves directly. Gated by
+    # tools.skills_tool.INDEX_PLUGIN_SKILLS (one-line kill switch).
+    try:
+        from tools.skills_tool import _plugin_skill_entries
+
+        for entry in _plugin_skill_entries():
+            pname = entry["name"]
+            if pname in seen_skill_names:
+                continue
+            if pname in disabled:
+                continue
+            seen_skill_names.add(pname)
+            skills_by_category.setdefault(entry["category"], []).append(
+                (pname, entry["description"])
+            )
+    except Exception as e:
+        logger.debug("Could not fold plugin skills into index: %s", e)
+
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only
     # line — descriptions are dropped to cut noise, but every skill name

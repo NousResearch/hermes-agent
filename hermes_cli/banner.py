@@ -97,8 +97,13 @@ def get_available_skills() -> Dict[str, List[str]]:
     user's ``skills.disabled`` config list.
     """
     try:
-        from tools.skills_tool import _find_all_skills
+        from tools.skills_tool import _find_all_skills, _plugin_skill_entries
         all_skills = _find_all_skills()  # already filtered
+        existing = {s["name"] for s in all_skills}
+        for entry in _plugin_skill_entries():
+            if entry["name"] not in existing:
+                all_skills.append(entry)
+                existing.add(entry["name"])
     except Exception:
         return {}
 

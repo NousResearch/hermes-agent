@@ -777,6 +777,68 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     return [dict(s) for s in skills]
 
 
+# When True, plugin-registered skills (ctx.register_skill → 'plugin:skill')
+# are folded into the flat skill index: the skills_list tool, the banner, and
+# the always-on system-prompt <available_skills> block. Set to False to hide
+# them from the system-prompt index again (they always stay loadable via
+# skill_view("plugin:skill") regardless). One-line kill switch by design.
+INDEX_PLUGIN_SKILLS = True
+
+
+def _plugin_skill_entries() -> List[Dict[str, Any]]:
+    """Return plugin-registered skills as flat index entries.
+
+    Each entry uses the qualified ``plugin:skill`` name (so ``skill_view(name)``
+    resolves it directly) and the plugin name as its category. Skills belonging
+    to disabled plugins are skipped. Descriptions come from the register_skill
+    call, falling back to the skill's own frontmatter. Returns ``[]`` when
+    ``INDEX_PLUGIN_SKILLS`` is False or the plugin manager is unavailable.
+    """
+    if not INDEX_PLUGIN_SKILLS:
+        return []
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+
+        pm = get_plugin_manager()
+        disabled_plugins = _get_disabled_plugins()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("Plugin skill enumeration unavailable: %s", e)
+        return []
+
+    entries: List[Dict[str, Any]] = []
+    for qualified, meta in getattr(pm, "_plugin_skills", {}).items():
+        try:
+            plugin = meta.get("plugin", "")
+            if plugin and plugin in disabled_plugins:
+                continue
+            description = meta.get("description", "") or ""
+            if not description:
+                # Fall back to the skill's frontmatter description.
+                try:
+                    content = Path(meta["path"]).read_text(encoding="utf-8")[:4000]
+                    frontmatter, body = _parse_frontmatter(content)
+                    description = frontmatter.get("description", "")
+                    if not description:
+                        for line in body.strip().split("\n"):
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                description = line
+                                break
+                except Exception:
+                    description = ""
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+            entries.append({
+                "name": qualified,
+                "description": description,
+                "category": plugin or "plugins",
+            })
+        except Exception as e:  # pragma: no cover - defensive per-entry guard
+            logger.debug("Skipping plugin skill %s: %s", qualified, e)
+            continue
+    return entries
+
+
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
@@ -812,6 +874,13 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
         # Find all skills
         all_skills = _find_all_skills()
+
+        # Fold in plugin-registered skills (namespaced 'plugin:skill').
+        existing = {s["name"] for s in all_skills}
+        for entry in _plugin_skill_entries():
+            if entry["name"] not in existing:
+                all_skills.append(entry)
+                existing.add(entry["name"])
 
         if not all_skills:
             return json.dumps(

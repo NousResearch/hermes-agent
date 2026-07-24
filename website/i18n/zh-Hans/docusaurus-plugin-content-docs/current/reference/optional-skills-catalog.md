@@ -202,6 +202,12 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**page-agent**](/user-guide/skills/optional/web-development/web-development-page-agent) | 将 alibaba/page-agent 嵌入您自己的 Web 应用 — 一个纯 JavaScript 页内 GUI agent，以单个 `<script>` 标签或 npm 包形式提供，让您网站的终端用户可以用自然语言驱动 UI（如"点击登录，填写用户名..."）。 |
 
+## yuanbao
+
+| 技能 | 描述 |
+|-------|-------------|
+| [**yuanbao**](/user-guide/skills/optional/yuanbao/yuanbao-yuanbao) | 元宝（Yuanbao）群组：@提及用户、查询信息/成员。 |
+
 ---
 
 ## 贡献可选技能

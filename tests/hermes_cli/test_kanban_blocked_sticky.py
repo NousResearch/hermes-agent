@@ -272,6 +272,133 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Creation-time blocked tasks must be atomically sticky
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_sticky_and_emits_block_event(
+    kanban_home: Path,
+) -> None:
+    """``initial_status='blocked'`` is an operator hold, not a transient
+    circuit-breaker state.  It must be sticky from the creation transaction
+    and must expose both the initial task state and the sticky-block marker in
+    event history."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="awaiting authorization",
+            assignee="default",
+            initial_status="blocked",
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        events = kb.list_events(conn, tid)
+        assert [event.kind for event in events] == ["created", "blocked"]
+        assert events[0].payload is not None
+        assert events[0].payload["status"] == "blocked"
+        assert events[1].payload == {
+            "reason": None,
+            "kind": None,
+            "recurrences": 0,
+            "source": "initial_status",
+        }
+
+        for _ in range(5):
+            assert kb.recompute_ready(conn) == 0
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "blocked"
+        assert kb.claim_task(conn, tid) is None
+
+
+def test_initial_block_event_failure_rolls_back_entire_creation(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The initial ``blocked`` marker is part of the same transaction as the
+    task row.  A marker-write failure must never leave a blocked row without
+    sticky history."""
+    original = kb._append_event
+
+    def fail_initial_block(conn, task_id, kind, payload=None, *, run_id=None):
+        if kind == "blocked":
+            raise RuntimeError("injected blocked-event failure")
+        return original(conn, task_id, kind, payload, run_id=run_id)
+
+    monkeypatch.setattr(kb, "_append_event", fail_initial_block)
+    with kb.connect() as conn:
+        with pytest.raises(RuntimeError, match="injected blocked-event failure"):
+            kb.create_task(conn, title="must roll back", initial_status="blocked")
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 0
+
+
+def test_existing_initial_block_can_be_annotated_without_synthetic_run(
+    kanban_home: Path,
+) -> None:
+    """An authorization workflow creates the task blocked, then binds the
+    canonical digest as its reason.  Annotating that same hold must succeed
+    without pretending a worker ran or incrementing the unblock-loop count."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="authorization", initial_status="blocked")
+
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="standards-owner-authorization-hold:abc123",
+            kind="needs_input",
+        )
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="standards-owner-authorization-hold:abc123",
+            kind="needs_input",
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        assert task.block_recurrences == 1
+        events = kb.list_events(conn, tid)
+        assert [event.kind for event in events] == ["created", "blocked", "blocked", "blocked"]
+        assert events[-1].payload == {
+            "reason": "standards-owner-authorization-hold:abc123",
+            "kind": "needs_input",
+            "recurrences": 1,
+            "source": "existing_block_annotation",
+        }
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (tid,)
+        ).fetchone()[0] == 0
+        assert kb.recompute_ready(conn) == 0
+
+
+def test_explicit_unblock_releases_initial_sticky_block(kanban_home: Path) -> None:
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        kb.complete_task(conn, parent, summary="done")
+        child = kb.create_task(
+            conn,
+            title="child",
+            parents=[parent],
+            initial_status="blocked",
+        )
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+        assert kb.unblock_task(conn, child)
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "ready"
+        assert kb.list_events(conn, child)[-1].kind == "unblocked"
+
+
+# ---------------------------------------------------------------------------
 # Schema-init recovery on legacy DBs is covered by
 # tests/hermes_cli/test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes
 # (landed via #28754 / #28781).  The original PR shipped a duplicate test

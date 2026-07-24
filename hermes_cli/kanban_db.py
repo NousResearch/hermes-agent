@@ -3141,6 +3141,25 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    # ``initial_status='blocked'`` is an explicit operator
+                    # hold, not a transient circuit-breaker state.  Record the
+                    # sticky marker in the same transaction as the task row so
+                    # no dispatcher tick can observe a blocked task without
+                    # the event that keeps ``recompute_ready`` from promoting
+                    # it.  An event-write failure rolls the whole creation
+                    # back rather than leaving an ambiguous blocked row.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": None,
+                            "kind": None,
+                            "recurrences": 0,
+                            "source": "initial_status",
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5417,6 +5436,54 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+
+    # Creation-time holds are already blocked before a worker can claim them.
+    # Let an operator bind a durable reason/kind to that same hold without
+    # manufacturing a worker run or treating the annotation as a
+    # block→unblock→re-block recurrence.  A dependency block is a routing
+    # request (to ``todo``), not an annotation, and an expected run id cannot
+    # match a never-claimed creation-time hold.
+    existing = conn.execute(
+        "SELECT status, block_recurrences FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if existing is not None and existing["status"] == "blocked":
+        if kind == "dependency" or expected_run_id is not None:
+            return False
+        recurrences = max(int(existing["block_recurrences"] or 0), 1)
+        with write_txn(conn):
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET block_kind = ?, block_recurrences = ?
+                 WHERE id = ? AND status = 'blocked' AND current_run_id IS NULL
+                """,
+                (kind, recurrences, task_id),
+            )
+            if cur.rowcount != 1:
+                return False
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "recurrences": recurrences,
+                    "source": "existing_block_annotation",
+                },
+            )
+            blocked_task = get_task(conn, task_id)
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_blocked",
+            task_id,
+            board=get_current_board(),
+            assignee=blocked_task.assignee if blocked_task else None,
+            run_id=None,
+            reason=reason,
+        )
+        return True
+
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):

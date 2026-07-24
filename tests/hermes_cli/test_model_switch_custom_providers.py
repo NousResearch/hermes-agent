@@ -193,6 +193,44 @@ def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monk
     assert bare_custom["models"] == ["gpt-4o", "gpt-4o-mini"]
 
 
+def test_active_bare_custom_probe_uses_catalog_auth_and_headers(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    calls = []
+
+    def _fetch(api_key, api_url, **kwargs):
+        calls.append((api_key, api_url, kwargs))
+        return ["cline/model-a"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url="https://api.cline.bot/api/v1",
+        current_model="old-model",
+        current_api_key="cline-key",
+        current_model_list_endpoint="/ai/cline/recommended-models",
+        current_extra_headers={"X-Tenant-Secret": "secret"},
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+    )
+
+    assert calls == [
+        (
+            "cline-key",
+            "https://api.cline.bot/api/v1",
+            {
+                "model_list_endpoint": "/ai/cline/recommended-models",
+                "headers": {"X-Tenant-Secret": "secret"},
+            },
+        )
+    ]
+    bare_custom = next(p for p in providers if p["slug"] == "custom")
+    assert bare_custom["models"] == ["old-model", "cline/model-a"]
+
+
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
     """Picker selections for bare custom endpoints should route to current base_url."""
     monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
@@ -1564,6 +1602,52 @@ def test_save_discovered_models_preserves_list_of_dicts_form(monkeypatch):
     assert save_calls == [], (
         "List-of-dicts models must not be replaced with a flat list"
     )
+
+
+def test_grouping_keeps_catalog_endpoint_and_display_prefix_dimensions(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Alpha — Model A",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "proxy-key",
+                "model": "model-a",
+                "model_list_endpoint": "/catalog-a",
+                "discover_models": False,
+            },
+            {
+                "name": "Alpha — Model B",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "proxy-key",
+                "model": "model-b",
+                "model_list_endpoint": "/catalog-b",
+                "discover_models": False,
+            },
+            {
+                "name": "Beta",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "proxy-key",
+                "model": "model-c",
+                "model_list_endpoint": "/catalog-a",
+                "discover_models": False,
+            },
+        ],
+        max_models=50,
+    )
+
+    custom = [p for p in providers if p.get("is_user_defined")]
+    assert len(custom) == 3
+    assert {tuple(p["models"]) for p in custom} == {
+        ("model-a",),
+        ("model-b",),
+        ("model-c",),
+    }
 
 
 def test_shared_url_different_display_names_are_separate_rows(monkeypatch):

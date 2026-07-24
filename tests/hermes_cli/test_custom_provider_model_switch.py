@@ -141,6 +141,59 @@ class TestCustomProviderModelSwitch:
             timeout=8.0,
         )
 
+    def test_catalog_endpoint_headers_and_identity_are_preserved(self, config_home):
+        """Catalog path and headers must survive the classic CLI flow.
+
+        Two catalogs may share one inference base URL, so saving a selection
+        must update only the entry whose catalog endpoint was selected.
+        """
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "custom_providers:\n"
+            "- name: Cline Recommended\n"
+            "  base_url: https://api.cline.bot/api/v1\n"
+            "  model_list_endpoint: /ai/cline/recommended-models\n"
+            "  model: recommended-old\n"
+            "- name: Cline PAYG\n"
+            "  base_url: https://api.cline.bot/api/v1\n"
+            "  model_list_endpoint: /ai/cline/models\n"
+            "  model: payg-old\n",
+            encoding="utf-8",
+        )
+        provider_info = {
+            "name": "Cline PAYG",
+            "base_url": "https://api.cline.bot/api/v1",
+            "api_key": "cline-key",
+            "model": "payg-old",
+            "model_list_endpoint": "/ai/cline/models",
+            "extra_headers": {"X-Tenant-Secret": "secret"},
+        }
+
+        with patch(
+            "hermes_cli.models.fetch_api_models", return_value=["payg-new"]
+        ) as mock_fetch, patch(
+            "hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError
+        ), patch("builtins.input", return_value="2"), patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_called_once_with(
+            "cline-key",
+            "https://api.cline.bot/api/v1",
+            timeout=8.0,
+            model_list_endpoint="/ai/cline/models",
+            headers={"X-Tenant-Secret": "secret"},
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        assert config["model"]["model_list_endpoint"] == "/ai/cline/models"
+        entries = {entry["name"]: entry for entry in config["custom_providers"]}
+        assert entries["Cline Recommended"]["model"] == "recommended-old"
+        assert entries["Cline PAYG"]["model"] == "payg-new"
+
     def test_can_switch_to_different_model(self, config_home):
         """User selects a different model than the saved one."""
         import yaml

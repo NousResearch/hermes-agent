@@ -42,12 +42,12 @@ class _RecordingHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self):
+        self._record()
         if self.path.startswith("/redirect"):
             self.send_response(type(self).redirect_status)
             self.send_header("Location", type(self).redirect_to)
             self.end_headers()
             return
-        self._record()
         body = json.dumps({"data": []}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -429,6 +429,44 @@ def test_probe_api_models_drops_custom_credentials_on_wire():
         sink.shutdown()
 
     assert result["models"] == []
+    _, source_headers = _RecordingHandler.requests[0]
+    assert source_headers["authorization"] == "Bearer provider-key"
+    assert source_headers["cf-access-client-secret"] == "cloudflare-secret"
+    assert source_headers["x-custom-auth"] == "tenant-secret"
+    _, headers = _RecordingHandler.requests[-1]
+    assert "authorization" not in headers
+    assert "cf-access-client-secret" not in headers
+    assert "x-custom-auth" not in headers
+
+
+def test_probe_custom_model_endpoint_drops_custom_credentials_on_redirect():
+    from hermes_cli.models import probe_api_models
+
+    source = _server()
+    sink = _server()
+    _RecordingHandler.requests = []
+    _RecordingHandler.redirect_status = 302
+    _RecordingHandler.redirect_to = f"http://localhost:{sink.server_port}/sink"
+    try:
+        result = probe_api_models(
+            "provider-key",
+            f"http://127.0.0.1:{source.server_port}",
+            timeout=3,
+            request_headers={
+                "CF-Access-Client-Secret": "cloudflare-secret",
+                "X-Custom-Auth": "tenant-secret",
+            },
+            model_list_endpoint="/redirect",
+        )
+    finally:
+        source.shutdown()
+        sink.shutdown()
+
+    assert result["models"] == []
+    _, source_headers = _RecordingHandler.requests[0]
+    assert source_headers["authorization"] == "Bearer provider-key"
+    assert source_headers["cf-access-client-secret"] == "cloudflare-secret"
+    assert source_headers["x-custom-auth"] == "tenant-secret"
     _, headers = _RecordingHandler.requests[-1]
     assert "authorization" not in headers
     assert "cf-access-client-secret" not in headers

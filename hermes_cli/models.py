@@ -2023,6 +2023,15 @@ def _get_custom_base_url() -> str:
     return str(model_cfg.get("base_url", "")).strip()
 
 
+def _get_custom_model_list_endpoint() -> Optional[str]:
+    """Return the custom model-list endpoint from config.yaml if it is a relative path."""
+    model_cfg = _get_model_config_dict()
+    endpoint = str(model_cfg.get("model_list_endpoint", "") or "").strip()
+    if endpoint and endpoint.startswith("/"):
+        return endpoint
+    return None
+
+
 def _get_model_config_dict() -> dict[str, Any]:
     """Return the main model config mapping, or an empty dict."""
     try:
@@ -2726,7 +2735,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
-            live = fetch_api_models(api_key, base_url, api_mode=api_mode)
+            custom_model_list_endpoint = _get_custom_model_list_endpoint()
+            fetch_kwargs: dict[str, Any] = {"api_mode": api_mode}
+            if custom_model_list_endpoint:
+                fetch_kwargs["model_list_endpoint"] = custom_model_list_endpoint
+            from hermes_cli.config import normalize_extra_headers
+
+            custom_headers = normalize_extra_headers(model_cfg.get("extra_headers"))
+            if custom_headers:
+                fetch_kwargs["headers"] = custom_headers
+            live = fetch_api_models(api_key, base_url, **fetch_kwargs)
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
@@ -3868,6 +3886,7 @@ def probe_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     request_headers: Optional[dict[str, str]] = None,
+    model_list_endpoint: Optional[str] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
@@ -3896,16 +3915,28 @@ def probe_api_models(
             "used_fallback": False,
         }
 
-    if normalized.endswith("/v1"):
-        alternate_base = normalized[:-3].rstrip("/")
+    # A custom endpoint is an alternate catalog location, not an alternate
+    # transport. Keep it in the common request path so authentication and
+    # configured headers always use the credential-safe redirect policy.
+    custom_endpoint = str(model_list_endpoint or "").strip()
+    use_custom_endpoint = custom_endpoint.startswith("/")
+    alternate_base: Optional[str]
+    candidates: list[tuple[str, str, bool]]
+    if use_custom_endpoint:
+        alternate_base = None
+        candidates = [(normalized + custom_endpoint, normalized, False)]
     else:
-        alternate_base = normalized + "/v1"
+        if normalized.endswith("/v1"):
+            alternate_base = normalized[:-3].rstrip("/")
+        else:
+            alternate_base = normalized + "/v1"
 
-    candidates: list[tuple[str, bool]] = [(normalized, False)]
-    if alternate_base and alternate_base != normalized:
-        candidates.append((alternate_base, True))
+        candidates = [(normalized.rstrip("/") + "/models", normalized, False)]
+        if alternate_base and alternate_base != normalized:
+            candidates.append(
+                (alternate_base.rstrip("/") + "/models", alternate_base, True)
+            )
 
-    tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if urllib.parse.urlparse(normalized).hostname == "generativelanguage.googleapis.com":
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_HERMES_VERSION}"
@@ -3923,18 +3954,42 @@ def probe_api_models(
 
         headers.update(normalize_extra_headers(request_headers))
 
-    for candidate_base, is_fallback in candidates:
-        url = candidate_base.rstrip("/") + "/models"
-        tried.append(url)
+    for url, candidate_base, is_fallback in candidates:
         req = urllib.request.Request(url, headers=headers)
         try:
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
+                raw_models = data.get("data") if isinstance(data, dict) else None
+                if use_custom_endpoint and not isinstance(raw_models, list):
+                    raw_models = (
+                        [
+                            item
+                            for value in data.values()
+                            if isinstance(value, list)
+                            for item in value
+                        ]
+                        if isinstance(data, dict)
+                        else []
+                    )
+                if not isinstance(raw_models, list):
+                    raw_models = []
+                models = [
+                    item.get("id", "")
+                    for item in raw_models
+                    if isinstance(item, dict)
+                ]
+                if use_custom_endpoint:
+                    models = [model_id for model_id in models if model_id]
+                suggested_base_url = (
+                    None
+                    if use_custom_endpoint
+                    else alternate_base if alternate_base != candidate_base else normalized
+                )
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": models,
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
-                    "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
+                    "suggested_base_url": suggested_base_url,
                     "used_fallback": is_fallback,
                 }
         except Exception:
@@ -3942,9 +3997,13 @@ def probe_api_models(
 
     return {
         "models": None,
-        "probed_url": tried[0] if tried else normalized.rstrip("/") + "/models",
+        "probed_url": candidates[0][0],
         "resolved_base_url": normalized,
-        "suggested_base_url": alternate_base if alternate_base != normalized else None,
+        "suggested_base_url": (
+            None
+            if use_custom_endpoint
+            else alternate_base if alternate_base != normalized else None
+        ),
         "used_fallback": False,
     }
 
@@ -4176,6 +4235,7 @@ def fetch_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
+    model_list_endpoint: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
@@ -4188,6 +4248,7 @@ def fetch_api_models(
         timeout=timeout,
         api_mode=api_mode,
         request_headers=headers,
+        model_list_endpoint=model_list_endpoint,
     ).get("models")
 
 

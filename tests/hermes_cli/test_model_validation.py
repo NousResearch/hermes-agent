@@ -972,3 +972,59 @@ class TestProbeApiModelsUserAgent:
 
         req = mock_urlopen.call_args[0][0]
         assert req.get_header("X-goog-api-client") is None
+
+
+class TestProbeApiModelsCustomEndpoint:
+    def _make_mock_response(self, body: bytes):
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read = MagicMock(return_value=body)
+        return mock_resp
+
+    def test_uses_custom_endpoint_and_parses_openai_response(self):
+        body = b'{"data":[{"id":"cline-pass/kimi-k2.7-code"}]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            result = probe_api_models(
+                "cline-key",
+                "https://api.cline.bot/api/v1",
+                model_list_endpoint="/ai/cline/recommended-models",
+            )
+
+        request = mock_urlopen.call_args[0][0]
+        assert request.full_url == (
+            "https://api.cline.bot/api/v1/ai/cline/recommended-models"
+        )
+        assert result == {
+            "models": ["cline-pass/kimi-k2.7-code"],
+            "probed_url": request.full_url,
+            "resolved_base_url": "https://api.cline.bot/api/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    def test_parses_grouped_custom_endpoint_response(self):
+        body = (
+            b'{"recommended":[{"id":"cline-pass/kimi-k2.7-code"}],'
+            b'"free":[{"id":"free/qwen3-coder"}],'
+            b'"clinePass":[{"id":"anthropic/claude-sonnet-4.5"}],'
+            b'"metadata":{"source":"cline"}}'
+        )
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ):
+            result = probe_api_models(
+                "cline-key",
+                "https://api.cline.bot/api/v1",
+                model_list_endpoint="/ai/cline/models",
+            )
+
+        assert result["models"] == [
+            "cline-pass/kimi-k2.7-code",
+            "free/qwen3-coder",
+            "anthropic/claude-sonnet-4.5",
+        ]

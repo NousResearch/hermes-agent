@@ -863,7 +863,20 @@ def _rewrite_compound_background(command: str) -> str:
         suffix = result[amp_pos + 1 :]
         # `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
-        result = prefix + "{ " + middle + "& }" + suffix
+        #
+        # A brace group must also be *followed* by a separator before any
+        # further command on the same line: `A && B & C` would otherwise
+        # become `A && { B & } C`, which bash rejects with
+        # "syntax error near unexpected token". When a command directly
+        # follows the backgrounded job (`& C`), splice in a `;` so the
+        # rewrite stays valid. Tails that already begin with a separator
+        # — a newline-delimited next statement, or a `&&`/`||`/`|` chain —
+        # need nothing.
+        tail = suffix.lstrip(" \t")
+        if tail and tail[0] not in (";", "&", "|", "\n", ")"):
+            result = prefix + "{ " + middle + "& }; " + tail
+        else:
+            result = prefix + "{ " + middle + "& }" + suffix
 
     return result
 

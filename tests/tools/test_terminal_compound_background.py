@@ -66,6 +66,43 @@ class TestRewrites:
         assert rewrite(cmd) == "A && { B & }\nfalse || { C & }"
 
 
+class TestTrailingCommandStaysValid:
+    """A command following the backgrounded job on the SAME line must stay
+    syntactically valid: ``A && B & C`` rewritten to ``A && { B & } C`` is a
+    bash syntax error (a brace group needs a separator before the next
+    command). The rewrite must splice in a ``;``.
+    """
+
+    def test_trailing_command_same_line(self):
+        assert rewrite("A && B & C") == "A && { B & }; C"
+
+    def test_trailing_command_realistic(self):
+        cmd = "build && python app.py & echo started"
+        assert rewrite(cmd) == "build && { python app.py & }; echo started"
+
+    def test_trailing_command_no_space_after_amp(self):
+        assert rewrite("A && B &C") == "A && { B & }; C"
+
+    def test_rewritten_output_is_valid_bash(self):
+        # The actual defect: the pre-fix output failed `bash -n`.
+        import subprocess
+
+        for cmd in (
+            "echo a && sleep 100 & echo done",
+            "A && B & C",
+            "build && run & tail -f log",
+        ):
+            out = rewrite(cmd)
+            proc = subprocess.run(
+                ["bash", "-n", "-c", out], capture_output=True, text=True
+            )
+            assert proc.returncode == 0, f"{out!r} failed bash -n: {proc.stderr}"
+
+    def test_trailing_command_idempotent(self):
+        once = rewrite("A && B & C")
+        assert rewrite(once) == once
+
+
 class TestPreserved:
     """Commands that DON'T have the bug MUST pass through unchanged."""
 

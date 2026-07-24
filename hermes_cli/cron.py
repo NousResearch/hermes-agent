@@ -335,6 +335,8 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        session_mode=getattr(args, "session_mode", None),
+        target_session_id=getattr(args, "target_session_id", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -351,6 +353,10 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
+    if job_data.get("session_mode") and job_data.get("session_mode") != "fresh":
+        print(f"  Session mode: {job_data['session_mode']}")
+    if job_data.get("target_session_id"):
+        print(f"  Target session: {job_data['target_session_id']}")
     print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
@@ -398,6 +404,8 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
+        session_mode=getattr(args, "session_mode", None),
+        target_session_id=getattr(args, "target_session_id", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -417,6 +425,10 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    if updated.get("session_mode") and updated.get("session_mode") != "fresh":
+        print(f"  Session mode: {updated['session_mode']}")
+    if updated.get("target_session_id"):
+        print(f"  Target session: {updated['target_session_id']}")
     return 0
 
 

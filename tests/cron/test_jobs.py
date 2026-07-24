@@ -341,6 +341,26 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_session_mode_fields_round_trip(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Watch project state",
+            schedule="every 1h",
+            session_mode="continue",
+        )
+        assert job["session_mode"] == "reuse"
+        assert job["target_session_id"] is None
+
+        updated = update_job(job["id"], {"target_session_id": "main-session"})
+        assert updated["session_mode"] == "target"
+        assert updated["target_session_id"] == "main-session"
+
+        updated = update_job(
+            job["id"],
+            {"target_session_id": "", "session_mode": "fresh"},
+        )
+        assert updated["session_mode"] == "fresh"
+        assert updated["target_session_id"] is None
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):

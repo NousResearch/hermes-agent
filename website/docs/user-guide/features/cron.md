@@ -200,7 +200,9 @@ What they do:
 
 ## How it works
 
-**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.
+**Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds. By default, each due job runs in a fresh, isolated agent session.
+
+For jobs that need continuity, set `session_mode: reuse` to keep one cron-owned session per job, or set `target_session_id` to append each run to an existing session. A target session must belong to the same saved gateway origin (platform, chat, thread, and user) as the job; CLI/dashboard-created jobs may target only local UI sessions in the same profile. Concurrent cron jobs targeting one session are admitted one at a time so transcript turns stay ordered.
 
 ```bash
 hermes gateway install     # Install as a user service
@@ -471,7 +473,7 @@ See the [Script-Only Cron Jobs guide](/guides/cron-script-only) for worked examp
 
 ## Chaining jobs with `context_from`
 
-Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
+Fresh cron jobs run in isolated sessions with no memory of previous runs. For stateful runs, use `session_mode: reuse`; for a separate job's latest completed output, use `context_from`, which prepends Job A's output to Job B's prompt at runtime.
 
 ```python
 # Job 1: Collect raw data
@@ -606,7 +608,7 @@ For `update`, pass `skills=[]` to remove all attached skills.
 
 ## Toolsets available to cron jobs
 
-Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
+Cron runs each job without a live chat platform attached. Fresh mode starts a new agent session each tick, while reuse/target modes load an authorized prior transcript. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
 
 ```bash
 hermes tools
@@ -757,7 +759,7 @@ The storage uses atomic file writes so interrupted writes do not leave a partial
 ## Self-contained prompts still matter
 
 :::warning Important
-Cron jobs run in a completely fresh agent session. The prompt must contain everything the agent needs that is not already provided by attached skills.
+Fresh cron jobs run in a completely new agent session. The prompt must contain everything the agent needs that is not already provided by attached skills. Reuse and authorized target sessions retain their prior transcript, but a clear self-contained task still makes scheduled runs safer and more predictable.
 :::
 
 **BAD:** `"Check on that server issue"`

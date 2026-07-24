@@ -183,4 +183,26 @@ describe('click-to-edit user message', () => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
   })
+
+  // A long previous prompt is capped at max-h-48 in the edit composer. Without
+  // an overflow rule the overflow is clipped with no way to scroll, hiding the
+  // tail of the prompt. The editor must scroll its own overflow (like the main
+  // composer's editor does).
+  it('keeps the edit composer editor scrollable when the prompt overflows the cap', async () => {
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    const bubble = await screen.findByRole('button', { name: 'Edit message' })
+
+    fireEvent.click(bubble)
+
+    const editor = await waitFor(() => {
+      const node = container.querySelector('[contenteditable="true"]')
+      expect(node).toBeTruthy()
+
+      return node as HTMLElement
+    })
+
+    expect(editor.className).toContain('max-h-48')
+    expect(editor.className).toContain('overflow-y-auto')
+  })
 })

@@ -534,8 +534,11 @@ def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch,
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    local_ahead_count="0",
     ff_only_fails=False,
     reset_fails=False,
+    rebase_fails=False,
+    rebase_abort_fails=False,
     fetch_fails=False,
     fetch_stderr="",
 ):
@@ -553,6 +556,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-list" in joined and f"origin/{current_branch}..HEAD" in joined:
+            return SimpleNamespace(stdout=f"{local_ahead_count}\n", stderr="", returncode=0)
         if "rev-list" in joined:
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "--ff-only" in joined:
@@ -563,6 +568,14 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
+        if "rebase" in joined and "--abort" in joined:
+            if rebase_abort_fails:
+                return SimpleNamespace(stdout="", stderr="fatal: cannot abort\n", returncode=1)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase" in joined and f"origin/{current_branch}" in joined:
+            if rebase_fails:
+                return SimpleNamespace(stdout="", stderr="CONFLICT\n", returncode=1)
+            return SimpleNamespace(stdout="Successfully rebased\n", stderr="", returncode=0)
         if "reset" in joined and "--hard" in joined:
             if reset_fails:
                 return SimpleNamespace(stdout="", stderr="error: unable to write\n", returncode=1)
@@ -572,12 +585,14 @@ def _make_update_side_effect(
     return side_effect, recorded
 
 
-def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+def test_cmd_update_falls_back_to_reset_when_ff_only_fails_without_local_commits(
+    monkeypatch, tmp_path, capsys
+):
+    """When only upstream history changed, update may reset to origin/{branch}."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, local_ahead_count="0")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     hermes_main.cmd_update(SimpleNamespace())
@@ -588,6 +603,36 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
+
+
+def test_cmd_update_rebases_instead_of_resetting_when_local_commits_exist(
+    monkeypatch, tmp_path, capsys
+):
+    """Local-only commits must not be discarded by a diverged update."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_ahead_count="1",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    rebase_calls = [c for c in recorded if "rebase" in c and "origin/main" in c]
+    backup_branch_calls = [
+        c for c in recorded if c[:2] == ["git", "branch"] and "hermes-local-backup" in " ".join(c)
+    ]
+
+    assert reset_calls == []
+    assert rebase_calls == [["git", "rebase", "origin/main"]]
+    assert len(backup_branch_calls) == 1
+
+    out = capsys.readouterr().out
+    assert "local commit" in out
+    assert "rebasing local commits" in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
@@ -602,6 +647,116 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+def test_cmd_update_rebase_failure_preserves_local_commits_without_reset(
+    monkeypatch, tmp_path, capsys
+):
+    """When rebase fails with local commits, abort the rebase, preserve the backup
+    branch, never execute reset --hard, and exit with recoverable state.
+
+    Regression test for #44380: ensure the safe update recovery feature correctly
+    handles rebase conflicts by aborting gracefully and leaving local commits
+    accessible via the backup branch, rather than discarding them.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_ahead_count="2",
+        rebase_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Assert rebase --abort was executed
+    rebase_abort_calls = [c for c in recorded if "rebase" in c and "--abort" in c]
+    assert len(rebase_abort_calls) == 1
+    assert rebase_abort_calls[0] == ["git", "rebase", "--abort"]
+
+    # Assert no reset --hard was executed (local commits must not be discarded)
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert reset_calls == []
+
+    # Assert a backup branch was created with correct naming format
+    backup_branch_calls = [
+        c for c in recorded if c[:2] == ["git", "branch"] and "hermes-local-backup" in " ".join(c)
+    ]
+    assert len(backup_branch_calls) == 1
+    # Verify branch name starts with correct prefix (hermes-local-backup/main- for main branch)
+    assert backup_branch_calls[0][2].startswith("hermes-local-backup/main-")
+
+    # Verify user-facing output mentions backup branch preservation
+    out = capsys.readouterr().out
+    assert "Could not rebase local commits" in out
+    assert "hermes-local-backup" in out
+    assert "local commits are preserved" in out
+
+
+def test_cmd_update_fails_closed_when_local_commit_count_unknown(
+    monkeypatch, tmp_path, capsys
+):
+    """When ff-only fails but local commit count cannot be determined, fail safely
+    without running reset --hard that might discard unknown local work."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    # Mock _count_local_commits_ahead_of_remote to return None (unknown)
+    monkeypatch.setattr(
+        hermes_main, "_count_local_commits_ahead_of_remote",
+        lambda *args, **kwargs: None,
+    )
+
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Assert no reset --hard was executed (fail closed)
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert reset_calls == []
+
+    # Assert no rebase was attempted
+    rebase_calls = [c for c in recorded if "rebase" in c]
+    assert rebase_calls == []
+
+    # Verify user-facing output explains the situation
+    out = capsys.readouterr().out
+    assert "local commit status is unknown" in out
+    assert "git status" in out
+
+
+def test_cmd_update_reports_abort_failure_explicitly(
+    monkeypatch, tmp_path, capsys
+):
+    """When rebase fails AND rebase --abort also fails, provide explicit recovery guidance."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_ahead_count="1",
+        rebase_fails=True,
+        rebase_abort_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Assert rebase --abort was attempted
+    rebase_abort_calls = [c for c in recorded if "rebase" in c and "--abort" in c]
+    assert len(rebase_abort_calls) == 1
+
+    # Verify output mentions abort failure and provides manual recovery steps
+    out = capsys.readouterr().out
+    assert "Rebase --abort also failed" in out
+    assert "partial rebase state" in out
+    assert "git rebase --abort" in out
 
 
 # ---------------------------------------------------------------------------

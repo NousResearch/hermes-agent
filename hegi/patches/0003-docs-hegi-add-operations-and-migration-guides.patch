@@ -1,7 +1,7 @@
-From dede60f5182bea64f54929b93e41b24207f515fa Mon Sep 17 00:00:00 2001
+From e157b6a9dcd6a0ebf93e9248195f7edf9a93635d Mon Sep 17 00:00:00 2001
 From: Yong Wook Lee <icerain@jj.ac.kr>
 Date: Fri, 24 Jul 2026 15:31:06 +0900
-Subject: [PATCH HEGI v2 3/3] docs(hegi): add operations and migration guides
+Subject: [PATCH-HEGI-v2 3/3] docs(hegi): add operations and migration guides
 
 ---
  hegi/CHANGELOG.md                  |  11 ++

@@ -1,7 +1,7 @@
-From edc1e7678add61023385d4c6f85cb8b36bb4b569 Mon Sep 17 00:00:00 2001
+From fff2b055686ca6ad94a3efbd4a9339f94f18fdb1 Mon Sep 17 00:00:00 2001
 From: Yong Wook Lee <icerain@jj.ac.kr>
 Date: Fri, 24 Jul 2026 15:30:48 +0900
-Subject: [PATCH HEGI v2 1/3] feat(hegi): add sqlite conversation collector
+Subject: [PATCH-HEGI-v2 1/3] feat(hegi): add sqlite conversation collector
 
 ---
  hegi/VERSION                    |   1 +
@@ -1194,12 +1194,21 @@ index 000000000..b16719009
 +            )
 +        return cursor.rowcount == 1
 diff --git a/pyproject.toml b/pyproject.toml
-index 851473b13..982995a6d 100644
+index a2a1d6c0e..cbc0df780 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
-@@ -338,6 +338,17 @@ locales = ["locales/*.yaml"]
+@@ -316,7 +316,7 @@ hermes-acp = "acp_adapter.entry:main"
+ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+ 
+ [tool.setuptools.packages.find]
+-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
++include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hegi", "hegi.*"]
+ 
  [tool.setuptools.package-data]
- hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
+ # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
+@@ -325,6 +325,17 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
+ # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
+ # in gateway/status_phrases.py and gateway/run.py.
  gateway = ["assets/**/*"]
 +hegi = [
 +  "config/*.yaml",
@@ -1212,15 +1221,6 @@ index 851473b13..982995a6d 100644
 +  "ROADMAP.md",
 +  "VERSION",
 +]
- plugins = [
-   "*/dashboard/manifest.json",
-   "*/dashboard/dist/*",
-@@ -354,7 +365,7 @@ plugins = [
- ]
- 
- [tool.setuptools.packages.find]
--include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
-+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hegi", "hegi.*"]
  
  [tool.pytest.ini_options]
  testpaths = ["tests"]

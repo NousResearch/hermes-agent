@@ -28,6 +28,7 @@ from hermes_cli.auth import (
     _agent_key_is_usable,
     _nous_inference_env_override,
     format_auth_error,
+    normalize_codex_base_url,
     resolve_provider,
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
@@ -428,7 +429,7 @@ def _resolve_runtime_from_pool_entry(
     api_mode = "chat_completions"
     if provider == "openai-codex":
         api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_CODEX_BASE_URL
+        base_url = normalize_codex_base_url(base_url or DEFAULT_CODEX_BASE_URL)
     elif provider == "xai-oauth":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
@@ -1421,7 +1422,7 @@ def _resolve_explicit_runtime(
         }
 
     if provider == "openai-codex":
-        base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
+        base_url = normalize_codex_base_url(explicit_base_url or DEFAULT_CODEX_BASE_URL)
         api_key = explicit_api_key
         last_refresh = None
         if not api_key:
@@ -1429,7 +1430,9 @@ def _resolve_explicit_runtime(
             api_key = creds.get("api_key", "")
             last_refresh = creds.get("last_refresh")
             if not explicit_base_url:
-                base_url = creds.get("base_url", "").rstrip("/") or base_url
+                base_url = normalize_codex_base_url(
+                    creds.get("base_url", "").rstrip("/") or base_url
+                )
         return {
             "provider": "openai-codex",
             "api_mode": "codex_responses",

@@ -34,8 +34,11 @@ def _clean_env(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("url,expected,label", [
-    ("https://api.kimi.com/coding/v1", True, "Kimi Coding Plan /v1"),
-    ("https://api.kimi.com/coding", True, "Kimi Coding Plan no /v1"),
+    ("https://api.kimi.com/coding/v1", False, "Kimi Coding Plan OpenAI /v1"),
+    ("https://api.kimi.com/coding/v1/", False, "Kimi Coding Plan OpenAI /v1 trailing slash"),
+    ("https://api.kimi.com/coding/v1?client=hermes", False, "Kimi Coding Plan OpenAI /v1 query"),
+    ("https://api.kimi.com/coding", True, "Kimi Coding Plan bare Anthropic route"),
+    ("https://api.kimi.com/coding/", True, "Kimi Coding Plan bare Anthropic route trailing slash"),
     ("https://api.moonshot.ai/v1", False, "Moonshot legacy"),
     ("https://api.minimax.io/anthropic", True, "MiniMax /anthropic"),
     ("https://litellm.example.com/v1/anthropic", True, "/anthropic suffix"),
@@ -76,6 +79,19 @@ def test_maybe_wrap_anthropic_rewraps_kimi_coding_url():
             "https://api.kimi.com/coding", api_mode=None,
         )
     assert isinstance(result, AnthropicAuxiliaryClient)
+
+
+def test_maybe_wrap_anthropic_leaves_kimi_coding_v1_openai_wire():
+    """api.kimi.com/coding/v1 is OpenAI-compatible and must not be rewrapped."""
+    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
+
+    plain_client = MagicMock(name="plain_openai")
+    result = _maybe_wrap_anthropic(
+        plain_client, "kimi-for-coding", "sk-kimi-test",
+        "https://api.kimi.com/coding/v1", api_mode=None,
+    )
+    assert result is plain_client
+    assert not isinstance(result, AnthropicAuxiliaryClient)
 
 
 def test_maybe_wrap_anthropic_rewraps_slash_anthropic_url():

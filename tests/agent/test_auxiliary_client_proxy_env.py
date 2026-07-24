@@ -96,3 +96,23 @@ def test_openai_http_client_kwargs_async_mode():
         async_mode=True,
     )
     assert isinstance(kwargs["http_client"], httpx.AsyncClient)
+
+
+@patch("agent.auxiliary_client.OpenAI")
+def test_create_openai_client_ignores_ipv6_no_proxy_entries(mock_openai, monkeypatch):
+    """httpx must not parse bare IPv6/CIDR NO_PROXY entries itself."""
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1,fe80::/10,64:ff9b::/96")
+
+    _create_openai_client(
+        api_key="test-key",
+        base_url="https://litellm.internal.example.com/v1",
+    )
+
+    http_client = mock_openai.call_args.kwargs.get("http_client")
+    assert isinstance(http_client, httpx.Client)
+    assert http_client.trust_env is False
+    http_client.close()

@@ -196,6 +196,7 @@ def build_keepalive_http_client(
             proxy=proxy,
             mounts=mounts or None,
             verify=verify,
+            trust_env=False,
         )
     except Exception:
         return None

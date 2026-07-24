@@ -19,6 +19,7 @@ import {
   listSessions,
   listSidebarSessions,
   resetSidebarBatchCapability,
+  searchSessions,
   speakText,
   transcribeAudio
 } from './hermes'
@@ -68,6 +69,15 @@ describe('Hermes REST helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('routes session search through the selected concrete profile', async () => {
+    await searchSessions('needle / value', 'alma')
+
+    expect(api).toHaveBeenCalledWith({
+      profile: 'alma',
+      path: '/api/sessions/search?q=needle%20%2F%20value'
+    })
   })
 
   it('batches the sidebar slices into a single request with per-slice limits + excludes', async () => {
@@ -148,7 +158,7 @@ describe('Hermes REST helpers', () => {
     })
 
     // Slices reassembled from the legacy per-slice route with the same
-    // scoping: recents on the caller's profile, cron + messaging cross-profile.
+    // workspace scope for recents, cron, and messaging.
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
     expect(result.recents.total).toBe(7)
     expect(result.recents.profile_totals).toEqual({ default: 7 })
@@ -158,7 +168,7 @@ describe('Hermes REST helpers', () => {
     const paths = api.mock.calls.map(call => (call[0] as { path: string }).path)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions/sidebar'))).toHaveLength(1)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions?'))).toHaveLength(3)
-    expect(paths).toContainEqual(expect.stringContaining('profile=work'))
+    expect(paths.filter(p => p.startsWith('/api/profiles/sessions?') && p.includes('profile=work'))).toHaveLength(3)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
   })

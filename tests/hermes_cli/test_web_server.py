@@ -1948,6 +1948,38 @@ class TestWebServerEndpoints:
         assert isinstance(data.get("errors"), list)
         assert data["recents"]["total"] >= 1
 
+    def test_profiles_sessions_sidebar_scopes_every_slice_to_concrete_profile(self):
+        """A concrete Desktop workspace must not leak sibling profile rows."""
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        for profile, prefix in (("default", "default"), ("alma", "alma"), ("aegis_h-01", "aegis")):
+            home = profiles_mod.get_profile_dir(profile)
+            home.mkdir(parents=True, exist_ok=True)
+            db = SessionDB(db_path=home / "state.db")
+            try:
+                for suffix, source in (("local", "desktop"), ("cron", "cron"), ("telegram", "telegram")):
+                    session_id = f"{prefix}-{suffix}"
+                    db.create_session(session_id=session_id, source=source)
+                    db.append_message(session_id=session_id, role="user", content="synthetic")
+            finally:
+                db.close()
+
+        resp = self.client.get(
+            "/api/profiles/sessions/sidebar"
+            "?recents_profile=alma&recents_limit=20&recents_exclude=cron,telegram"
+            "&cron_limit=50&messaging_limit=100"
+            "&messaging_exclude=cron,cli,codex,desktop,gateway,local,tui"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        for section in ("recents", "cron", "messaging"):
+            rows = data[section]["sessions"]
+            assert rows
+            assert {row["profile"] for row in rows} == {"alma"}
+            assert all(row["id"].startswith("alma-") for row in rows)
+
     def test_sessions_endpoint_reads_requested_profile(self):
         """The machine dashboard's global profile switcher must retarget
         the Sessions page, not just config/skills/model pages."""

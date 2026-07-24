@@ -63,6 +63,7 @@ import {
   resolveAuthMode,
   resolveTestWsUrl,
   savedProfileSsh,
+  sidebarSessionSliceProfiles,
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
@@ -9095,7 +9096,7 @@ async function interceptSessionRequestForRemote(request) {
       return undefined // local fast path → batched endpoint's single DB open
     }
 
-    const recentsProfile = (searchParams.get('recents_profile') || 'all').trim() || 'all'
+    const sliceProfiles = sidebarSessionSliceProfiles(searchParams.get('recents_profile'))
 
     const sliceParams = (limitKey, defaultLimit, extra) => {
       const sp = new URLSearchParams({
@@ -9110,16 +9111,16 @@ async function interceptSessionRequestForRemote(request) {
       return sp
     }
 
-    const recentsSp = sliceParams('recents_limit', '20', { profile: recentsProfile })
+    const recentsSp = sliceParams('recents_limit', '20', { profile: sliceProfiles.recents })
     const recentsExclude = searchParams.get('recents_exclude')
 
     if (recentsExclude) {
       recentsSp.set('exclude_sources', recentsExclude)
     }
 
-    const cronSp = sliceParams('cron_limit', '50', { profile: 'all', source: 'cron' })
+    const cronSp = sliceParams('cron_limit', '50', { profile: sliceProfiles.cron, source: 'cron' })
 
-    const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
+    const messagingSp = sliceParams('messaging_limit', '100', { profile: sliceProfiles.messaging })
     const messagingExclude = searchParams.get('messaging_exclude')
 
     if (messagingExclude) {

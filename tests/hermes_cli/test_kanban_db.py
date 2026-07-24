@@ -1944,6 +1944,41 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_ignores_pr_comment_before_unblock(kanban_home):
+    """A pre-unblock PR comment must not block the resumed review round."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="resume-pr", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/101",
+        )
+        assert kb.block_task(conn, t, reason="review found regression")
+        assert kb.unblock_task(conn, t)
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_after_unblock_still_blocks(kanban_home):
+    """A new PR comment after unblock still belongs to the current review round."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="resume-pr-new-comment", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/102",
+        )
+        assert kb.block_task(conn, t, reason="review found regression")
+        assert kb.unblock_task(conn, t)
+        time.sleep(1.1)
+        kb.add_comment(
+            conn, t, "worker",
+            "Updated PR: https://github.com/totemx-AI/subsidysmart/pull/102",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):
@@ -2037,6 +2072,30 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_resumed_pr_rework(
+    kanban_home, all_assignees_spawnable
+):
+    """dispatch_once should respawn after unblock when only old PR comments exist."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="resume-round", assignee="alice")
+        kb.claim_task(conn, t)
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/103",
+        )
+        assert kb.block_task(conn, t, reason="review found regression")
+        assert kb.unblock_task(conn, t)
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert t in spawned_ids
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

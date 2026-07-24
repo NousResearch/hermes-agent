@@ -269,6 +269,69 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     assert events[-1][2]["success"] is True
 
 
+def test_run_one_job_records_unresolved_origin_as_not_configured(monkeypatch):
+    import cron.scheduler as scheduler
+
+    finished = []
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        scheduler,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None),
+    )
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda _job: [])
+    monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
+
+    job = {
+        "id": "job-unresolved-origin",
+        "execution_id": "exec-unresolved-origin",
+        "deliver": "origin",
+    }
+    assert scheduler.run_one_job(job) is True
+
+    assert finished[-1][1]["delivery_outcome"] == "not_configured"
+
+
+def test_run_one_job_normalizes_legacy_local_delivery_as_suppressed(monkeypatch):
+    import cron.scheduler as scheduler
+
+    finished = []
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None),
+    )
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        scheduler,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(scheduler, "_consume_interrupted_flag", lambda *_args: False)
+
+    job = {
+        "id": "legacy-local",
+        "name": "Legacy local",
+        "schedule": {"kind": "interval", "minutes": 10},
+        "deliver": ["local"],
+        "execution_id": "exec-legacy-local",
+    }
+
+    assert scheduler.run_one_job(job) is True
+    assert finished[-1][1]["delivery_outcome"] == "suppressed"
+
+
 def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):
     import cron.scheduler_provider as provider
 

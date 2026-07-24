@@ -3945,6 +3945,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
             # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
@@ -3956,6 +3957,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 should_deliver = False
 
             if should_deliver:
+                unresolved_origin = (
+                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
+                    and not _resolve_delivery_targets(job)
+                )
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                 except Exception as de:
@@ -3977,7 +3982,21 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        finish_execution(execution_id, success=success, error=error)
+        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        if delivery_error:
+            delivery_outcome = "failed"
+        elif should_deliver and unresolved_origin:
+            delivery_outcome = "not_configured"
+        elif should_deliver and normalized_deliver != "local":
+            delivery_outcome = "delivered"
+        else:
+            delivery_outcome = "suppressed"
+        finish_execution(
+            execution_id,
+            success=success,
+            error=error,
+            delivery_outcome=delivery_outcome,
+        )
         return True
 
     except Exception as e:

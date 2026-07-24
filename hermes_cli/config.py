@@ -2174,7 +2174,7 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
-    
+
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
@@ -3026,6 +3026,44 @@ DEFAULT_CONFIG = {
         # Python tries AAAA records first and hangs for the full TCP timeout
         # before falling back to IPv4.  Set to true to skip IPv6 entirely.
         "force_ipv4": False,
+    },
+
+    # Gateway monitoring — Service Health Monitoring plus redacted Operational
+    # Diagnostics for the gateway daemon, exported over OTLP to an
+    # operator-configured endpoint (OTEL Collector, DataDog, ...). Content-free
+    # by construction: no prompts, messages, tool args/results, session
+    # history, usage analytics, audit logs, or trajectories. Off by default;
+    # nothing is collected or sent until an operator enables it and sets an
+    # endpoint.
+    "monitoring": {
+        # Stable install identifier attached to exported health signals so an
+        # operator can tell instances apart in their collector. Empty string
+        # means "mint a fresh UUID on first use"; clear it to rotate. Carries
+        # no account identity.
+        "install_id": "",
+        # Gateway health & diagnostics export.
+        "gateway_health_export": {
+            "enabled": False,
+            "metrics_enabled": True,
+            "diagnostic_events_enabled": True,
+            "warning_error_events_enabled": True,
+            "export_interval_seconds": 60,
+            "logs_export_interval_seconds": 5,
+            "resource_attributes": {
+                "service.name": "hermes-gateway",
+                "deployment.environment.name": "production",
+            },
+        },
+        # OTLP destination. headers_env maps header names to ENVIRONMENT
+        # VARIABLE NAMES (never secret values); values are read from the
+        # environment at export time.
+        "export": {
+            "otlp": {
+                "enabled": False,
+                "endpoint": "",
+                "headers_env": {},
+            },
+        },
     },
 
     # Gateway settings — control how messaging platforms (Telegram, Discord,

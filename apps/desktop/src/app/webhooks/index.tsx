@@ -516,7 +516,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                   <label className="flex items-start gap-2 text-sm text-muted-foreground">
                     <input
                       checked={deliverOnly}
-                      className="mt-0.5 shrink-0"
+                      className="mt-[4px] shrink-0"
                       onChange={e => setDeliverOnly(e.target.checked)}
                       type="checkbox"
                     />

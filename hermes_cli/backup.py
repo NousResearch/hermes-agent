@@ -253,26 +253,57 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 # SQLite safe copy
 # ---------------------------------------------------------------------------
 
+_SQLITE_BACKUP_PAGES = 256
+_SQLITE_BACKUP_RETRY_SLEEP_SECONDS = 0.1
+_SQLITE_BACKUP_STALL_TIMEOUT_SECONDS = 30.0
+
+
 def _safe_copy_db(src: Path, dst: Path) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to. Fail closed if a consistent snapshot cannot
     be created: copying only the live main file can omit committed WAL data.
+    Abort when the backup makes no page progress for a bounded interval so a
+    persistently locked database cannot stall the whole backup indefinitely.
     """
     conn = None
     backup_conn = None
+    copy_succeeded = False
     try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
-        conn.backup(backup_conn)
+        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
+        backup_conn = sqlite3.connect(str(dst), timeout=0.0)
+        last_progress_at = time.monotonic()
+
+        def _check_progress(status: int, _remaining: int, _total: int) -> None:
+            nonlocal last_progress_at
+            if status == sqlite3.SQLITE_DONE:
+                return
+
+            now = time.monotonic()
+            if status == sqlite3.SQLITE_OK:
+                # SQLite returns OK only after successfully copying pages.
+                last_progress_at = now
+                return
+
+            if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and (
+                now - last_progress_at >= _SQLITE_BACKUP_STALL_TIMEOUT_SECONDS
+            ):
+                raise TimeoutError(
+                    "SQLite backup timed out after "
+                    f"{_SQLITE_BACKUP_STALL_TIMEOUT_SECONDS:g}s without page progress"
+                )
+
+        conn.backup(
+            backup_conn,
+            pages=_SQLITE_BACKUP_PAGES,
+            progress=_check_progress,
+            sleep=_SQLITE_BACKUP_RETRY_SLEEP_SECONDS,
+        )
+        copy_succeeded = True
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
         return False
     finally:
         for connection in (backup_conn, conn):
@@ -281,6 +312,11 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
                     connection.close()
                 except Exception:
                     pass
+        if not copy_succeeded:
+            try:
+                dst.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------

@@ -7235,3 +7235,54 @@ class TestDisplayMetadataPersistence:
         assert len(switched) == 1
         assert switched[0]["display_metadata"] == meta
 
+    def test_get_messages_deserializes_display_metadata(self, db):
+        """get_messages() must return display_metadata as a parsed dict, not a raw JSON string."""
+        db.create_session("s1", source="cli")
+        meta = {"task_count": 2, "delegation_id": "del-1", "duration_seconds": 45.0}
+        db.append_message(
+            "s1", "user", "delegation done",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        messages = db.get_messages("s1")
+        assert len(messages) == 1
+        assert isinstance(messages[0]["display_metadata"], dict)
+        assert messages[0]["display_metadata"] == meta
+
+    def test_get_messages_around_deserializes_display_metadata(self, db):
+        """get_messages_around() must return display_metadata as a parsed dict, not a raw JSON string."""
+        db.create_session("s1", source="cli")
+        meta = {"task_count": 3, "delegation_id": "del-2", "completed_count": 3}
+        msg_id = db.append_message(
+            "s1", "user", "delegation done",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        result = db.get_messages_around("s1", around_message_id=msg_id, window=2)
+        # The anchored message should be in the window
+        anchored = [m for m in result["window"] if m.get("display_kind") == "async_delegation_complete"]
+        assert len(anchored) == 1
+        assert isinstance(anchored[0]["display_metadata"], dict)
+        assert anchored[0]["display_metadata"] == meta
+
+    def test_display_metadata_omitted_on_parse_failure(self, db):
+        """Corrupt display_metadata JSON must not crash — key should be absent."""
+        db.create_session("s1", source="cli")
+        # Write a valid row so we have a message, then corrupt display_metadata directly
+        db.append_message("s1", "user", "ok")
+        msg_id = db.append_message(
+            "s1", "user", "event",
+            display_kind="async_delegation_complete",
+            display_metadata={"task_count": 1},
+        )
+        # Inject corrupt JSON via raw SQL
+        db._conn.execute(
+            "UPDATE messages SET display_metadata = ? WHERE id = ?",
+            ("not valid json {{{", msg_id),
+        )
+        db._conn.commit()
+        # get_messages must not crash and must omit the key
+        messages = db.get_messages("s1")
+        event_msg = [m for m in messages if m.get("id") == msg_id][0]
+        assert "display_metadata" not in event_msg
+

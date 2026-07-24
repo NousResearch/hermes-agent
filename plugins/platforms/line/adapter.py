@@ -1017,6 +1017,13 @@ class LineAdapter(BasePlatformAdapter):
         entry = self._cache.get(request_id)
         if not self._client or not reply_token or not entry:
             return
+        if entry.chat_id != chat_id:
+            logger.warning(
+                "LINE: rejecting postback for request %s from mismatched chat %s",
+                request_id,
+                chat_id,
+            )
+            return
 
         if entry.state is State.READY:
             payload = entry.payload or ""

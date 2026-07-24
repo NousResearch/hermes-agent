@@ -617,6 +617,32 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     return merged or headers
 
 
+def _apply_custom_provider_own_extra_headers(
+    headers: dict | None, custom_entry: dict
+) -> dict | None:
+    """Merge a named ``custom_providers``/``providers`` entry's own
+    ``extra_headers`` onto *headers*.
+
+    Per-provider headers are the most specific config level and must win over
+    ``model.default_headers``/``model.extra_headers`` (applied by
+    :func:`_apply_user_default_headers`) — mirrors
+    ``apply_custom_provider_extra_headers_to_client_kwargs`` (see
+    ``hermes_cli/config.py``), which the main agent client applies last for
+    the same reason (``agent_init.py`` / ``run_agent.py``). Without this, an
+    ``extra_headers`` entry used for gateway auth (e.g. ``x-gateway-auth``)
+    would apply to the main turn but silently drop from auxiliary tasks
+    (title generation, compression, vision, goal judge).
+
+    SECURITY: values may carry credentials — never log them.
+    """
+    entry_headers = custom_entry.get("extra_headers")
+    if not isinstance(entry_headers, dict) or not entry_headers:
+        return headers
+    merged = dict(headers or {})
+    merged.update(entry_headers)
+    return merged
+
+
 def build_or_headers(or_config: dict | None = None) -> dict:
     """Build OpenRouter headers, optionally including response-cache headers.
 
@@ -4666,13 +4692,23 @@ def _resolve_auto(
 # below — never look up auth env vars ad-hoc.
 
 
-def _to_async_client(sync_client, model: str, is_vision: bool = False):
+def _to_async_client(
+    sync_client, model: str, is_vision: bool = False,
+    custom_entry: dict | None = None,
+):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
     When ``is_vision=True`` and the underlying base URL is Copilot, the
     resulting async client carries the ``Copilot-Vision-Request: true``
     header so the request is routed to Copilot's vision-capable
     infrastructure (otherwise vision payloads silently time out).
+
+    ``custom_entry`` is the resolved named ``custom_providers``/``providers``
+    entry, when the sync client was built from one. The async rebuild
+    reconstructs ``default_headers`` from scratch (it does not copy the sync
+    client's), so the entry's own ``extra_headers`` must be re-applied here —
+    last, mirroring the sync path's precedence — or per-provider gateway-auth
+    headers would silently drop from every async auxiliary call.
     """
     from openai import AsyncOpenAI
 
@@ -4728,6 +4764,27 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             pass
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
+    if custom_entry is not None:
+        _merged_async = _apply_custom_provider_own_extra_headers(
+            _merged_async, custom_entry
+        )
+    else:
+        # No explicit entry (fallback_chain / vision auto-detect exits):
+        # self-look-up the matching custom_providers entry by the sync
+        # client's base_url, mirroring the main client's
+        # apply_custom_provider_extra_headers_to_client_kwargs matching.
+        # The named-provider branch keeps passing custom_entry explicitly
+        # because its anthropic-fallback URL is rewritten (/anthropic → /v1)
+        # and would miss here.
+        try:
+            from hermes_cli.config import get_custom_provider_extra_headers
+            _entry_headers = get_custom_provider_extra_headers(sync_base_url)
+            if _entry_headers:
+                _merged_async = _apply_custom_provider_own_extra_headers(
+                    _merged_async, {"extra_headers": _entry_headers}
+                )
+        except Exception:
+            pass
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
     async_kwargs = {
@@ -5156,6 +5213,7 @@ def resolve_provider_client(
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                _headers2 = _apply_custom_provider_own_extra_headers(_headers2, custom_entry)
                 if _headers2:
                     _extra2["default_headers"] = _headers2
                 logger.debug(
@@ -5181,10 +5239,12 @@ def resolve_provider_client(
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        _fb_headers = _apply_custom_provider_own_extra_headers(_fb_headers, custom_entry)
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
-                        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        return (_to_async_client(client, final_model, is_vision=is_vision,
+                                                 custom_entry=custom_entry) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
                         real_client, final_model, custom_key, custom_base, is_oauth=False,
@@ -5203,7 +5263,8 @@ def resolve_provider_client(
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
-                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                return (_to_async_client(client, final_model, is_vision=is_vision,
+                                         custom_entry=custom_entry) if async_mode
                         else (client, final_model))
             logger.warning(
                 "resolve_provider_client: named custom provider %r has no base_url",

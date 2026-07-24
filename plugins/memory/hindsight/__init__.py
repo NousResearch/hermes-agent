@@ -527,6 +527,12 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         "HINDSIGHT_API_LLM_MODEL": str(current_model),
         "HINDSIGHT_API_LOG_LEVEL": "info",
     }
+    database_url = config.get("database_url") or os.environ.get("HINDSIGHT_EMBED_API_DATABASE_URL", "")
+    if database_url:
+        # hindsight-embed's daemon manager only treats HINDSIGHT_EMBED_API_DATABASE_URL
+        # as an explicit profile DB override; it maps that into HINDSIGHT_API_DATABASE_URL
+        # for the actual hindsight-api child process.
+        env_values["HINDSIGHT_EMBED_API_DATABASE_URL"] = str(database_url)
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 

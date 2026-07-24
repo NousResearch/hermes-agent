@@ -233,11 +233,54 @@ class SessionManager:
     def remove_session(self, session_id: str) -> bool:
         """Remove a session from memory and database. Returns True if it existed."""
         with self._lock:
-            existed = self._sessions.pop(session_id, None) is not None
+            state = self._sessions.pop(session_id, None)
+        if state is not None:
+            self._close_session_agent(state)
+        existed = state is not None
         db_existed = self._delete_persisted(session_id)
         if existed or db_existed:
             _clear_task_cwd(session_id)
         return existed or db_existed
+
+    @staticmethod
+    def _close_session_agent(state: "SessionState") -> None:
+        """Best-effort teardown for a removed session's AIAgent.
+
+        Mirrors the cleanup performed elsewhere for temporary/cached agents
+        (e.g. ``GatewayRunner._cleanup_agent_resources``): shut down the
+        memory provider (writer threads, bridge subprocesses, HTTP clients),
+        close tool resources (terminal sandbox, browser daemon, background
+        processes), then sweep any auxiliary async clients left behind.
+        Removing a session without this leaks all of the above per session.
+        """
+        agent = getattr(state, "agent", None)
+        if agent is None:
+            return
+        try:
+            if hasattr(agent, "shutdown_memory_provider"):
+                # Pass the agent's own conversation transcript so memory
+                # providers' on_session_end hooks see the real messages
+                # instead of the empty default — a no-argument call becomes
+                # on_session_end([]), losing facts from this session.
+                # Mirrors GatewayRunner._cleanup_agent_resources' guarded
+                # forwarding (gateway/run.py).
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+        except Exception:
+            pass
+        try:
+            if hasattr(agent, "close"):
+                agent.close()
+        except Exception:
+            pass
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception:
+            pass
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
@@ -357,8 +400,11 @@ class SessionManager:
     def cleanup(self) -> None:
         """Remove all sessions (memory and database) and clear task-specific cwd overrides."""
         with self._lock:
+            states = list(self._sessions.values())
             session_ids = list(self._sessions.keys())
             self._sessions.clear()
+        for state in states:
+            self._close_session_agent(state)
         for session_id in session_ids:
             _clear_task_cwd(session_id)
             self._delete_persisted(session_id)

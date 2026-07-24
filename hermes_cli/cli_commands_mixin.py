@@ -1666,6 +1666,7 @@ class CLICommandsMixin:
                 set_secret_capture_callback(self._secret_capture_callback)
             except Exception:
                 pass
+            bg_agent = None
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -1766,6 +1767,31 @@ class CLICommandsMixin:
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
+                if bg_agent is not None:
+                    try:
+                        # Pass the agent's own conversation transcript so
+                        # memory providers' on_session_end hooks see the
+                        # real messages instead of the empty default — a
+                        # no-argument call becomes on_session_end([]),
+                        # losing facts from this background session.
+                        # Mirrors GatewayRunner._cleanup_agent_resources'
+                        # guarded forwarding (gateway/run.py).
+                        session_messages = getattr(bg_agent, "_session_messages", None)
+                        if isinstance(session_messages, list):
+                            bg_agent.shutdown_memory_provider(session_messages)
+                        else:
+                            bg_agent.shutdown_memory_provider()
+                    except Exception:
+                        pass
+                    try:
+                        bg_agent.close()
+                    except Exception:
+                        pass
+                    try:
+                        from agent.auxiliary_client import cleanup_stale_async_clients
+                        cleanup_stale_async_clients()
+                    except Exception:
+                        pass
                 try:
                     set_sudo_password_callback(None)
                     set_approval_callback(None)

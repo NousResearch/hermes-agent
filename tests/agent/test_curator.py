@@ -1442,3 +1442,102 @@ def test_review_fork_merges_slot_extra_body_over_runtime(curator_env, monkeypatc
         },
         "service_tier": "priority",
     }
+
+
+def test_review_agent_shuts_down_memory_provider_on_completion(curator_env, monkeypatch):
+    """_run_llm_review's finally block must tear down the review agent's
+    memory provider, not just call close() (#50197).
+
+    Regression: the finally block called review_agent.close() but never
+    shutdown_memory_provider() or cleanup_stale_async_clients(), leaking
+    memory-provider threads/HTTP clients per curator review pass.
+    """
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "real-model-id",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    calls = []
+
+    class _StubAgent:
+        def __init__(self, **_kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def shutdown_memory_provider(self):
+            calls.append("shutdown_memory_provider")
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    cleanup_calls = []
+    monkeypatch.setattr(
+        "agent.auxiliary_client.cleanup_stale_async_clients",
+        lambda: cleanup_calls.append(1),
+    )
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert calls == ["shutdown_memory_provider", "close"]
+    assert cleanup_calls == [1]
+
+
+def test_review_agent_cleanup_survives_missing_shutdown_hook(curator_env, monkeypatch):
+    """A review agent stub without shutdown_memory_provider() must not
+    prevent close() from running, and must not raise out of the review."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "real-model-id",
+            "api_key": "test-key",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    calls = []
+
+    class _StubAgentNoShutdownHook:
+        def __init__(self, **_kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgentNoShutdownHook)
+
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert calls == ["close"]

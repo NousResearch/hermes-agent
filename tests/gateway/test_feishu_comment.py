@@ -256,5 +256,75 @@ class TestWikiReverseLookup(unittest.TestCase):
         self.assertEqual(second_call_kwargs[1].get("wiki_token") or second_call_kwargs[0][3], "WIKI123")
 
 
+class TestRunCommentAgentCleanup(unittest.TestCase):
+    """_run_comment_agent must tear down the AIAgent it creates (#50197).
+
+    Regression: the finally block only cleared feishu doc/drive client
+    thread-locals; it never called shutdown_memory_provider() or close() on
+    the agent, leaking a terminal sandbox / httpx client / memory-provider
+    session per comment handled.
+    """
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    @patch("plugins.platforms.feishu.feishu_comment._resolve_model_and_runtime")
+    @patch("plugins.platforms.feishu.feishu_comment._load_session_history", return_value=[])
+    @patch("tools.feishu_drive_tool.set_client")
+    @patch("tools.feishu_doc_tool.set_client")
+    def test_agent_is_shut_down_and_closed(
+        self, mock_set_doc, mock_set_drive, mock_load_history, mock_resolve,
+    ):
+        from plugins.platforms.feishu.feishu_comment import _run_comment_agent
+
+        mock_resolve.return_value = ("test-model", {"provider": "test", "api_key": "k"})
+
+        calls = []
+
+        class _StubAgent:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_conversation(self, *_a, **_kw):
+                return {"final_response": "ok", "api_calls": 1, "messages": []}
+
+            def shutdown_memory_provider(self):
+                calls.append("shutdown_memory_provider")
+
+            def close(self):
+                calls.append("close")
+
+        with patch("run_agent.AIAgent", _StubAgent), \
+             patch("agent.auxiliary_client.cleanup_stale_async_clients") as mock_cleanup:
+            result = _run_comment_agent("do something", client=Mock())
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls, ["shutdown_memory_provider", "close"])
+        mock_cleanup.assert_called_once_with()
+
+    @patch("plugins.platforms.feishu.feishu_comment._resolve_model_and_runtime")
+    @patch("plugins.platforms.feishu.feishu_comment._load_session_history", return_value=[])
+    @patch("tools.feishu_drive_tool.set_client")
+    @patch("tools.feishu_doc_tool.set_client")
+    def test_agent_cleanup_runs_even_when_construction_fails(
+        self, mock_set_doc, mock_set_drive, mock_load_history, mock_resolve,
+    ):
+        """Agent construction failing must not skip client thread-local cleanup,
+        and must not raise past _run_comment_agent (best-effort by design)."""
+        from plugins.platforms.feishu.feishu_comment import _run_comment_agent
+
+        mock_resolve.return_value = ("test-model", {"provider": "test", "api_key": "k"})
+
+        def _boom(**_kwargs):
+            raise RuntimeError("construction failed")
+
+        with patch("run_agent.AIAgent", _boom):
+            result = _run_comment_agent("do something", client=Mock())
+
+        self.assertEqual(result, "")
+        mock_set_doc.assert_called_with(None)
+        mock_set_drive.assert_called_with(None)
+
+
 if __name__ == "__main__":
     unittest.main()

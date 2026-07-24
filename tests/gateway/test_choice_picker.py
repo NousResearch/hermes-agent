@@ -172,7 +172,11 @@ class TestFastChoicePicker:
     def _patch_fast_support(self, monkeypatch, tmp_path):
         monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg: "gpt-5.6")
+        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg=None: "gpt-5.6")
+        # ``/fast`` now resolves the effective session model through
+        # ``_resolve_session_agent_runtime``; with no session override that path
+        # calls runtime provider resolution, so stub it (no real credentials in CI).
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
         import hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda m: True)
 

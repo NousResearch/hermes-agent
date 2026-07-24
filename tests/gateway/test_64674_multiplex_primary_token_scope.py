@@ -33,6 +33,49 @@ def _reset_multiplex_flag():
 
 
 class TestLoadGatewayConfigForRunner:
+    def test_named_profile_ignores_inherited_platform_credentials(self, tmp_path, monkeypatch):
+        """A bare named profile must not activate Matrix from the root env."""
+        from gateway import run as run_mod
+
+        root_home = tmp_path / ".hermes"
+        profile_home = root_home / "profiles" / "bare"
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "root-profile-token")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.test")
+
+        cfg = run_mod.load_gateway_config_for_runner()
+
+        assert Platform.MATRIX not in cfg.platforms
+
+    def test_named_profile_uses_its_own_platform_credentials(self, tmp_path, monkeypatch):
+        """A named profile's .env remains authoritative over the process env."""
+        from gateway import run as run_mod
+
+        root_home = tmp_path / ".hermes"
+        profile_home = root_home / "profiles" / "bare"
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("", encoding="utf-8")
+        (profile_home / ".env").write_text(
+            "MATRIX_ACCESS_TOKEN=profile-token\n"
+            "MATRIX_HOMESERVER=https://profile.example.test\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "root-profile-token")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://root.example.test")
+
+        cfg = run_mod.load_gateway_config_for_runner()
+
+        matrix = cfg.platforms[Platform.MATRIX]
+        assert matrix.token == "profile-token"
+        assert matrix.extra["homeserver"] == "https://profile.example.test"
+
     def test_unscoped_when_multiplex_off(self, tmp_path, monkeypatch):
         from gateway import run as run_mod
 

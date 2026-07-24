@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -79,6 +80,14 @@ class ToolCallGuardrailConfig:
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    # Destructive-overwrite guard (cf. 2026-06-09: the companion blanked STATUS.md
+    # and a full research report by overwriting them with empty/scaffold content).
+    # Independent of hard_stop_enabled — this is data-loss prevention, not loop
+    # detection. Blocks write_file when a non-empty file (>= min_bytes) would be
+    # replaced by content < shrink_ratio of its current size.
+    safe_write_enabled: bool = True
+    safe_write_min_bytes: int = 200
+    safe_write_shrink_ratio: float = 0.5
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -120,6 +129,13 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            safe_write_enabled=_as_bool(data.get("safe_write_enabled"), defaults.safe_write_enabled),
+            safe_write_min_bytes=_positive_int(
+                data.get("safe_write_min_bytes"), defaults.safe_write_min_bytes
+            ),
+            safe_write_shrink_ratio=_as_ratio(
+                data.get("safe_write_shrink_ratio"), defaults.safe_write_shrink_ratio
             ),
         )
 
@@ -232,6 +248,8 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._mutation_repeats: dict[ToolCallSignature, int] = {}
+        self._shrink_confirmed: set[ToolCallSignature] = set()
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -240,6 +258,10 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        if self.config.safe_write_enabled and tool_name == "write_file":
+            shrink = self._destructive_overwrite_decision(_coerce_args(args), signature)
+            if shrink is not None:
+                return shrink
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -349,6 +371,51 @@ class ToolCallGuardrailController:
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            # Repeated IDENTICAL successful mutation = cognitive loop (cf. bug 38x
+            # write_file, 2026-06-08, Claude). The read-only no_progress guard above
+            # excludes mutating tools, and the failure counters only move on failed=True,
+            # so a tool that keeps "succeeding" on the exact same call is never caught.
+            # Keyed on signature (tool + args, content included) → never flags a
+            # legitimate iterative edit, since different content = different signature.
+            # Reuses the idempotent_no_progress thresholds. Resets each turn.
+            if tool_name in self.config.mutating_tools:
+                repeat = self._mutation_repeats.get(signature, 0) + 1
+                self._mutation_repeats[signature] = repeat
+                if (
+                    self.config.hard_stop_enabled
+                    and repeat >= self.config.no_progress_block_after
+                ):
+                    decision = ToolGuardrailDecision(
+                        action="halt",
+                        code="repeated_mutation_halt",
+                        message=(
+                            f"Stopped {tool_name}: the identical successful call was "
+                            f"repeated {repeat} times this turn with no change. This is a "
+                            "loop (cf. write_file 38x). Read the file, run a validation "
+                            "(bash -n / py_compile), and change approach before retrying."
+                        ),
+                        tool_name=tool_name,
+                        count=repeat,
+                        signature=signature,
+                    )
+                    self._halt_decision = decision
+                    return decision
+                if (
+                    self.config.warnings_enabled
+                    and repeat >= self.config.no_progress_warn_after
+                ):
+                    return ToolGuardrailDecision(
+                        action="warn",
+                        code="repeated_mutation_warning",
+                        message=(
+                            f"{tool_name} repeated the identical call {repeat} times this "
+                            "turn with no change. Verify the result (read the file, run a "
+                            "syntax check) instead of writing the same thing again."
+                        ),
+                        tool_name=tool_name,
+                        count=repeat,
+                        signature=signature,
+                    )
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
@@ -378,6 +445,51 @@ class ToolCallGuardrailController:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _destructive_overwrite_decision(
+        self, args: Mapping[str, Any], signature: ToolCallSignature
+    ) -> ToolGuardrailDecision | None:
+        """Block a write_file that overwrites a non-empty file with empty / much
+        smaller content (the accidental-blanking failure: STATUS.md and a full
+        research report were wiped this way on 2026-06-09).
+
+        Independent of hard_stop_enabled — data-loss prevention, not loop
+        detection. Does NOT set _halt_decision: only this call is blocked, so the
+        model can recover in-turn by writing the intended full content. Re-issuing
+        the identical call once confirms intent (a genuine shrink then proceeds).
+        """
+        path = args.get("path") or args.get("file_path")
+        content = args.get("content")
+        if not isinstance(path, str) or not path or not isinstance(content, str):
+            return None
+        try:
+            existing = os.path.getsize(os.path.expanduser(path))
+        except OSError:
+            return None  # new or unreadable file → nothing to protect
+        if existing < self.config.safe_write_min_bytes:
+            return None  # trivially small existing file → allow
+        new_bytes = len(content.encode("utf-8"))
+        if new_bytes >= existing * self.config.safe_write_shrink_ratio:
+            return None  # not a drastic shrink → allow
+        if signature in self._shrink_confirmed:
+            return None  # identical re-issue = explicit confirmation → allow
+        self._shrink_confirmed.add(signature)
+        pct = int(round(new_bytes * 100 / existing)) if existing else 0
+        return ToolGuardrailDecision(
+            action="block",
+            code="destructive_overwrite_block",
+            message=(
+                f"Blocked write_file: this overwrites {path} ({existing} bytes) with "
+                f"only {new_bytes} bytes ({pct}% of current). This matches the "
+                "accidental-blanking failure (STATUS.md and a full report were wiped "
+                "this way on 2026-06-09). Read the file first and write the full "
+                "intended content. If you truly mean to shrink/replace it, re-issue "
+                "this exact call once to confirm."
+            ),
+            tool_name="write_file",
+            count=new_bytes,
+            signature=signature,
+        )
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
@@ -469,6 +581,16 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= 1 else default
+
+
+def _as_ratio(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if 0.0 < parsed <= 1.0 else default
 
 
 def _sha256(value: str) -> str:

@@ -62,7 +62,16 @@ _WORKER_CONFIG = {}
 # This stays in sync automatically when new tools are added to TOOL_TO_TOOLSET_MAP.
 # Used for consistent schema in Arrow/Parquet (HuggingFace datasets) and for
 # filtering corrupted entries during trajectory combination.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
+#
+# Kept as a *sorted tuple* rather than a bare ``set``. The normalization helpers
+# below build the per-record ``tool_stats`` / ``tool_error_counts`` dicts by
+# iterating this collection, so its iteration order becomes the field order in
+# every emitted batch shard. Workers run in spawned processes (the default
+# start method on macOS/Windows), each with its own ``PYTHONHASHSEED``, so a
+# ``set`` would iterate in a different order per worker. Different field orders
+# across shards make HuggingFace ``datasets`` reject the combined load with a
+# struct schema mismatch — the exact failure this normalization exists to avoid.
+ALL_POSSIBLE_TOOLS = tuple(sorted(TOOL_TO_TOOLSET_MAP.keys()))
 
 # Default stats for tools that weren't used
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
@@ -1029,8 +1038,9 @@ class BatchRunner:
         combined_file = self.output_dir / "trajectories.jsonl"
         print(f"\n📦 Combining ALL batch files into {combined_file.name}...")
         
-        # Valid tools auto-derived from model_tools.py — no manual updates needed
-        VALID_TOOLS = ALL_POSSIBLE_TOOLS
+        # Valid tools auto-derived from model_tools.py — no manual updates needed.
+        # Materialize a set for O(1) membership in the per-entry filter below.
+        VALID_TOOLS = set(ALL_POSSIBLE_TOOLS)
         
         total_entries = 0
         filtered_entries = 0

@@ -1839,10 +1839,14 @@ def _start_browser_cleanup_thread():
 
 def _stop_browser_cleanup_thread():
     """Stop the background cleanup thread."""
-    global _cleanup_running
+    global _cleanup_running, _cleanup_thread
     _cleanup_running = False
     if _cleanup_thread is not None:
-        _cleanup_thread.join(timeout=5)
+        try:
+            _cleanup_thread.join(timeout=5)
+        except Exception:
+            pass
+        _cleanup_thread = None
 
 
 def _update_session_activity(task_id: str):

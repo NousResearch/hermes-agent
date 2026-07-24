@@ -378,22 +378,25 @@ export function PanelAction({
   children,
   disabled,
   icon,
-  onClick
+  onClick,
+  spinning
 }: {
   children: ReactNode
   disabled?: boolean
   icon: string
   onClick: () => void
+  spinning?: boolean
 }) {
   return (
     <Button
+      aria-busy={spinning || undefined}
       className="gap-1.5 text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground"
       disabled={disabled}
       onClick={onClick}
       size="sm"
       variant="ghost"
     >
-      <Codicon name={icon} size="0.875rem" />
+      <Codicon name={icon} size="0.875rem" spinning={spinning} />
       {children}
     </Button>
   )

@@ -42,11 +42,11 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         normalized_model = normalized_model.split("/", 1)[1]
 
     # ``thinking_config`` is a Gemini-only request parameter. The same
-    # ``gemini`` provider also serves Gemma (and historically PaLM/Bard);
-    # those reject the field with HTTP 400 "Unknown name 'thinking_config':
-    # Cannot find field" — including the polite ``{"includeThoughts": False}``
-    # form. Omit the field entirely on non-Gemini models. (#17426)
-    if not normalized_model.startswith("gemini"):
+    # ``gemini`` provider also serves Gemma (and historically PaLM/Bard).
+    # Gemma <= 3 rejected the field with HTTP 400, but Gemma 4 models
+    # advertise ``thinking: true`` in the API model list and now accept
+    # the parameter. Only emit for Gemini and Gemma 4+ families. (#17426)
+    if not (normalized_model.startswith("gemini") or normalized_model.startswith("gemma-4")):
         return None
 
     if reasoning_config.get("enabled") is False:

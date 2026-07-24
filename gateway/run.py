@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import faulthandler
 import inspect
 import json
 import logging
@@ -3292,6 +3293,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
     _platform_lock_takeover_on_start: bool = False
+    _reconnect_watcher_task: Optional["asyncio.Task"] = None
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -4047,14 +4049,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         timeout = self._platform_connect_timeout_secs()
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
+        # Use the detach-on-timeout pattern instead of plain asyncio.wait_for:
+        # asyncio.wait_for cancels the overdue task but then waits for it to
+        # exit. An adapter connect() that catches CancelledError can therefore
+        # block recovery forever (the watcher never reaches the next retry).
+        # Keep ownership of the old task through its done callback, but
+        # release the runner at the deadline (#70344).
+        task = asyncio.ensure_future(
+            adapter.connect(is_reconnect=is_reconnect)
+        )
         try:
-            return await asyncio.wait_for(
-                adapter.connect(is_reconnect=is_reconnect), timeout=timeout
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"{platform.value} connect timed out after {timeout:g}s"
-            ) from exc
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(consume_detached_task_result)
+            raise
+        if task in done:
+            result = await task
+            return bool(result)
+        task.cancel()
+        task.add_done_callback(consume_detached_task_result)
+        raise TimeoutError(
+            f"{platform.value} connect timed out after {timeout:g}s"
+        )
 
     async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
         """Connect one cold-start adapter with tightly scoped replace intent.
@@ -4731,6 +4748,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "%s queued for background reconnection",
                     adapter.platform.value,
                 )
+                # Ensure the reconnect watcher is alive — if it died (e.g. from
+                # exhausting its restart budget), respawn it so queued platforms
+                # are not permanently stranded (#70344).
+                self._ensure_reconnect_watcher_running()
 
         if not self.adapters and not self._failed_platforms:
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
@@ -7742,6 +7763,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+        # Enable faulthandler at gateway start so that SIGUSR2 (or an
+        # internal watchdog) can dump all thread and task stacks to stderr
+        # for post-mortem diagnosis of event-loop freezes (#70344).
+        faulthandler.enable()
+        # Also dump stacks to a rotating file for off-line analysis when
+        # the gateway is running under a service manager that doesn't
+        # capture stderr.
+        try:
+            _log_dir = getattr(self.config, "log_dir", None) or os.path.join(
+                os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
+                "logs",
+            )
+            _faulthandler_path = os.path.join(_log_dir, "gateway_faulthandler.log")
+            os.makedirs(_log_dir, exist_ok=True)
+            faulthandler.register(
+                signal.SIGUSR2,
+                file=open(_faulthandler_path, "a"),
+                all_threads=True,
+                chain=True,
+            )
+        except Exception:
+            logger.debug("Could not set up faulthandler file logging", exc_info=True)
+
         try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -8461,7 +8505,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        self._spawn_supervised(self._platform_reconnect_watcher, "platform_reconnect_watcher")
+        # Track the reconnect watcher task so _ensure_reconnect_watcher_running
+        # can detect if it dies and respawn it (#70344).
+        self._reconnect_watcher_task = asyncio.create_task(
+            self._platform_reconnect_watcher()
+        )
+        self._background_tasks.add(self._reconnect_watcher_task)
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
@@ -9016,6 +9065,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # GatewayKanbanWatchersMixin (gateway/kanban_watchers.py). They use only
     # self state, so inheriting the mixin keeps every self._kanban_* call site
     # working unchanged while lifting ~1,000 LOC out of this file.
+
+    def _ensure_reconnect_watcher_running(self) -> None:
+        """Ensure the platform reconnect watcher background task is alive.
+
+        If the tracked reconnect watcher task has died (e.g. from exhausting
+        its restart budget, or a terminal exception that _spawn_supervised
+        could not recover), respawns it so platforms queued for reconnection
+        are not permanently stranded. Called after queueing a retryable fatal
+        error in _handle_adapter_fatal_error (#70344).
+        """
+        if not getattr(self, "_running", False):
+            return
+        task = getattr(self, "_reconnect_watcher_task", None)
+        if task is not None and not task.done():
+            return  # already alive
+        logger.warning(
+            "Reconnect watcher task is dead (done=%s) — respawning",
+            task.done() if task is not None else "N/A",
+        )
+        self._reconnect_watcher_task = asyncio.create_task(
+            self._platform_reconnect_watcher()
+        )
+        if getattr(self, "_background_tasks", None) is not None:
+            self._background_tasks.add(self._reconnect_watcher_task)
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.

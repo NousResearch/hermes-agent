@@ -60,6 +60,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   runtimeIdRef.current = runtimeId
   const storedIdRef = useRef(storedSessionId)
   storedIdRef.current = storedSessionId
+  // A tile IS its session (see the comment on the useSubmitPrompt call below)
+  // A tile owns one stable stored/runtime pair, so seed the shared ownership
+  // cache explicitly rather than relying on the primary route cache.
+  const runtimeIdByStoredSessionIdRef = useRef(new Map([[storedSessionId, runtimeId]]))
+  runtimeIdByStoredSessionIdRef.current.set(storedSessionId, runtimeId)
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -140,6 +145,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
+    runtimeIdByStoredSessionIdRef,
     // Tile ids are always bound before this hook mounts, so routed recovery is
     // unreachable here; keep the shared submit contract explicit.
     resumeStoredSession: () => undefined,

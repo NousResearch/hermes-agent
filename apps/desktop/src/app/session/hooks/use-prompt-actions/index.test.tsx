@@ -94,6 +94,7 @@ function Harness({
   refreshSessions,
   requestGateway,
   resumeStoredSession,
+  runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefProp,
   seedMessages,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefProp,
   storedSessionId,
@@ -116,6 +117,7 @@ function Harness({
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
+  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   seedMessages?: unknown[]
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
@@ -131,6 +133,16 @@ function Harness({
   const selectedStoredSessionIdRef: MutableRefObject<string | null> = selectedStoredSessionIdRefProp ?? {
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   }
+
+  const defaultStoredSessionId = storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
+  const defaultRuntimeSessionId = activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
+  const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> =
+    runtimeIdByStoredSessionIdRefProp ?? {
+      current:
+        defaultStoredSessionId && defaultRuntimeSessionId
+          ? new Map([[defaultStoredSessionId, defaultRuntimeSessionId]])
+          : new Map()
+    }
 
   const localBusyRef = busyRef ?? { current: false }
 
@@ -155,6 +167,7 @@ function Harness({
     refreshSessions,
     requestGateway,
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
+    runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
@@ -2303,6 +2316,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         resumeStoredSession={resumeStoredSession}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([[STORED_SESSION_ID, RECOVERED_SESSION_ID]]) }}
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={STORED_SESSION_ID}
       />
@@ -2334,6 +2348,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         resumeStoredSession={resumeStoredSession}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([[STORED_SESSION_ID, RECOVERED_SESSION_ID]]) }}
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
         storedSessionId={STORED_SESSION_ID}
       />
@@ -2666,6 +2681,208 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 
     expect(await handle!.submitText('message that must not land in session B')).toBe(false)
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+})
+
+describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65328)', () => {
+  const STORED_SESSION_B = 'stored-project-b'
+  const RUNTIME_SESSION_A = 'rt-session-a'
+  const RUNTIME_SESSION_B_RESUMED = 'rt-session-b-resumed'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not submit to runtime A when the cache proves B is bound to a different runtime (forward mismatch)', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[STORED_SESSION_B, 'rt-session-b-known']])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_B_RESUMED } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('ordinary text for the selected project B session')
+
+    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+      session_id: STORED_SESSION_B,
+      source: 'desktop'
+    })
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
+    ).toBeUndefined()
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
+    ).toBeDefined()
+  })
+
+  it('does not submit to runtime A when the cache proves A belongs to a DIFFERENT stored session (reverse proof, no forward entry for B)', async () => {
+    // The failure mode a one-directional (stored -> runtime) lookup misses:
+    // the cache has no entry for B at all (a forward miss looks like "no
+    // conflict"), but A is definitively known to belong to some OTHER
+    // stored session. A real-world trigger: the user is mid-conversation in
+    // an old session (whose runtime is A, cached under stored-project-old),
+    // then creates a fresh session B — if activeSessionIdRef hasn't been
+    // re-homed to B's own runtime yet by the time submit fires, A must not
+    // be accepted just because B itself was never cached.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-project-old', RUNTIME_SESSION_A]])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_B_RESUMED } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('ordinary text for the freshly created project B session')
+
+    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+      session_id: STORED_SESSION_B,
+      source: 'desktop'
+    })
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
+    ).toBeUndefined()
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
+    ).toBeDefined()
+  })
+
+  it('still submits directly when the cache positively maps the selected session to the runtime', async () => {
+    // Direct submit is safe only when the cache explicitly proves the selected
+    // stored session owns the active runtime.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([[STORED_SESSION_B, RUNTIME_SESSION_A]])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('first message in a genuinely fresh session')
+
+    expect(calls.some(c => c.method === 'session.resume')).toBe(false)
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
+    ).toBeDefined()
+  })
+
+  it('resumes the selected session when its ownership cache entry is missing', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_A }
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = { current: new Map() }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        return { session_id: RUNTIME_SESSION_B_RESUMED } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_A}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.submitText('message after an ownership-cache miss')
+
+    expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
+      session_id: STORED_SESSION_B,
+      source: 'desktop'
+    })
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_A)
+    ).toBeUndefined()
+    expect(
+      calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
+    ).toBeDefined()
   })
 })
 

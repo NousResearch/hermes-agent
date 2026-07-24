@@ -11585,6 +11585,20 @@ def _allowed_image_extensions() -> frozenset[str]:
         return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 
+def _attachment_display_name(value: object, default: str) -> str:
+    """Clean a client-supplied attachment name before it enters prompt text."""
+    raw = str(value or "")
+    leaf = raw.replace("\\", "/").split("/")[-1]
+    cleaned = "".join(
+        " " if ch in {"\r", "\n", "\t"} or ord(ch) < 32 else ch
+        for ch in leaf
+    )
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > 120:
+        cleaned = cleaned[:120].rstrip()
+    return cleaned or default
+
+
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
     """Write image bytes into the gateway's images dir and queue them.
 
@@ -11710,7 +11724,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
             pdf_path = td_path / "input.pdf"
             pdf_path.write_bytes(pdf_bytes)
-            display_name = str(params.get("filename", "") or "uploaded.pdf")
+            display_name = _attachment_display_name(params.get("filename"), "uploaded.pdf")
         else:
             try:
                 from cli import _resolve_attachment_path
@@ -11726,7 +11740,7 @@ def _(rid, params: dict) -> dict:
                 mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
                 return _err(rid, 4018, f"PDF too large; cap is {mb} MB")
             pdf_path = Path(resolved)
-            display_name = pdf_path.name
+            display_name = _attachment_display_name(pdf_path.name, "document.pdf")
 
         try:
             first_page = int(params.get("first_page") or 1)

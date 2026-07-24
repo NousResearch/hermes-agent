@@ -11240,10 +11240,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             if event.message_type == MessageType.PHOTO:
-                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+                # A photo follow-up arriving mid-run is a complete user turn:
+                # album/burst grouping already collapsed multi-photo messages
+                # into ONE event upstream (adapter._media_group_events /
+                # _pending_photo_batches), so each event here is a distinct
+                # user intent. In queue mode, enqueue it as its own FIFO turn
+                # so several photos sent one after another each get their own
+                # turn instead of collapsing into a single pending slot (the
+                # slot is a single "next-up" cell — a second photo would merge
+                # into / overwrite the first, silently losing it). In non-queue
+                # (interrupt/steer) mode, keep the legacy single-slot merge so
+                # rapid photo bursts still coalesce as before.
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    if self._busy_input_mode == "queue":
+                        logger.debug(
+                            "PHOTO follow-up for session %s — FIFO-queued (queue mode)",
+                            _quick_key,
+                        )
+                        self._enqueue_fifo(_quick_key, event, adapter)
+                    else:
+                        logger.debug(
+                            "PRIORITY photo follow-up for session %s — queueing without interrupt",
+                            _quick_key,
+                        )
+                        merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
             _telegram_followup_grace = float(

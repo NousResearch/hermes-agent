@@ -123,6 +123,115 @@ class TestBusySessionAck:
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_telegram_text_busy_handler_queues_without_interrupt(self):
+        """Telegram busy-handler text follow-ups should not abort the active task."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="more context",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="msg-followup",
+        )
+        sk = build_session_key(source)
+
+        running_agent = MagicMock()
+        runner._running_agents[sk] = running_agent
+        runner.adapters[source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert adapter._pending_messages[sk] is event
+        running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_priority_followup_honors_steer_mode(self):
+        """Explicit Telegram steer mode must not be overridden by auto-queueing."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        runner._queued_events = {}
+        runner._queue_or_replace_pending_event = MagicMock()
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="more context",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="msg-followup",
+        )
+        sk = build_session_key(source)
+
+        running_agent = MagicMock()
+        running_agent.steer.return_value = True
+        runner._running_agents[sk] = running_agent
+        runner.adapters[source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        running_agent.steer.assert_called_once_with("more context")
+        running_agent.interrupt.assert_not_called()
+        runner._queue_or_replace_pending_event.assert_not_called()
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_telegram_voice_busy_handler_queues_without_interrupt(self):
+        """Voice notes during a Telegram run must be queued for STT drain."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=source,
+            message_id="voice-followup",
+            media_urls=["/tmp/followup.ogg"],
+            media_types=["audio/ogg"],
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        running_agent = MagicMock()
+        runner._running_agents[sk] = running_agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        queued = adapter._pending_messages[sk]
+        assert queued is event
+        assert queued.media_urls == ["/tmp/followup.ogg"]
+        running_agent.interrupt.assert_not_called()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+        assert "/stop" in content
+
+    @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
         """Rapid Telegram text follow-ups in queue mode must not merge."""
         from gateway.run import GatewayRunner

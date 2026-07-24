@@ -649,17 +649,52 @@ class QQAdapter(BasePlatformAdapter):
                 if not self._running:
                     return
                 logger.warning("[%s] WebSocket error: %s", self._log_tag, exc)
-                self._mark_transport_disconnected()
+
+                # Quick disconnect detection — mirrors the QQCloseError handler
+                duration = time.monotonic() - connect_time
+                if duration < QUICK_DISCONNECT_THRESHOLD and connect_time > 0:
+                    quick_disconnect_count += 1
+                    logger.info(
+                        "[%s] Quick disconnect (%.1fs), count: %d",
+                        self._log_tag,
+                        duration,
+                        quick_disconnect_count,
+                    )
+                    if quick_disconnect_count >= MAX_QUICK_DISCONNECT_COUNT:
+                        logger.error(
+                            "[%s] Too many quick disconnects. "
+                            "Check: 1) AppID/Secret correct 2) Bot permissions "
+                            "3) Network / firewall stability",
+                            self._log_tag,
+                        )
+                        self._set_fatal_error(
+                            "qq_quick_disconnect",
+                            "Too many quick disconnects — check bot permissions or network",
+                            retryable=True,
+                        )
+                        return
+                else:
+                    quick_disconnect_count = 0
+
+                self._mark_disconnected()
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    self._set_fatal_error(
+                        "qq_reconnect_exhausted",
+                        "Max reconnect attempts reached",
+                        retryable=True,
+                    )
                     return
 
                 if await self._reconnect(backoff_idx):
                     backoff_idx = 0
-                    quick_disconnect_count = 0
+                    # Intentionally NOT resetting quick_disconnect_count here.
+                    # When reconnection succeeds but the WS immediately closes
+                    # (e.g. "WebSocket closed" RuntimeError loop), keeping the
+                    # counter lets MAX_QUICK_DISCONNECT_COUNT bound the retries
+                    # instead of looping forever.
                 else:
                     backoff_idx += 1
 
@@ -679,6 +714,9 @@ class QQAdapter(BasePlatformAdapter):
             await self._ensure_token()
             gateway_url = await self._get_gateway_url()
             await self._open_ws(gateway_url)
+            # Recreate heartbeat task (cancelled during disconnect, not restarted)
+            if self._heartbeat_task is None or self._heartbeat_task.done():
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
             logger.info("[%s] Reconnected", self._log_tag)
             return True
@@ -687,7 +725,11 @@ class QQAdapter(BasePlatformAdapter):
             return False
 
     async def _read_events(self) -> None:
-        """Read WebSocket frames until connection closes."""
+        """Read WebSocket frames until connection closes.
+
+        Uses a timeout on receive() to detect stale connections where the server
+        has closed but the client hasn't noticed. Timeout is 3x heartbeat interval.
+        """
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
         if self._ws.closed:
@@ -697,8 +739,17 @@ class QQAdapter(BasePlatformAdapter):
             # producing a 100% CPU spin. Raise so the reconnect/backoff path runs.
             raise RuntimeError("WebSocket closed")
 
+        receive_timeout = self._heartbeat_interval * 3
         while self._running and self._ws and not self._ws.closed:
-            msg = await self._ws.receive()
+            try:
+                msg = await asyncio.wait_for(self._ws.receive(), timeout=receive_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] WebSocket receive timeout (%.1fs), connection may be stale",
+                    self._log_tag,
+                    receive_timeout,
+                )
+                raise RuntimeError("WebSocket receive timeout")
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)
                 if payload:
@@ -716,7 +767,14 @@ class QQAdapter(BasePlatformAdapter):
 
         The interval is set from the Hello (op 10) event's heartbeat_interval.
         QQ's default is ~41s; we send at 80% of the interval to stay safe.
+
+        If heartbeat fails 3 consecutive times, we assume the connection is dead
+        and force a close to trigger reconnection.
         """
+        heartbeat_fail_count = 0
+        heartbeat_success_count = 0
+        MAX_HEARTBEAT_FAILS = 3
+        HEARTBEAT_LOG_INTERVAL = 5  # Log every 5th successful heartbeat (~5 min)
         try:
             while self._running:
                 await asyncio.sleep(self._heartbeat_interval)
@@ -725,8 +783,35 @@ class QQAdapter(BasePlatformAdapter):
                 try:
                     # d should be the latest sequence number received, or null
                     await self._ws.send_json({"op": 1, "d": self._last_seq})
+                    heartbeat_fail_count = 0  # Reset on success
+                    heartbeat_success_count += 1
+                    if heartbeat_success_count % HEARTBEAT_LOG_INTERVAL == 0:
+                        logger.info(
+                            "[%s] Heartbeat OK (count=%d)",
+                            self._log_tag,
+                            heartbeat_success_count,
+                        )
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
+                    heartbeat_fail_count += 1
+                    logger.warning(
+                        "[%s] Heartbeat failed (%d/%d): %s",
+                        self._log_tag,
+                        heartbeat_fail_count,
+                        MAX_HEARTBEAT_FAILS,
+                        exc,
+                    )
+                    if heartbeat_fail_count >= MAX_HEARTBEAT_FAILS:
+                        logger.error(
+                            "[%s] Too many heartbeat failures, forcing disconnect",
+                            self._log_tag,
+                        )
+                        self._mark_disconnected()
+                        if self._ws and not self._ws.closed:
+                            try:
+                                await self._ws.close()
+                            except Exception:
+                                pass
+                        break
         except asyncio.CancelledError:
             pass
 

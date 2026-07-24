@@ -170,9 +170,46 @@ def test_hermes_delegate_handler_preserves_legacy_path(monkeypatch):
 
     monkeypatch.setattr(delegate_tool, "delegate_task", legacy_delegate)
     parent = SimpleNamespace(_resolved_identity=ResolvedIdentity(HERMES_MODE, "Hermes"))
-
     result = delegate_tool._handle_delegate_call({"goal": "inspect"}, parent_agent=parent)
 
     assert result == "legacy"
     assert captured["goal"] == "inspect"
     assert captured["parent_agent"] is parent
+
+
+def test_empty_executor_evidence_fails_closed():
+    calls = []
+    gate = ApprovalGate(requester=lambda _operation: {"approved": True})
+
+    run = orchestrate_request(
+        REQUEST,
+        object(),
+        delegate=_delegate_from(_base_findings(), calls),
+        approval_gate=gate,
+        executor=lambda _operation: "   ",
+    )
+
+    assert len(run.executed_actions) == 1
+    assert run.executed_actions[0].status == "failed"
+    assert "no usable execution evidence" in run.executed_actions[0].evidence
+    assert run.response.result == "Approved execution failed validation"
+    assert "executed and validated" not in run.response.result.lower()
+    assert any("no usable execution evidence" in failure for failure in run.response.partial_failures)
+
+
+def test_non_empty_executor_evidence_is_preserved():
+    calls = []
+    gate = ApprovalGate(requester=lambda _operation: {"approved": True})
+
+    run = orchestrate_request(
+        REQUEST,
+        object(),
+        delegate=_delegate_from(_base_findings(), calls),
+        approval_gate=gate,
+        executor=lambda _operation: "  service state changed; health check=ok  ",
+    )
+
+    assert len(run.executed_actions) == 1
+    assert run.executed_actions[0].status == "completed"
+    assert run.executed_actions[0].evidence == "service state changed; health check=ok"
+    assert run.response.result == "Approved operations executed and validated"

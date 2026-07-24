@@ -119,12 +119,21 @@ def _execute_approved(
         if not gate.authorized(operation, receipt):
             continue
         try:
-            evidence = executor(operation)
+            raw_evidence = executor(operation)
+            evidence = "" if raw_evidence is None else str(raw_evidence).strip()
+            if not evidence:
+                executed.append(ExecutedAction(
+                    operation_fingerprint=operation.fingerprint,
+                    action=operation.action,
+                    status="failed",
+                    evidence="executor returned no usable execution evidence",
+                ))
+                continue
             executed.append(ExecutedAction(
                 operation_fingerprint=operation.fingerprint,
                 action=operation.action,
                 status="completed",
-                evidence=str(evidence),
+                evidence=evidence,
             ))
         except Exception as exc:
             executed.append(ExecutedAction(

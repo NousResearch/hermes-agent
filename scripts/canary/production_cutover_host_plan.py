@@ -29,6 +29,9 @@ from gateway import canonical_writer_production_cutover as cutover
 from gateway import production_model_sovereignty_runtime as gateway_runtime
 from gateway import production_secret_stager
 from gateway.mac_ops_edge_client import DEFAULT_SERVICE_UNIT
+from gateway.mac_ops_edge_service import (
+    DEFAULT_PROJECT_ID as MAC_OPS_PROJECT_ID,
+)
 from gateway.operational_edge_bootstrap import (
     validate_operational_edge_key_foundation,
 )
@@ -1081,7 +1084,7 @@ def stage_fixed_host_artifacts(
         socket_gid=inputs["mac_ops"]["gid"],
         service_identity_sha256=_sha(sealed["mac_ops_unit"]),
         max_connections=4,
-        project_id=inputs["target"]["project"],
+        project_id=MAC_OPS_PROJECT_ID,
         timeout_seconds=20,
         journal_busy_timeout_ms=5_000,
     )

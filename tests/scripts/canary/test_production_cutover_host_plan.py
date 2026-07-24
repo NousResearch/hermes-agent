@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from gateway.mac_ops_edge_service import DEFAULT_PROJECT_ID
 from scripts.canary import package_production_cutover_artifacts as package
 from scripts.canary import production_cutover_host_plan as producer
 from tests.scripts.canary.test_package_production_cutover_artifacts import (
@@ -61,6 +62,70 @@ def test_release_sealed_payloads_reproduce_the_manifest(tmp_path: Path) -> None:
     assert set(payloads) == producer.RELEASE_SEALED_ARTIFACT_NAMES
     assert descriptor == manifest["sealed_runtime_artifact_request"]
     assert observed_manifest == manifest
+
+
+def test_stage_uses_runtime_pinned_mac_ops_project(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class MacOpsConfigObserved(RuntimeError):
+        pass
+
+    inputs = _unit_inputs()
+    assert inputs["target"]["project"] != DEFAULT_PROJECT_ID
+    monkeypatch.setattr(
+        producer,
+        "_validate_reconciliation_intent",
+        lambda *_args, **_kwargs: ({}, {}),
+    )
+    monkeypatch.setattr(
+        producer.package,
+        "render_release_sealed_host_payloads",
+        lambda **_kwargs: (
+            {"mac_ops_unit": b"mac-ops-unit"},
+            {},
+            {"host_artifact_contract": {}},
+        ),
+    )
+    monkeypatch.setattr(
+        producer,
+        "_read_regular",
+        lambda *_args, **_kwargs: (b"source", {}),
+    )
+    monkeypatch.setattr(
+        producer,
+        "_render_connector_unit",
+        lambda *_args, **_kwargs: b"connector-unit",
+    )
+    monkeypatch.setattr(
+        producer,
+        "_render_connector_config",
+        lambda *_args, **_kwargs: b"connector-config",
+    )
+    monkeypatch.setattr(
+        producer,
+        "render_production_routeback_config",
+        lambda **_kwargs: b"routeback-config",
+    )
+
+    def observe_mac_ops_config(**kwargs: object) -> bytes:
+        assert kwargs["project_id"] == DEFAULT_PROJECT_ID
+        raise MacOpsConfigObserved
+
+    monkeypatch.setattr(
+        producer,
+        "render_production_mac_ops_config",
+        observe_mac_ops_config,
+    )
+
+    with pytest.raises(MacOpsConfigObserved):
+        producer.stage_fixed_host_artifacts(
+            REVISION,
+            release_root=tmp_path,
+            filesystem_root=tmp_path,
+            unit_inputs=inputs,
+            require_root=False,
+        )
 
 
 def test_create_only_staging_resumes_and_rejects_conflicts(

@@ -92,4 +92,22 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         metavar="KEY",
         help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
     )
+
+    # hermes tools web reorder
+    tools_web_p = tools_sub.add_parser(
+        "web",
+        help="Manage web search backend configuration",
+    )
+    tools_web_sub = tools_web_p.add_subparsers(dest="web_action")
+
+    tools_web_reorder_p = tools_web_sub.add_parser(
+        "reorder",
+        help="Interactively reorder web search provider priority",
+        description=(
+            "Show current fallback order and let you rearrange it.\n"
+            "Providers are tried left-to-right on search failure.\n"
+            "Writes the new order to config.yaml as web.fallback_backends."
+        ),
+    )
+
     tools_parser.set_defaults(func=cmd_tools)

@@ -3,6 +3,14 @@
 from providers import register_provider
 from providers.base import ProviderProfile
 
+# Default base_url is Pay As You Go.  Token Plan users get a regional
+# endpoint selected during ``hermes model`` setup and stored in
+# ``model.base_url`` in config.yaml (env var: XIAOMI_BASE_URL).
+#
+# Token Plan endpoints:
+#   CN:  https://token-plan-cn.xiaomimimo.com/v1
+#   SGP: https://token-plan-sgp.xiaomimimo.com/v1
+#   EU:  https://token-plan-ams.xiaomimimo.com/v1
 xiaomi = ProviderProfile(
     name="xiaomi",
     aliases=("mimo", "xiaomi-mimo"),

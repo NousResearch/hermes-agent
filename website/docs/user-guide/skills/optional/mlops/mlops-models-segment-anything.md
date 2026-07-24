@@ -14,8 +14,8 @@ SAM: zero-shot image segmentation via points, boxes, masks.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/mlops/models/segment-anything` |
+| Source | Optional — install with `hermes skills install official/mlops/segment-anything` |
+| Path | `optional-skills/mlops/models/segment-anything` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -92,7 +92,7 @@ import numpy as np
 from segment_anything import sam_model_registry, SamPredictor
 
 # Load model
-sam = sam_model_registry["vit_h"](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/segment-anything/checkpoint="sam_vit_h_4b8939.pth")
+sam = sam_model_registry["vit_h"](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/checkpoint="sam_vit_h_4b8939.pth")
 sam.to(device="cuda")
 
 # Create predictor
@@ -478,7 +478,7 @@ decoded_mask = mask_utils.decode(rle)
 
 ```python
 # Use smaller model for limited VRAM
-sam = sam_model_registry["vit_b"](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/segment-anything/checkpoint="sam_vit_b_01ec64.pth")
+sam = sam_model_registry["vit_b"](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/checkpoint="sam_vit_b_01ec64.pth")
 
 # Process images in batches
 # Clear CUDA cache between large batches
@@ -513,8 +513,8 @@ mask_generator = SamAutomaticMaskGenerator(
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/segment-anything/references/advanced-usage.md)** - Batching, fine-tuning, integration
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/segment-anything/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/references/advanced-usage.md)** - Batching, fine-tuning, integration
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/models/segment-anything/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

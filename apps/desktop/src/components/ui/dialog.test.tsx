@@ -1,48 +1,38 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Dialog, DialogContent, DialogTitle, isInteractionFromPopper, preventCloseButtonAutoFocus } from './dialog'
+import { Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from './dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select'
 
 afterEach(cleanup)
 
-describe('isInteractionFromPopper (dropdown-in-dialog guard)', () => {
-  afterEach(() => {
-    document.body.innerHTML = ''
-  })
+describe('Select portalled inside a Dialog', () => {
+  it('renders the open dropdown inside the dialog DOM subtree, not document.body', () => {
+    // Force the Select open (defaultOpen) to sidestep jsdom's missing
+    // hasPointerCapture on the trigger. The dropdown content must land inside the
+    // dialog content node — that DOM nesting is what keeps focus in the dialog so
+    // dismissing the dropdown no longer closes the dialog.
+    render(
+      <Dialog open>
+        <DialogContent>
+          <DialogTitle>Test dialog</DialogTitle>
+          <Select defaultOpen>
+            <SelectTrigger aria-label="picker">
+              <SelectValue placeholder="pick" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="a">Option A</SelectItem>
+            </SelectContent>
+          </Select>
+        </DialogContent>
+      </Dialog>
+    )
 
-  it('is true when the interaction target is inside a Radix popper wrapper', () => {
-    const wrapper = document.createElement('div')
-    wrapper.setAttribute('data-radix-popper-content-wrapper', '')
-    const item = document.createElement('div')
-    wrapper.appendChild(item)
-    document.body.appendChild(wrapper)
+    const dialog = screen.getByRole('dialog')
+    const option = screen.getByText('Option A')
 
-    const event = new Event('pointerdown')
-    Object.defineProperty(event, 'target', { value: item })
-
-    expect(isInteractionFromPopper(event)).toBe(true)
-  })
-
-  it('is true when a popper is open anywhere, even if the target is elsewhere (focus/re-dispatch case)', () => {
-    const wrapper = document.createElement('div')
-    wrapper.setAttribute('data-radix-popper-content-wrapper', '')
-    document.body.appendChild(wrapper)
-
-    const elsewhere = document.createElement('div')
-    document.body.appendChild(elsewhere)
-    const event = new Event('focusin')
-    Object.defineProperty(event, 'target', { value: elsewhere })
-
-    expect(isInteractionFromPopper(event)).toBe(true)
-  })
-
-  it('is false for a genuine outside interaction with no popper open', () => {
-    const elsewhere = document.createElement('div')
-    document.body.appendChild(elsewhere)
-    const event = new Event('pointerdown')
-    Object.defineProperty(event, 'target', { value: elsewhere })
-
-    expect(isInteractionFromPopper(event)).toBe(false)
+    // The dropdown item is a descendant of the dialog, i.e. portalled into it.
+    expect(dialog.contains(option)).toBe(true)
   })
 })
 

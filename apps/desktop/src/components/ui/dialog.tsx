@@ -2,6 +2,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
+import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
@@ -60,28 +61,6 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
-// Radix Select/Popover/Dropdown content is portalled OUTSIDE the dialog. Two
-// ways their dismissal wrongly closes the parent dialog:
-//   1. The dismiss pointerdown lands on the portalled popper content, and Radix
-//      re-dispatches it so the Dialog's DismissableLayer sees an outside-click.
-//   2. Closing the popover moves focus, which the Dialog reads as focusOutside.
-// Radix mounts a `[data-radix-popper-content-wrapper]` only while such a popover
-// is open. So: if the interaction target is inside that wrapper, OR one is open
-// anywhere in the document at event time, this outside-interaction is the
-// popover's dismissal — swallow it. A genuine backdrop click with no popover
-// open still closes the dialog normally.
-const POPPER_WRAPPER = '[data-radix-popper-content-wrapper]'
-
-export function isInteractionFromPopper(event: Event): boolean {
-  const target = event.target
-
-  if (target instanceof Element && target.closest(POPPER_WRAPPER)) {
-    return true
-  }
-
-  return document.querySelector(POPPER_WRAPPER) !== null
-}
-
 function DialogContent({
   className,
   children,
@@ -90,8 +69,6 @@ function DialogContent({
   banner,
   bannerTone = 'error',
   onOpenAutoFocus,
-  onInteractOutside,
-  onFocusOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -109,33 +86,14 @@ function DialogContent({
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
-  // Compose the popper guard with any caller-supplied onInteractOutside: when the
-  // outside-interaction belongs to a portalled dropdown/popover, swallow it so
-  // only the dropdown closes; otherwise defer to the caller.
-  const handleInteractOutside = (event: Parameters<NonNullable<typeof onInteractOutside>>[0]) => {
-    if (isInteractionFromPopper(event.detail.originalEvent)) {
-      event.preventDefault()
-
-      return
-    }
-
-    onInteractOutside?.(event)
-  }
-
-  // Closing a portalled Select/Popover moves focus, which the Dialog otherwise
-  // reads as focusOutside and closes on — the root cause of "clicking away from
-  // an open dropdown closes the whole dialog." Swallow focus-outside that comes
-  // from (or happens while) a popper is open; pointerdown-outside + Escape
-  // remain the real dismiss paths.
-  const handleFocusOutside = (event: Parameters<NonNullable<typeof onFocusOutside>>[0]) => {
-    if (isInteractionFromPopper(event.detail.originalEvent)) {
-      event.preventDefault()
-
-      return
-    }
-
-    onFocusOutside?.(event)
-  }
+  // Publish the dialog's content node so popovers (Select / Popover /
+  // DropdownMenu) opened inside it portal INTO the dialog instead of
+  // document.body. That keeps them as DOM descendants — focus never leaves the
+  // dialog, so dismissing a dropdown (or clicking another field) no longer
+  // trips the Dialog's outside-interaction/focus-out close. See
+  // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
+  // the node mounts.
+  const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
 
   // No default here — Radix's normal autofocus (first focusable element, often
   // an input) is what most dialogs want. Dialogs with no input should pass
@@ -180,28 +138,29 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
-          onFocusOutside={handleFocusOutside}
-          onInteractOutside={handleInteractOutside}
           onOpenAutoFocus={onOpenAutoFocus}
+          ref={setContentNode}
           {...props}
         >
-          {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
-          <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
-            <div className="grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4">{children}</div>
-          </div>
-          <div
-            className={cn(
-              // Overlap by one corner radius so the white bottom lobes read clearly
-              // over the tint instead of meeting it on a straight seam.
-              'relative z-0 -mt-[var(--radius-xl)] px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
-              DIALOG_BANNER_TONES[bannerTone]
-            )}
-            data-slot="dialog-banner"
-            role={bannerTone === 'error' ? 'alert' : 'status'}
-          >
-            {banner}
-          </div>
-          {closeButton}
+          <DialogPortalContainerContext.Provider value={contentNode}>
+            {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
+            <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
+              <div className="grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4">{children}</div>
+            </div>
+            <div
+              className={cn(
+                // Overlap by one corner radius so the white bottom lobes read clearly
+                // over the tint instead of meeting it on a straight seam.
+                'relative z-0 -mt-[var(--radius-xl)] px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
+                DIALOG_BANNER_TONES[bannerTone]
+              )}
+              data-slot="dialog-banner"
+              role={bannerTone === 'error' ? 'alert' : 'status'}
+            >
+              {banner}
+            </div>
+            {closeButton}
+          </DialogPortalContainerContext.Provider>
         </DialogPrimitive.Content>
       </DialogPortal>
     )
@@ -220,13 +179,14 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
-        onFocusOutside={handleFocusOutside}
-        onInteractOutside={handleInteractOutside}
         onOpenAutoFocus={onOpenAutoFocus}
+        ref={setContentNode}
         {...props}
       >
-        {children}
-        {closeButton}
+        <DialogPortalContainerContext.Provider value={contentNode}>
+          {children}
+          {closeButton}
+        </DialogPortalContainerContext.Provider>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

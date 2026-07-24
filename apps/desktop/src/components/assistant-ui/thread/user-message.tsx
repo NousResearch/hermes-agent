@@ -3,6 +3,10 @@ import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
+import {
+  DelegationCompletionNote,
+  parseDelegationCompletion
+} from '@/components/assistant-ui/thread/delegation-completion-note'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
@@ -194,6 +198,23 @@ export const UserMessage: FC<{
   }, [])
 
   useResizeObserver(measureClamp, clampInnerRef)
+
+  // Async-delegation completions remain synthetic user turns for the parent
+  // agent. Reclassify only their exact leading markers at presentation time;
+  // the role and complete persisted payload remain untouched.
+  const delegationCompletion = parseDelegationCompletion(messageText)
+
+  if (delegationCompletion) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col items-stretch"
+        data-role="user"
+        data-slot="aui_user-message-root"
+      >
+        <DelegationCompletionNote completion={delegationCompletion} />
+      </MessagePrimitive.Root>
+    )
+  }
 
   // Injected background-process notification, not a human prompt — render the
   // compact system-style notice (after all hooks above have run).

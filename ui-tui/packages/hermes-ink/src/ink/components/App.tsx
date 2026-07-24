@@ -779,6 +779,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   const col = m.col - 1
   const row = m.row - 1
   const baseButton = m.button & 0x03
+  const isMotion = (m.button & 0x20) !== 0
 
   // Disable app click handling without blocking wheel/right-click dispatch.
   if (isMouseClicksDisabled() && baseButton === 0) {
@@ -786,7 +787,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   }
 
   if (m.action === 'press') {
-    if ((m.button & 0x20) !== 0 && baseButton === 3) {
+    if (isMotion && baseButton === 3) {
       if (app.mouseCaptureTarget) {
         app.props.onMouseUpAt(app.mouseCaptureTarget, col, row, baseButton)
         app.mouseCaptureTarget = undefined
@@ -817,15 +818,19 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       return
     }
 
+    if (isMotion && baseButton !== 0) {
+      if (app.mouseCaptureTarget) {
+        app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
+      }
+
+      return
+    }
+
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
 
       if (baseButton === 2 && hasSelection(sel)) {
-        if ((m.button & 0x20) !== 0) {
-          return
-        }
-
         if (!app.props.getSelectedText()) {
           return
         }
@@ -855,7 +860,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       return
     }
 
-    if ((m.button & 0x20) !== 0) {
+    if (isMotion) {
       if (app.mouseCaptureTarget) {
         app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
 

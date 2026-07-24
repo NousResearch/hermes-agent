@@ -68,6 +68,7 @@ Usage:
 
 import json
 import logging
+import math
 import time
 
 from hermes_constants import get_hermes_home, display_hermes_home
@@ -753,11 +754,22 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                # Index tags from both top-level frontmatter and metadata.hermes
+                # so that search covers all real-world tag conventions.
+                metadata = frontmatter.get("metadata")
+                hermes_meta = metadata.get("hermes", {}) if isinstance(metadata, dict) else {}
+                tags = _parse_tags(frontmatter.get("tags", []))
+                if isinstance(hermes_meta, dict):
+                    tags.extend(_parse_tags(hermes_meta.get("tags", [])))
+                related = hermes_meta.get("related_skills", []) if isinstance(hermes_meta, dict) else []
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "tags": tags,
+                    "related_skills": related,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -782,15 +794,93 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def _normalize_skill_search_text(value: Any) -> str:
+    """Normalize user queries and skill metadata for forgiving matching."""
+    text = str(value or "").lower()
+    # Treat punctuation such as hyphens/underscores/slashes as separators so
+    # queries like "system prompt" find "system-prompt-skill-governance".
+    return re.sub(r"[^0-9a-z가-힣]+", " ", text).strip()
+
+
+def _skill_search_blob(skill: Dict[str, Any]) -> str:
+    """Build a single searchable text blob from all indexable skill fields."""
+    parts: List[str] = [
+        skill.get("name") or "",
+        skill.get("description") or "",
+        skill.get("category") or "",
+    ]
+    for key in ("tags", "related_skills"):
+        value = skill.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+    return _normalize_skill_search_text(" ".join(parts))
+
+
+def _score_skill_for_query(skill: Dict[str, Any], query: str) -> int:
+    """Return a simple deterministic relevance score for skills_list(query=...)."""
+    norm_query = _normalize_skill_search_text(query)
+    if not norm_query:
+        return 0
+    terms = [term for term in norm_query.split() if term]
+    if not terms:
+        return 0
+
+    name = _normalize_skill_search_text(skill.get("name"))
+    category = _normalize_skill_search_text(skill.get("category"))
+    desc = _normalize_skill_search_text(skill.get("description"))
+    blob = _skill_search_blob(skill)
+
+    score = 0
+    if norm_query == name:
+        score += 1000
+    if norm_query in name:
+        score += 500
+    if norm_query in category:
+        score += 120
+    if norm_query in desc:
+        score += 80
+
+    matched_terms = 0
+    for term in terms:
+        if term in blob:
+            matched_terms += 1
+            if term in name:
+                score += 80
+            elif term in category:
+                score += 40
+            else:
+                score += 15
+
+    # Prefer skills that match every term, but still keep partial matches so
+    # typo-ish or broad natural-language searches do not hide existing skills.
+    if matched_terms == len(terms):
+        score += 200
+    elif matched_terms:
+        score += int(25 * matched_terms / math.sqrt(len(terms)))
+
+    return score
+
+
+def skills_list(
+    category: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: Optional[int] = None,
+    task_id: Optional[str] = None,
+) -> str:
     """
-    List all available skills (progressive disclosure tier 1 - minimal metadata).
+    List or search available skills (progressive disclosure tier 1 - minimal metadata).
 
     Returns only name + description to minimize token usage. Use skill_view() to
     load full content, tags, related files, etc.
 
     Args:
         category: Optional category filter (e.g., "mlops")
+        query: Optional search query. Matches skill names, descriptions,
+            categories, tags, and related skill metadata.
+        limit: Optional maximum number of query results to return. Defaults to
+            25 for query searches and unlimited for category/all listings.
         task_id: Optional task identifier used to probe the active backend
 
     Returns:
@@ -828,12 +918,36 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
-        # Sort by category then name
-        all_skills = _sort_skills(all_skills)
+        total_before_query = len(all_skills)
+
+        if query:
+            scored = [
+                (score, skill)
+                for skill in all_skills
+                if (score := _score_skill_for_query(skill, query)) > 0
+            ]
+            scored.sort(
+                key=lambda item: (
+                    -item[0],
+                    item[1].get("category") or "",
+                    item[1].get("name") or "",
+                )
+            )
+            if limit is None:
+                effective_limit = 25
+            else:
+                try:
+                    effective_limit = max(1, min(int(limit), 100))
+                except (TypeError, ValueError):
+                    effective_limit = 25
+            all_skills = [skill for _score, skill in scored[:effective_limit]]
+        else:
+            # Sort non-query listings by category then name
+            all_skills = _sort_skills(all_skills)
 
         # Extract unique categories
         categories = sorted(
-            {s.get("category") for s in all_skills if s.get("category")}
+            {str(s.get("category")) for s in all_skills if s.get("category")}
         )
 
         return json.dumps(
@@ -842,7 +956,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "skills": all_skills,
                 "categories": categories,
                 "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "total_before_query": total_before_query if query else None,
+                "query": query or None,
+                "hint": "Use skill_view(name) to see full content, tags, and linked files. Use skills_list(query=...) to search the catalog when the system prompt only shows categories.",
             },
             ensure_ascii=False,
         )
@@ -1683,13 +1799,21 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List or search available skills (name + description). Use query to find skills by task/domain/toolchain when the system prompt only shows categories, then skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional search query matched against skill names, descriptions, categories, tags, and related skill metadata",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional max results for query searches (default 25, max 100)",
             }
         },
         "required": [],
@@ -1720,7 +1844,10 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"),
+        query=args.get("query"),
+        limit=args.get("limit"),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

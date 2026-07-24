@@ -1421,11 +1421,22 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_codex_client_credentials(force=True)
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "fresh-xai-token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.x.ai/v1"
     assert isinstance(agent.client, _RebuiltClient)
@@ -1543,11 +1554,22 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_codex_client_credentials(force=True)
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert isinstance(agent.client, _RebuiltClient)
@@ -1575,11 +1597,22 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
-    agent.client = _ExistingClient()
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
     ok = agent._try_refresh_copilot_client_credentials()
 
     assert ok is True
-    assert closed["value"] is True
+    # #70773: the replaced shared client must NOT be close()d from the
+    # refresh path (cross-thread close is the FD-recycle corruption
+    # vector) — it is retired (sockets shutdown, FD release via GC).
+    assert closed["value"] is False
+    assert retired["client"] is existing
     assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
     assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
     assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"

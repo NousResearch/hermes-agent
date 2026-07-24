@@ -39,10 +39,9 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# How long shutdown_all() waits for in-flight background sync/prefetch work
-# to drain before abandoning it. A wedged provider must never block process
-# teardown indefinitely — the worker threads are daemon, so anything still
-# running past this window dies with the interpreter.
+# How long shutdown_all() waits for its daemon finalizer. The finalizer keeps
+# draining every accepted task before provider shutdown, while a wedged daemon
+# worker still cannot block process teardown indefinitely.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
@@ -378,10 +377,15 @@ class MemoryManager:
         # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
-        # Futures are tracked by durability class so shutdown can give writes
-        # a bounded FIFO drain, then explicitly report anything abandoned.
+        # Shutdown linearizes with submission under _sync_executor_lock. Once
+        # closed, the manager never creates a replacement worker. Futures are
+        # tracked by durability class so shutdown can report anything abandoned.
+        self._background_closed = False
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_started = False
+        self._shutdown_finalizer: Optional[threading.Thread] = None
+        self._sync_drain_complete = threading.Event()
         self._background_futures: Dict[Future, str] = {}
-        self._shutting_down = False
         self._shutdown_drain_state: Dict[str, Any] = {
             "status": "not_started",
             "abandoned_writes": 0,
@@ -685,39 +689,49 @@ class MemoryManager:
 
     # -- Background dispatch -------------------------------------------------
 
-    def _submit_background(self, fn, *, kind: str = "write") -> None:
-        """Queue ``fn`` on the serialized worker and track its durability class."""
-        executor = self._get_sync_executor()
-        if executor is None:
-            if self._shutting_down:
-                logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
-                return
-            # Creation failure outside shutdown: preserve the historical
-            # fail-safe behavior and run the operation inline.
+    def _submit_background(self, fn, *, kind: str = "write") -> bool:
+        """Submit ``fn`` atomically with respect to manager shutdown.
+
+        Returns True only when the single worker accepted the work. Creation
+        or submission failure rejects the task rather than running provider
+        code inline outside lifecycle tracking. The accepted future is
+        tracked by durability class so shutdown can report anything abandoned.
+        """
+        with self._sync_executor_lock:
+            executor = self._get_sync_executor_locked()
+            if executor is None:
+                return False
             try:
-                fn()
-            except Exception as e:  # pragma: no cover - fn guards internally
-                logger.debug("Inline memory background task failed: %s", e)
-            return
-        try:
-            # Make submit+tracking atomic with the shutdown snapshot. The
-            # callback is attached after releasing the lock because an already
-            # completed future invokes callbacks synchronously.
-            with self._sync_executor_lock:
-                if self._shutting_down:
-                    logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
-                    return
                 future = executor.submit(fn)
-                self._background_futures[future] = kind
-            future.add_done_callback(self._forget_background_future)
-        except RuntimeError:
-            if self._shutting_down:
-                logger.warning("Memory manager shut down during %s submission; task rejected", kind)
-                return
+            except Exception as e:
+                logger.warning("Memory background task submission failed: %s", e)
+                return False
+            self._background_futures[future] = kind
+        # Attach the callback after releasing the lock: an already-completed
+        # future invokes callbacks synchronously.
+        future.add_done_callback(self._forget_background_future)
+        return True
+
+    def _get_sync_executor_locked(self) -> Optional[ThreadPoolExecutor]:
+        """Return/create the worker while ``_sync_executor_lock`` is held."""
+        if self._background_closed:
+            return None
+        if self._sync_executor is None:
             try:
-                fn()
-            except Exception as e:  # pragma: no cover - fn guards internally
-                logger.debug("Inline memory background task failed: %s", e)
+                # Daemon workers (see tools.daemon_pool): a provider wedged
+                # on a network call must never block interpreter exit —
+                # stdlib ThreadPoolExecutor's atexit hook would join it
+                # unconditionally even after shutdown(wait=False).
+                from tools.daemon_pool import DaemonThreadPoolExecutor
+
+                self._sync_executor = DaemonThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="mem-sync",
+                )
+            except Exception as e:  # pragma: no cover - resource exhaustion
+                logger.warning("Failed to create memory sync executor: %s", e)
+                return None
+        return self._sync_executor
 
     def _forget_background_future(self, future: Future) -> None:
         with self._sync_executor_lock:
@@ -725,44 +739,38 @@ class MemoryManager:
 
     def _get_sync_executor(self) -> Optional[ThreadPoolExecutor]:
         """Lazily create the single-worker background executor."""
-        if self._shutting_down:
-            return None
-        if self._sync_executor is not None:
-            return self._sync_executor
         with self._sync_executor_lock:
-            if self._shutting_down:
-                return None
-            if self._sync_executor is None:
-                try:
-                    # Daemon workers (see tools.daemon_pool): a provider wedged
-                    # on a network call must never block interpreter exit.
-                    from tools.daemon_pool import DaemonThreadPoolExecutor
-                    self._sync_executor = DaemonThreadPoolExecutor(
-                        max_workers=1,
-                        thread_name_prefix="mem-sync",
-                    )
-                except Exception as e:  # pragma: no cover - resource exhaustion
-                    logger.warning("Failed to create memory sync executor: %s", e)
-                    return None
-            return self._sync_executor
+            return self._get_sync_executor_locked()
 
     def flush_pending(self, timeout: Optional[float] = None) -> bool:
         """Block until queued sync/prefetch work has drained.
 
         Single-worker executor means submitting a sentinel and waiting on
-        it guarantees every previously-submitted task has run. Returns
-        True if the barrier completed within ``timeout`` (or no executor
-        exists), False on timeout. Used at real session boundaries and by
-        tests that need to assert provider state deterministically.
+        it guarantees every previously-submitted task has run. Barrier
+        submission linearizes with executor detachment under the submission
+        lock. Once shutdown has detached the executor, callers wait on the
+        explicit drain-complete signal instead. Returns True only when the
+        relevant barrier completed within ``timeout`` (or no executor has
+        ever existed), and False on timeout or barrier submission failure.
         """
-        executor = self._sync_executor
-        if executor is None:
-            return True
-        try:
-            fut = executor.submit(lambda: None)
-        except RuntimeError:
-            # Executor already shut down — nothing pending.
-            return True
+        drain_complete = None
+        with self._sync_executor_lock:
+            if self._background_closed:
+                drain_complete = self._sync_drain_complete
+                fut = None
+            else:
+                executor = self._sync_executor
+                if executor is None:
+                    return True
+                try:
+                    fut = executor.submit(lambda: None)
+                except RuntimeError as e:
+                    logger.warning("Memory flush barrier submission failed: %s", e)
+                    return False
+
+        if drain_complete is not None:
+            return drain_complete.wait(timeout=timeout)
+
         try:
             fut.result(timeout=timeout)
             return True
@@ -888,9 +896,9 @@ class MemoryManager:
         worker gives both properties at a single chokepoint: the caller returns
         immediately, and the worker's FIFO order serializes end→switch against
         every other provider write (per-turn ``sync_all``, prefetches), which
-        already share the same worker. If the executor is unavailable,
-        ``_submit_background`` degrades to inline execution — the pre-#16454
-        synchronous behavior, slow but correct.
+        already share the same worker. If the executor is unavailable, the
+        boundary task is rejected with a warning rather than running provider
+        code inline outside lifecycle tracking.
         """
         if not self._providers:
             return
@@ -1132,15 +1140,50 @@ class MemoryManager:
                 )
 
     def shutdown_all(self) -> None:
-        """Shut down all providers (reverse order for clean teardown).
+        """Bounded, idempotent shutdown without closing providers under work.
 
-        Drains the background sync/prefetch executor first (bounded by
-        ``_SYNC_DRAIN_TIMEOUT_S``) so a turn's final sync has a chance to
-        land before providers are torn down. The worker threads are
-        daemon, so anything still wedged past the drain window dies with
-        the interpreter rather than blocking exit.
+        A daemon finalizer waits without a deadline for the detached executor,
+        then closes providers in reverse order. Callers wait only
+        ``_SYNC_DRAIN_TIMEOUT_S`` for that finalizer. Because both the worker
+        and finalizer are daemon threads, process exit may still abandon wedged
+        work after the bounded caller wait.
         """
-        self._drain_sync_executor()
+        with self._shutdown_lock:
+            if not self._shutdown_started:
+                self._shutdown_started = True
+                executor = self._drain_sync_executor()
+
+                def _finalize() -> None:
+                    drained = executor is None or self._bounded_executor_wait(executor)
+                    if not drained:
+                        with self._sync_executor_lock:
+                            tracked = dict(self._background_futures)
+                            not_done = [(f, k) for f, k in tracked.items() if not f.done()]
+                            self._shutdown_drain_state.update(
+                                status="failed",
+                                abandoned_writes=sum(1 for _, k in not_done if k != "prefetch"),
+                                abandoned_prefetches=sum(1 for _, k in not_done if k == "prefetch"),
+                                active_tasks=len(not_done),
+                            )
+                        return
+                    with self._sync_executor_lock:
+                        self._shutdown_drain_state.update(status="drained", active_tasks=0)
+                    self._sync_drain_complete.set()
+                    self._shutdown_providers()
+
+                self._shutdown_finalizer = threading.Thread(
+                    target=_finalize,
+                    daemon=True,
+                    name="memory-shutdown-finalizer",
+                )
+                self._shutdown_finalizer.start()
+            finalizer = self._shutdown_finalizer
+
+        if finalizer is not None and finalizer is not threading.current_thread():
+            finalizer.join(timeout=_SYNC_DRAIN_TIMEOUT_S)
+
+    def _shutdown_providers(self) -> None:
+        """Close providers once, in reverse registration order."""
         for provider in reversed(self._providers):
             try:
                 provider.shutdown()
@@ -1156,10 +1199,10 @@ class MemoryManager:
         with self._sync_executor_lock:
             return dict(self._shutdown_drain_state)
 
-    def _drain_sync_executor(self) -> None:
-        """Give queued FIFO work a bounded chance, then abandon explicitly."""
+    def _drain_sync_executor(self) -> Optional[ThreadPoolExecutor]:
+        """Detach the worker and stop submissions without cancelling its queue."""
         with self._sync_executor_lock:
-            self._shutting_down = True
+            self._background_closed = True
             executor = self._sync_executor
             self._sync_executor = None
             tracked = dict(self._background_futures)
@@ -1170,46 +1213,28 @@ class MemoryManager:
                 "active_tasks": sum(not future.done() for future in tracked),
             }
         if executor is None:
-            return
+            return None
+        try:
+            executor.shutdown(wait=False, cancel_futures=False)
+        except TypeError:
+            # Older Python without cancel_futures kwarg.
+            try:
+                executor.shutdown(wait=False)
+            except Exception as e:  # pragma: no cover
+                logger.debug("Memory sync executor shutdown failed: %s", e)
+        except Exception as e:  # pragma: no cover
+            logger.debug("Memory sync executor shutdown failed: %s", e)
+        return executor
 
-        # shutdown(wait=False) closes submission without touching the FIFO.
-        # Waiting on the tracked futures lets the real single-worker executor
-        # run every queued write/boundary task in order up to the deadline.
-        executor.shutdown(wait=False, cancel_futures=False)
-        _, pending = wait(tuple(tracked), timeout=_SYNC_DRAIN_TIMEOUT_S)
-        if not pending:
-            with self._sync_executor_lock:
-                self._shutdown_drain_state.update(status="drained", active_tasks=0)
-            return
-
-        abandoned_writes = 0
-        abandoned_prefetches = 0
-        active_tasks = 0
-        for future in pending:
-            kind = tracked[future]
-            if future.cancel():
-                if kind == "prefetch":
-                    abandoned_prefetches += 1
-                else:
-                    abandoned_writes += 1
-            else:
-                active_tasks += 1
-
-        with self._sync_executor_lock:
-            self._shutdown_drain_state.update(
-                status="timed_out",
-                abandoned_writes=abandoned_writes,
-                abandoned_prefetches=abandoned_prefetches,
-                active_tasks=active_tasks,
-            )
-        logger.warning(
-            "Memory shutdown drain timed out after %.2fs; abandoning %d queued "
-            "memory write(s) and %d queued prefetch(es); %d active task(s) remain detached",
-            _SYNC_DRAIN_TIMEOUT_S,
-            abandoned_writes,
-            abandoned_prefetches,
-            active_tasks,
-        )
+    @staticmethod
+    def _bounded_executor_wait(executor: ThreadPoolExecutor) -> bool:
+        """Wait for every accepted task from the daemon finalizer thread."""
+        try:
+            executor.shutdown(wait=True)
+        except Exception as e:
+            logger.warning("Memory sync executor drain wait failed: %s", e)
+            return False
+        return True
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.

@@ -1,5 +1,6 @@
 """Tests for Feishu interactive card approval buttons."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -58,6 +59,7 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str = "",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +67,7 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -313,6 +315,7 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_once(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[1] = {
             "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_001",
@@ -614,6 +617,230 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is None
         mock_submit.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("open_id", "user_id", "paired_id"),
+        [
+            ("ou_paired", "", "ou_paired"),
+            ("ou_app_scoped", "tenant_paired", "tenant_paired"),
+        ],
+    )
+    def test_accepts_approval_click_from_paired_user_without_static_allowlist(
+        self,
+        _patch_callback_card_types,
+        tmp_path,
+        monkeypatch,
+        open_id,
+        user_id,
+        paired_id,
+    ):
+        from gateway.pairing import PairingStore
+        from gateway.run import GatewayRunner
+        from gateway.session import Platform
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        for name in (
+            "FEISHU_ALLOWED_USERS",
+            "FEISHU_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        default_store = PairingStore(profile="default")
+        paired_store = PairingStore(profile="work")
+        paired_store._approve_user("feishu", paired_id, "Paired User")
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = default_store
+        runner.pairing_stores = {"work": paired_store}
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[7] = {
+            "session_key": "agent:work:feishu:dm:oc_12345",
+            "message_id": "msg-7",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 7},
+            open_id=open_id,
+            user_id=user_id,
+        )
+        adapter.set_authorization_check(
+            runner._make_adapter_auth_check(Platform.FEISHU, profile_name="work")
+        )
+        submitted = []
+
+        def _capture(coro, _loop):
+            submitted.append(coro)
+            return SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
+
+        with (
+            patch("asyncio.run_coroutine_threadsafe", side_effect=_capture),
+            patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve,
+        ):
+            response = adapter._on_card_action_trigger(data)
+            asyncio.run(submitted.pop())
+
+        assert default_store.is_approved("feishu", paired_id) is False
+        assert paired_store.is_approved("feishu", paired_id) is True
+        assert response is not None
+        assert response.card is not None
+        assert response.card.data["header"]["template"] == "green"
+        assert 7 not in adapter._approval_state
+        mock_resolve.assert_called_once_with(
+            "agent:work:feishu:dm:oc_12345", "once"
+        )
+
+    def test_rejects_approval_click_when_gateway_denies_empty_static_allowlist(
+        self, _patch_callback_card_types
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[8] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg-8",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 8},
+            open_id="ou_unpaired",
+        )
+        authorization_check = MagicMock(return_value=False)
+        adapter.set_authorization_check(authorization_check)
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+        authorization_check.assert_called_once_with(
+            "ou_unpaired", "dm", "oc_12345"
+        )
+
+    def test_rejects_approval_click_when_gateway_auth_check_raises(
+        self, _patch_callback_card_types
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[9] = {
+            "session_key": "agent:main:feishu:dm:oc_12345",
+            "message_id": "msg-9",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 9},
+            open_id="ou_unknown",
+        )
+        adapter.set_authorization_check(MagicMock(side_effect=RuntimeError("boom")))
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_gateway_auth_rejects_non_gateway_approval_session_key(self):
+        adapter = _make_adapter()
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+
+        assert (
+            adapter._is_approval_operator_authorized(
+                "ou_paired",
+                state={"session_key": "malformed", "chat_id": "oc_12345"},
+            )
+            is False
+        )
+        authorization_check.assert_not_called()
+
+    def test_gateway_auth_rejects_unknown_approval_chat_type(self):
+        adapter = _make_adapter()
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+
+        assert (
+            adapter._is_approval_operator_authorized(
+                "ou_paired",
+                state={
+                    "session_key": "agent:main:feishu:p2p:oc_12345",
+                    "chat_id": "oc_12345",
+                },
+            )
+            is False
+        )
+        authorization_check.assert_not_called()
+
+    def test_paired_user_does_not_bypass_disabled_group_policy(
+        self, _patch_callback_card_types
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "disabled"
+        adapter._default_group_policy = "disabled"
+        adapter._approval_state[10] = {
+            "session_key": "agent:main:feishu:group:oc_group:ou_paired",
+            "message_id": "msg-10",
+            "chat_id": "oc_group",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 10},
+            chat_id="oc_group",
+            open_id="ou_paired",
+        )
+        authorization_check = MagicMock(return_value=True)
+        adapter.set_authorization_check(authorization_check)
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+        authorization_check.assert_not_called()
+
+    def test_group_approval_preserves_operator_user_id_allowlist(
+        self, _patch_callback_card_types
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"on_allowed"}
+        adapter._approval_state[11] = {
+            "session_key": "agent:main:feishu:group:oc_group:on_allowed",
+            "message_id": "msg-11",
+            "chat_id": "oc_group",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 11},
+            chat_id="oc_group",
+            open_id="ou_other",
+            user_id="on_allowed",
+        )
+        submitted = []
+
+        def _capture(coro, _loop):
+            submitted.append(coro)
+            return SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
+
+        with (
+            patch("asyncio.run_coroutine_threadsafe", side_effect=_capture),
+            patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve,
+        ):
+            response = adapter._on_card_action_trigger(data)
+            asyncio.run(submitted.pop())
+
+        assert response is not None
+        assert response.card is not None
+        mock_resolve.assert_called_once_with(
+            "agent:main:feishu:group:oc_group:on_allowed", "once"
+        )
 
     def test_rejects_approval_click_when_callback_chat_mismatches(self, _patch_callback_card_types):
         adapter = _make_adapter()

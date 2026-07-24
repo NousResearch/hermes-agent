@@ -46,6 +46,92 @@ from gateway.config import Platform, PlatformConfig
 from utils import env_int, env_bool
 
 logger = logging.getLogger(__name__)
+
+# ── HTML Email Styling ──────────────────────────────────────────────────────
+# Inline CSS for maximum email client compatibility (Gmail, Outlook, Apple Mail).
+
+_HTML_PREFIX = """\
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f7;">
+<div style="max-width:680px;margin:0 auto;background:#ffffff;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.6;color:#2d3748;padding:32px;">
+
+"""
+
+_HERMES_EMAIL_FOOTER = """\
+
+<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0;
+  font-size:12px;color:#a0aec0;">
+  Sent by <strong>Hermes Agent</strong> &middot;
+  <a href="https://hermes-agent.nousresearch.com" style="color:#667eea;text-decoration:none;">
+    hermes-agent.nousresearch.com
+  </a>
+</div>
+</div>
+</body>
+</html>
+"""
+
+_HERMES_EMAIL_ELEMENT_STYLES = [
+    ("h1", 'style="font-size:24px;font-weight:700;color:#1a202c;margin:24px 0 12px;border-bottom:2px solid #667eea;padding-bottom:8px;"'),
+    ("h2", 'style="font-size:20px;font-weight:700;color:#2d3748;margin:24px 0 10px;border-bottom:1px solid #e2e8f0;padding-bottom:6px;"'),
+    ("h3", 'style="font-size:17px;font-weight:600;color:#4a5568;margin:18px 0 8px;"'),
+    ("h4", 'style="font-size:15px;font-weight:600;color:#718096;margin:14px 0 6px;"'),
+    ("p", 'style="margin:0 0 12px;"'),
+    ("ul", 'style="margin:0 0 12px;padding-left:24px;"'),
+    ("ol", 'style="margin:0 0 12px;padding-left:24px;"'),
+    ("li", 'style="margin-bottom:4px;"'),
+    ("blockquote", 'style="margin:12px 0;padding:12px 16px;border-left:4px solid #667eea;background:#f7fafc;color:#4a5568;font-style:italic;"'),
+    ("table", 'style="border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;"'),
+    ("th", 'style="background:#667eea;color:#fff;padding:8px 12px;text-align:left;font-weight:600;"'),
+    ("td", 'style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"'),
+    ("tr", 'style="border-bottom:1px solid #e2e8f0;"'),
+    ("code", 'style="background:#edf2f7;padding:2px 5px;border-radius:3px;font-size:13px;font-family:Menlo,Monaco,Consolas,monospace;"'),
+    ("pre", 'style="background:#2d3748;color:#e2e8f0;padding:16px;border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.5;"'),
+    ("a", 'style="color:#667eea;text-decoration:none;"'),
+    ("strong", 'style="color:#1a202c;"'),
+    ("em", 'style="color:#4a5568;"'),
+    ("hr", 'style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;"'),
+]
+
+# HTML detection regex — matches common HTML document openings or HTML
+# fragment tags that signal the body is HTML (not plain text).
+# Used to detect pre-existing HTML in model/cron output.
+_HTML_RE = re.compile(
+    r"(?:<!DOCTYPE\s+html|<html[\s>]|<(?:div|table|h[1-6]|section|article|main|header|footer|style)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Block-level closing tags used to detect end of HTML fragments
+_BLOCK_CLOSE_RE = re.compile(
+    r"</(?:div|table|section|article|main|header|footer|body|ul|ol|p|h[1-6])>",
+    re.IGNORECASE,
+)
+
+
+def _style_html_email(html: str) -> str:
+    """Inject inline CSS styles into HTML elements for email client compat."""
+    import re
+    # Pre-code override MUST run before the general <code> tag loop,
+    # otherwise the general loop adds style= to <code> first and the
+    # override regex (?![^>]*style=) can no longer match.
+    html = re.sub(
+        r'(<pre[^>]*>.*?)<code(?![^>]*style=)(\s|>)',
+        r'\1<code style="background:transparent;padding:0;color:inherit;"\2',
+        html,
+        flags=re.DOTALL,
+    )
+    for tag, style in _HERMES_EMAIL_ELEMENT_STYLES:
+        html = re.sub(
+            rf'<{tag}(?![^>]*style=)(\s|>)',
+            rf'<{tag} {style}\1',
+            html,
+        )
+    return html
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -447,6 +533,7 @@ class EmailAdapter(BasePlatformAdapter):
         #     email:
         #       skip_attachments: true
         self._skip_attachments = extra.get("skip_attachments", False)
+        self._html_format = extra.get("html_format", True)
 
         # Require the sender's From: domain to be authenticated (SPF/DKIM/DMARC)
         # before trusting it for authorization. The From: header is
@@ -946,7 +1033,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         msg["Message-ID"] = msg_id
 
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        self._attach_body(msg, body)
 
         smtp = self._connect_smtp()
         try:
@@ -963,6 +1050,74 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
+
+    # ── HTML email helpers ──────────────────────────────────────────────────
+
+    def _attach_body(self, msg: MIMEMultipart, body: str) -> None:
+        """Attach body as plain text + optional HTML to a message.
+
+        Always wraps in multipart/alternative so email clients correctly
+        choose between plain and HTML representations.
+        """
+        alt = MIMEMultipart("alternative")
+        self._attach_parts(alt, body)
+        msg.attach(alt)
+
+    def _create_body_part(self, body: str) -> MIMEMultipart:
+        """Create a multipart/alternative body part (for use inside multipart/mixed)."""
+        alt = MIMEMultipart("alternative")
+        self._attach_parts(alt, body)
+        return alt
+
+    def _attach_parts(self, container: MIMEMultipart, body: str) -> None:
+        """Attach plain + optional HTML parts to a multipart container."""
+        # Check if body already contains HTML (from cron/model output).
+        # Models sometimes produce full HTML documents or fragments with
+        # preamble text before the first HTML tag.
+        html_match = _HTML_RE.search(body)
+        if html_match and self._html_format:
+            # Body already contains HTML — strip preamble and trailing
+            # commentary, then send as multipart/alternative.
+            html_body = body[html_match.start():]
+
+            # Strip content after </html> (first occurrence, not last)
+            html_end = html_body.lower().find("</html>")
+            if html_end >= 0:
+                html_body = html_body[: html_end + len("</html>")]
+            else:
+                # HTML fragment — strip trailing model commentary
+                for m in reversed(list(_BLOCK_CLOSE_RE.finditer(html_body))):
+                    after = html_body[m.end():]
+                    if not after.strip():
+                        break
+                    if re.search(r"<[a-zA-Z/!]", after.strip()):
+                        continue  # still HTML
+                    html_body = html_body[: m.end()]
+                    break
+
+            # Generate plain-text fallback
+            import html as _html_mod
+            plain = _html_mod.unescape(re.sub(r"<[^>]+>", "", html_body)).strip()
+            if not plain:
+                plain = "(HTML email — please view in a client that supports HTML.)"
+
+            container.attach(MIMEText(plain, "plain", "utf-8"))
+            container.attach(MIMEText(html_body, "html", "utf-8"))
+        else:
+            # Body is markdown/plain — convert to HTML if html_format enabled
+            container.attach(MIMEText(body, "plain", "utf-8"))
+            if self._html_format:
+                try:
+                    import markdown
+                    html_body = markdown.markdown(
+                        body, extensions=["tables", "fenced_code", "nl2br"]
+                    )
+                    html_body = _style_html_email(_HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER)
+                    container.attach(MIMEText(html_body, "html", "utf-8"))
+                except ImportError:
+                    logger.debug("[Email] markdown not installed, sending plain text")
+                except Exception as e:
+                    logger.warning("[Email] HTML conversion failed, falling back to plain: %s", e)
 
     async def send_image(
         self,
@@ -1060,7 +1215,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Message-ID"] = msg_id
 
         if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(self._create_body_part(body))
 
         for file_path in file_paths:
             p = Path(file_path)
@@ -1140,7 +1295,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Message-ID"] = msg_id
 
         if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(self._create_body_part(body))
 
         # Attach file
         p = Path(file_path)
@@ -1197,16 +1352,22 @@ async def _standalone_send(
     force_document=False,
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
-    standalone_sender_fn contract; replaces the legacy _send_email helper."""
+    standalone_sender_fn contract; replaces the legacy _send_email helper.
+
+    Sends multipart/alternative with plain text + HTML (when markdown is
+    available). Uses the same inline CSS styling as the adapter class.
+    """
     import smtplib
     import ssl as _ssl
     from email.mime.text import MIMEText
     from email.utils import formatdate
+    from email.mime.multipart import MIMEMultipart as _MIMEMultipart
 
     extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    html_format = extra.get("html_format", True)
     try:
         smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     except (ValueError, TypeError):
@@ -1216,14 +1377,40 @@ async def _standalone_send(
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        # Build multipart/alternative with plain + HTML
+        msg = _MIMEMultipart()
         msg["From"] = address
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        # Plain text part (always)
+        alt = _MIMEMultipart("alternative")
+        alt.attach(MIMEText(message, "plain", "utf-8"))
+
+        # HTML part (when markdown is available and html_format enabled)
+        if html_format:
+          try:
+            import markdown
+            html_body = markdown.markdown(
+                message, extensions=["tables", "fenced_code", "nl2br"]
+            )
+            html_body = _style_html_email(_HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER)
+            alt.attach(MIMEText(html_body, "html", "utf-8"))
+          except ImportError:
+              pass  # no markdown lib, send plain only
+          except Exception:
+              pass  # HTML conversion failed, send plain only
+
+        msg.attach(alt)
+
+        # Port 465 uses implicit TLS (SMTP_SSL), others use STARTTLS
+        ctx = _ssl.create_default_context()
+        if smtp_port == 465:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30, context=ctx)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+            server.starttls(context=ctx)
         server.login(address, password)
         server.send_message(msg)
         server.quit()
@@ -1266,7 +1453,7 @@ def register(ctx) -> None:
         allow_all_env="EMAIL_ALLOW_ALL_USERS",
         cron_deliver_env_var="EMAIL_HOME_ADDRESS",
         standalone_sender_fn=_standalone_send,
-        max_message_length=50_000,
+        max_message_length=200_000,
         pii_safe=True,
         emoji="📧",
         allow_update_command=True,

@@ -120,7 +120,30 @@ Replies are sent via SMTP with proper email threading:
 - **In-Reply-To** and **References** headers maintain the thread
 - **Subject line** preserved with `Re:` prefix (no double `Re: Re:`)
 - **Message-ID** generated with the agent's domain
-- Responses are sent as plain text (UTF-8)
+- Responses are sent as **multipart/alternative** with both plain text and HTML (when `html_format: true`, the default)
+- HTML emails use inline CSS for maximum client compatibility (Gmail, Outlook, Apple Mail)
+- If the model output already contains HTML (e.g., from cron jobs), it is detected and sent as HTML with preamble stripping
+- Port 465 uses implicit TLS (SMTP_SSL), other ports use STARTTLS
+
+#### HTML Format Configuration
+
+By default, email responses include rich HTML formatting. To disable HTML and send plain text only:
+
+```yaml
+platforms:
+  email:
+    extra:
+      html_format: false
+```
+
+When `html_format: true` (default):
+- Markdown content is converted to styled HTML with inline CSS
+- Pre-existing HTML in model output is detected and sent as-is
+- Both plain text and HTML parts are wrapped in `multipart/alternative`
+
+When `html_format: false`:
+- All content is sent as plain text only
+- HTML tags in model output are stripped
 
 ### File Attachments
 

@@ -2357,11 +2357,35 @@ async def send_weixin_direct(
         adapter._token_store = token_store
 
         last_result: Optional[SendResult] = None
-        cleaned = adapter.format_message(message)
-        if cleaned:
-            last_result = await adapter.send(chat_id, cleaned)
-            if not last_result.success:
-                return {"error": f"Weixin send failed: {last_result.error}"}
+
+        async def _try_send_with_refresh() -> Optional[SendResult]:
+            nonlocal last_result
+            cleaned = adapter.format_message(message)
+            if cleaned:
+                last_result = await adapter.send(chat_id, cleaned)
+            return last_result
+
+        # Retry once on session/rate-limit errors, then give an
+        # actionable error so cron/send_message can surface it.
+        for _retry in range(2):
+            last_result = await _try_send_with_refresh()
+            if last_result and last_result.success:
+                break
+            err = last_result.error if last_result else ""
+            is_rate = "rate limited" in err or "ret=-2" in err
+            is_session = "session" in err.lower()
+            if not is_rate and not is_session:
+                break
+            # Clear stale context_token and retry once without it
+            if context_token:
+                token_store._cache.pop(
+                    token_store._key(account_id, chat_id), None
+                )
+                context_token = None
+            await asyncio.sleep(3.0)
+
+        if not last_result or not last_result.success:
+            return {"error": f"Weixin send failed: {last_result.error if last_result else 'unknown'}"}
 
         for media_path, _is_voice in media_files or []:
             ext = Path(media_path).suffix.lower()

@@ -737,7 +737,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 # renders "全部智能体 0". We cache the count keyed by the skills dir, invalidated
 # when the dir tree's signature (skills_dir + immediate category dirs mtimes)
 # changes (catches skill add/remove) or after a short TTL (catches deep edits).
-_SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
+_SKILL_COUNT_CACHE: dict[str, tuple[tuple[float, ...], float, int]] = {}
 _SKILL_COUNT_TTL_SECONDS = 30.0
 
 
@@ -768,29 +768,81 @@ def _skills_dir_signature(skills_dir: Path) -> float:
     return sig
 
 
+def _collect_skills_dirs(profile_dir: Path) -> List[Path]:
+    """Return all skill directories visible to *profile_dir*.
+
+    Order: profile-specific skills first (own ``skills/``), then the global
+    ``~/.hermes/skills/`` (via ``get_default_hermes_root`` so this is
+    unaffected by profile-scope overrides), then any
+    ``skills.external_dirs`` from config.
+    """
+    from agent.skill_utils import get_external_skills_dirs
+    from hermes_constants import get_default_hermes_root
+
+    dirs: List[Path] = []
+
+    profile_skills = profile_dir / "skills"
+    if profile_skills.is_dir():
+        dirs.append(profile_skills)
+
+    global_skills = get_default_hermes_root() / "skills"
+    if global_skills.is_dir() and global_skills not in dirs:
+        dirs.append(global_skills)
+
+    for ext_dir in get_external_skills_dirs():
+        if ext_dir not in dirs:
+            dirs.append(ext_dir)
+
+    return dirs
+
+
+def _skills_dirs_signature(dirs: List[Path]) -> tuple[float, ...]:
+    """Combined change-signature for multiple skill directories."""
+    return tuple(_skills_dir_signature(d) for d in dirs)
+
+
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile (cached by skills-dir signature)."""
-    skills_dir = profile_dir / "skills"
-    if not skills_dir.is_dir():
+    """Count total skills available to *profile_dir* (profile-specific +
+    global + external dirs, cached by combined dir signature).
+
+    Deduplicates by skill name (from YAML frontmatter) across directories so
+    a skill that appears in both the global dir and the profile's own dir is
+    counted once — matching how ``scan_skill_commands`` loads skills.
+    """
+    dirs = _collect_skills_dirs(profile_dir)
+    if not dirs:
         return 0
 
-    key = str(skills_dir)
-    signature = _skills_dir_signature(skills_dir)
+    key = ";".join(str(d) for d in dirs)
+    signatures = _skills_dirs_signature(dirs)
     now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
     if (
         cached is not None
-        and cached[0] == signature
+        and cached[0] == signatures
         and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS
     ):
         return cached[2]
 
+    from agent.skill_utils import parse_frontmatter
+
     count = 0
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
+    seen_names: set = set()
+    for sdir in dirs:
+        for md in sdir.rglob("SKILL.md"):
+            if is_excluded_skill_path(md):
+                continue
+            # Dedup by skill name from frontmatter
+            try:
+                frontmatter, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+                name = frontmatter.get("name", md.parent.name)
+            except Exception:
+                name = md.parent.name
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            count += 1
+    _SKILL_COUNT_CACHE[key] = (signatures, now, count)
     return count
 
 

@@ -1322,6 +1322,86 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 
 # ---------------------------------------------------------------------------
+# SCHEMA_SQL column introspection (keeps the legacy-DB migration in sync)
+# ---------------------------------------------------------------------------
+
+# Table-level constraint keywords. A line inside ``CREATE TABLE`` that starts
+# with one of these is a constraint clause, NOT a column definition, and must
+# be excluded from the parsed column map.
+_TABLE_CONSTRAINT_KEYWORDS = (
+    "primary key",
+    "foreign key",
+    "unique",
+    "check",
+    "constraint",
+)
+
+
+def _parse_schema_columns(table: str, schema_sql: str = SCHEMA_SQL) -> "dict[str, str]":
+    """Parse ``CREATE TABLE <table>`` from SCHEMA_SQL into name -> column DDL.
+
+    Why: the legacy-DB migration historically hard-coded one ``ALTER TABLE``
+    per optional column, and any SCHEMA_SQL column forgotten in that list
+    silently broke legacy boards (5 incidents: claim_lock, claim_expires,
+    started_at, workspace_kind, workspace_path). Deriving the authoritative
+    column set directly from SCHEMA_SQL means no future column can be
+    forgotten — the generic reconcile picks it up automatically and the
+    drift-guard test fails loudly if the parse and SCHEMA_SQL disagree.
+    What: returns an ordered ``{column_name: "<name> <type/constraints>"}``
+    map for the named table, with SQL ``--`` comments stripped and
+    table-level constraint clauses (PRIMARY KEY (...), etc.) excluded. The
+    value is the exact DDL fragment usable as ``ALTER TABLE ADD COLUMN <ddl>``.
+    Test: ``_parse_schema_columns("tasks")`` includes ``started_at`` ->
+    "started_at INTEGER" and ``workspace_kind`` ->
+    "workspace_kind TEXT NOT NULL DEFAULT 'scratch'", and excludes ``id``'s
+    PRIMARY KEY from being treated as a separate constraint row.
+    """
+    # Isolate the body between the table's CREATE TABLE ... ( and its matching
+    # closing ");". SCHEMA_SQL has no nested parens at table scope, so the
+    # first ");" after the opening paren terminates the table body.
+    pattern = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?" + re.escape(table) + r"\s*\((.*?)\n\)\s*;",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(schema_sql)
+    if not match:
+        raise ValueError(f"table {table!r} not found in SCHEMA_SQL")
+    body = match.group(1)
+
+    columns: "dict[str, str]" = {}
+    for raw_line in body.splitlines():
+        # Strip trailing ``--`` comments and surrounding whitespace.
+        line = raw_line.split("--", 1)[0].strip().rstrip(",").strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(lowered.startswith(kw) for kw in _TABLE_CONSTRAINT_KEYWORDS):
+            continue
+        name = line.split(None, 1)[0]
+        # Defensive: a bare keyword line with no following type is not a column.
+        if " " not in line:
+            continue
+        columns[name] = line
+    return columns
+
+
+def _is_not_null_without_default(column_ddl: str) -> bool:
+    """Return True when a column DDL is NOT NULL but declares no DEFAULT.
+
+    Why: SQLite ``ALTER TABLE ADD COLUMN`` rejects a NOT NULL column that has
+    no DEFAULT (it can't backfill existing rows). The generic reconcile must
+    skip such a column rather than crash. None currently exist in the
+    optional set (``workspace_kind`` carries ``DEFAULT 'scratch'``), but this
+    guards against a future SCHEMA_SQL change introducing one.
+    What: case-insensitive check for ``NOT NULL`` present and ``DEFAULT`` absent.
+    Test: True for "x INTEGER NOT NULL"; False for
+    "workspace_kind TEXT NOT NULL DEFAULT 'scratch'" and "y TEXT".
+    """
+    lowered = column_ddl.lower()
+    return "not null" in lowered and "default" not in lowered
+
+
+# ---------------------------------------------------------------------------
 # Connection helpers
 # ---------------------------------------------------------------------------
 
@@ -1404,11 +1484,41 @@ def _cross_process_init_lock(path: Path):
     is redundant work, not corruption. A bounded "proceed anyway" beats an
     unbounded hang that silently stops the board.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
-    handle = lock_path.open("a+b")
-    acquired = False
+
+    # Open the advisory-lock sidecar, but DEGRADE GRACEFULLY if it can't be
+    # created/opened (e.g. a read-only mount, a lock file owned by another uid,
+    # or a filesystem that rejects the open). Previously any
+    # ``PermissionError``/``OSError`` here raised out of ``connect()`` and
+    # permanently blocked ALL migration on that board — the kanban DB could
+    # never self-heal. The advisory lock is only an optimization to serialize
+    # first-connect setup across processes; the in-process ``_INIT_LOCK`` still
+    # protects threads within this process and the additive migrations are
+    # idempotent and race-tolerant (``_add_column_if_missing`` swallows
+    # duplicate-column races). So on open failure we log once and proceed
+    # WITHOUT the cross-process lock rather than blocking kanban forever.
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except (PermissionError, OSError) as exc:
+        _log.warning(
+            "kanban: cross-process init lock unavailable for %s (%s); "
+            "proceeding without advisory lock — in-process lock still applies "
+            "and additive migrations are idempotent",
+            lock_path,
+            exc,
+        )
+        yield
+        return
+
+    acquired = False
+    lock_degraded = False
+    try:
+        # Bounded, non-blocking acquire (#36644): retry ``LOCK_NB`` up to a
+        # deadline, then proceed WITHOUT the cross-process lock. This preserves
+        # main's bounded-loop behaviour — a wedged holder can no longer block
+        # this connect indefinitely — while the open-failure fallback above and
+        # the lock-error fallback below add graceful degradation on top of it.
         deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
         if _IS_WINDOWS:
             import msvcrt
@@ -1433,11 +1543,27 @@ def _cross_process_init_lock(path: Path):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     acquired = True
                     break
-                except (BlockingIOError, OSError):
+                except BlockingIOError:
+                    # Held by another process — keep polling until the deadline.
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(_INIT_LOCK_POLL_SECONDS)
-        if not acquired:
+                except (PermissionError, OSError) as exc:
+                    # Structural inability to lock this sidecar (bad fd, a
+                    # filesystem without ``flock`` support, etc.) rather than
+                    # simple contention — polling would never succeed, so
+                    # degrade immediately instead of spinning to the deadline.
+                    _log.warning(
+                        "kanban: could not acquire cross-process init lock on "
+                        "%s (%s); proceeding without advisory lock — in-process "
+                        "lock still applies and additive migrations are "
+                        "idempotent",
+                        lock_path,
+                        exc,
+                    )
+                    lock_degraded = True
+                    break
+        if not acquired and not lock_degraded:
             _log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
                 "without the cross-process lock (in-process lock + idempotent "
@@ -2412,6 +2538,39 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+
+    # Generic SCHEMA_SQL reconcile (the durable fix). The hand-maintained
+    # ALTER list above repeatedly drifted from SCHEMA_SQL's CREATE TABLE: a
+    # column added to SCHEMA_SQL for fresh DBs but forgotten here left legacy
+    # boards without it, and the one-shot backfill SELECT below (which reads
+    # claim_lock, claim_expires, started_at, ...) then crashed the dispatcher
+    # tick with ``sqlite3.OperationalError: no such column: <col>``. This bit
+    # 5 times (claim_lock, claim_expires, started_at, workspace_kind,
+    # workspace_path). Instead of chasing each column by hand, derive the
+    # authoritative column set straight from SCHEMA_SQL and ADD whatever the
+    # live table is missing, using the EXACT type/default SCHEMA_SQL declares.
+    # This runs BEFORE the backfill SELECT so every column it references
+    # exists. ``_add_column_if_missing`` is presence-checked and
+    # race-tolerant; we still gate on the live snapshot to avoid needless
+    # ALTERs. A column that is NOT NULL without a DEFAULT cannot be added by
+    # SQLite ALTER TABLE, so we skip+warn rather than crash (none exist in the
+    # set today — workspace_kind carries DEFAULT 'scratch' — but this guards
+    # future drift).
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    for name, ddl in _parse_schema_columns("tasks").items():
+        if name in cols:
+            continue
+        if _is_not_null_without_default(ddl):
+            _log.warning(
+                "kanban: SCHEMA_SQL column %r is NOT NULL without a DEFAULT and "
+                "cannot be added to a legacy 'tasks' table via ALTER TABLE; "
+                "skipping (DDL: %s)",
+                name,
+                ddl,
+            )
+            continue
+        _add_column_if_missing(conn, "tasks", name, ddl)
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.

@@ -18,11 +18,10 @@ Design notes
   client import inside the function, lenient response parse, never
   raises on expected failure modes.
 
-* The system prompt sees the *configured* profile roster — names plus
-  descriptions plus the default fallback. Profiles without a
-  description are still listed (with a note) so the decomposer can
-  match on name as a fallback, but the user has an obvious incentive
-  to describe them.
+* The system prompt sees the *configured* generic-routing roster — installed
+  profiles with literal non-blank string descriptions. Missing, blank,
+  whitespace, and malformed non-string descriptions are excluded from automatic
+  routing; direct task assignment remains available for installed profiles.
 
 * ``fanout=false`` collapses to the same effect as ``kanban specify``:
   we tighten the body and flip ``triage -> todo`` as a single task,
@@ -214,12 +213,18 @@ def _resolve_default_assignee(cfg: dict) -> str:
         return "default"
 
 
+def _has_usable_description(description: object) -> bool:
+    """Return whether a profile description is eligible for generic routing."""
+    return isinstance(description, str) and bool(description.strip())
+
+
 def _build_roster() -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
-    Each roster entry is ``{name, description, has_description}``. The
-    valid-set is used after the LLM responds to rewrite invalid
-    assignees to the default fallback.
+    Only profiles with literal non-blank string descriptions enter the generic
+    routing roster. The valid-set is used after the LLM responds to rewrite
+    invalid assignees to the default fallback. Direct task assignment is
+    handled elsewhere and is not restricted by this roster.
     """
     roster: list[dict] = []
     valid: set[str] = set()
@@ -229,13 +234,18 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return roster, valid
     for p in all_profiles:
-        desc = (p.description or "").strip()
+        name = getattr(p, "name", None)
+        description = getattr(p, "description", None)
+        if not isinstance(name, str) or not _has_usable_description(description):
+            continue
+        # The eligibility helper guarantees this cast is safe and non-blank.
+        assert isinstance(description, str)
         roster.append({
-            "name": p.name,
-            "description": desc or f"(no description; profile named {p.name!r})",
-            "has_description": bool(desc),
+            "name": name,
+            "description": description.strip(),
+            "has_description": True,
         })
-        valid.add(p.name)
+        valid.add(name)
     return roster, valid
 
 

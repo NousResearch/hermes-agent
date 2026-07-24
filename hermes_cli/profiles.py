@@ -804,8 +804,8 @@ def _count_skills(profile_dir: Path) -> int:
 # profile itself (its role, who described it). Mixing them makes both
 # harder to read.
 #
-# Missing file -> empty defaults; never an error. The kanban decomposer
-# tolerates empty descriptions and just falls back to the profile name.
+# Missing file -> empty defaults; never an error. Consumers such as the
+# kanban decomposer decide whether an empty or malformed description is usable.
 
 
 def _profile_yaml_path(profile_dir: Path) -> Path:
@@ -831,8 +831,14 @@ def read_profile_meta(profile_dir: Path) -> dict:
         return {"description": "", "description_auto": False}
     if not isinstance(data, dict):
         return {"description": "", "description_auto": False}
+    description = data.get("description")
+    # Preserve the metadata type boundary. Stringifying malformed YAML values
+    # would make lists, mappings, and scalars appear to be valid descriptions to
+    # consumers such as the Kanban generic-routing roster.
+    if not isinstance(description, str):
+        description = ""
     return {
-        "description": str(data.get("description") or "").strip(),
+        "description": description.strip(),
         "description_auto": bool(data.get("description_auto", False)),
     }
 

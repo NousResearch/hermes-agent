@@ -1632,6 +1632,48 @@ class TestWebServerEndpoints:
         finally:
             db.close()
 
+    def test_rename_compression_root_updates_visible_tip(self):
+        """Renaming a projected compression root must persist on its visible tip."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rename-root", source="desktop")
+            db.set_session_title("rename-root", "Generated title")
+            db.append_message("rename-root", "user", "start")
+            db.end_session("rename-root", "compression")
+            db.create_session(
+                session_id="rename-tip",
+                source="desktop",
+                parent_session_id="rename-root",
+            )
+            db.set_session_title("rename-tip", "Generated title #2")
+            db.append_message("rename-tip", "assistant", "continued")
+        finally:
+            db.close()
+
+        resp = self.client.patch(
+            "/api/sessions/rename-root",
+            json={"title": "Janus EQ adjustment"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "Janus EQ adjustment"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("rename-root") == "Generated title"
+            assert db.get_session_title("rename-tip") == "Janus EQ adjustment"
+            visible = [
+                row
+                for row in db.list_sessions_rich(limit=20, min_message_count=1)
+                if row.get("_lineage_root_id") == "rename-root"
+            ]
+            assert [(row["id"], row["title"]) for row in visible] == [
+                ("rename-tip", "Janus EQ adjustment")
+            ]
+        finally:
+            db.close()
+
     def test_rename_session_clears_title_when_empty(self):
         from hermes_state import SessionDB
 

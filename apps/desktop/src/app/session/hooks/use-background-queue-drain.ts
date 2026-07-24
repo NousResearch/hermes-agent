@@ -13,7 +13,9 @@ import {
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 
@@ -27,6 +29,15 @@ interface BackgroundQueueDrainOptions {
 }
 
 const BACKGROUND_DRAIN_RETRY_MS = 750
+
+/** True when two ids name the same conversation across compression tip rotation. */
+export function idsShareLineage(a: string, b: string, sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]): boolean {
+  if (a === b) {
+    return true
+  }
+
+  return sessions.some(session => sessionMatchesStoredId(session, a) && sessionMatchesStoredId(session, b))
+}
 
 /**
  * Drain queued prompts for sessions that are not currently rendered by ChatBar.
@@ -153,14 +164,19 @@ export function useBackgroundQueueDrain({
       return
     }
 
-    const working = new Set(workingSessionIds)
+    const sessions = $sessions.get()
+    const working = [...workingSessionIds]
 
     for (const [sessionKey, entries] of Object.entries(queuedPromptsBySession)) {
+      const isSelected =
+        Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
+      const isBusy = working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
+
       if (
-        sessionKey === selectedStoredSessionId ||
+        isSelected ||
         drainingSessionIdsRef.current.has(sessionKey) ||
         !shouldAutoDrain({
-          isBusy: working.has(sessionKey),
+          isBusy,
           parked: Boolean(parkedQueueSessions[sessionKey]),
           queueLength: entries.length
         })

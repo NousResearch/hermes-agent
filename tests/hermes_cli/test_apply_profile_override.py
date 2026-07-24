@@ -323,3 +323,68 @@ class TestSupervisedChildIgnoresStickyProfile:
         assert result is not None
         assert result.endswith("coder")
 
+
+class TestCronEditProfileExemption:
+    """``cron edit`` uses ``--profile`` as a job field, not a context switch.
+
+    ``_apply_profile_override`` must skip consuming ``--profile`` when it
+    appears after ``cron edit``, so argparse can receive it as the job's
+    profile field instead.
+    """
+
+    def test_profile_after_cron_edit_is_not_consumed(self, tmp_path, monkeypatch):
+        """``hermes cron edit jid --profile trading`` must leave ``--profile`` in argv."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        argv = ["hermes", "cron", "edit", "abc123", "--profile", "trading"]
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # HERMES_HOME must NOT be set (no profile override happened)
+        assert os.environ.get("HERMES_HOME") is None
+        # argv must be unchanged — --profile not consumed
+        assert sys.argv == argv
+
+    def test_profile_equals_after_cron_edit_is_not_consumed(self, tmp_path, monkeypatch):
+        """``hermes cron edit jid --profile=trading`` also must leave argv intact."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        argv = ["hermes", "cron", "edit", "abc123", "--profile=trading"]
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv == argv
+
+    def test_profile_after_cron_other_subcommands_is_consumed(self, tmp_path, monkeypatch):
+        """``hermes cron list --profile coder`` must still work as context switch."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
+
+        argv = ["hermes", "cron", "list", "--profile", "coder"]
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # Must redirect to coder profile
+        hermes_home = os.environ.get("HERMES_HOME")
+        assert hermes_home is not None
+        assert hermes_home.endswith("coder")
+        # --profile coder must be stripped from argv
+        assert sys.argv == ["hermes", "cron", "list"]
+

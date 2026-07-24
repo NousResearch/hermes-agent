@@ -68,7 +68,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_create.add_argument(
         "--workdir",
-        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
+        help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Omit to preserve old behaviour (no project context files).",
+    )
+    cron_create.add_argument(
+        "--profile",
+        help="Assign this job to a specific profile. The job's cron data (db, output) stays in the profile's home.",
     )
 
     # cron edit
@@ -133,6 +137,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--profile",
+        help="Assign this job to a specific profile. The job's cron data (db, output) stays in the profile's home. Pass empty string to clear or omit to keep current.",
     )
 
     # lifecycle actions

@@ -5548,6 +5548,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
+        interaction_channel = getattr(interaction, "channel", None)
+        parent_id = self._get_parent_channel_id(interaction_channel) if is_thread else None
         source = self.build_source(
             chat_id=str(interaction.channel_id),
             chat_name=chat_name,
@@ -5556,11 +5558,13 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            parent_chat_id=parent_id,
+            ancestor_chat_ids=self._channel_ancestor_ids(interaction_channel),
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
-        parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        parent_id = parent_id or ""
         return MessageEvent(
             text=text,
             message_type=msg_type,
@@ -5641,6 +5645,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+        _parent_channel = (
+            self._thread_parent_channel(_chan)
+            if isinstance(_chan, discord.Thread)
+            else _chan
+        )
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
 
         source = self.build_source(
             chat_id=thread_id,
@@ -5650,10 +5660,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            parent_chat_id=_parent_id or None,
+            ancestor_chat_ids=self._channel_ancestor_ids(_parent_channel),
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -6934,6 +6944,33 @@ class DiscordAdapter(BasePlatformAdapter):
             return str(parent_id)
         return None
 
+    def _channel_ancestor_ids(self, channel: Any) -> tuple[str, ...]:
+        """Return stable Discord ancestor IDs, nearest first.
+
+        ``parent_chat_id`` carries a thread's immediate parent separately.
+        This list includes every more-distant Discord parent (notably the
+        category) and is deterministically de-duplicated by the gateway.
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
+        current = channel
+        while current is not None:
+            parent = (
+                getattr(current, "parent", None)
+                or getattr(current, "category", None)
+            )
+            if parent is None:
+                category_id = str(getattr(current, "category_id", "") or "")
+                if category_id and category_id not in seen:
+                    ids.append(category_id)
+                break
+            parent_id = str(getattr(parent, "id", "") or "")
+            if parent_id and parent_id not in seen:
+                seen.add(parent_id)
+                ids.append(parent_id)
+            current = parent
+        return tuple(ids)
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
@@ -7327,6 +7364,7 @@ class DiscordAdapter(BasePlatformAdapter):
             is_bot=getattr(message.author, "bot", False),
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
+            ancestor_chat_ids=self._channel_ancestor_ids(effective_channel),
             message_id=str(message.id),
             role_authorized=role_authorized,
             auto_thread_created=auto_threaded_channel is not None,

@@ -1162,6 +1162,40 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
             env.cwd = new_cwd
 
 
+def update_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+    """Merge *overrides* into a task's existing environment overrides.
+
+    Unlike :func:`register_task_env_overrides`, this helper preserves keys
+    already registered by another caller.  The registration API intentionally
+    retains its replacement semantics for rollout callers that depend on it.
+    """
+    merged = dict(_task_env_overrides.get(task_id, {}))
+    merged.update(overrides)
+    register_task_env_overrides(task_id, merged)
+
+
+def clear_task_env_override_cwd(task_id: str, *, expected_cwd: str) -> bool:
+    """Remove a caller-owned cwd override without disturbing sibling keys.
+
+    The expected-value guard prevents a stale conversation-boundary cleanup
+    from deleting a cwd installed later by another owner.  Live environment
+    objects are deliberately left untouched so an already-running turn keeps
+    its cwd; subsequent resolution no longer sees the stale registry entry.
+    """
+    current = _task_env_overrides.get(task_id)
+    if not isinstance(current, dict) or current.get("cwd") != expected_cwd:
+        return False
+    remaining = dict(current)
+    remaining.pop("cwd", None)
+    if remaining:
+        _task_env_overrides[task_id] = remaining
+    else:
+        _task_env_overrides.pop(task_id, None)
+    if get_session_cwd(task_id) == expected_cwd:
+        clear_session_cwd(task_id)
+    return True
+
+
 def clear_task_env_overrides(task_id: str):
     """
     Clear environment overrides for a task after rollout completes.

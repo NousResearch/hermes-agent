@@ -193,6 +193,10 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_id_alt=src.get("chat_id_alt"),
         scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
+        ancestor_chat_ids=tuple(
+            str(value) for value in (src.get("ancestor_chat_ids") or ())
+            if value is not None
+        ),
         message_id=src.get("message_id"),
         # The HERMES profile this event is routed to (multiplex mode). The
         # connector stamps it on the wire source when NAS resolves the target

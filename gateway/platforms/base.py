@@ -505,7 +505,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union, Sequence
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -5782,6 +5782,7 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None,
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
+        ancestor_chat_ids: Optional[Sequence[str]] = None,
         message_id: Optional[str] = None,
         role_authorized: bool = False,
         auto_thread_created: bool = False,
@@ -5820,6 +5821,7 @@ class BasePlatformAdapter(ABC):
                         scope_id=str(scope_id) if scope_id else None,
                         guild_id=str(guild_id) if guild_id else None,
                         parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+                        ancestor_chat_ids=tuple(str(value) for value in (ancestor_chat_ids or ())),
                         message_id=str(message_id) if message_id else None,
                     )
                 )
@@ -5844,6 +5846,7 @@ class BasePlatformAdapter(ABC):
             scope_id=str(scope_id) if scope_id else None,
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            ancestor_chat_ids=tuple(str(value) for value in (ancestor_chat_ids or ())),
             message_id=str(message_id) if message_id else None,
             profile=profile,
             role_authorized=role_authorized,

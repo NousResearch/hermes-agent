@@ -475,6 +475,35 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+#### Channel workspace overrides
+
+The existing `channel_overrides` mapping supports an optional `workdir` on
+every messaging platform. The value must be an existing absolute directory.
+Hermes uses it for project context discovery and as the base directory for
+terminal, file, and code-execution tools.
+
+```yaml
+discord:
+  channel_overrides:
+    "111":
+      workdir: /srv/projects/alpha
+    "222":
+      workdir: /home/user/projects/docs
+      model: example/model
+```
+
+Keys are stable platform IDs, not names. On Discord, an override on category
+ID `111` applies to its child channels and threads. A child channel override
+such as `222` wins over its category, and a thread override such as `333` wins
+over both. Lookup always proceeds from the exact thread/channel to its parent,
+then through more distant ancestors.
+
+The selected workspace is pinned for the lifetime of a conversation to keep
+the system prompt cache stable. After changing a mapping, start a new/reset
+session (or restart the gateway) before expecting the new workspace to apply.
+Invalid, relative, missing, or non-directory paths reject the turn with a
+configuration error instead of falling back to another working directory.
+
 #### `discord.history_backfill`
 
 **Type:** boolean — **Default:** `true`
@@ -904,5 +933,3 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
-

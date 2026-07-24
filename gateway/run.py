@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, Sequence, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -2227,6 +2227,12 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # and run_sync) must not leak into a future conversation's first user
     # message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes",
+    # The selected channel workspace is pinned for the conversation so a
+    # config edit cannot silently change project context mid-session.
+    "_session_workdirs",
+    # session_key -> {task/session id: gateway-installed cwd}. Kept separately
+    # from the pin because terminal overrides are keyed by session_id.
+    "_session_workdir_task_overrides",
 )
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
@@ -2853,15 +2859,16 @@ def _channel_override_lookup_keys(
     *,
     thread_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    ancestor_ids: Optional[Sequence[str]] = None,
 ) -> list[str]:
     """Ordered, de-duplicated keys for ``channel_overrides`` lookup.
 
-    Matches ``resolve_channel_prompt`` semantics: exact thread/channel id first,
-    then parent channel/forum id (Discord threads inherit parent overrides).
+    Exact thread/channel ID wins, followed by the immediate parent and then
+    platform-supplied ancestors from nearest to farthest.
     """
     keys: list[str] = []
     seen: set[str] = set()
-    for key in (chat_id, thread_id, parent_id):
+    for key in (chat_id, thread_id, parent_id, *(ancestor_ids or ())):
         if not key:
             continue
         sk = str(key)
@@ -2879,11 +2886,12 @@ def _get_channel_override(
     *,
     thread_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    ancestor_ids: Optional[Sequence[str]] = None,
 ) -> Optional[ChannelOverride]:
     """Return per-channel override for this platform/chat_id, or None.
 
-    Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
-    ``parent_id`` (forum threads / child channels inherit the parent entry).
+    Looks up ``channel_overrides`` by exact ID, immediate parent, then ordered
+    platform-supplied ancestors (for example a Discord category).
     """
     platforms = getattr(config, "platforms", None)
     if not platforms:
@@ -2893,7 +2901,8 @@ def _get_channel_override(
         return None
     overrides = platform_config.channel_overrides
     for key in _channel_override_lookup_keys(
-        chat_id, thread_id=thread_id, parent_id=parent_id
+        chat_id, thread_id=thread_id, parent_id=parent_id,
+        ancestor_ids=ancestor_ids,
     ):
         ov = overrides.get(key)
         if ov is not None:
@@ -4411,6 +4420,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id,
                 thread_id=thread_id,
                 parent_id=parent_id,
+                ancestor_ids=getattr(source, "ancestor_chat_ids", ()),
             )
             if ch:
                 if ch.model:
@@ -5435,6 +5445,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config: Optional[dict] = None,
         thread_id: Optional[str] = None,
         parent_id: Optional[str] = None,
+        ancestor_ids: Optional[Sequence[str]] = None,
     ) -> str:
         """Resolve model for this channel: channel_overrides else global default."""
         config = getattr(self, "config", None)
@@ -5445,6 +5456,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id,
                 thread_id=thread_id,
                 parent_id=parent_id,
+                ancestor_ids=ancestor_ids,
             )
             if override and override.model:
                 return override.model
@@ -5457,6 +5469,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         thread_id: Optional[str] = None,
         parent_id: Optional[str] = None,
+        ancestor_ids: Optional[Sequence[str]] = None,
     ) -> str:
         """Ephemeral system prompt for this channel/thread.
 
@@ -5473,10 +5486,60 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id,
                 thread_id=thread_id,
                 parent_id=parent_id,
+                ancestor_ids=ancestor_ids,
             )
             if override and override.system_prompt:
                 return (override.system_prompt or "").strip()
         return getattr(self, "_ephemeral_system_prompt", None) or ""
+
+    def _resolve_workdir_for_session(
+        self,
+        source: SessionSource,
+        session_key: str,
+    ) -> str:
+        """Return the validated, conversation-pinned channel workdir.
+
+        A missing override is represented by ``""``. Config changes take
+        effect only after a conversation boundary clears the pin.
+        """
+        pinned = getattr(self, "_session_workdirs", None)
+        if not isinstance(pinned, dict):
+            pinned = {}
+            self._session_workdirs = pinned
+        if session_key in pinned:
+            return pinned[session_key]
+
+        override = _get_channel_override(
+            self.config,
+            source.platform,
+            str(source.chat_id or ""),
+            thread_id=getattr(source, "thread_id", None),
+            parent_id=getattr(source, "parent_chat_id", None),
+            ancestor_ids=getattr(source, "ancestor_chat_ids", ()),
+        )
+        configured = (override.workdir or "").strip() if override else ""
+        if not configured:
+            pinned[session_key] = ""
+            return ""
+
+        path = Path(configured)
+        if not path.is_absolute():
+            raise ValueError(
+                f"channel override workdir must be an absolute path: {configured!r}"
+            )
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(
+                f"channel override workdir does not exist: {configured!r}"
+            ) from exc
+        if not resolved.is_dir():
+            raise ValueError(
+                f"channel override workdir is not a directory: {configured!r}"
+            )
+        value = str(resolved)
+        pinned[session_key] = value
+        return value
 
     @staticmethod
     def _load_reasoning_config(model: str = "") -> dict | None:
@@ -12782,9 +12845,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
+
+        # Resolve once per conversation before binding any tool context. An
+        # invalid override must stop the turn rather than fall through to the
+        # gateway process cwd.
+        try:
+            session_workdir = self._resolve_workdir_for_session(source, session_key)
+        except ValueError as exc:
+            logger.error(
+                "Refusing gateway turn with invalid channel workdir for %s: %s",
+                session_key,
+                exc,
+            )
+            adapter = self._adapter_for_source(source)
+            if adapter:
+                metadata = (
+                    {"thread_id": source.thread_id}
+                    if getattr(source, "thread_id", None)
+                    else None
+                )
+                await adapter.send(
+                    source.chat_id,
+                    f"⚠️ Invalid channel workspace configuration: {exc}",
+                    metadata=metadata,
+                )
+            return None
+        if session_workdir:
+            # Tool calls use the conversation's session_id as task_id. Seed
+            # the existing per-task terminal/file cwd registry; no process
+            # cwd or global TERMINAL_CWD mutation is involved.
+            from tools.terminal_tool import update_task_env_overrides
+
+            update_task_env_overrides(
+                session_entry.session_id,
+                {"cwd": session_workdir},
+            )
+            owned = getattr(self, "_session_workdir_task_overrides", None)
+            if not isinstance(owned, dict):
+                owned = {}
+                self._session_workdir_task_overrides = owned
+            owned.setdefault(session_key, {})[session_entry.session_id] = session_workdir
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(context, cwd=session_workdir)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -17149,7 +17252,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext, *, cwd: str = "") -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -17180,6 +17283,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
+            cwd=cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -18678,6 +18782,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if not session_key:
             return
+        owned_workdirs = getattr(self, "_session_workdir_task_overrides", None)
+        if isinstance(owned_workdirs, dict):
+            task_overrides = owned_workdirs.get(session_key, {})
+            if isinstance(task_overrides, dict):
+                from tools.terminal_tool import clear_task_env_override_cwd
+
+                for task_id, expected_cwd in tuple(task_overrides.items()):
+                    clear_task_env_override_cwd(
+                        task_id,
+                        expected_cwd=expected_cwd,
+                    )
         for attr in _CONVERSATION_SCOPED_STATE:
             store = getattr(self, attr, None)
             if isinstance(store, dict):
@@ -21003,6 +21118,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.chat_id or "",
                 thread_id=getattr(source, "thread_id", None),
                 parent_id=getattr(source, "parent_chat_id", None),
+                ancestor_ids=getattr(source, "ancestor_chat_ids", ()),
             )
             if cfg_channel_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()

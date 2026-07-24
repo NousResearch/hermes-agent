@@ -209,7 +209,10 @@ class TestUpdateManagedUv:
     def test_self_update_success(self, tmp_path):
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch(
+                 "hermes_cli.managed_uv.upgrade_vulnerable_sqlite_runtime"
+             ) as mock_runtime_upgrade:
             # uv self update succeeds
             mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
             from hermes_cli.managed_uv import update_managed_uv
@@ -218,16 +221,103 @@ class TestUpdateManagedUv:
             # First call is self update, second is --version
             assert mock_run.call_count == 2
             assert mock_run.call_args_list[0][0][0] == [str(tmp_path / "bin" / "uv"), "self", "update"]
+            mock_runtime_upgrade.assert_called_once_with(str(tmp_path / "bin" / "uv"))
 
     def test_self_update_failure_non_fatal(self, tmp_path):
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch(
+                 "hermes_cli.managed_uv.upgrade_vulnerable_sqlite_runtime"
+             ) as mock_runtime_upgrade:
             mock_run.return_value = MagicMock(returncode=1, stderr="nope")
             from hermes_cli.managed_uv import update_managed_uv
             result = update_managed_uv()
             # Still returns the path — failure is non-fatal
             assert result == str(tmp_path / "bin" / "uv")
+            mock_runtime_upgrade.assert_called_once_with(str(tmp_path / "bin" / "uv"))
+
+
+# ---------------------------------------------------------------------------
+# SQLite runtime migration
+# ---------------------------------------------------------------------------
+
+class TestSqliteRuntimeMigration:
+    def test_probe_reports_safe_runtime(self):
+        completed = MagicMock(returncode=0, stdout="3.53.1\n", stderr="")
+        with patch("hermes_cli.managed_uv.subprocess.run", return_value=completed):
+            from hermes_cli.managed_uv import _probe_sqlite_runtime
+
+            assert _probe_sqlite_runtime("/python") == (False, "3.53.1")
+
+    def test_probe_reports_vulnerable_runtime(self):
+        completed = MagicMock(returncode=42, stdout="3.50.4\n", stderr="")
+        with patch("hermes_cli.managed_uv.subprocess.run", return_value=completed):
+            from hermes_cli.managed_uv import _probe_sqlite_runtime
+
+            assert _probe_sqlite_runtime("/python") == (True, "3.50.4")
+
+    def test_safe_runtime_does_not_reinstall_python(self):
+        with patch(
+            "hermes_cli.managed_uv._probe_sqlite_runtime",
+            return_value=(False, "3.53.1"),
+        ), patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            from hermes_cli.managed_uv import upgrade_vulnerable_sqlite_runtime
+
+            assert upgrade_vulnerable_sqlite_runtime(
+                "/uv", python_executable="/venv/python"
+            )
+            mock_run.assert_not_called()
+
+    def test_vulnerable_runtime_is_force_reinstalled(self):
+        reinstall = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "hermes_cli.managed_uv._probe_sqlite_runtime",
+            side_effect=[(True, "3.50.4"), (False, "3.53.1")],
+        ), patch(
+            "hermes_cli.managed_uv.subprocess.run", return_value=reinstall
+        ) as mock_run:
+            from hermes_cli.managed_uv import upgrade_vulnerable_sqlite_runtime
+
+            assert upgrade_vulnerable_sqlite_runtime(
+                "/uv", python_executable="/venv/python"
+            )
+            assert mock_run.call_args_list[0][0][0] == [
+                "/uv",
+                "python",
+                "install",
+                "3.11",
+                "--reinstall",
+            ]
+
+    def test_failed_reinstall_is_non_fatal(self):
+        reinstall = MagicMock(returncode=1, stdout="", stderr="file is locked")
+        with patch(
+            "hermes_cli.managed_uv._probe_sqlite_runtime",
+            return_value=(True, "3.50.4"),
+        ), patch("hermes_cli.managed_uv.subprocess.run", return_value=reinstall):
+            from hermes_cli.managed_uv import upgrade_vulnerable_sqlite_runtime
+
+            assert not upgrade_vulnerable_sqlite_runtime(
+                "/uv", python_executable="/venv/python"
+            )
+
+    def test_active_path_still_vulnerable_requires_venv_rebuild(self):
+        reinstall = MagicMock(returncode=0, stdout="", stderr="")
+        with patch(
+            "hermes_cli.managed_uv._probe_sqlite_runtime",
+            side_effect=[
+                (True, "3.50.4"),
+                (True, "3.50.4"),
+            ],
+        ), patch(
+            "hermes_cli.managed_uv.subprocess.run", return_value=reinstall
+        ):
+            from hermes_cli.managed_uv import upgrade_vulnerable_sqlite_runtime
+
+            assert not upgrade_vulnerable_sqlite_runtime(
+                "/uv", python_executable="/venv/python"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -216,6 +216,21 @@ class TestManifestParsing:
         cfg = _build_server_config(_entry("demo"), None)
         assert "env" not in cfg
 
+    def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/sse"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "MCP_DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        cfg = _build_server_config(_entry("demo"), None)
+        assert cfg["url"] == "https://mcp.example.com/sse"
+        assert cfg["headers"] == {"Authorization": "Bearer ${MCP_DEMO_API_KEY}"}
+
     def test_transport_env_bad_shape_rejected(self, catalog_dir):
         body = _basic_manifest()
         body["transport"]["env"] = ["DISABLE_TELEMETRY=true"]  # list, not mapping
@@ -333,6 +348,29 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_api_key_writes_bearer_headers(self, catalog_dir, monkeypatch):
+        body = _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/sse"},
+            auth={
+                "type": "api_key",
+                "env": [{"name": "MCP_DEMO_API_KEY", "prompt": "key", "secret": True}],
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli import mcp_catalog
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda *a, **kw: "secret-val")
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/sse"
+        assert server["headers"] == {"Authorization": "Bearer secret-val"}
 
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

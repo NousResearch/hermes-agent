@@ -3330,6 +3330,7 @@ export const ja = defineLocale({
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
+    readinessChecksDisagree: 'setup.status は資格情報が設定済みと報告していますが、ランタイム解決は失敗しました。',
     emptySlashCommand: '空のスラッシュコマンド',
     desktopCommands: 'デスクトップコマンド',
     skillCommandsAvailable: count => `${count} 件のスキルコマンドが利用可能です。`,

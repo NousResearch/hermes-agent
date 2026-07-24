@@ -2799,6 +2799,7 @@ export const en: Translations = {
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
+    readinessChecksDisagree: 'setup.status reports configured credentials, but runtime resolution still failed.',
     emptySlashCommand: 'empty slash command',
     desktopCommands: 'Desktop commands',
     skillCommandsAvailable: count => `${count} skill commands available.`,

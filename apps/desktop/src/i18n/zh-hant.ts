@@ -3121,6 +3121,7 @@ export const zhHant = defineLocale({
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
+    readinessChecksDisagree: 'setup.status 顯示憑證已設定，但執行階段解析仍然失敗。',
     emptySlashCommand: '空的斜線指令',
     desktopCommands: '桌面端指令',
     skillCommandsAvailable: count => `${count} 個技能指令可用。`,

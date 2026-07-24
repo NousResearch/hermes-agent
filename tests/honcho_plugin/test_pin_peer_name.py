@@ -816,6 +816,69 @@ class TestPinTransition:
 
         assert sig_before["honcho.ai_peer"] != sig_after["honcho.ai_peer"]
 
+    def test_cache_busting_signature_reflects_session_peer_prefix(self, tmp_path, monkeypatch):
+        """Flipping ``sessionPeerPrefix`` mid-flight must invalidate the cached agent.
+
+        Symmetric to the ``sessionAiPeerPrefix`` case below: the user-side
+        prefix also feeds ``resolve_session_name`` (per-session/title/per-repo/
+        per-directory strategies), so the provider's frozen ``_session_key``
+        goes stale on a live flip unless the cached agent is rebuilt.
+        """
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "sessionStrategy": "per-directory",
+            "sessionPeerPrefix": False,
+        }))
+        sig_off = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "sessionStrategy": "per-directory",
+            "sessionPeerPrefix": True,
+        }))
+        sig_on = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert sig_off["honcho.session_peer_prefix"] != sig_on["honcho.session_peer_prefix"]
+
+    def test_cache_busting_signature_reflects_session_ai_peer_prefix(self, tmp_path, monkeypatch):
+        """Flipping ``sessionAiPeerPrefix`` mid-flight must invalidate the cached agent.
+
+        The provider freezes its resolved session key at construction
+        (``_session_key`` in ``plugins/memory/honcho/__init__.py``), so without
+        busting here a live flip would leave an existing gateway session bound
+        to its old, AI-peer-agnostic Honcho session until an unrelated eviction
+        or restart — the same staleness contract covered above for ``aiPeer``.
+        """
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "aiPeer": "hermes",
+            "sessionAiPeerPrefix": False,
+        }))
+        sig_off = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "aiPeer": "hermes",
+            "sessionAiPeerPrefix": True,
+        }))
+        sig_on = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert sig_off["honcho.session_ai_peer_prefix"] != sig_on["honcho.session_ai_peer_prefix"]
+
 
 class TestProfilePeerUniqueness:
     """Each Hermes profile can pin to its own unique peerName.

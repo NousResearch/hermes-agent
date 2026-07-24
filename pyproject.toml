@@ -316,7 +316,7 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hegi", "hegi.*"]
 
 [tool.setuptools.package-data]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
@@ -325,6 +325,19 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
 # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
 # in gateway/status_phrases.py and gateway/run.py.
 gateway = ["assets/**/*"]
+hegi = [
+  "config/*.yaml",
+  "config/*.json",
+  "prompts/v2/*.md",
+  "docs/*.md",
+  "scripts/*.sh",
+  "plugin/*.yaml",
+  "plugin/*.py",
+  "README.md",
+  "CHANGELOG.md",
+  "ROADMAP.md",
+  "VERSION",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

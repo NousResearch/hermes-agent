@@ -1,5 +1,6 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+hegi/patches/*.patch linguist-generated=true -whitespace
 
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the

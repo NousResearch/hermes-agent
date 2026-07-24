@@ -1,0 +1,1475 @@
+From fff2b055686ca6ad94a3efbd4a9339f94f18fdb1 Mon Sep 17 00:00:00 2001
+From: Yong Wook Lee <icerain@jj.ac.kr>
+Date: Fri, 24 Jul 2026 15:30:48 +0900
+Subject: [PATCH-HEGI-v2 1/3] feat(hegi): add sqlite conversation collector
+
+---
+ hegi/VERSION                    |   1 +
+ hegi/__init__.py                |  19 ++
+ hegi/collector.py               | 209 +++++++++++++++++++++
+ hegi/config.py                  | 200 ++++++++++++++++++++
+ hegi/config/default.yaml        |  63 +++++++
+ hegi/config/schema.json         |  39 ++++
+ hegi/episode.py                 | 106 +++++++++++
+ hegi/models.py                  | 155 ++++++++++++++++
+ hegi/state.py                   | 314 ++++++++++++++++++++++++++++++++
+ pyproject.toml                  |  13 +-
+ tests/hegi/test_collector.py    |  93 ++++++++++
+ tests/hegi/test_config_state.py |  43 +++++
+ tests/hegi/test_episode.py      |  55 ++++++
+ tests/hegi/test_load.py         |  31 ++++
+ 14 files changed, 1340 insertions(+), 1 deletion(-)
+ create mode 100644 hegi/VERSION
+ create mode 100644 hegi/__init__.py
+ create mode 100644 hegi/collector.py
+ create mode 100644 hegi/config.py
+ create mode 100644 hegi/config/default.yaml
+ create mode 100644 hegi/config/schema.json
+ create mode 100644 hegi/episode.py
+ create mode 100644 hegi/models.py
+ create mode 100644 hegi/state.py
+ create mode 100644 tests/hegi/test_collector.py
+ create mode 100644 tests/hegi/test_config_state.py
+ create mode 100644 tests/hegi/test_episode.py
+ create mode 100644 tests/hegi/test_load.py
+
+diff --git a/hegi/VERSION b/hegi/VERSION
+new file mode 100644
+index 000000000..227cea215
+--- /dev/null
++++ b/hegi/VERSION
+@@ -0,0 +1 @@
++2.0.0
+diff --git a/hegi/__init__.py b/hegi/__init__.py
+new file mode 100644
+index 000000000..18548a604
+--- /dev/null
++++ b/hegi/__init__.py
+@@ -0,0 +1,19 @@
++"""HEGI research meeting automation."""
++
++from .models import (
++    ActionItem,
++    MeetingEpisode,
++    MeetingMinutes,
++    MemoryEvaluation,
++    SourceMessage,
++)
++
++__all__ = [
++    "ActionItem",
++    "MeetingEpisode",
++    "MeetingMinutes",
++    "MemoryEvaluation",
++    "SourceMessage",
++]
++
++__version__ = "2.0.0"
+diff --git a/hegi/collector.py b/hegi/collector.py
+new file mode 100644
+index 000000000..ec49907eb
+--- /dev/null
++++ b/hegi/collector.py
+@@ -0,0 +1,209 @@
++"""Read-only collection and deterministic cross-profile merge."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++import sqlite3
++from dataclasses import asdict
++from pathlib import Path
++from typing import Any, Iterable
++
++from .config import AgentSourceConfig
++from .models import SourceMessage
++from .state import StateStore
++
++
++_EXCLUDED_BLOCK_TYPES = {
++    "tool_call",
++    "tool_result",
++    "function_call",
++    "function_result",
++    "reasoning",
++    "system",
++}
++_TEXT_KEYS = ("text", "content", "message", "body", "output_text")
++
++
++def extract_content(value: Any) -> str:
++    """Extract human-visible text while excluding tool/reasoning blocks."""
++    if value is None:
++        return ""
++    parsed = value
++    if isinstance(value, str):
++        stripped = value.strip()
++        if stripped[:1] in {"[", "{"}:
++            try:
++                parsed = json.loads(stripped)
++            except (json.JSONDecodeError, TypeError):
++                parsed = stripped
++        else:
++            parsed = stripped
++    parts: list[str] = []
++
++    def walk(item: Any) -> None:
++        if isinstance(item, str):
++            if item.strip():
++                parts.append(item.strip())
++            return
++        if isinstance(item, list):
++            for child in item:
++                walk(child)
++            return
++        if not isinstance(item, dict):
++            return
++        block_type = str(item.get("type", "")).lower()
++        role = str(item.get("role", "")).lower()
++        if block_type in _EXCLUDED_BLOCK_TYPES or role in {"system", "tool"}:
++            return
++        found = False
++        for key in _TEXT_KEYS:
++            if key in item:
++                walk(item[key])
++                found = True
++        if not found:
++            for child in item.values():
++                if isinstance(child, (dict, list)):
++                    walk(child)
++
++    walk(parsed)
++    return re.sub(r"\s+", " ", " ".join(parts)).strip()
++
++
++def normalize_content(content: str) -> str:
++    return re.sub(r"\s+", " ", content).strip()
++
++
++def open_readonly(path: Path) -> sqlite3.Connection:
++    if not path.is_file():
++        raise FileNotFoundError(path)
++    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=10)
++    connection.row_factory = sqlite3.Row
++    connection.execute("PRAGMA query_only=ON")
++    connection.execute("PRAGMA busy_timeout=10000")
++    return connection
++
++
++class HermesSQLiteCollector:
++    def __init__(
++        self,
++        sources: list[AgentSourceConfig],
++        state: StateStore,
++        *,
++        timestamp_bucket_seconds: int = 3,
++    ):
++        self.sources = sources
++        self.state = state
++        self.timestamp_bucket_seconds = max(1, timestamp_bucket_seconds)
++
++    def collect(self, chat_id: str, *, since: float | None = None) -> list[SourceMessage]:
++        collected: list[SourceMessage] = []
++        high_water: dict[str, tuple[float, int]] = {}
++        for source in self.sources:
++            cursor_ts, cursor_id = self.state.get_cursor(str(source.db_path))
++            effective_since = since if since is not None else cursor_ts
++            rows = self._query_source(source, chat_id, effective_since, cursor_id)
++            collected.extend(rows)
++            if rows:
++                newest = max(rows, key=lambda item: (item.timestamp, item.message_id))
++                high_water[str(source.db_path)] = (newest.timestamp, newest.message_id)
++        self.state.buffer_messages([asdict(message) for message in collected])
++        for source_db, (timestamp, message_id) in high_water.items():
++            self.state.set_cursor(source_db, timestamp, message_id)
++        buffered = [
++            SourceMessage(**payload) for payload in self.state.buffered_messages(chat_id)
++        ]
++        return deduplicate_messages(buffered, self.timestamp_bucket_seconds)
++
++    @staticmethod
++    def _query_source(
++        source: AgentSourceConfig,
++        chat_id: str,
++        since: float,
++        cursor_id: int,
++    ) -> list[SourceMessage]:
++        connection = open_readonly(source.db_path)
++        try:
++            columns = {
++                row["name"]
++                for row in connection.execute("PRAGMA table_info(messages)").fetchall()
++            }
++            required = {"id", "session_id", "role", "content", "timestamp"}
++            missing = required - columns
++            if missing:
++                raise RuntimeError(
++                    f"{source.db_path} messages schema missing: {sorted(missing)}"
++                )
++            optional = lambda name, fallback: f"m.{name}" if name in columns else fallback
++            query = f"""
++                SELECT m.id AS message_id, m.session_id, m.role, m.content, m.timestamp,
++                    {optional("platform_message_id", "NULL")} AS platform_message_id,
++                    {optional("active", "1")} AS active,
++                    {optional("compacted", "0")} AS compacted,
++                    s.chat_id, s.chat_type
++                FROM messages AS m
++                JOIN sessions AS s ON s.id = m.session_id
++                WHERE s.chat_id = ?
++                  AND m.role IN ('user', 'assistant')
++                  AND COALESCE({optional("active", "1")}, 1) = 1
++                  AND (m.timestamp > ? OR (m.timestamp = ? AND m.id > ?))
++                ORDER BY m.timestamp, m.id
++            """
++            rows = connection.execute(query, (str(chat_id), since, since, cursor_id)).fetchall()
++        finally:
++            connection.close()
++        result: list[SourceMessage] = []
++        for row in rows:
++            content = extract_content(row["content"])
++            if not content:
++                continue
++            result.append(
++                SourceMessage(
++                    source_agent=source.name,
++                    source_db=str(source.db_path),
++                    message_id=int(row["message_id"]),
++                    session_id=str(row["session_id"]),
++                    platform_message_id=(
++                        str(row["platform_message_id"])
++                        if row["platform_message_id"] is not None
++                        else None
++                    ),
++                    chat_id=str(row["chat_id"]),
++                    chat_type=str(row["chat_type"] or ""),
++                    role=str(row["role"]).lower(),  # type: ignore[arg-type]
++                    content=content,
++                    timestamp=float(row["timestamp"]),
++                    active=bool(row["active"]),
++                    compacted=bool(row["compacted"]),
++                )
++            )
++        return result
++
++
++def _dedup_key(message: SourceMessage, bucket_seconds: int) -> str:
++    if message.platform_message_id:
++        identity = f"platform:{message.role}:{message.platform_message_id}"
++        if message.role == "assistant":
++            identity += f":{message.source_agent}"
++    else:
++        bucket = int(message.timestamp // bucket_seconds)
++        identity = f"{message.role}:{normalize_content(message.content)}:{bucket}"
++        if message.role == "assistant":
++            identity += f":{message.source_agent}"
++    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
++
++
++def deduplicate_messages(
++    messages: Iterable[SourceMessage], bucket_seconds: int = 3
++) -> list[SourceMessage]:
++    unique: dict[str, SourceMessage] = {}
++    for message in messages:
++        key = _dedup_key(message, bucket_seconds)
++        existing = unique.get(key)
++        if existing is None or (message.timestamp, message.message_id) < (
++            existing.timestamp,
++            existing.message_id,
++        ):
++            unique[key] = message
++    return sorted(unique.values(), key=lambda item: (item.timestamp, item.message_id))
+diff --git a/hegi/config.py b/hegi/config.py
+new file mode 100644
+index 000000000..9c12ae1a7
+--- /dev/null
++++ b/hegi/config.py
+@@ -0,0 +1,200 @@
++"""HEGI configuration loading and validation."""
++
++from __future__ import annotations
++
++import copy
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any
++
++from hermes_constants import get_hermes_home
++from utils import fast_safe_load
++
++
++DEFAULT_CONFIG: dict[str, Any] = {
++    "version": 1,
++    "enabled": False,
++    "telegram": {
++        "chat_id": "",
++        "curator_env": "",
++        "enabled": False,
++    },
++    "agents": [],
++    "episode": {
++        "quiet_minutes": 10,
++        "max_gap_minutes": 30,
++        "minimum_agents": 2,
++        "minimum_messages": 4,
++        "maximum_messages": 10000,
++        "timestamp_bucket_seconds": 3,
++        "initial_lookback_minutes": 240,
++    },
++    "analysis": {
++        "model": "",
++        "provider": "",
++        "max_input_chars": 100000,
++        "chunk_chars": 30000,
++        "max_output_tokens": 10000,
++        "prompt_version": "v2.0.0",
++    },
++    "archive": {
++        "local_spool": "",
++        "nas_root": "",
++        "sync_when_available": True,
++        "markdown": True,
++        "json": True,
++    },
++    "memory": {
++        "enabled": True,
++        "read_server": "memory-forest-read",
++        "search_tool": "",
++        "draft_server": "memory-forest-curator-draft",
++        "draft_tool": "",
++        "auto_commit": False,
++        "auto_draft": False,
++        "require_professor_approval": True,
++        "professor_user_ids": [],
++    },
++    "daemon": {"poll_seconds": 60},
++    "reports": {"telegram": True},
++    "v3": {"enabled": False},
++    "v4": {"enabled": False},
++    "v5": {"enabled": False},
++}
++
++
++@dataclass(slots=True, frozen=True)
++class AgentSourceConfig:
++    name: str
++    db_path: Path
++
++
++@dataclass(slots=True)
++class HegiConfig:
++    path: Path
++    raw: dict[str, Any]
++    enabled: bool
++    chat_id: str
++    agents: list[AgentSourceConfig]
++    state_db: Path
++    local_spool: Path
++    curator_env: Path
++    nas_root: Path | None
++
++    def section(self, name: str) -> dict[str, Any]:
++        value = self.raw.get(name, {})
++        return value if isinstance(value, dict) else {}
++
++
++def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
++    merged = copy.deepcopy(base)
++    for key, value in override.items():
++        if isinstance(value, dict) and isinstance(merged.get(key), dict):
++            merged[key] = _deep_merge(merged[key], value)
++        else:
++            merged[key] = copy.deepcopy(value)
++    return merged
++
++
++def _expand_path(value: str, *, base: Path) -> Path:
++    path = Path(value).expanduser()
++    return path if path.is_absolute() else (base / path).resolve()
++
++
++def default_config_path() -> Path:
++    return get_hermes_home() / "hegi" / "config.yaml"
++
++
++def load_config(path: str | Path | None = None) -> HegiConfig:
++    config_path = Path(path).expanduser() if path else default_config_path()
++    if not config_path.exists():
++        raise FileNotFoundError(
++            f"HEGI 설정 파일이 없습니다: {config_path}. "
++            "hegi/config/default.yaml을 복사하여 값을 설정하세요."
++        )
++    loaded = fast_safe_load(config_path.read_text(encoding="utf-8")) or {}
++    if not isinstance(loaded, dict):
++        raise ValueError("HEGI 설정 루트는 YAML mapping이어야 합니다.")
++    raw = _deep_merge(DEFAULT_CONFIG, loaded)
++    home = get_hermes_home()
++    chat_id = str(raw.get("telegram", {}).get("chat_id", "")).strip()
++    agents: list[AgentSourceConfig] = []
++    for entry in raw.get("agents", []):
++        if not isinstance(entry, dict):
++            raise ValueError("agents 항목은 name/db_path mapping이어야 합니다.")
++        name = str(entry.get("name", "")).strip()
++        db_path = str(entry.get("db_path", "")).strip()
++        if not name or not db_path:
++            raise ValueError("각 agent에는 name과 db_path가 필요합니다.")
++        agents.append(AgentSourceConfig(name, _expand_path(db_path, base=home)))
++    if len({agent.name for agent in agents}) != len(agents):
++        raise ValueError("agent name은 중복될 수 없습니다.")
++
++    archive = raw["archive"]
++    telegram = raw["telegram"]
++    state_db_value = str(raw.get("state_db", "")).strip()
++    state_db = (
++        _expand_path(state_db_value, base=home)
++        if state_db_value
++        else home / "hegi" / "state.db"
++    )
++    spool_value = str(archive.get("local_spool", "")).strip()
++    local_spool = (
++        _expand_path(spool_value, base=home)
++        if spool_value
++        else home / "hegi" / "archive"
++    )
++    curator_value = str(telegram.get("curator_env", "")).strip()
++    curator_env = (
++        _expand_path(curator_value, base=home)
++        if curator_value
++        else home / "profiles" / "memory-curator" / ".env"
++    )
++    nas_value = str(archive.get("nas_root", "")).strip()
++    nas_root = _expand_path(nas_value, base=home) if nas_value else None
++    return HegiConfig(
++        path=config_path,
++        raw=raw,
++        enabled=bool(raw.get("enabled", False)),
++        chat_id=chat_id,
++        agents=agents,
++        state_db=state_db,
++        local_spool=local_spool,
++        curator_env=curator_env,
++        nas_root=nas_root,
++    )
++
++
++def validate_config(config: HegiConfig, *, require_runtime: bool = False) -> list[str]:
++    errors: list[str] = []
++    if not config.chat_id:
++        errors.append("telegram.chat_id가 비어 있습니다.")
++    if not config.agents:
++        errors.append("agents가 비어 있습니다.")
++    episode = config.section("episode")
++    for key in (
++        "quiet_minutes",
++        "max_gap_minutes",
++        "minimum_agents",
++        "minimum_messages",
++        "initial_lookback_minutes",
++    ):
++        try:
++            if int(episode.get(key, 0)) <= 0:
++                errors.append(f"episode.{key}는 양수여야 합니다.")
++        except (TypeError, ValueError):
++            errors.append(f"episode.{key}는 정수여야 합니다.")
++    memory = config.section("memory")
++    if memory.get("auto_commit"):
++        errors.append("memory.auto_commit은 안전 경계상 true일 수 없습니다.")
++    if memory.get("auto_draft"):
++        errors.append("memory.auto_draft는 안전 경계상 true일 수 없습니다.")
++    if not memory.get("require_professor_approval", True):
++        errors.append("memory.require_professor_approval은 true여야 합니다.")
++    if require_runtime:
++        for agent in config.agents:
++            if not agent.db_path.is_file():
++                errors.append(f"{agent.name} DB가 없습니다: {agent.db_path}")
++        if config.section("telegram").get("enabled") and not config.curator_env.is_file():
++            errors.append(f"Telegram env 파일이 없습니다: {config.curator_env}")
++    return errors
+diff --git a/hegi/config/default.yaml b/hegi/config/default.yaml
+new file mode 100644
+index 000000000..53071db34
+--- /dev/null
++++ b/hegi/config/default.yaml
+@@ -0,0 +1,63 @@
++version: 1
++enabled: false
++
++telegram:
++  chat_id: ""
++  curator_env: "~/.hermes/profiles/memory-curator/.env"
++  enabled: false
++
++agents:
++  - name: "헤헤"
++    db_path: "~/.hermes/state.db"
++  - name: "헤코"
++    db_path: "~/.hermes/profiles/codex-test/state.db"
++  - name: "헤클"
++    db_path: "~/.hermes/profiles/heclaude-test/state.db"
++
++episode:
++  quiet_minutes: 10
++  max_gap_minutes: 30
++  minimum_agents: 2
++  minimum_messages: 4
++  maximum_messages: 10000
++  timestamp_bucket_seconds: 3
++  initial_lookback_minutes: 240
++
++analysis:
++  provider: ""
++  model: ""
++  max_input_chars: 100000
++  chunk_chars: 30000
++  max_output_tokens: 10000
++  prompt_version: "v2.0.0"
++
++archive:
++  local_spool: "~/.hermes/hegi/archive"
++  nas_root: ""
++  sync_when_available: true
++  markdown: true
++  json: true
++
++memory:
++  enabled: true
++  read_server: "memory-forest-read"
++  search_tool: ""
++  draft_server: "memory-forest-curator-draft"
++  draft_tool: ""
++  auto_commit: false
++  auto_draft: false
++  require_professor_approval: true
++  professor_user_ids: []
++
++daemon:
++  poll_seconds: 60
++
++reports:
++  telegram: true
++
++v3:
++  enabled: false
++v4:
++  enabled: false
++v5:
++  enabled: false
+diff --git a/hegi/config/schema.json b/hegi/config/schema.json
+new file mode 100644
+index 000000000..714dcaaf1
+--- /dev/null
++++ b/hegi/config/schema.json
+@@ -0,0 +1,39 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "HEGI v2 Configuration",
++  "type": "object",
++  "required": ["version", "enabled", "telegram", "agents", "episode", "archive", "memory"],
++  "properties": {
++    "version": {"const": 1},
++    "enabled": {"type": "boolean"},
++    "telegram": {
++      "type": "object",
++      "required": ["chat_id", "enabled"],
++      "properties": {
++        "chat_id": {"type": "string"},
++        "curator_env": {"type": "string"},
++        "enabled": {"type": "boolean"}
++      }
++    },
++    "agents": {
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "type": "object",
++        "required": ["name", "db_path"],
++        "properties": {
++          "name": {"type": "string", "minLength": 1},
++          "db_path": {"type": "string", "minLength": 1}
++        }
++      }
++    },
++    "memory": {
++      "type": "object",
++      "properties": {
++        "auto_commit": {"const": false},
++        "auto_draft": {"const": false},
++        "require_professor_approval": {"const": true}
++      }
++    }
++  }
++}
+diff --git a/hegi/episode.py b/hegi/episode.py
+new file mode 100644
+index 000000000..c965715f4
+--- /dev/null
++++ b/hegi/episode.py
+@@ -0,0 +1,106 @@
++"""Deterministic meeting episode detection."""
++
++from __future__ import annotations
++
++import hashlib
++import re
++import time
++from datetime import datetime, timezone
++
++from .models import MeetingEpisode, SourceMessage
++
++
++_END_PATTERN = re.compile(r"(여기까지|다음\s*주제|정리해(?:줘|주세요)?)(?:[.!?\s]|$)")
++
++
++def episode_hash(messages: list[SourceMessage]) -> str:
++    source = "\n".join(
++        f"{message.source_agent}|{message.session_id}|{message.message_id}|"
++        f"{message.timestamp:.6f}|{message.role}|{message.content}"
++        for message in messages
++    )
++    return hashlib.sha256(source.encode("utf-8")).hexdigest()
++
++
++def _meeting_id(chat_id: str, started_at: float, digest: str) -> str:
++    stamp = datetime.fromtimestamp(started_at, timezone.utc).strftime("%Y%m%dT%H%M%SZ")
++    chat_fragment = re.sub(r"[^0-9A-Za-z]+", "", chat_id)[-8:] or "chat"
++    return f"hegi-{stamp}-{chat_fragment}-{digest[:10]}"
++
++
++class EpisodeDetector:
++    def __init__(
++        self,
++        *,
++        quiet_minutes: int = 10,
++        max_gap_minutes: int = 30,
++        minimum_agents: int = 2,
++        minimum_messages: int = 4,
++        maximum_messages: int = 10000,
++    ):
++        self.quiet_seconds = quiet_minutes * 60
++        self.max_gap_seconds = max_gap_minutes * 60
++        self.minimum_agents = minimum_agents
++        self.minimum_messages = minimum_messages
++        self.maximum_messages = maximum_messages
++
++    def split(self, messages: list[SourceMessage]) -> list[list[SourceMessage]]:
++        if not messages:
++            return []
++        ordered = sorted(messages, key=lambda item: (item.timestamp, item.message_id))
++        episodes: list[list[SourceMessage]] = [[]]
++        previous: SourceMessage | None = None
++        for message in ordered:
++            boundary = (
++                previous is not None
++                and (
++                    message.timestamp - previous.timestamp >= self.max_gap_seconds
++                    or (
++                        _END_PATTERN.search(previous.content) is not None
++                        and any(
++                            prior.role == "assistant" for prior in episodes[-1]
++                        )
++                    )
++                )
++            )
++            if boundary:
++                episodes.append([])
++            episodes[-1].append(message)
++            previous = message
++        return [episode for episode in episodes if episode]
++
++    def detect(
++        self, messages: list[SourceMessage], *, now: float | None = None
++    ) -> list[MeetingEpisode]:
++        current_time = time.time() if now is None else now
++        detected: list[MeetingEpisode] = []
++        for group in self.split(messages):
++            if len(group) < self.minimum_messages:
++                continue
++            if len(group) > self.maximum_messages:
++                group = group[-self.maximum_messages :]
++            participants = sorted(
++                {
++                    message.source_agent
++                    for message in group
++                    if message.role == "assistant"
++                }
++            )
++            if len(participants) < self.minimum_agents:
++                continue
++            digest = episode_hash(group)
++            ended_at = group[-1].timestamp
++            quiet = current_time - ended_at >= self.quiet_seconds
++            detected.append(
++                MeetingEpisode(
++                    meeting_id=_meeting_id(group[0].chat_id, group[0].timestamp, digest),
++                    chat_id=group[0].chat_id,
++                    started_at=group[0].timestamp,
++                    ended_at=ended_at,
++                    participants=participants,
++                    messages=group,
++                    episode_hash=digest,
++                    status="quiet" if quiet else "collecting",
++                )
++            )
++        return detected
+diff --git a/hegi/models.py b/hegi/models.py
+new file mode 100644
+index 000000000..95788dd2f
+--- /dev/null
++++ b/hegi/models.py
+@@ -0,0 +1,155 @@
++"""Typed HEGI domain models with stable JSON serialization."""
++
++from __future__ import annotations
++
++from dataclasses import asdict, dataclass, field
++from typing import Any, Literal
++
++
++@dataclass(slots=True)
++class SourceMessage:
++    source_agent: str
++    source_db: str
++    message_id: int
++    session_id: str
++    platform_message_id: str | None
++    chat_id: str
++    chat_type: str
++    role: Literal["user", "assistant"]
++    content: str
++    timestamp: float
++    active: bool = True
++    compacted: bool = False
++
++    def trace_id(self) -> str:
++        return f"{self.source_agent}:{self.session_id}:{self.message_id}"
++
++
++@dataclass(slots=True)
++class MeetingEpisode:
++    meeting_id: str
++    chat_id: str
++    started_at: float
++    ended_at: float
++    participants: list[str]
++    messages: list[SourceMessage]
++    episode_hash: str
++    topic_hint: str | None = None
++    status: Literal[
++        "collecting", "quiet", "analyzing", "reported", "archived", "failed"
++    ] = "collecting"
++
++    @property
++    def source_message_ids(self) -> list[int]:
++        return [message.message_id for message in self.messages]
++
++    @property
++    def source_session_ids(self) -> list[str]:
++        return sorted({message.session_id for message in self.messages})
++
++
++@dataclass(slots=True)
++class DiscussionStage:
++    heading: str
++    summary: str
++    source_message_ids: list[int] = field(default_factory=list)
++
++
++@dataclass(slots=True)
++class AgentPosition:
++    agent: str
++    position: str
++    contributions: list[str] = field(default_factory=list)
++    source_message_ids: list[int] = field(default_factory=list)
++
++
++@dataclass(slots=True)
++class ConceptDefinition:
++    name: str
++    definition: str
++    status: Literal["proposed", "agreed", "uncertain"] = "proposed"
++    source_message_ids: list[int] = field(default_factory=list)
++
++
++@dataclass(slots=True)
++class EvidenceItem:
++    claim: str
++    source: str | None
++    verification: Literal["검증됨", "추정", "추가 확인 필요"]
++    source_message_ids: list[int] = field(default_factory=list)
++
++
++@dataclass(slots=True)
++class ActionItem:
++    action_id: str
++    title: str
++    description: str
++    source_message_ids: list[int]
++    owner: str | None
++    priority: Literal["critical", "high", "medium", "low"]
++    status: Literal["open", "in_progress", "blocked", "done", "cancelled"] = "open"
++    deadline: str | None = None
++    project_id: str | None = None
++    rationale: str = ""
++
++
++@dataclass(slots=True)
++class MemoryMatch:
++    memory_id: str
++    title: str
++    summary: str
++    relation: Literal["높은 중복", "부분 중복", "낮은 중복", "신규"]
++    raw: dict[str, Any] = field(default_factory=dict)
++
++
++@dataclass(slots=True)
++class MemoryEvaluation:
++    searched_queries: list[str] = field(default_factory=list)
++    matched_memories: list[MemoryMatch] = field(default_factory=list)
++    duplicate_score: float | None = None
++    novelty_score: float | None = None
++    significance_score: float | None = None
++    durability_score: float | None = None
++    recommendation: Literal[
++        "no_memory", "merge_existing", "create_stm_draft", "needs_professor_review"
++    ] = "needs_professor_review"
++    candidate_memory_title: str | None = None
++    candidate_memory_summary: str | None = None
++    reasons: list[str] = field(default_factory=list)
++
++
++@dataclass(slots=True)
++class MeetingMinutes:
++    meeting_id: str
++    title: str
++    background: str
++    agenda: list[str]
++    discussion_flow: list[DiscussionStage]
++    agent_positions: list[AgentPosition]
++    professor_positions: list[str]
++    agreements: list[str]
++    disagreements: list[str]
++    unresolved_questions: list[str]
++    new_concepts: list[ConceptDefinition]
++    evidence_and_sources: list[EvidenceItem]
++    research_direction: list[str]
++    action_items: list[ActionItem]
++    memory_evaluation: MemoryEvaluation | None
++    confidence: float
++    warnings: list[str]
++    recommendation: str = ""
++    metadata: dict[str, Any] = field(default_factory=dict)
++
++    def to_dict(self) -> dict[str, Any]:
++        return asdict(self)
++
++
++def as_jsonable(value: Any) -> Any:
++    """Convert dataclass graphs into JSON-compatible values."""
++    if hasattr(value, "__dataclass_fields__"):
++        return {key: as_jsonable(item) for key, item in asdict(value).items()}
++    if isinstance(value, dict):
++        return {str(key): as_jsonable(item) for key, item in value.items()}
++    if isinstance(value, (list, tuple)):
++        return [as_jsonable(item) for item in value]
++    return value
+diff --git a/hegi/state.py b/hegi/state.py
+new file mode 100644
+index 000000000..b16719009
+--- /dev/null
++++ b/hegi/state.py
+@@ -0,0 +1,314 @@
++"""Durable, transactional HEGI state."""
++
++from __future__ import annotations
++
++import json
++import sqlite3
++import time
++from contextlib import contextmanager
++from pathlib import Path
++from typing import Any, Iterator
++
++
++SCHEMA = """
++PRAGMA journal_mode=WAL;
++PRAGMA foreign_keys=ON;
++CREATE TABLE IF NOT EXISTS collector_cursor (
++    source_db TEXT PRIMARY KEY,
++    timestamp REAL NOT NULL,
++    message_id INTEGER NOT NULL DEFAULT 0,
++    updated_at REAL NOT NULL
++);
++CREATE TABLE IF NOT EXISTS processed_episodes (
++    meeting_id TEXT PRIMARY KEY,
++    episode_hash TEXT NOT NULL UNIQUE,
++    status TEXT NOT NULL,
++    episode_json TEXT NOT NULL,
++    minutes_json TEXT,
++    last_error TEXT,
++    created_at REAL NOT NULL,
++    updated_at REAL NOT NULL
++);
++CREATE TABLE IF NOT EXISTS message_buffer (
++    source_db TEXT NOT NULL,
++    message_id INTEGER NOT NULL,
++    chat_id TEXT NOT NULL,
++    timestamp REAL NOT NULL,
++    payload_json TEXT NOT NULL,
++    consumed INTEGER NOT NULL DEFAULT 0,
++    PRIMARY KEY (source_db, message_id)
++);
++CREATE INDEX IF NOT EXISTS idx_message_buffer_pending
++ON message_buffer(chat_id, consumed, timestamp);
++CREATE TABLE IF NOT EXISTS report_delivery (
++    meeting_id TEXT NOT NULL,
++    part_index INTEGER NOT NULL,
++    content_hash TEXT NOT NULL,
++    platform_message_id TEXT,
++    status TEXT NOT NULL,
++    retry_count INTEGER NOT NULL DEFAULT 0,
++    last_error TEXT,
++    updated_at REAL NOT NULL,
++    PRIMARY KEY (meeting_id, part_index)
++);
++CREATE TABLE IF NOT EXISTS dead_letter (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    kind TEXT NOT NULL,
++    meeting_id TEXT,
++    payload_json TEXT NOT NULL,
++    error TEXT NOT NULL,
++    created_at REAL NOT NULL
++);
++CREATE TABLE IF NOT EXISTS approval_events (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    meeting_id TEXT NOT NULL,
++    command TEXT NOT NULL,
++    user_id TEXT NOT NULL,
++    platform_message_id TEXT,
++    raw_text TEXT NOT NULL,
++    approved_at REAL NOT NULL,
++    UNIQUE(platform_message_id)
++);
++CREATE TABLE IF NOT EXISTS action_items (
++    action_id TEXT PRIMARY KEY,
++    meeting_id TEXT NOT NULL,
++    fingerprint TEXT NOT NULL,
++    item_json TEXT NOT NULL,
++    status TEXT NOT NULL,
++    updated_at REAL NOT NULL
++);
++CREATE INDEX IF NOT EXISTS idx_action_items_open
++ON action_items(status, fingerprint);
++"""
++
++
++class StateStore:
++    def __init__(self, path: Path):
++        self.path = path
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        with self.connect() as connection:
++            connection.executescript(SCHEMA)
++
++    @contextmanager
++    def connect(self) -> Iterator[sqlite3.Connection]:
++        connection = sqlite3.connect(self.path, timeout=30)
++        connection.row_factory = sqlite3.Row
++        connection.execute("PRAGMA busy_timeout=30000")
++        try:
++            yield connection
++            connection.commit()
++        except Exception:
++            connection.rollback()
++            raise
++        finally:
++            connection.close()
++
++    def get_cursor(self, source_db: str) -> tuple[float, int]:
++        with self.connect() as connection:
++            row = connection.execute(
++                "SELECT timestamp, message_id FROM collector_cursor WHERE source_db = ?",
++                (source_db,),
++            ).fetchone()
++        return (float(row["timestamp"]), int(row["message_id"])) if row else (0.0, 0)
++
++    def has_cursors(self) -> bool:
++        with self.connect() as connection:
++            row = connection.execute(
++                "SELECT EXISTS(SELECT 1 FROM collector_cursor)"
++            ).fetchone()
++        return bool(row[0])
++
++    def set_cursor(self, source_db: str, timestamp: float, message_id: int) -> None:
++        now = time.time()
++        with self.connect() as connection:
++            connection.execute(
++                """
++                INSERT INTO collector_cursor(source_db, timestamp, message_id, updated_at)
++                VALUES (?, ?, ?, ?)
++                ON CONFLICT(source_db) DO UPDATE SET
++                    timestamp=excluded.timestamp,
++                    message_id=excluded.message_id,
++                    updated_at=excluded.updated_at
++                """,
++                (source_db, timestamp, message_id, now),
++            )
++
++    def buffer_messages(self, messages: list[dict[str, Any]]) -> None:
++        if not messages:
++            return
++        with self.connect() as connection:
++            connection.executemany(
++                """
++                INSERT OR IGNORE INTO message_buffer(
++                    source_db, message_id, chat_id, timestamp, payload_json, consumed
++                ) VALUES (?, ?, ?, ?, ?, 0)
++                """,
++                [
++                    (
++                        str(message["source_db"]),
++                        int(message["message_id"]),
++                        str(message["chat_id"]),
++                        float(message["timestamp"]),
++                        json.dumps(message, ensure_ascii=False),
++                    )
++                    for message in messages
++                ],
++            )
++
++    def buffered_messages(self, chat_id: str) -> list[dict[str, Any]]:
++        with self.connect() as connection:
++            rows = connection.execute(
++                """
++                SELECT payload_json FROM message_buffer
++                WHERE chat_id=? AND consumed=0 ORDER BY timestamp, message_id
++                """,
++                (str(chat_id),),
++            ).fetchall()
++        return [json.loads(row["payload_json"]) for row in rows]
++
++    def consume_messages(self, source_keys: list[tuple[str, int]]) -> None:
++        if not source_keys:
++            return
++        with self.connect() as connection:
++            connection.executemany(
++                "UPDATE message_buffer SET consumed=1 WHERE source_db=? AND message_id=?",
++                source_keys,
++            )
++
++    def consume_range(self, chat_id: str, started_at: float, ended_at: float) -> None:
++        """Consume every source copy represented by a merged episode."""
++        with self.connect() as connection:
++            connection.execute(
++                """
++                UPDATE message_buffer SET consumed=1
++                WHERE chat_id=? AND timestamp>=? AND timestamp<=?
++                """,
++                (str(chat_id), started_at, ended_at),
++            )
++
++    def save_episode(self, meeting_id: str, episode_hash: str, payload: dict[str, Any], status: str) -> bool:
++        now = time.time()
++        with self.connect() as connection:
++            cursor = connection.execute(
++                """
++                INSERT OR IGNORE INTO processed_episodes(
++                    meeting_id, episode_hash, status, episode_json, created_at, updated_at
++                ) VALUES (?, ?, ?, ?, ?, ?)
++                """,
++                (
++                    meeting_id,
++                    episode_hash,
++                    status,
++                    json.dumps(payload, ensure_ascii=False),
++                    now,
++                    now,
++                ),
++            )
++        return cursor.rowcount == 1
++
++    def episode_by_id(self, meeting_id: str) -> dict[str, Any] | None:
++        with self.connect() as connection:
++            row = connection.execute(
++                "SELECT * FROM processed_episodes WHERE meeting_id = ?", (meeting_id,)
++            ).fetchone()
++        return dict(row) if row else None
++
++    def update_episode(
++        self,
++        meeting_id: str,
++        *,
++        status: str,
++        minutes: dict[str, Any] | None = None,
++        error: str | None = None,
++    ) -> None:
++        with self.connect() as connection:
++            connection.execute(
++                """
++                UPDATE processed_episodes SET status=?, minutes_json=COALESCE(?, minutes_json),
++                    last_error=?, updated_at=? WHERE meeting_id=?
++                """,
++                (
++                    status,
++                    json.dumps(minutes, ensure_ascii=False) if minutes else None,
++                    error,
++                    time.time(),
++                    meeting_id,
++                ),
++            )
++
++    def delivered_parts(self, meeting_id: str) -> set[int]:
++        with self.connect() as connection:
++            rows = connection.execute(
++                "SELECT part_index FROM report_delivery WHERE meeting_id=? AND status='sent'",
++                (meeting_id,),
++            ).fetchall()
++        return {int(row["part_index"]) for row in rows}
++
++    def record_delivery(
++        self,
++        meeting_id: str,
++        part_index: int,
++        content_hash: str,
++        *,
++        status: str,
++        platform_message_id: str | None = None,
++        error: str | None = None,
++    ) -> None:
++        with self.connect() as connection:
++            connection.execute(
++                """
++                INSERT INTO report_delivery(
++                    meeting_id, part_index, content_hash, platform_message_id,
++                    status, retry_count, last_error, updated_at
++                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
++                ON CONFLICT(meeting_id, part_index) DO UPDATE SET
++                    content_hash=excluded.content_hash,
++                    platform_message_id=excluded.platform_message_id,
++                    status=excluded.status,
++                    retry_count=report_delivery.retry_count +
++                        CASE WHEN excluded.status='failed' THEN 1 ELSE 0 END,
++                    last_error=excluded.last_error,
++                    updated_at=excluded.updated_at
++                """,
++                (
++                    meeting_id,
++                    part_index,
++                    content_hash,
++                    platform_message_id,
++                    status,
++                    1 if status == "failed" else 0,
++                    error,
++                    time.time(),
++                ),
++            )
++
++    def add_dead_letter(
++        self, kind: str, payload: dict[str, Any], error: str, meeting_id: str | None = None
++    ) -> None:
++        with self.connect() as connection:
++            connection.execute(
++                """
++                INSERT INTO dead_letter(kind, meeting_id, payload_json, error, created_at)
++                VALUES (?, ?, ?, ?, ?)
++                """,
++                (kind, meeting_id, json.dumps(payload, ensure_ascii=False), error, time.time()),
++            )
++
++    def record_approval(
++        self,
++        meeting_id: str,
++        command: str,
++        user_id: str,
++        raw_text: str,
++        platform_message_id: str | None,
++    ) -> bool:
++        with self.connect() as connection:
++            cursor = connection.execute(
++                """
++                INSERT OR IGNORE INTO approval_events(
++                    meeting_id, command, user_id, platform_message_id, raw_text, approved_at
++                ) VALUES (?, ?, ?, ?, ?, ?)
++                """,
++                (meeting_id, command, user_id, platform_message_id, raw_text, time.time()),
++            )
++        return cursor.rowcount == 1
+diff --git a/pyproject.toml b/pyproject.toml
+index a2a1d6c0e..cbc0df780 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -316,7 +316,7 @@ hermes-acp = "acp_adapter.entry:main"
+ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+ 
+ [tool.setuptools.packages.find]
+-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
++include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hegi", "hegi.*"]
+ 
+ [tool.setuptools.package-data]
+ # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
+@@ -325,6 +325,17 @@ include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*",
+ # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
+ # in gateway/status_phrases.py and gateway/run.py.
+ gateway = ["assets/**/*"]
++hegi = [
++  "config/*.yaml",
++  "config/*.json",
++  "prompts/v2/*.md",
++  "docs/*.md",
++  "scripts/*.sh",
++  "README.md",
++  "CHANGELOG.md",
++  "ROADMAP.md",
++  "VERSION",
++]
+ 
+ [tool.pytest.ini_options]
+ testpaths = ["tests"]
+diff --git a/tests/hegi/test_collector.py b/tests/hegi/test_collector.py
+new file mode 100644
+index 000000000..4beeec9ec
+--- /dev/null
++++ b/tests/hegi/test_collector.py
+@@ -0,0 +1,93 @@
++from __future__ import annotations
++
++import json
++import sqlite3
++from pathlib import Path
++
++from hegi.collector import HermesSQLiteCollector, deduplicate_messages, extract_content
++from hegi.config import AgentSourceConfig
++from hegi.models import SourceMessage
++from hegi.state import StateStore
++
++
++def _make_db(path: Path, rows: list[tuple]) -> None:
++    connection = sqlite3.connect(path)
++    connection.executescript(
++        """
++        CREATE TABLE sessions (
++            id TEXT PRIMARY KEY, chat_id TEXT, chat_type TEXT
++        );
++        CREATE TABLE messages (
++            id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
++            timestamp REAL, platform_message_id TEXT, active INTEGER, compacted INTEGER
++        );
++        INSERT INTO sessions VALUES ('session-1', '-1001', 'group');
++        """
++    )
++    connection.executemany(
++        "INSERT INTO messages VALUES (?, 'session-1', ?, ?, ?, ?, ?, ?)", rows
++    )
++    connection.commit()
++    connection.close()
++
++
++def test_extract_content_excludes_tool_and_reasoning_blocks():
++    content = json.dumps(
++        [
++            {"type": "text", "text": "첫 발언"},
++            {"type": "tool_call", "content": "비밀 도구 인자"},
++            {"type": "reasoning", "text": "숨은 추론"},
++            {"type": "output_text", "text": "둘째 발언"},
++        ],
++        ensure_ascii=False,
++    )
++    assert extract_content(content) == "첫 발언 둘째 발언"
++
++
++def test_collector_reads_active_chat_messages_and_persists_cursor(tmp_path):
++    source_db = tmp_path / "source.db"
++    _make_db(
++        source_db,
++        [
++            (1, "user", "질문", 100.0, "p-1", 1, 0),
++            (2, "assistant", '[{"type":"text","text":"답변"}]', 101.0, "p-2", 1, 0),
++            (3, "assistant", "비활성", 102.0, "p-3", 0, 0),
++        ],
++    )
++    state = StateStore(tmp_path / "state.db")
++    collector = HermesSQLiteCollector(
++        [AgentSourceConfig("헤헤", source_db)], state
++    )
++
++    messages = collector.collect("-1001")
++
++    assert [message.content for message in messages] == ["질문", "답변"]
++    assert state.get_cursor(str(source_db)) == (101.0, 2)
++    assert [message.content for message in collector.collect("-1001")] == ["질문", "답변"]
++    state.consume_messages([(str(source_db), 1), (str(source_db), 2)])
++    assert collector.collect("-1001") == []
++
++
++def test_dedup_keeps_shared_user_once_but_agents_distinct():
++    base = dict(
++        source_db="/tmp/db",
++        message_id=1,
++        session_id="s",
++        platform_message_id="platform-1",
++        chat_id="-1",
++        chat_type="group",
++        content="같은 내용",
++        timestamp=100.0,
++    )
++    messages = [
++        SourceMessage(source_agent="헤헤", role="user", **base),
++        SourceMessage(source_agent="헤코", role="user", **base),
++        SourceMessage(source_agent="헤헤", role="assistant", **base),
++        SourceMessage(source_agent="헤코", role="assistant", **base),
++    ]
++    merged = deduplicate_messages(messages)
++    assert len(merged) == 3
++    assert {item.source_agent for item in merged if item.role == "assistant"} == {
++        "헤헤",
++        "헤코",
++    }
+diff --git a/tests/hegi/test_config_state.py b/tests/hegi/test_config_state.py
+new file mode 100644
+index 000000000..c6214a783
+--- /dev/null
++++ b/tests/hegi/test_config_state.py
+@@ -0,0 +1,43 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from hegi.config import load_config, validate_config
++from hegi.state import StateStore
++
++
++def test_config_rejects_automatic_memory_writes(tmp_path, monkeypatch):
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    config_path = tmp_path / "hegi.yaml"
++    config_path.write_text(
++        """
++enabled: true
++telegram:
++  chat_id: "-1001"
++agents:
++  - name: "헤헤"
++    db_path: "source.db"
++memory:
++  auto_commit: true
++  auto_draft: true
++  require_professor_approval: false
++""",
++        encoding="utf-8",
++    )
++    errors = validate_config(load_config(config_path))
++    assert any("auto_commit" in error for error in errors)
++    assert any("auto_draft" in error for error in errors)
++    assert any("require_professor_approval" in error for error in errors)
++
++
++def test_state_delivery_is_idempotent_and_dead_letter_is_durable(tmp_path):
++    store = StateStore(tmp_path / "state.db")
++    store.record_delivery("meeting", 1, "hash", status="sent", platform_message_id="7")
++    store.record_delivery("meeting", 1, "hash", status="sent", platform_message_id="7")
++    store.add_dead_letter("telegram", {"part": 2}, "network", "meeting")
++    assert store.delivered_parts("meeting") == {1}
++    with store.connect() as connection:
++        assert connection.execute("SELECT COUNT(*) FROM report_delivery").fetchone()[0] == 1
++        assert connection.execute("SELECT COUNT(*) FROM dead_letter").fetchone()[0] == 1
+diff --git a/tests/hegi/test_episode.py b/tests/hegi/test_episode.py
+new file mode 100644
+index 000000000..6b417fdfe
+--- /dev/null
++++ b/tests/hegi/test_episode.py
+@@ -0,0 +1,55 @@
++from __future__ import annotations
++
++from hegi.episode import EpisodeDetector, episode_hash
++from hegi.models import SourceMessage
++
++
++def _message(index: int, agent: str, role: str, timestamp: float, content: str = "본문"):
++    return SourceMessage(
++        source_agent=agent,
++        source_db=f"/{agent}.db",
++        message_id=index,
++        session_id=f"s-{agent}",
++        platform_message_id=str(index),
++        chat_id="-1001",
++        chat_type="group",
++        role=role,
++        content=content,
++        timestamp=timestamp,
++    )
++
++
++def test_episode_requires_two_assistant_agents_and_quiet_period():
++    messages = [
++        _message(1, "헤헤", "user", 100),
++        _message(2, "헤헤", "assistant", 110),
++        _message(3, "헤코", "assistant", 120),
++        _message(4, "헤클", "assistant", 130),
++    ]
++    detector = EpisodeDetector(quiet_minutes=10)
++    episode = detector.detect(messages, now=731)[0]
++    assert episode.status == "quiet"
++    assert episode.participants == ["헤코", "헤클", "헤헤"]
++
++
++def test_episode_splits_on_gap_and_professor_end_expression():
++    detector = EpisodeDetector(
++        quiet_minutes=1, max_gap_minutes=30, minimum_messages=1, minimum_agents=1
++    )
++    messages = [
++        _message(1, "헤헤", "assistant", 0),
++        _message(2, "헤헤", "user", 1, "여기까지."),
++        _message(3, "헤코", "assistant", 2),
++        _message(4, "헤클", "assistant", 4000),
++    ]
++    groups = detector.split(messages)
++    assert [len(group) for group in groups] == [2, 1, 1]
++
++
++def test_hash_is_stable_and_order_sensitive():
++    messages = [
++        _message(1, "헤헤", "assistant", 100),
++        _message(2, "헤코", "assistant", 101),
++    ]
++    assert episode_hash(messages) == episode_hash(list(messages))
++    assert episode_hash(messages) != episode_hash(list(reversed(messages)))
+diff --git a/tests/hegi/test_load.py b/tests/hegi/test_load.py
+new file mode 100644
+index 000000000..22e83dca0
+--- /dev/null
++++ b/tests/hegi/test_load.py
+@@ -0,0 +1,31 @@
++from __future__ import annotations
++
++from hegi.episode import EpisodeDetector
++from hegi.models import SourceMessage
++
++
++def test_detector_handles_ten_thousand_messages():
++    messages = [
++        SourceMessage(
++            source_agent=("헤헤" if index % 2 else "헤코"),
++            source_db=f"/{index % 2}.db",
++            message_id=index,
++            session_id=f"s-{index % 2}",
++            platform_message_id=str(index),
++            chat_id="-1",
++            chat_type="group",
++            role="assistant",
++            content=f"발언 {index}",
++            timestamp=float(index),
++        )
++        for index in range(1, 10001)
++    ]
++    episodes = EpisodeDetector(
++        quiet_minutes=1,
++        max_gap_minutes=30,
++        minimum_agents=2,
++        minimum_messages=4,
++        maximum_messages=10000,
++    ).detect(messages, now=20000)
++    assert len(episodes) == 1
++    assert len(episodes[0].messages) == 10000
+-- 
+2.43.0
+

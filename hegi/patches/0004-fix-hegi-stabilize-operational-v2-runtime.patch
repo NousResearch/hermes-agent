@@ -1,0 +1,3192 @@
+From f868da3cbac717dbea74ac4bce76e6394f5edbd0 Mon Sep 17 00:00:00 2001
+From: Yong Wook Lee <icerain@jj.ac.kr>
+Date: Fri, 24 Jul 2026 17:42:22 +0900
+Subject: [PATCH] fix(hegi): stabilize operational v2 runtime
+
+---
+ gateway/run.py                             |  82 ++--
+ hegi/CHANGELOG.md                          |   9 +
+ hegi/README.md                             |  20 +-
+ hegi/VERSION                               |   2 +-
+ hegi/__init__.py                           |   2 +-
+ hegi/approval.py                           | 143 ++++++
+ hegi/bootstrap.py                          | 479 +++++++++++++++++++++
+ hegi/cli.py                                | 133 +++++-
+ hegi/config.py                             |  37 +-
+ hegi/config/default.yaml                   |   6 +-
+ hegi/config/schema.json                    |  23 +-
+ hegi/docs/architecture.md                  |  10 +
+ hegi/docs/migration.md                     |  15 +-
+ hegi/docs/operations.md                    |  43 +-
+ hegi/gateway_plugin.py                     | 132 ++++++
+ hegi/llm.py                                |  48 ++-
+ hegi/pipeline.py                           |   3 +-
+ hegi/plugin/__init__.py                    |   5 +
+ hegi/plugin/plugin.yaml                    |   4 +
+ hegi/scripts/install.sh                    | 125 +++++-
+ hegi/scripts/migrate_v1.sh                 |  80 +++-
+ hegi/scripts/restart_gateway.sh            |  75 ++++
+ hegi/scripts/start.sh                      |  73 +++-
+ hegi/scripts/status.sh                     |   8 +-
+ hegi/scripts/stop.sh                       |  37 +-
+ hegi/state.py                              | 133 ++++++
+ pyproject.toml                             |   2 +
+ tests/gateway/test_pre_gateway_dispatch.py |  20 +
+ tests/hegi/test_approval_integration.py    | 170 ++++++++
+ tests/hegi/test_bootstrap_install.py       | 120 ++++++
+ tests/hegi/test_daemon_lifecycle.py        | 128 ++++++
+ tests/hegi/test_migration.py               | 113 +++++
+ tests/hegi/test_operational_flow.py        | 194 +++++++++
+ tests/hegi/test_pipeline_e2e.py            |   2 +
+ tests/hegi/test_replay.py                  |  98 +++++
+ 35 files changed, 2444 insertions(+), 130 deletions(-)
+ create mode 100644 hegi/approval.py
+ create mode 100644 hegi/bootstrap.py
+ create mode 100644 hegi/gateway_plugin.py
+ create mode 100644 hegi/plugin/__init__.py
+ create mode 100644 hegi/plugin/plugin.yaml
+ create mode 100755 hegi/scripts/restart_gateway.sh
+ create mode 100644 tests/hegi/test_approval_integration.py
+ create mode 100644 tests/hegi/test_bootstrap_install.py
+ create mode 100644 tests/hegi/test_daemon_lifecycle.py
+ create mode 100644 tests/hegi/test_migration.py
+ create mode 100644 tests/hegi/test_operational_flow.py
+ create mode 100644 tests/hegi/test_replay.py
+
+diff --git a/gateway/run.py b/gateway/run.py
+index ec169fd65..ba4f29ef4 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -6034,6 +6034,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         self._enqueue_fifo(session_key, event, adapter)
+ 
+     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
++        # The adapter-level active-session guard runs before the normal runner
++        # path. Give pre-dispatch plugins the same interception opportunity
++        # here so durable control replies are never stranded in the follow-up
++        # queue behind an active agent.
++        event, plugin_handled = self._apply_pre_gateway_dispatch_plugins(event)
++        if plugin_handled:
++            return True
++
+         # --- Authorization gate (#17775) ---
+         # The cold path (_handle_message) checks _is_user_authorized before
+         # creating a session.  The busy path must enforce the same check;
+@@ -10558,6 +10566,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         )
+         return switched
+ 
++    def _apply_pre_gateway_dispatch_plugins(
++        self, event: MessageEvent
++    ) -> tuple[MessageEvent, bool]:
++        source = event.source
++        try:
++            from hermes_cli.plugins import invoke_hook as _invoke_hook
++
++            hook_results = _invoke_hook(
++                "pre_gateway_dispatch",
++                event=event,
++                gateway=self,
++                session_store=self.session_store,
++            )
++        except Exception as hook_exc:
++            logger.warning("pre_gateway_dispatch invocation failed: %s", hook_exc)
++            hook_results = []
++
++        for result in hook_results:
++            if not isinstance(result, dict):
++                continue
++            action = result.get("action")
++            if action == "skip":
++                logger.info(
++                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
++                    result.get("reason"),
++                    source.platform.value if source.platform else "unknown",
++                    source.chat_id or "unknown",
++                )
++                return event, True
++            if action == "rewrite":
++                new_text = result.get("text")
++                if isinstance(new_text, str):
++                    event = dataclasses.replace(event, text=new_text)
++                break
++            if action == "allow":
++                break
++        return event, False
++
+     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+         """
+         Handle an incoming message from any platform.
+@@ -10637,38 +10683,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         # Hook runs BEFORE auth so plugins can handle unauthorized senders
+         # (e.g. customer handover ingest) without triggering the pairing flow.
+         if not is_internal:
+-            try:
+-                from hermes_cli.plugins import invoke_hook as _invoke_hook
+-                _hook_results = _invoke_hook(
+-                    "pre_gateway_dispatch",
+-                    event=event,
+-                    gateway=self,
+-                    session_store=self.session_store,
+-                )
+-            except Exception as _hook_exc:
+-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
+-                _hook_results = []
+-
+-            for _result in _hook_results:
+-                if not isinstance(_result, dict):
+-                    continue
+-                _action = _result.get("action")
+-                if _action == "skip":
+-                    logger.info(
+-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+-                        _result.get("reason"),
+-                        source.platform.value if source.platform else "unknown",
+-                        source.chat_id or "unknown",
+-                    )
+-                    return None
+-                if _action == "rewrite":
+-                    _new_text = _result.get("text")
+-                    if isinstance(_new_text, str):
+-                        event = dataclasses.replace(event, text=_new_text)
+-                        source = event.source
+-                    break
+-                if _action == "allow":
+-                    break
++            event, plugin_handled = self._apply_pre_gateway_dispatch_plugins(event)
++            if plugin_handled:
++                return None
++            source = event.source
+ 
+         if is_internal:
+             pass
+diff --git a/hegi/CHANGELOG.md b/hegi/CHANGELOG.md
+index 5b7c4cb20..fdc7f330a 100644
+--- a/hegi/CHANGELOG.md
++++ b/hegi/CHANGELOG.md
+@@ -1,5 +1,14 @@
+ # Changelog
+ 
++## 2.0.1
++
++- Memory Curator, Telegram chat/user ID와 agent DB를 자동 탐지하고 즉시 활성화한다.
++- 선택한 profile을 LLM·MCP 실행 컨텍스트에도 고정한다.
++- readiness, `flock`, stale PID 복구와 Linux/WSL 로그인 자동 시작을 제공한다.
++- 실행 중인 gateway를 재시작해 HEGI Telegram pre-dispatch plugin을 반영한다.
++- `기억해`·`초안 만들어`를 영속 승인 큐로 선점해 재검색 후 STM Draft만 만든다.
++- v1 migration이 watcher 종료, 백업, v2 설치와 daemon 시작까지 수행한다.
++
+ ## 2.0.0
+ 
+ - 세 Hermes SQLite DB의 공진방 메시지를 읽기 전용 범위 쿼리로 수집한다.
+diff --git a/hegi/README.md b/hegi/README.md
+index 5eac39f9d..fac7678e6 100644
+--- a/hegi/README.md
++++ b/hegi/README.md
+@@ -1,4 +1,4 @@
+-# HEGI v2 — AI Research Secretary
++# HEGI v2.0.1 — AI Research Secretary
+ 
+ HEGI는 여러 Hermes 프로필의 공진방 대화를 읽기 전용으로 수집해 연구회의 Episode,
+ 한국어 구조화 회의록, Action Item, Memory Evaluation, Markdown/JSON 아카이브와
+@@ -9,5 +9,23 @@ Telegram, MCP는 Hermes의 기존 호출 경로를 재사용한다. Memory Fores
+ Commit은 구현하지 않으며, STM Draft는 설정된 교수 계정의 명시적 승인 이후에만
+ curator draft MCP를 호출한다.
+ 
++`install.sh`은 현재 Hermes 환경에서 Memory Curator profile, Telegram group chat,
++교수 user ID와 회의 참여 agent DB를 탐지한다. 비활성 예제 설정을 복사하거나 YAML을
++수동 편집하지 않는다.
++
++```bash
++cd ~/.hermes/hermes-agent
++hegi/scripts/install.sh
++python -m hegi doctor
++python -m hegi run-once
++python -m hegi run-once --send
++hegi/scripts/start.sh --send
++python -m hegi status
++```
++
++교수가 HEGI 회의록에 `기억해` 또는 `초안 만들어`라고 답하면 profile-local
++pre-dispatch plugin이 일반 Memory Curator 응답보다 먼저 메시지를 처리한다. 승인
++작업은 SQLite에 영속화되며 Memory Forest 재검색 뒤 pending STM Draft만 만든다.
++
+ 설치와 운영은 [operations.md](docs/operations.md), 안전 경계는
+ [memory_policy.md](docs/memory_policy.md)를 참고한다.
+diff --git a/hegi/VERSION b/hegi/VERSION
+index 227cea215..38f77a65b 100644
+--- a/hegi/VERSION
++++ b/hegi/VERSION
+@@ -1 +1 @@
+-2.0.0
++2.0.1
+diff --git a/hegi/__init__.py b/hegi/__init__.py
+index 18548a604..534f8017b 100644
+--- a/hegi/__init__.py
++++ b/hegi/__init__.py
+@@ -16,4 +16,4 @@ __all__ = [
+     "SourceMessage",
+ ]
+ 
+-__version__ = "2.0.0"
++__version__ = "2.0.1"
+diff --git a/hegi/approval.py b/hegi/approval.py
+new file mode 100644
+index 000000000..b477e76fc
+--- /dev/null
++++ b/hegi/approval.py
+@@ -0,0 +1,143 @@
++"""Durable Telegram approval processing for professor-authorized STM drafts."""
++
++from __future__ import annotations
++
++import json
++from typing import Any, Callable
++
++from .config import HegiConfig
++from .memory import DraftGate, MCPMemoryBackend, MemoryEvaluator
++from .notify import load_env_value
++from .pipeline import minutes_from_dict
++from .state import StateStore
++
++
++def _backend(config: HegiConfig) -> MCPMemoryBackend:
++    memory = config.section("memory")
++    return MCPMemoryBackend(
++        read_server=str(memory.get("read_server", "memory-forest-read")),
++        search_tool=str(memory.get("search_tool", "")),
++        draft_server=str(memory.get("draft_server", "")),
++        draft_tool=str(memory.get("draft_tool", "")),
++    )
++
++
++def _send_status(
++    config: HegiConfig,
++    text: str,
++    *,
++    sender: Callable[..., Any] | None = None,
++) -> None:
++    token = load_env_value(config.curator_env, "TELEGRAM_BOT_TOKEN")
++    if not token:
++        raise RuntimeError("TELEGRAM_BOT_TOKEN이 없습니다.")
++    if sender is None:
++        from tools.send_message_tool import _send_telegram
++
++        sender = _send_telegram
++    result = sender(
++        token,
++        config.chat_id,
++        text,
++        disable_link_previews=True,
++    )
++    if hasattr(result, "__await__"):
++        import asyncio
++
++        asyncio.run(result)
++
++
++def process_pending_approvals(
++    config: HegiConfig,
++    *,
++    backend: Any | None = None,
++    sender: Callable[..., Any] | None = None,
++    limit: int = 10,
++) -> list[dict[str, Any]]:
++    """Claim queued approvals exactly once and create draft-only Memory records."""
++    state = StateStore(config.state_db)
++    memory_backend = backend or _backend(config)
++    memory = config.section("memory")
++    gate = DraftGate(
++        state,
++        memory_backend,
++        professor_user_ids=[
++            str(item) for item in memory.get("professor_user_ids", [])
++        ],
++    )
++    results: list[dict[str, Any]] = []
++    for _ in range(limit):
++        job = state.claim_approval_job()
++        if job is None:
++            break
++        meeting_id = str(job["meeting_id"])
++        try:
++            row = state.episode_by_id(meeting_id)
++            if row is None or not row.get("minutes_json"):
++                raise ValueError("승인 대상 회의록이 없습니다.")
++            minutes = minutes_from_dict(json.loads(row["minutes_json"]))
++            evaluation = MemoryEvaluator(memory_backend).evaluate(minutes)
++            draft = gate.create_draft_after_recheck(
++                minutes,
++                evaluation,
++                project=str(job["project"]),
++            )
++            result = {
++                "meeting_id": meeting_id,
++                "status": "draft_created",
++                "project": str(job["project"]),
++                "draft": draft,
++                "commit": "not_performed",
++            }
++            state.complete_approval_job(int(job["id"]), status="completed", result=result)
++            results.append(result)
++            try:
++                _send_status(
++                    config,
++                    "✅ HEGI STM Draft 생성 완료\n\n"
++                    f"회의: {meeting_id}\n"
++                    f"프로젝트: {job['project']}\n"
++                    "Memory Forest 재검색: 완료\n"
++                    "Commit: 수행하지 않음",
++                    sender=sender,
++                )
++            except Exception as notify_exc:
++                state.add_dead_letter(
++                    "approval_notification",
++                    {"job_id": int(job["id"])},
++                    str(notify_exc),
++                    meeting_id,
++                )
++        except Exception as exc:
++            state.complete_approval_job(
++                int(job["id"]), status="failed", error=str(exc)
++            )
++            state.add_dead_letter(
++                "approval",
++                {
++                    "job_id": int(job["id"]),
++                    "platform_message_id": str(job["platform_message_id"]),
++                },
++                str(exc),
++                meeting_id,
++            )
++            try:
++                _send_status(
++                    config,
++                    "⚠️ HEGI Draft 생성 실패\n\n"
++                    f"회의: {meeting_id}\n"
++                    f"오류: {exc}\n"
++                    "Commit은 수행하지 않았습니다.",
++                    sender=sender,
++                )
++            except Exception:
++                pass
++            results.append(
++                {
++                    "meeting_id": meeting_id,
++                    "status": "failed",
++                    "error": str(exc),
++                    "commit": "not_performed",
++                }
++            )
++    return results
+diff --git a/hegi/bootstrap.py b/hegi/bootstrap.py
+new file mode 100644
+index 000000000..66c118111
+--- /dev/null
++++ b/hegi/bootstrap.py
+@@ -0,0 +1,479 @@
++"""Discover the local Hermes deployment and install an operational HEGI config."""
++
++from __future__ import annotations
++
++import argparse
++import copy
++import json
++import os
++import re
++import shutil
++import sqlite3
++import sys
++import time
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++import yaml
++
++from utils import fast_safe_load
++
++
++@dataclass(slots=True, frozen=True)
++class DiscoveredAgent:
++    name: str
++    db_path: Path
++
++
++@dataclass(slots=True, frozen=True)
++class DiscoveredEnvironment:
++    hermes_root: Path
++    runtime_home: Path
++    curator_env: Path
++    chat_id: str
++    professor_user_ids: tuple[str, ...]
++    agents: tuple[DiscoveredAgent, ...]
++    default_project: str
++
++
++def _read_env(path: Path) -> dict[str, str]:
++    values: dict[str, str] = {}
++    if not path.is_file():
++        return values
++    for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
++        line = raw_line.strip()
++        if not line or line.startswith("#") or "=" not in line:
++            continue
++        key, value = line.split("=", 1)
++        values[key.strip()] = value.strip().strip("'\"")
++    return values
++
++
++def _config_has_memory_curator(path: Path) -> bool:
++    if not path.is_file():
++        return False
++    try:
++        raw = fast_safe_load(path.read_text(encoding="utf-8")) or {}
++    except Exception:
++        return False
++    servers = raw.get("mcp_servers", {}) if isinstance(raw, dict) else {}
++    return isinstance(servers, dict) and any(
++        "memory-forest-curator" in str(name) for name in servers
++    )
++
++
++def hermes_root_for(runtime_home: Path | None = None) -> Path:
++    if runtime_home is not None:
++        resolved = runtime_home.expanduser().resolve()
++        if resolved.parent.name == "profiles":
++            return resolved.parent.parent
++        if resolved.name == ".hermes":
++            return resolved
++    return (Path.home() / ".hermes").resolve()
++
++
++def resolve_runtime_home(
++    *, hermes_root: Path | None = None, honor_environment: bool = True
++) -> Path:
++    """Locate the profile that owns Memory Forest and the HEGI Telegram bot."""
++    if honor_environment:
++        explicit = os.environ.get("HERMES_HOME", "").strip()
++        if explicit:
++            return Path(explicit).expanduser().resolve()
++    root = (hermes_root or hermes_root_for()).expanduser().resolve()
++    exact = root / "profiles" / "memory-curator"
++    candidates = [exact]
++    profiles = root / "profiles"
++    if profiles.is_dir():
++        candidates.extend(
++            path
++            for path in sorted(profiles.iterdir())
++            if path.is_dir() and path != exact
++        )
++    candidates.append(root)
++    for candidate in candidates:
++        if _config_has_memory_curator(candidate / "config.yaml"):
++            return candidate
++    for candidate in candidates:
++        env = _read_env(candidate / ".env")
++        if env.get("TELEGRAM_BOT_TOKEN") and "curator" in candidate.name.lower():
++            return candidate
++    return root
++
++
++def _candidate_databases(root: Path, runtime_home: Path) -> list[Path]:
++    candidates = [root / "state.db"]
++    profiles = root / "profiles"
++    if profiles.is_dir():
++        candidates.extend(sorted(profiles.glob("*/state.db")))
++    runtime_db = (runtime_home / "state.db").resolve()
++    return [
++        path.resolve()
++        for path in candidates
++        if path.is_file()
++        and (
++            runtime_home.resolve() == root.resolve()
++            or path.resolve() != runtime_db
++        )
++    ]
++
++
++def _database_chats(path: Path) -> list[tuple[str, str, int, float]]:
++    try:
++        uri = f"file:{path}?mode=ro"
++        connection = sqlite3.connect(uri, uri=True, timeout=3)
++        rows = connection.execute(
++            """
++            SELECT s.chat_id, COALESCE(s.chat_type, ''), COUNT(m.id),
++                   COALESCE(MAX(m.timestamp), 0)
++            FROM sessions AS s
++            JOIN messages AS m ON m.session_id=s.id
++            WHERE s.chat_id IS NOT NULL AND s.chat_id != ''
++              AND m.role IN ('user', 'assistant', 'agent')
++              AND COALESCE(m.active, 1)=1
++            GROUP BY s.chat_id, s.chat_type
++            """
++        ).fetchall()
++        connection.close()
++    except (OSError, sqlite3.Error):
++        return []
++    return [
++        (str(chat_id), str(chat_type), int(count), float(latest))
++        for chat_id, chat_type, count, latest in rows
++    ]
++
++
++def _configured_chat_candidates(root: Path, runtime_home: Path) -> list[str]:
++    candidates: list[str] = []
++    for env_path in (runtime_home / ".env", root / ".env"):
++        value = _read_env(env_path).get("HEGI_GROUP_CHAT_ID", "").strip()
++        if value:
++            candidates.append(value)
++    old_state = root / "hegi-watch" / "state.json"
++    if old_state.is_file():
++        try:
++            value = str(json.loads(old_state.read_text()).get("last_chat_id", "")).strip()
++            if value:
++                candidates.append(value)
++        except (OSError, ValueError):
++            pass
++    for config_path in (runtime_home / "config.yaml", root / "config.yaml"):
++        if not config_path.is_file():
++            continue
++        try:
++            raw = fast_safe_load(config_path.read_text(encoding="utf-8")) or {}
++        except Exception:
++            continue
++        telegram = raw.get("telegram", {}) if isinstance(raw, dict) else {}
++        allowed = telegram.get("allowed_chats", "") if isinstance(telegram, dict) else ""
++        values = allowed if isinstance(allowed, list) else re.split(r"[\s,]+", str(allowed))
++        candidates.extend(str(item).strip() for item in values if str(item).strip().startswith("-"))
++    return candidates
++
++
++def _discover_chat_id(root: Path, runtime_home: Path, databases: list[Path]) -> str:
++    configured = _configured_chat_candidates(root, runtime_home)
++    if configured:
++        return configured[0]
++    scores: dict[str, tuple[int, int, float]] = {}
++    for path in databases:
++        for chat_id, chat_type, count, latest in _database_chats(path):
++            if chat_type not in {"group", "forum", "supergroup"} and not chat_id.startswith("-"):
++                continue
++            database_count, message_count, newest = scores.get(chat_id, (0, 0, 0.0))
++            scores[chat_id] = (
++                database_count + 1,
++                message_count + count,
++                max(newest, latest),
++            )
++    if not scores:
++        return ""
++    return max(scores, key=lambda key: scores[key])
++
++
++def _agent_name(path: Path, root: Path) -> str:
++    if path == (root / "state.db").resolve():
++        return "HeHe"
++    slug = path.parent.name.lower()
++    if "codex" in slug or slug in {"heco", "co"}:
++        return "HeCo"
++    if "claude" in slug or slug in {"hecl", "heclaude"}:
++        return "HeClaude"
++    return path.parent.name
++
++
++def _db_has_chat(path: Path, chat_id: str) -> bool:
++    return any(item[0] == chat_id and item[2] > 0 for item in _database_chats(path))
++
++
++def _discover_professor_ids(root: Path, runtime_home: Path) -> tuple[str, ...]:
++    env_paths = [runtime_home / ".env", root / ".env"]
++    profiles = root / "profiles"
++    if profiles.is_dir():
++        env_paths.extend(sorted(profiles.glob("*/.env")))
++    result: list[str] = []
++    for path in env_paths:
++        env = _read_env(path)
++        values = [
++            env.get("TELEGRAM_ALLOWED_USERS", ""),
++            env.get("TELEGRAM_HOME_CHANNEL", ""),
++        ]
++        for value in values:
++            for candidate in re.split(r"[\s,]+", value):
++                candidate = candidate.strip()
++                if candidate.isdigit() and candidate not in result:
++                    result.append(candidate)
++    return tuple(result)
++
++
++def _discover_project(runtime_home: Path) -> str:
++    config_path = runtime_home / "config.yaml"
++    roots: list[Path] = []
++    if config_path.is_file():
++        text = config_path.read_text(encoding="utf-8", errors="ignore")
++        for match in re.finditer(r"MEMORY_FOREST_ROOT:\s*['\"]?([^'\"\n]+)", text):
++            roots.append(Path(match.group(1).strip()).expanduser())
++        for match in re.finditer(r"command:\s*['\"]?([^'\"\n]+curator[^'\"\n]*)", text):
++            command = Path(match.group(1).strip()).expanduser()
++            if command.is_file():
++                command_text = command.read_text(encoding="utf-8", errors="ignore")
++                root_match = re.search(
++                    r"MEMORY_FOREST_ROOT[^}]*:-([^}\"']+)", command_text
++                )
++                if root_match:
++                    roots.append(Path(root_match.group(1).strip()).expanduser())
++    roots.append(Path.home() / "memory-forests" / "yw-research")
++    for root in roots:
++        stm = root / "04 stm"
++        if not stm.is_dir():
++            continue
++        projects = sorted(path.name for path in stm.iterdir() if path.is_dir())
++        if "media_aesthetics" in projects:
++            return "media_aesthetics"
++        if projects:
++            return projects[0]
++    return "research"
++
++
++def discover_environment(
++    *, hermes_root: Path | None = None, runtime_home: Path | None = None
++) -> DiscoveredEnvironment:
++    root = (hermes_root or hermes_root_for(runtime_home)).expanduser().resolve()
++    runtime = (
++        runtime_home.expanduser().resolve()
++        if runtime_home is not None
++        else resolve_runtime_home(hermes_root=root)
++    )
++    databases = _candidate_databases(root, runtime)
++    chat_id = _discover_chat_id(root, runtime, databases)
++    selected = [path for path in databases if chat_id and _db_has_chat(path, chat_id)]
++    preferred = [
++        path
++        for path in selected
++        if _agent_name(path, root) in {"HeHe", "HeCo", "HeClaude"}
++    ]
++    if len(preferred) >= 2:
++        selected = preferred
++    agents = tuple(
++        DiscoveredAgent(_agent_name(path, root), path)
++        for path in selected
++    )
++    return DiscoveredEnvironment(
++        hermes_root=root,
++        runtime_home=runtime,
++        curator_env=runtime / ".env",
++        chat_id=chat_id,
++        professor_user_ids=_discover_professor_ids(root, runtime),
++        agents=agents,
++        default_project=_discover_project(runtime),
++    )
++
++
++def discovery_errors(discovery: DiscoveredEnvironment) -> list[str]:
++    errors: list[str] = []
++    if not discovery.curator_env.is_file():
++        errors.append(f"Memory Curator env가 없습니다: {discovery.curator_env}")
++    elif not _read_env(discovery.curator_env).get("TELEGRAM_BOT_TOKEN"):
++        errors.append(f"TELEGRAM_BOT_TOKEN이 없습니다: {discovery.curator_env}")
++    if not discovery.chat_id:
++        errors.append("Telegram group chat ID를 탐지하지 못했습니다.")
++    if not discovery.professor_user_ids:
++        errors.append("Professor Telegram user ID를 탐지하지 못했습니다.")
++    if len(discovery.agents) < 2:
++        errors.append("대상 chat을 포함한 agent DB를 2개 이상 탐지하지 못했습니다.")
++    return errors
++
++
++def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
++    merged = copy.deepcopy(base)
++    for key, value in override.items():
++        if isinstance(value, dict) and isinstance(merged.get(key), dict):
++            merged[key] = _deep_merge(merged[key], value)
++        else:
++            merged[key] = copy.deepcopy(value)
++    return merged
++
++
++def _backup(path: Path) -> Path | None:
++    if not path.exists():
++        return None
++    stamp = time.strftime("%Y%m%d-%H%M%S")
++    destination = path.with_name(f"{path.name}.backup-{stamp}")
++    counter = 1
++    while destination.exists():
++        destination = path.with_name(f"{path.name}.backup-{stamp}-{counter}")
++        counter += 1
++    shutil.copy2(path, destination)
++    return destination
++
++
++def _atomic_yaml(path: Path, payload: dict[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_suffix(path.suffix + ".tmp")
++    temporary.write_text(
++        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
++        encoding="utf-8",
++    )
++    os.chmod(temporary, 0o600)
++    temporary.replace(path)
++
++
++def _enable_plugin(runtime_home: Path) -> None:
++    config_path = runtime_home / "config.yaml"
++    if not config_path.is_file():
++        raise FileNotFoundError(f"Hermes profile config가 없습니다: {config_path}")
++    raw = fast_safe_load(config_path.read_text(encoding="utf-8")) or {}
++    if not isinstance(raw, dict):
++        raise ValueError(f"Hermes profile config가 mapping이 아닙니다: {config_path}")
++    plugins = raw.setdefault("plugins", {})
++    if not isinstance(plugins, dict):
++        plugins = {}
++        raw["plugins"] = plugins
++    enabled = plugins.get("enabled")
++    enabled_list = list(enabled) if isinstance(enabled, list) else []
++    if "hegi-telegram" not in enabled_list:
++        enabled_list.append("hegi-telegram")
++        plugins["enabled"] = enabled_list
++        _backup(config_path)
++        _atomic_yaml(config_path, raw)
++
++
++def install(
++    *, repo_root: Path, hermes_root: Path | None = None, runtime_home: Path | None = None
++) -> dict[str, Any]:
++    discovery = discover_environment(
++        hermes_root=hermes_root, runtime_home=runtime_home
++    )
++    errors = discovery_errors(discovery)
++    if errors:
++        raise RuntimeError("; ".join(errors))
++    default_path = repo_root / "hegi" / "config" / "default.yaml"
++    defaults = fast_safe_load(default_path.read_text(encoding="utf-8")) or {}
++    target = discovery.runtime_home / "hegi" / "config.yaml"
++    existing: dict[str, Any] = {}
++    if target.is_file():
++        loaded = fast_safe_load(target.read_text(encoding="utf-8")) or {}
++        if isinstance(loaded, dict):
++            existing = loaded
++    config = _deep_merge(defaults, existing)
++    config["enabled"] = True
++    config["telegram"] = {
++        **config.get("telegram", {}),
++        "chat_id": discovery.chat_id,
++        "curator_env": str(discovery.curator_env),
++        "enabled": True,
++    }
++    config["agents"] = [
++        {"name": agent.name, "db_path": str(agent.db_path)}
++        for agent in discovery.agents
++    ]
++    memory = config.setdefault("memory", {})
++    memory["professor_user_ids"] = list(discovery.professor_user_ids)
++    memory["default_project"] = discovery.default_project
++    memory["auto_commit"] = False
++    memory["auto_draft"] = False
++    memory["require_professor_approval"] = True
++    archive = config.setdefault("archive", {})
++    archive["local_spool"] = str(discovery.runtime_home / "hegi" / "archive")
++    backup = _backup(target)
++    _atomic_yaml(target, config)
++
++    plugin_source = repo_root / "hegi" / "plugin"
++    plugin_target = discovery.runtime_home / "plugins" / "hegi-telegram"
++    plugin_target.mkdir(parents=True, exist_ok=True)
++    for name in ("plugin.yaml", "__init__.py"):
++        shutil.copy2(plugin_source / name, plugin_target / name)
++    _enable_plugin(discovery.runtime_home)
++    return {
++        "config": str(target),
++        "backup": str(backup) if backup else None,
++        "runtime_home": str(discovery.runtime_home),
++        "chat_id": discovery.chat_id,
++        "professor_user_ids": list(discovery.professor_user_ids),
++        "agents": [
++            {"name": agent.name, "db_path": str(agent.db_path)}
++            for agent in discovery.agents
++        ],
++        "plugin": str(plugin_target),
++    }
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description="HEGI environment bootstrap")
++    subparsers = parser.add_subparsers(dest="command", required=True)
++    locate = subparsers.add_parser("locate-home")
++    locate.add_argument("--hermes-root", type=Path)
++    discover = subparsers.add_parser("discover")
++    discover.add_argument("--hermes-root", type=Path)
++    discover.add_argument("--runtime-home", type=Path)
++    installer = subparsers.add_parser("install")
++    installer.add_argument("--repo-root", required=True, type=Path)
++    installer.add_argument("--hermes-root", type=Path)
++    installer.add_argument("--runtime-home", type=Path)
++    return parser
++
++
++def main(argv: list[str] | None = None) -> int:
++    args = build_parser().parse_args(argv)
++    try:
++        if args.command == "locate-home":
++            print(resolve_runtime_home(hermes_root=args.hermes_root))
++            return 0
++        if args.command == "discover":
++            discovery = discover_environment(
++                hermes_root=args.hermes_root, runtime_home=args.runtime_home
++            )
++            print(
++                json.dumps(
++                    {
++                        "runtime_home": str(discovery.runtime_home),
++                        "curator_env": str(discovery.curator_env),
++                        "chat_id": discovery.chat_id,
++                        "professor_user_ids": list(discovery.professor_user_ids),
++                        "agents": [
++                            {"name": agent.name, "db_path": str(agent.db_path)}
++                            for agent in discovery.agents
++                        ],
++                        "default_project": discovery.default_project,
++                        "errors": discovery_errors(discovery),
++                    },
++                    ensure_ascii=False,
++                    indent=2,
++                )
++            )
++            return 0 if not discovery_errors(discovery) else 2
++        result = install(
++            repo_root=args.repo_root,
++            hermes_root=args.hermes_root,
++            runtime_home=args.runtime_home,
++        )
++        print(json.dumps(result, ensure_ascii=False, indent=2))
++        return 0
++    except Exception as exc:
++        print(f"HEGI install failed: {exc}", file=sys.stderr)
++        return 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/hegi/cli.py b/hegi/cli.py
+index 750ead87f..72afcacd3 100644
+--- a/hegi/cli.py
++++ b/hegi/cli.py
+@@ -17,6 +17,11 @@ from .memory import DraftGate, MCPMemoryBackend, MemoryEvaluator
+ from .pipeline import HegiPipeline, episode_from_dict, minutes_from_dict
+ from .state import StateStore
+ 
++try:
++    import fcntl
++except ImportError:  # pragma: no cover - Windows fallback
++    fcntl = None  # type: ignore[assignment]
++
+ 
+ def _json(value: Any) -> None:
+     print(json.dumps(value, ensure_ascii=False, indent=2))
+@@ -36,7 +41,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
+     checks = {
+         "config": str(config.path),
+         "enabled": config.enabled,
++        "chat_id": config.chat_id,
+         "chat_id_configured": bool(config.chat_id),
++        "telegram_enabled": bool(config.section("telegram").get("enabled")),
++        "curator_env": str(config.curator_env),
++        "professor_user_ids": [
++            str(item)
++            for item in config.section("memory").get("professor_user_ids", [])
++        ],
++        "agents": [
++            {"name": agent.name, "db_path": str(agent.db_path)}
++            for agent in config.agents
++        ],
+         "state_parent_writable": os.access(config.state_db.parent, os.W_OK)
+         if config.state_db.parent.exists()
+         else os.access(config.state_db.parent.parent, os.W_OK),
+@@ -117,6 +133,8 @@ def cmd_status(args: argparse.Namespace) -> int:
+             "episode_counts": counts,
+             "pending_messages": pending,
+             "dead_letters": dead_letters,
++            "approval_jobs": state.approval_job_counts(),
++            "daemon": _daemon_status(config.state_db.parent),
+         }
+     )
+     return 0
+@@ -166,33 +184,93 @@ def cmd_approve(args: argparse.Namespace) -> int:
+             raise ValueError("승인 대상 회의록이 없습니다.")
+         minutes = minutes_from_dict(json.loads(row["minutes_json"]))
+         evaluation = MemoryEvaluator(backend).evaluate(minutes)
++        project = args.project or str(memory_cfg.get("default_project", "")).strip()
++        if not project:
++            raise ValueError("memory.default_project 또는 --project가 필요합니다.")
+         result["draft"] = gate.create_draft_after_recheck(
+-            minutes, evaluation, project=args.project
++            minutes, evaluation, project=project
+         )
++        result["commit"] = "not_performed"
+     _json(result)
+     return 0
+ 
+ 
+-def _acquire_pidfile(path: Path) -> None:
+-    path.parent.mkdir(parents=True, exist_ok=True)
++def _atomic_runtime_file(path: Path, payload: dict[str, Any]) -> None:
++    temporary = path.with_suffix(path.suffix + ".tmp")
++    temporary.write_text(
++        json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"
++    )
++    os.chmod(temporary, 0o600)
++    temporary.replace(path)
++
++
++def _daemon_status(state_dir: Path) -> dict[str, Any]:
++    pidfile = state_dir / "daemon.pid"
++    readyfile = state_dir / "daemon.ready"
++    pid: int | None = None
++    alive = False
+     try:
+-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+-    except FileExistsError:
++        pid = int(pidfile.read_text(encoding="ascii").strip())
++        os.kill(pid, 0)
++        alive = True
++    except (OSError, ValueError):
++        pass
++    ready: dict[str, Any] = {}
++    if readyfile.is_file():
+         try:
+-            pid = int(path.read_text(encoding="ascii"))
+-            os.kill(pid, 0)
+-        except (ValueError, OSError):
+-            path.unlink(missing_ok=True)
+-            return _acquire_pidfile(path)
+-        raise RuntimeError(f"HEGI daemon이 이미 실행 중입니다: pid={pid}")
+-    with os.fdopen(descriptor, "w", encoding="ascii") as stream:
++            ready = json.loads(readyfile.read_text(encoding="utf-8"))
++        except (OSError, ValueError):
++            ready = {}
++    return {"pid": pid, "alive": alive, "ready": ready}
++
++
++def _acquire_daemon_lock(state_dir: Path):
++    state_dir.mkdir(parents=True, exist_ok=True)
++    lock_path = state_dir / "daemon.lock"
++    if fcntl is None:
++        try:
++            descriptor = os.open(
++                lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600
++            )
++        except FileExistsError:
++            try:
++                pid = int(lock_path.read_text(encoding="ascii").strip())
++                os.kill(pid, 0)
++            except (OSError, ValueError):
++                lock_path.unlink(missing_ok=True)
++                return _acquire_daemon_lock(state_dir)
++            raise RuntimeError(f"HEGI daemon이 이미 실행 중입니다: pid={pid}")
++        stream = os.fdopen(descriptor, "w+", encoding="ascii")
+         stream.write(str(os.getpid()))
++        stream.flush()
++        (state_dir / "daemon.pid").write_text(str(os.getpid()), encoding="ascii")
++        return stream
++    stream = lock_path.open("a+", encoding="ascii")
++    try:
++        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++    except BlockingIOError:
++        stream.seek(0)
++        pid = stream.read().strip() or "unknown"
++        stream.close()
++        raise RuntimeError(f"HEGI daemon이 이미 실행 중입니다: pid={pid}")
++    stream.seek(0)
++    stream.truncate()
++    stream.write(str(os.getpid()))
++    stream.flush()
++    os.fsync(stream.fileno())
++    (state_dir / "daemon.pid").write_text(str(os.getpid()), encoding="ascii")
++    return stream
+ 
+ 
+ def cmd_daemon(args: argparse.Namespace) -> int:
+     config = load_config(args.config)
+-    pidfile = config.state_db.parent / "daemon.pid"
+-    _acquire_pidfile(pidfile)
++    errors = validate_config(config, require_runtime=True)
++    if errors:
++        raise ValueError("; ".join(errors))
++    state_dir = config.state_db.parent
++    pidfile = state_dir / "daemon.pid"
++    readyfile = state_dir / "daemon.ready"
++    lock_stream = _acquire_daemon_lock(state_dir)
+     running = True
+ 
+     def stop(_signum, _frame):
+@@ -203,18 +281,40 @@ def cmd_daemon(args: argparse.Namespace) -> int:
+     signal.signal(signal.SIGTERM, stop)
+     try:
+         pipeline = HegiPipeline(config)
++        _atomic_runtime_file(
++            readyfile,
++            {
++                "pid": os.getpid(),
++                "started_at": time.time(),
++                "send": bool(args.send),
++                "config": str(config.path),
++            },
++        )
+         while running:
+             try:
+                 pipeline.run_once(dry_run=not args.send)
+             except Exception as exc:
+                 pipeline.state.add_dead_letter("daemon", {}, str(exc))
++            if args.send:
++                try:
++                    from .approval import process_pending_approvals
++
++                    process_pending_approvals(config)
++                except Exception as exc:
++                    pipeline.state.add_dead_letter("approval_daemon", {}, str(exc))
+             deadline = time.monotonic() + int(
+                 config.section("daemon").get("poll_seconds", 60)
+             )
+             while running and time.monotonic() < deadline:
+                 time.sleep(min(1, deadline - time.monotonic()))
+     finally:
++        readyfile.unlink(missing_ok=True)
+         pidfile.unlink(missing_ok=True)
++        if fcntl is not None:
++            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
++        lock_stream.close()
++        if fcntl is None:
++            (state_dir / "daemon.lock").unlink(missing_ok=True)
+     return 0
+ 
+ 
+@@ -246,7 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
+     approve.add_argument("--text", required=True)
+     approve.add_argument("--user-id", required=True)
+     approve.add_argument("--message-id")
+-    approve.add_argument("--project", required=True)
++    approve.add_argument("--project")
+     approve.set_defaults(func=cmd_approve)
+     return parser
+ 
+@@ -254,6 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
+ def main(argv: list[str] | None = None) -> int:
+     parser = build_parser()
+     args = parser.parse_args(argv)
++    config_path = Path(args.config).expanduser().resolve()
++    if config_path.parent.name == "hegi":
++        os.environ["HERMES_HOME"] = str(config_path.parent.parent)
+     if getattr(args, "chat_id", None):
+         config = load_config(args.config)
+         if str(args.chat_id) != config.chat_id:
+diff --git a/hegi/config.py b/hegi/config.py
+index 9c12ae1a7..41418f0d8 100644
+--- a/hegi/config.py
++++ b/hegi/config.py
+@@ -13,11 +13,11 @@ from utils import fast_safe_load
+ 
+ DEFAULT_CONFIG: dict[str, Any] = {
+     "version": 1,
+-    "enabled": False,
++    "enabled": True,
+     "telegram": {
+         "chat_id": "",
+         "curator_env": "",
+-        "enabled": False,
++        "enabled": True,
+     },
+     "agents": [],
+     "episode": {
+@@ -35,6 +35,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
+         "max_input_chars": 100000,
+         "chunk_chars": 30000,
+         "max_output_tokens": 10000,
++        "timeout_seconds": 180,
+         "prompt_version": "v2.0.0",
+     },
+     "archive": {
+@@ -54,6 +55,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
+         "auto_draft": False,
+         "require_professor_approval": True,
+         "professor_user_ids": [],
++        "default_project": "",
+     },
+     "daemon": {"poll_seconds": 60},
+     "reports": {"telegram": True},
+@@ -102,7 +104,13 @@ def _expand_path(value: str, *, base: Path) -> Path:
+ 
+ 
+ def default_config_path() -> Path:
+-    return get_hermes_home() / "hegi" / "config.yaml"
++    import os
++
++    if os.environ.get("HERMES_HOME", "").strip():
++        return get_hermes_home() / "hegi" / "config.yaml"
++    from .bootstrap import resolve_runtime_home
++
++    return resolve_runtime_home() / "hegi" / "config.yaml"
+ 
+ 
+ def load_config(path: str | Path | None = None) -> HegiConfig:
+@@ -116,7 +124,7 @@ def load_config(path: str | Path | None = None) -> HegiConfig:
+     if not isinstance(loaded, dict):
+         raise ValueError("HEGI 설정 루트는 YAML mapping이어야 합니다.")
+     raw = _deep_merge(DEFAULT_CONFIG, loaded)
+-    home = get_hermes_home()
++    home = config_path.resolve().parent.parent
+     chat_id = str(raw.get("telegram", {}).get("chat_id", "")).strip()
+     agents: list[AgentSourceConfig] = []
+     for entry in raw.get("agents", []):
+@@ -167,11 +175,18 @@ def load_config(path: str | Path | None = None) -> HegiConfig:
+ 
+ def validate_config(config: HegiConfig, *, require_runtime: bool = False) -> list[str]:
+     errors: list[str] = []
++    if not config.enabled:
++        errors.append("enabled가 false입니다.")
+     if not config.chat_id:
+         errors.append("telegram.chat_id가 비어 있습니다.")
+     if not config.agents:
+         errors.append("agents가 비어 있습니다.")
+     episode = config.section("episode")
++    try:
++        if len(config.agents) < int(episode.get("minimum_agents", 2)):
++            errors.append("agents 수가 episode.minimum_agents보다 적습니다.")
++    except (TypeError, ValueError):
++        pass
+     for key in (
+         "quiet_minutes",
+         "max_gap_minutes",
+@@ -191,10 +206,24 @@ def validate_config(config: HegiConfig, *, require_runtime: bool = False) -> lis
+         errors.append("memory.auto_draft는 안전 경계상 true일 수 없습니다.")
+     if not memory.get("require_professor_approval", True):
+         errors.append("memory.require_professor_approval은 true여야 합니다.")
++    professor_ids = memory.get("professor_user_ids", [])
++    if not isinstance(professor_ids, list) or not [
++        str(item).strip() for item in professor_ids if str(item).strip()
++    ]:
++        errors.append("memory.professor_user_ids가 비어 있습니다.")
++    if not str(memory.get("default_project", "")).strip():
++        errors.append("memory.default_project가 비어 있습니다.")
+     if require_runtime:
+         for agent in config.agents:
+             if not agent.db_path.is_file():
+                 errors.append(f"{agent.name} DB가 없습니다: {agent.db_path}")
+         if config.section("telegram").get("enabled") and not config.curator_env.is_file():
+             errors.append(f"Telegram env 파일이 없습니다: {config.curator_env}")
++        elif config.section("telegram").get("enabled"):
++            from .notify import load_env_value
++
++            if not load_env_value(config.curator_env, "TELEGRAM_BOT_TOKEN"):
++                errors.append(
++                    f"TELEGRAM_BOT_TOKEN이 없습니다: {config.curator_env}"
++                )
+     return errors
+diff --git a/hegi/config/default.yaml b/hegi/config/default.yaml
+index 53071db34..e8c000c5f 100644
+--- a/hegi/config/default.yaml
++++ b/hegi/config/default.yaml
+@@ -1,10 +1,10 @@
+ version: 1
+-enabled: false
++enabled: true
+ 
+ telegram:
+   chat_id: ""
+   curator_env: "~/.hermes/profiles/memory-curator/.env"
+-  enabled: false
++  enabled: true
+ 
+ agents:
+   - name: "헤헤"
+@@ -29,6 +29,7 @@ analysis:
+   max_input_chars: 100000
+   chunk_chars: 30000
+   max_output_tokens: 10000
++  timeout_seconds: 180
+   prompt_version: "v2.0.0"
+ 
+ archive:
+@@ -48,6 +49,7 @@ memory:
+   auto_draft: false
+   require_professor_approval: true
+   professor_user_ids: []
++  default_project: ""
+ 
+ daemon:
+   poll_seconds: 60
+diff --git a/hegi/config/schema.json b/hegi/config/schema.json
+index 714dcaaf1..5364555e5 100644
+--- a/hegi/config/schema.json
++++ b/hegi/config/schema.json
+@@ -5,19 +5,19 @@
+   "required": ["version", "enabled", "telegram", "agents", "episode", "archive", "memory"],
+   "properties": {
+     "version": {"const": 1},
+-    "enabled": {"type": "boolean"},
++    "enabled": {"const": true},
+     "telegram": {
+       "type": "object",
+       "required": ["chat_id", "enabled"],
+       "properties": {
+-        "chat_id": {"type": "string"},
++        "chat_id": {"type": "string", "minLength": 1},
+         "curator_env": {"type": "string"},
+-        "enabled": {"type": "boolean"}
++        "enabled": {"const": true}
+       }
+     },
+     "agents": {
+       "type": "array",
+-      "minItems": 1,
++      "minItems": 2,
+       "items": {
+         "type": "object",
+         "required": ["name", "db_path"],
+@@ -29,10 +29,23 @@
+     },
+     "memory": {
+       "type": "object",
++      "required": [
++        "auto_commit",
++        "auto_draft",
++        "require_professor_approval",
++        "professor_user_ids",
++        "default_project"
++      ],
+       "properties": {
+         "auto_commit": {"const": false},
+         "auto_draft": {"const": false},
+-        "require_professor_approval": {"const": true}
++        "require_professor_approval": {"const": true},
++        "professor_user_ids": {
++          "type": "array",
++          "items": {"type": ["string", "integer"]},
++          "minItems": 1
++        },
++        "default_project": {"type": "string", "minLength": 1}
+       }
+     }
+   }
+diff --git a/hegi/docs/architecture.md b/hegi/docs/architecture.md
+index c5b7cbf6d..b3bfaabf6 100644
+--- a/hegi/docs/architecture.md
++++ b/hegi/docs/architecture.md
+@@ -13,3 +13,13 @@
+ 경우 복제한다. `TelegramReporter`는 네 개의 보고 part를 각각 checkpoint하여 부분
+ 실패 뒤 이미 성공한 part를 재전송하지 않는다. 성공한 실제 보고 뒤에만 buffer를
+ consumed로 전환한다.
++
++profile-local `hegi-telegram` plugin은 gateway의 `pre_gateway_dispatch`에서 교수의
++승인 응답을 일반 Memory Curator agent보다 먼저 선점한다. `StateStore`의 approval
++job은 처리 전후 상태를 영속화하고, 비정상 종료된 processing job은 다시 pending으로
++회수된다. approval worker는 Memory Forest를 다시 검색한 뒤 curator-draft MCP로
++pending STM Draft만 만든다. Commit 도구는 호출 경로에 존재하지 않는다.
++
++daemon lifecycle은 `flock` 기반 단일 실행, PID identity와 readiness marker를
++사용한다. Linux user systemd 또는 WSL Windows Startup launcher가 system restart
++이후 `start.sh --send`를 다시 호출한다.
+diff --git a/hegi/docs/migration.md b/hegi/docs/migration.md
+index 0b9baaead..940872677 100644
+--- a/hegi/docs/migration.md
++++ b/hegi/docs/migration.md
+@@ -1,14 +1,17 @@
+ # v1 Migration
+ 
+-`migrate_v1.sh`은 기본 실행 시 진단만 출력한다. `--apply`를 주면 기존 v1 loop에
+-TERM을 보내고 v1 state를 timestamped backup으로 보존한 뒤 HEGI config를 설치한다.
+-기존 파일과 stash는 삭제하거나 변경하지 않는다.
++`migrate_v1.sh`은 기본 실행 시 진단만 출력한다. `--apply`를 주면 PID file과 실제
++command line을 함께 검증하여 기존 v1 loop를 종료하고, v1 state와 기존 v2 config를
++timestamped backup으로 보존한다. 이어서 환경 자동 탐지, v2 활성화, Telegram
++pre-dispatch plugin 설치와 gateway 반영, HEGI daemon `--send` 시작까지 수행한다.
++기존 watcher 파일과 Git stash는 삭제하거나 변경하지 않는다.
+ 
+ ```bash
+ hegi/scripts/migrate_v1.sh
+ hegi/scripts/migrate_v1.sh --apply
+ ```
+ 
+-HEGI를 검증한 뒤 daemon을 시작한다. 롤백 시 HEGI daemon을 중지하고 기존
+-`~/bin/hegi-memory-watch-loop`를 다시 실행하면 된다. 두 감시기를 동시에 실제
+-Telegram 송신 모드로 실행하지 않는다.
++명령이 성공하면 `daemon.ready`가 생성되어 있고 `python -m hegi status`의
++`daemon.alive`가 true이다. 롤백 시 HEGI daemon을 중지하고 profile config backup을
++복원한 뒤 기존 `~/bin/hegi-memory-watch-loop`를 다시 실행하면 된다. 두 감시기를
++동시에 실제 Telegram 송신 모드로 실행하지 않는다.
+diff --git a/hegi/docs/operations.md b/hegi/docs/operations.md
+index 7e2c27657..98659b19b 100644
+--- a/hegi/docs/operations.md
++++ b/hegi/docs/operations.md
+@@ -5,13 +5,24 @@
+ ```bash
+ cd ~/.hermes/hermes-agent
+ hegi/scripts/install.sh
+-$EDITOR ~/.hermes/profiles/memory-curator/hegi/config.yaml
+ ```
+ 
+-Draft MCP를 사용하려면 memory-curator profile의 `HERMES_HOME`에서 실행한다.
++설치기는 실제 Hermes config, `.env`, session DB에서 다음 항목을 자동 탐지한다.
++
++- Memory Forest curator MCP가 설정된 profile
++- `HEGI_GROUP_CHAT_ID` 또는 실제 group session의 Telegram chat ID
++- Telegram allowlist/home channel의 교수 user ID
++- 해당 chat을 가진 HeHe, HeCo, HeClaude DB
++- Memory Forest의 기본 STM project
++
++기존 HEGI config는 timestamped backup으로 보존한다. profile-local
++`hegi-telegram` plugin을 설치·활성화하고, 실행 중인 curator gateway가 있으면
++안전하게 재시작한다. YAML 수동 편집은 정상 설치 절차가 아니다.
++
++WSL에서 user systemd를 사용할 수 없으면 Windows Startup의
++`Hermes-HEGI-v2.cmd`를 등록한다. 일반 Linux에서는 user systemd unit을 활성화한다.
+ 
+ ```bash
+-export HERMES_HOME="$HOME/.hermes/profiles/memory-curator"
+ python -m hegi doctor
+ python -m hegi run-once
+ ```
+@@ -25,21 +36,30 @@ hegi/scripts/start.sh --send
+ python -m hegi status
+ ```
+ 
+-## 승인과 Draft
++`start.sh`은 10초 동안 `daemon.ready`를 확인한 뒤에만 성공한다. daemon은
++`daemon.lock`의 `flock`과 PID identity 검사로 중복 실행 및 PID 재사용을 막는다.
++비정상 종료 뒤 stale PID가 남아도 다음 시작에서 복구한다.
++
++## Telegram 승인과 Draft
++
++교수가 회의록에 `기억해` 또는 `초안 만들어`라고 답하면 Telegram
++`pre_gateway_dispatch` plugin이 메시지를 일반 agent turn보다 먼저 선점한다. 회의록
++Telegram message ID로 meeting을 찾고, 교수 ID와 중복 message ID를 검증한 뒤
++approval job을 영속화한다. gateway나 daemon이 재시작되어도 pending job은 다시
++처리된다.
+ 
+-Telegram 승인 event의 교수 user ID와 message ID를 gateway integration에서 전달한다.
+-수동 운영 시 다음 명령이 같은 gate를 사용한다.
++운영 복구 시에만 다음 CLI로 같은 gate를 직접 호출할 수 있다.
+ 
+ ```bash
+ python -m hegi approve \
+   --meeting-id HEGI_MEETING_ID \
+-  --text '@헤기 초안 만들어' \
++  --text '기억해' \
+   --user-id TELEGRAM_USER_ID \
+-  --message-id TELEGRAM_MESSAGE_ID \
+-  --project media_aesthetics
++  --message-id TELEGRAM_MESSAGE_ID
+ ```
+ 
+-이 명령은 Memory Forest를 다시 검색한 뒤 pending STM Draft만 만든다. Commit은 없다.
++`--project`를 생략하면 자동 탐지된 `memory.default_project`를 사용한다. 두 경로 모두
++Memory Forest를 다시 검색한 뒤 pending STM Draft만 만든다. Commit은 없다.
+ 
+ ## 중지와 롤백
+ 
+@@ -48,5 +68,6 @@ hegi/scripts/stop.sh
+ git revert HEGI_COMMIT
+ ```
+ 
+-상태와 archive를 보존한 채 daemon만 중지한다. v1 복귀 절차는
++상태, approval queue와 archive를 보존한 채 daemon만 중지한다. Windows 자동 시작을
++영구 제거하려면 Startup 폴더의 `Hermes-HEGI-v2.cmd`도 제거한다. v1 복귀 절차는
+ [migration.md](migration.md)에 있다.
+diff --git a/hegi/gateway_plugin.py b/hegi/gateway_plugin.py
+new file mode 100644
+index 000000000..1e1bd383d
+--- /dev/null
++++ b/hegi/gateway_plugin.py
+@@ -0,0 +1,132 @@
++"""Telegram pre-dispatch hook that routes professor approval replies to HEGI."""
++
++from __future__ import annotations
++
++import asyncio
++from typing import Any
++
++from .approval import process_pending_approvals
++from .config import load_config
++from .memory import DraftGate, MCPMemoryBackend, parse_approval_command
++from .state import StateStore
++
++
++def _platform_name(event: Any) -> str:
++    platform = getattr(getattr(event, "source", None), "platform", "")
++    return str(getattr(platform, "value", platform)).lower()
++
++
++def _schedule_reply(gateway: Any, event: Any, text: str) -> None:
++    try:
++        adapter = gateway._adapter_for_source(event.source)
++        if adapter is None:
++            return
++        kwargs: dict[str, Any] = {}
++        message_id = getattr(event, "message_id", None)
++        if message_id:
++            kwargs["reply_to"] = str(message_id)
++        asyncio.get_running_loop().create_task(
++            adapter.send(str(event.source.chat_id), text, **kwargs)
++        )
++    except Exception:
++        return
++
++
++def _meeting_id(state: StateStore, event: Any) -> str | None:
++    reply_id = getattr(event, "reply_to_message_id", None)
++    if reply_id:
++        matched = state.meeting_for_report_message(str(reply_id))
++        if matched:
++            return matched
++    return state.latest_reported_meeting()
++
++
++def intercept_telegram_approval(
++    *, event: Any, gateway: Any, session_store: Any = None
++) -> dict[str, str] | None:
++    del session_store
++    if _platform_name(event) != "telegram":
++        return None
++    text = str(getattr(event, "text", "") or "")
++    command = parse_approval_command(text)
++    if command is None:
++        return None
++    try:
++        config = load_config()
++    except Exception:
++        return None
++    source = getattr(event, "source", None)
++    if (
++        not config.enabled
++        or source is None
++        or str(getattr(source, "chat_id", "")) != config.chat_id
++    ):
++        return None
++    state = StateStore(config.state_db)
++    meeting_id = _meeting_id(state, event)
++    if not meeting_id:
++        _schedule_reply(gateway, event, "처리할 HEGI 회의록을 찾지 못했습니다.")
++        return {"action": "skip", "reason": "hegi-no-meeting"}
++    memory = config.section("memory")
++    backend = MCPMemoryBackend(
++        read_server=str(memory.get("read_server", "memory-forest-read")),
++        search_tool=str(memory.get("search_tool", "")),
++        draft_server=str(memory.get("draft_server", "")),
++        draft_tool=str(memory.get("draft_tool", "")),
++    )
++    gate = DraftGate(
++        state,
++        backend,
++        professor_user_ids=[
++            str(item) for item in memory.get("professor_user_ids", [])
++        ],
++    )
++    message_id = str(getattr(event, "message_id", "") or "")
++    user_id = str(getattr(source, "user_id", "") or "")
++    try:
++        approved = gate.approve(
++            meeting_id=meeting_id,
++            text=text,
++            user_id=user_id,
++            platform_message_id=message_id or None,
++        )
++        if approved == "reject":
++            _schedule_reply(
++                gateway,
++                event,
++                f"HEGI 기억 생성을 취소했습니다.\n회의: {meeting_id}",
++            )
++            return {"action": "skip", "reason": "hegi-rejected"}
++        if not message_id:
++            raise ValueError("Telegram message ID가 없어 승인을 영속화할 수 없습니다.")
++        project = str(memory.get("default_project", "")).strip()
++        if not project:
++            raise ValueError("memory.default_project가 설정되지 않았습니다.")
++        if not state.enqueue_approval_job(
++            meeting_id=meeting_id,
++            platform_message_id=message_id,
++            project=project,
++        ):
++            raise ValueError("이미 처리 중이거나 완료된 승인 메시지입니다.")
++    except Exception as exc:
++        _schedule_reply(gateway, event, f"HEGI 승인 거부: {exc}")
++        return {"action": "skip", "reason": "hegi-approval-denied"}
++
++    _schedule_reply(
++        gateway,
++        event,
++        "HEGI 승인을 접수했습니다.\n"
++        f"회의: {meeting_id}\n"
++        "Memory Forest를 다시 검색한 뒤 STM Draft만 생성합니다.",
++    )
++    try:
++        asyncio.get_running_loop().create_task(
++            asyncio.to_thread(process_pending_approvals, config)
++        )
++    except RuntimeError:
++        pass
++    return {"action": "skip", "reason": "hegi-approval-queued"}
++
++
++def register(context: Any) -> None:
++    context.register_hook("pre_gateway_dispatch", intercept_telegram_approval)
+diff --git a/hegi/llm.py b/hegi/llm.py
+index 4f9077e92..0d2c2d985 100644
+--- a/hegi/llm.py
++++ b/hegi/llm.py
+@@ -4,6 +4,8 @@ from __future__ import annotations
+ 
+ import json
+ import re
++import signal
++import threading
+ from pathlib import Path
+ from typing import Any, Callable
+ 
+@@ -73,11 +75,13 @@ class HermesLLMClient:
+         provider: str = "",
+         model: str = "",
+         max_tokens: int = 10000,
++        timeout_seconds: int = 180,
+         call: Callable[..., Any] | None = None,
+     ):
+         self.provider = provider or None
+         self.model = model or None
+         self.max_tokens = max_tokens
++        self.timeout_seconds = timeout_seconds
+         self._call = call
+ 
+     def complete(self, system: str, user: str) -> str:
+@@ -86,17 +90,39 @@ class HermesLLMClient:
+             from agent.auxiliary_client import call_llm
+ 
+             call = call_llm
+-        response = call(
+-            task="hegi",
+-            provider=self.provider,
+-            model=self.model,
+-            messages=[
+-                {"role": "system", "content": system},
+-                {"role": "user", "content": user},
+-            ],
+-            temperature=0,
+-            max_tokens=self.max_tokens,
+-        )
++        def invoke() -> Any:
++            return call(
++                task="hegi",
++                provider=self.provider,
++                model=self.model,
++                messages=[
++                    {"role": "system", "content": system},
++                    {"role": "user", "content": user},
++                ],
++                temperature=0,
++                max_tokens=self.max_tokens,
++            )
++
++        if (
++            self.timeout_seconds > 0
++            and threading.current_thread() is threading.main_thread()
++            and hasattr(signal, "SIGALRM")
++        ):
++            def timeout(_signum, _frame):
++                raise TimeoutError(
++                    f"HEGI LLM 호출이 {self.timeout_seconds}초를 초과했습니다."
++                )
++
++            previous_handler = signal.getsignal(signal.SIGALRM)
++            signal.signal(signal.SIGALRM, timeout)
++            previous_timer = signal.setitimer(signal.ITIMER_REAL, self.timeout_seconds)
++            try:
++                response = invoke()
++            finally:
++                signal.setitimer(signal.ITIMER_REAL, *previous_timer)
++                signal.signal(signal.SIGALRM, previous_handler)
++        else:
++            response = invoke()
+         return _response_text(response)
+ 
+     def structured(self, system: str, user: str) -> dict[str, Any]:
+diff --git a/hegi/pipeline.py b/hegi/pipeline.py
+index c578b3b6d..043eff614 100644
+--- a/hegi/pipeline.py
++++ b/hegi/pipeline.py
+@@ -132,6 +132,7 @@ class HegiPipeline:
+             provider=str(analysis.get("provider", "")),
+             model=str(analysis.get("model", "")),
+             max_tokens=int(analysis.get("max_output_tokens", 10000)),
++            timeout_seconds=int(analysis.get("timeout_seconds", 180)),
+         )
+         self.analyzer = HierarchicalMeetingAnalyzer(
+             self.llm_client,
+@@ -223,7 +224,7 @@ class HegiPipeline:
+             "model": analysis.get("model", ""),
+             "prompt_version": analysis.get("prompt_version", "v2.0.0"),
+             "generated_at": datetime.now(timezone.utc).isoformat(),
+-            "hegi_version": "2.0.0",
++            "hegi_version": "2.0.1",
+         }
+         return minutes
+ 
+diff --git a/hegi/plugin/__init__.py b/hegi/plugin/__init__.py
+new file mode 100644
+index 000000000..ad1756372
+--- /dev/null
++++ b/hegi/plugin/__init__.py
+@@ -0,0 +1,5 @@
++"""Profile-local shim for the HEGI Telegram pre-dispatch integration."""
++
++from hegi.gateway_plugin import register
++
++__all__ = ["register"]
+diff --git a/hegi/plugin/plugin.yaml b/hegi/plugin/plugin.yaml
+new file mode 100644
+index 000000000..dcda65d94
+--- /dev/null
++++ b/hegi/plugin/plugin.yaml
+@@ -0,0 +1,4 @@
++name: hegi-telegram
++version: 2.0.1
++description: Intercept professor HEGI approval replies before normal agent dispatch.
++kind: standalone
+diff --git a/hegi/scripts/install.sh b/hegi/scripts/install.sh
+index fdaaededd..5fbfe0169 100755
+--- a/hegi/scripts/install.sh
++++ b/hegi/scripts/install.sh
+@@ -2,14 +2,121 @@
+ set -euo pipefail
+ 
+ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+-hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+-target="$hermes_home/hegi"
+-
+-mkdir -p "$target/archive"
+-if [[ ! -e "$target/config.yaml" ]]; then
+-  cp "$repo_root/hegi/config/default.yaml" "$target/config.yaml"
+-  chmod 600 "$target/config.yaml"
+-  echo "HEGI config installed: $target/config.yaml"
++python_bin=""
++for candidate in "$repo_root/.venv/bin/python" "$repo_root/venv/bin/python" "$(command -v python3 || true)"; do
++  if [[ -n "$candidate" && -x "$candidate" ]]; then
++    python_bin="$candidate"
++    break
++  fi
++done
++if [[ -z "$python_bin" ]]; then
++  echo "Python runtime not found" >&2
++  exit 1
++fi
++
++no_systemd=false
++bootstrap_args=(install --repo-root "$repo_root")
++requested_hermes_root=""
++requested_runtime_home=""
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --no-systemd)
++      no_systemd=true
++      shift
++      ;;
++    --hermes-root|--runtime-home)
++      [[ $# -ge 2 ]] || { echo "$1 requires a path" >&2; exit 2; }
++      if [[ "$1" == "--hermes-root" ]]; then
++        requested_hermes_root="$2"
++      else
++        requested_runtime_home="$2"
++      fi
++      bootstrap_args+=("$1" "$2")
++      shift 2
++      ;;
++    *)
++      echo "Usage: $0 [--no-systemd] [--hermes-root PATH] [--runtime-home PATH]" >&2
++      exit 2
++      ;;
++  esac
++done
++
++cd "$repo_root"
++"$python_bin" -m hegi.bootstrap "${bootstrap_args[@]}"
++if [[ -n "$requested_runtime_home" ]]; then
++  runtime_home="$requested_runtime_home"
++elif [[ -n "$requested_hermes_root" ]]; then
++  runtime_home="$("$python_bin" -m hegi.bootstrap locate-home --hermes-root "$requested_hermes_root")"
+ else
+-  echo "HEGI config already exists; unchanged: $target/config.yaml"
++  runtime_home="$("$python_bin" -m hegi.bootstrap locate-home)"
+ fi
++mkdir -p "$runtime_home/hegi/archive"
++
++restart_recovery="none"
++if [[ "$no_systemd" == false ]] && command -v systemctl >/dev/null 2>&1 \
++  && systemctl --user show-environment >/dev/null 2>&1; then
++  unit_dir="$HOME/.config/systemd/user"
++  unit_path="$unit_dir/hegi.service"
++  mkdir -p "$unit_dir"
++  temporary="$unit_path.tmp"
++  {
++    echo "[Unit]"
++    echo "Description=HEGI v2 AI Research Secretary"
++    echo "After=network-online.target"
++    echo "Wants=network-online.target"
++    echo
++    echo "[Service]"
++    printf 'Type=simple\n'
++    printf 'WorkingDirectory=%s\n' "$repo_root"
++    printf 'Environment=HERMES_HOME=%s\n' "$runtime_home"
++    printf 'ExecStart=%s -m hegi daemon --send\n' "$python_bin"
++    printf 'Restart=on-failure\n'
++    printf 'RestartSec=5\n'
++    printf 'TimeoutStopSec=20\n'
++    echo
++    echo "[Install]"
++    echo "WantedBy=default.target"
++  } >"$temporary"
++  chmod 600 "$temporary"
++  mv "$temporary" "$unit_path"
++  systemctl --user daemon-reload
++  systemctl --user enable hegi.service >/dev/null
++  restart_recovery="systemd"
++  echo "HEGI restart recovery enabled: $unit_path"
++elif [[ "$no_systemd" == false && -n "${WSL_DISTRO_NAME:-}" ]] \
++  && command -v powershell.exe >/dev/null 2>&1; then
++  wsl_start_command="HERMES_HOME='$runtime_home' '$repo_root/hegi/scripts/start.sh' --send"
++  distro_b64="$(printf '%s' "$WSL_DISTRO_NAME" | base64 -w0)"
++  command_b64="$(printf '%s' "$wsl_start_command" | base64 -w0)"
++  recovery_script="$runtime_home/hegi/install-recovery.ps1"
++  {
++    printf '$distroName = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("%s"))\n' "$distro_b64"
++    printf '$startCommand = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("%s"))\n' "$command_b64"
++    cat <<'POWERSHELL'
++    $arguments = "-d `"" + $distroName + "`" -- bash -lc `"" +
++      $startCommand + "`""
++    $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wsl.exe" -Argument $arguments
++    $trigger = New-ScheduledTaskTrigger -AtLogOn
++    try {
++      Register-ScheduledTask -TaskName "Hermes HEGI v2" -Action $action -Trigger $trigger `
++        -Description "Start HEGI v2 in WSL after Windows logon" -Force -ErrorAction Stop | Out-Null
++      "windows-task"
++    } catch {
++      $startup = [Environment]::GetFolderPath("Startup")
++      $launcher = Join-Path $startup "Hermes-HEGI-v2.cmd"
++      $line = "@echo off`r`nstart `"`" /min wsl.exe " + $arguments + "`r`n"
++      [IO.File]::WriteAllText($launcher, $line, [Text.UTF8Encoding]::new($false))
++      "windows-startup"
++    }
++POWERSHELL
++  } >"$recovery_script"
++  recovery_method="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(wslpath -w "$recovery_script")")"
++  rm -f "$recovery_script"
++  restart_recovery="$(printf '%s' "$recovery_method" | tr -d '\r\n')"
++  echo "HEGI restart recovery enabled: $restart_recovery / Hermes HEGI v2"
++else
++  echo "HEGI systemd unit skipped; start.sh will use the supervised PID/lock fallback."
++fi
++
++HERMES_HOME="$runtime_home" "$python_bin" -m hegi doctor
++HERMES_HOME="$runtime_home" "$repo_root/hegi/scripts/restart_gateway.sh"
+diff --git a/hegi/scripts/migrate_v1.sh b/hegi/scripts/migrate_v1.sh
+index b85e87e26..8b20337fd 100755
+--- a/hegi/scripts/migrate_v1.sh
++++ b/hegi/scripts/migrate_v1.sh
+@@ -2,35 +2,81 @@
+ set -euo pipefail
+ 
+ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+-hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+-v1_state="$HOME/.hermes/hegi-watch"
++python_bin=""
++for candidate in "$repo_root/.venv/bin/python" "$repo_root/venv/bin/python" "$(command -v python3 || true)"; do
++  if [[ -n "$candidate" && -x "$candidate" ]]; then python_bin="$candidate"; break; fi
++done
++[[ -n "$python_bin" ]] || { echo "Python runtime not found" >&2; exit 1; }
++
+ apply=false
+-if [[ "${1:-}" == "--apply" ]]; then
+-  apply=true
+-elif [[ $# -gt 0 ]]; then
+-  echo "Usage: $0 [--apply]" >&2
+-  exit 2
+-fi
++no_systemd=false
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --apply) apply=true ;;
++    --no-systemd) no_systemd=true ;;
++    *) echo "Usage: $0 [--apply] [--no-systemd]" >&2; exit 2 ;;
++  esac
++  shift
++done
+ 
++hermes_root="$HOME/.hermes"
++runtime_home="${HERMES_HOME:-$("$python_bin" -m hegi.bootstrap locate-home --hermes-root "$hermes_root")}"
++v1_state="$hermes_root/hegi-watch"
+ echo "v1 watcher: $HOME/bin/hegi-memory-watch.py"
+ echo "v1 state: $v1_state"
+-echo "v2 config: $hermes_home/hegi/config.yaml"
++echo "v2 runtime: $runtime_home"
++echo "v2 config: $runtime_home/hegi/config.yaml"
+ if [[ "$apply" != true ]]; then
+-  echo "Diagnostic only. Re-run with --apply to stop v1 and install v2 config."
++  echo "Diagnostic only. Re-run with --apply to stop v1, back up state, install v2, and start its daemon."
+   exit 0
+ fi
+ 
++pids=()
+ if [[ -f "$v1_state/loop.pid" ]]; then
+-  pid="$(<"$v1_state/loop.pid")"
+-  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+-    kill -TERM "$pid"
+-    echo "Requested v1 watcher stop: pid=$pid"
+-  fi
++  candidate="$(<"$v1_state/loop.pid")"
++  [[ "$candidate" =~ ^[0-9]+$ ]] && pids+=("$candidate")
+ fi
++while IFS= read -r candidate; do
++  [[ "$candidate" =~ ^[0-9]+$ ]] && pids+=("$candidate")
++done < <(pgrep -f "$HOME/bin/hegi-memory-watch-loop|$HOME/bin/hegi-memory-watch.py" || true)
++
++for pid in "${pids[@]}"; do
++  if kill -0 "$pid" 2>/dev/null; then
++    command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
++    if [[ "$command_line" == *"hegi-memory-watch"* ]]; then
++      kill -TERM "$pid"
++      echo "Requested v1 watcher stop: pid=$pid"
++    fi
++  fi
++done
++for _ in {1..50}; do
++  remaining=false
++  for pid in "${pids[@]}"; do
++    kill -0 "$pid" 2>/dev/null && remaining=true
++  done
++  [[ "$remaining" == false ]] && break
++  sleep 0.1
++done
++for pid in "${pids[@]}"; do
++  if kill -0 "$pid" 2>/dev/null; then
++    command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
++    if [[ "$command_line" == *"hegi-memory-watch"* ]]; then
++      kill -KILL "$pid"
++      echo "Forced stale v1 watcher stop after grace period: pid=$pid"
++    fi
++  fi
++done
++
+ if [[ -d "$v1_state" ]]; then
+-  backup="$HOME/.hermes/backups/hegi-watch-$(date +%Y%m%d-%H%M%S)"
++  backup="$hermes_root/backups/hegi-watch-$(date +%Y%m%d-%H%M%S)"
+   mkdir -p "$(dirname "$backup")"
+   cp -a "$v1_state" "$backup"
+   echo "Preserved v1 state: $backup"
+ fi
+-HERMES_HOME="$hermes_home" "$repo_root/hegi/scripts/install.sh"
++
++install_args=(--hermes-root "$hermes_root" --runtime-home "$runtime_home")
++[[ "$no_systemd" == true ]] && install_args+=(--no-systemd)
++"$repo_root/hegi/scripts/install.sh" "${install_args[@]}"
++HERMES_HOME="$runtime_home" "$repo_root/hegi/scripts/stop.sh"
++HERMES_HOME="$runtime_home" "$repo_root/hegi/scripts/start.sh" --send
++echo "HEGI v2 migration complete; v1 stopped, configuration backed up, v2 enabled and daemon started."
+diff --git a/hegi/scripts/restart_gateway.sh b/hegi/scripts/restart_gateway.sh
+new file mode 100755
+index 000000000..158b4a38a
+--- /dev/null
++++ b/hegi/scripts/restart_gateway.sh
+@@ -0,0 +1,75 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++python_bin=""
++for candidate in "$repo_root/.venv/bin/python" "$repo_root/venv/bin/python" "$(command -v python3 || true)"; do
++  if [[ -n "$candidate" && -x "$candidate" ]]; then python_bin="$candidate"; break; fi
++done
++[[ -n "$python_bin" ]] || { echo "Python runtime not found" >&2; exit 1; }
++runtime_home="${HERMES_HOME:-$("$python_bin" -m hegi.bootstrap locate-home)}"
++pidfile="$runtime_home/gateway.pid"
++if [[ ! -f "$pidfile" ]]; then
++  echo "Hermes gateway is not running; HEGI plugin will load on its next start."
++  exit 0
++fi
++raw_pidfile="$(<"$pidfile")"
++if [[ "$raw_pidfile" == \{* ]]; then
++  old_pid="$(printf '%s' "$raw_pidfile" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
++else
++  old_pid="$raw_pidfile"
++fi
++if [[ ! "$old_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$old_pid" 2>/dev/null; then
++  echo "Hermes gateway pidfile is stale; plugin will load on its next start."
++  exit 0
++fi
++command_line="$(tr '\0' ' ' <"/proc/$old_pid/cmdline" 2>/dev/null || true)"
++if [[ "$command_line" != *"hermes"* || "$command_line" != *"gateway"* ]]; then
++  echo "Refusing to stop unrelated process from gateway pidfile: pid=$old_pid" >&2
++  exit 1
++fi
++
++hermes_bin="$(command -v hermes || true)"
++if [[ -z "$hermes_bin" && -x "$HOME/.local/bin/hermes" ]]; then
++  hermes_bin="$HOME/.local/bin/hermes"
++fi
++[[ -n "$hermes_bin" ]] || { echo "hermes CLI not found" >&2; exit 1; }
++profile_args=()
++if [[ "$runtime_home" == "$HOME/.hermes/profiles/"* ]]; then
++  profile_args=(-p "$(basename "$runtime_home")")
++fi
++
++kill -TERM "$old_pid"
++for _ in {1..300}; do
++  kill -0 "$old_pid" 2>/dev/null || break
++  sleep 0.1
++done
++if kill -0 "$old_pid" 2>/dev/null; then
++  echo "Hermes gateway did not stop within 30 seconds: pid=$old_pid" >&2
++  exit 1
++fi
++
++log="$runtime_home/logs/gateway-start.log"
++mkdir -p "$(dirname "$log")"
++nohup "$hermes_bin" "${profile_args[@]}" gateway run --force >>"$log" 2>&1 &
++launcher_pid=$!
++for _ in {1..300}; do
++  if [[ -f "$pidfile" ]]; then
++    raw_pidfile="$(<"$pidfile")"
++    if [[ "$raw_pidfile" == \{* ]]; then
++      new_pid="$(printf '%s' "$raw_pidfile" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
++    else
++      new_pid="$raw_pidfile"
++    fi
++    if [[ "$new_pid" =~ ^[0-9]+$ && "$new_pid" != "$old_pid" ]] \
++      && kill -0 "$new_pid" 2>/dev/null; then
++      echo "Hermes gateway restarted for HEGI plugin: pid=$new_pid"
++      exit 0
++    fi
++  fi
++  kill -0 "$launcher_pid" 2>/dev/null || break
++  sleep 0.1
++done
++echo "Hermes gateway failed to restart; inspect $log" >&2
++tail -n 80 "$log" >&2 || true
++exit 1
+diff --git a/hegi/scripts/start.sh b/hegi/scripts/start.sh
+index 0ff196ef4..4bd839749 100755
+--- a/hegi/scripts/start.sh
++++ b/hegi/scripts/start.sh
+@@ -2,16 +2,71 @@
+ set -euo pipefail
+ 
+ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+-hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+-state_dir="$hermes_home/hegi"
++python_bin=""
++for candidate in "$repo_root/.venv/bin/python" "$repo_root/venv/bin/python" "$(command -v python3 || true)"; do
++  if [[ -n "$candidate" && -x "$candidate" ]]; then
++    python_bin="$candidate"
++    break
++  fi
++done
++[[ -n "$python_bin" ]] || { echo "Python runtime not found" >&2; exit 1; }
++
++send=false
++if [[ "${1:-}" == "--send" ]]; then
++  send=true
++  shift
++fi
++[[ $# -eq 0 ]] || { echo "Usage: $0 [--send]" >&2; exit 2; }
++
++runtime_home="${HERMES_HOME:-$("$python_bin" -m hegi.bootstrap locate-home)}"
++export HERMES_HOME="$runtime_home"
++state_dir="$runtime_home/hegi"
++pidfile="$state_dir/daemon.pid"
++readyfile="$state_dir/daemon.ready"
+ mkdir -p "$state_dir"
+ 
+ cd "$repo_root"
+-nohup python -m hegi daemon "$@" >>"$state_dir/daemon.log" 2>&1 &
+-launcher_pid=$!
+-sleep 1
+-if ! kill -0 "$launcher_pid" 2>/dev/null; then
+-  echo "HEGI daemon failed to start; inspect $state_dir/daemon.log" >&2
+-  exit 1
++"$python_bin" -m hegi doctor >/dev/null
++
++if [[ -f "$pidfile" ]]; then
++  pid="$(<"$pidfile")"
++  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null \
++    && tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'hegi daemon'; then
++    echo "HEGI daemon already running: pid=$pid"
++    exit 0
++  fi
++  rm -f "$pidfile" "$readyfile"
++fi
++
++use_systemd=false
++if [[ "$send" == true ]] && command -v systemctl >/dev/null 2>&1 \
++  && systemctl --user cat hegi.service >/dev/null 2>&1; then
++  use_systemd=true
++  systemctl --user start hegi.service
++else
++  daemon_args=(daemon)
++  [[ "$send" == true ]] && daemon_args+=(--send)
++  nohup "$python_bin" -m hegi "${daemon_args[@]}" >>"$state_dir/daemon.log" 2>&1 &
++fi
++
++for _ in {1..100}; do
++  if [[ -f "$readyfile" && -f "$pidfile" ]]; then
++    pid="$(<"$pidfile")"
++    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
++      echo "HEGI daemon ready: pid=$pid send=$send systemd=$use_systemd"
++      exit 0
++    fi
++  fi
++  if [[ "$use_systemd" == true ]] && ! systemctl --user is-active --quiet hegi.service; then
++    break
++  fi
++  sleep 0.1
++done
++
++echo "HEGI daemon failed readiness check; inspect $state_dir/daemon.log" >&2
++if [[ "$use_systemd" == true ]]; then
++  systemctl --user status hegi.service --no-pager >&2 || true
++else
++  tail -n 80 "$state_dir/daemon.log" >&2 || true
+ fi
+-echo "HEGI daemon started: pid=$launcher_pid"
++exit 1
+diff --git a/hegi/scripts/status.sh b/hegi/scripts/status.sh
+index 706024a92..1cfa28c1e 100755
+--- a/hegi/scripts/status.sh
++++ b/hegi/scripts/status.sh
+@@ -2,5 +2,11 @@
+ set -euo pipefail
+ 
+ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++python_bin=""
++for candidate in "$repo_root/.venv/bin/python" "$repo_root/venv/bin/python" "$(command -v python3 || true)"; do
++  if [[ -n "$candidate" && -x "$candidate" ]]; then python_bin="$candidate"; break; fi
++done
++[[ -n "$python_bin" ]] || { echo "Python runtime not found" >&2; exit 1; }
++runtime_home="${HERMES_HOME:-$("$python_bin" -m hegi.bootstrap locate-home)}"
+ cd "$repo_root"
+-python -m hegi status "$@"
++HERMES_HOME="$runtime_home" "$python_bin" -m hegi status "$@"
+diff --git a/hegi/scripts/stop.sh b/hegi/scripts/stop.sh
+index 363495ead..718f6b7ed 100755
+--- a/hegi/scripts/stop.sh
++++ b/hegi/scripts/stop.sh
+@@ -1,9 +1,23 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ 
+-hermes_home="${HERMES_HOME:-$HOME/.hermes}"
+-pidfile="$hermes_home/hegi/daemon.pid"
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
++python_bin=""
++for candidate in "$repo_root/.venv/bin/python" "$repo_root/venv/bin/python" "$(command -v python3 || true)"; do
++  if [[ -n "$candidate" && -x "$candidate" ]]; then python_bin="$candidate"; break; fi
++done
++[[ -n "$python_bin" ]] || { echo "Python runtime not found" >&2; exit 1; }
++runtime_home="${HERMES_HOME:-$("$python_bin" -m hegi.bootstrap locate-home)}"
++pidfile="$runtime_home/hegi/daemon.pid"
++readyfile="$runtime_home/hegi/daemon.ready"
++
++if command -v systemctl >/dev/null 2>&1 \
++  && systemctl --user is-active --quiet hegi.service 2>/dev/null; then
++  systemctl --user stop hegi.service
++fi
++
+ if [[ ! -f "$pidfile" ]]; then
++  rm -f "$readyfile"
+   echo "HEGI daemon is not running"
+   exit 0
+ fi
+@@ -13,8 +27,23 @@ if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+   exit 2
+ fi
+ if kill -0 "$pid" 2>/dev/null; then
++  command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
++  if [[ "$command_line" != *"hegi daemon"* ]]; then
++    rm -f "$pidfile" "$readyfile"
++    echo "Removed stale HEGI pidfile; pid=$pid belongs to another process"
++    exit 0
++  fi
+   kill -TERM "$pid"
+-  echo "Stop requested for HEGI daemon: pid=$pid"
++  for _ in {1..100}; do
++    kill -0 "$pid" 2>/dev/null || break
++    sleep 0.1
++  done
++  if kill -0 "$pid" 2>/dev/null; then
++    echo "HEGI daemon did not stop within 10 seconds: pid=$pid" >&2
++    exit 1
++  fi
++  echo "HEGI daemon stopped: pid=$pid"
+ else
+-  echo "Stale HEGI pidfile found; daemon is not running"
++  echo "Removed stale HEGI pidfile: pid=$pid"
+ fi
++rm -f "$pidfile" "$readyfile"
+diff --git a/hegi/state.py b/hegi/state.py
+index b16719009..a41cca964 100644
+--- a/hegi/state.py
++++ b/hegi/state.py
+@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS approval_events (
+     approved_at REAL NOT NULL,
+     UNIQUE(platform_message_id)
+ );
++CREATE TABLE IF NOT EXISTS approval_jobs (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    meeting_id TEXT NOT NULL,
++    platform_message_id TEXT NOT NULL UNIQUE,
++    project TEXT NOT NULL,
++    status TEXT NOT NULL,
++    result_json TEXT,
++    last_error TEXT,
++    created_at REAL NOT NULL,
++    updated_at REAL NOT NULL
++);
++CREATE INDEX IF NOT EXISTS idx_approval_jobs_status
++ON approval_jobs(status, created_at);
+ CREATE TABLE IF NOT EXISTS action_items (
+     action_id TEXT PRIMARY KEY,
+     meeting_id TEXT NOT NULL,
+@@ -312,3 +325,123 @@ class StateStore:
+                 (meeting_id, command, user_id, platform_message_id, raw_text, time.time()),
+             )
+         return cursor.rowcount == 1
++
++    def enqueue_approval_job(
++        self,
++        *,
++        meeting_id: str,
++        platform_message_id: str,
++        project: str,
++    ) -> bool:
++        now = time.time()
++        with self.connect() as connection:
++            cursor = connection.execute(
++                """
++                INSERT OR IGNORE INTO approval_jobs(
++                    meeting_id, platform_message_id, project, status,
++                    created_at, updated_at
++                ) VALUES (?, ?, ?, 'pending', ?, ?)
++                """,
++                (meeting_id, platform_message_id, project, now, now),
++            )
++        return cursor.rowcount == 1
++
++    def claim_approval_job(
++        self, *, stale_after_seconds: int = 300
++    ) -> dict[str, Any] | None:
++        now = time.time()
++        connection = sqlite3.connect(self.path, timeout=30)
++        connection.row_factory = sqlite3.Row
++        connection.execute("PRAGMA busy_timeout=30000")
++        try:
++            connection.execute("BEGIN IMMEDIATE")
++            connection.execute(
++                """
++                UPDATE approval_jobs SET status='pending', updated_at=?
++                WHERE status='processing' AND updated_at<?
++                """,
++                (now, now - stale_after_seconds),
++            )
++            row = connection.execute(
++                """
++                SELECT * FROM approval_jobs
++                WHERE status='pending' ORDER BY created_at, id LIMIT 1
++                """
++            ).fetchone()
++            if row is None:
++                connection.commit()
++                return None
++            connection.execute(
++                """
++                UPDATE approval_jobs SET status='processing', updated_at=?
++                WHERE id=? AND status='pending'
++                """,
++                (now, row["id"]),
++            )
++            connection.commit()
++            return dict(row)
++        except Exception:
++            connection.rollback()
++            raise
++        finally:
++            connection.close()
++
++    def complete_approval_job(
++        self,
++        job_id: int,
++        *,
++        status: str,
++        result: dict[str, Any] | None = None,
++        error: str | None = None,
++    ) -> None:
++        if status not in {"completed", "failed"}:
++            raise ValueError(f"invalid approval job status: {status}")
++        with self.connect() as connection:
++            connection.execute(
++                """
++                UPDATE approval_jobs SET status=?, result_json=?, last_error=?,
++                    updated_at=? WHERE id=?
++                """,
++                (
++                    status,
++                    json.dumps(result, ensure_ascii=False) if result is not None else None,
++                    error,
++                    time.time(),
++                    job_id,
++                ),
++            )
++
++    def meeting_for_report_message(
++        self, platform_message_id: str
++    ) -> str | None:
++        with self.connect() as connection:
++            row = connection.execute(
++                """
++                SELECT meeting_id FROM report_delivery
++                WHERE platform_message_id=? AND status='sent'
++                ORDER BY updated_at DESC LIMIT 1
++                """,
++                (str(platform_message_id),),
++            ).fetchone()
++        return str(row["meeting_id"]) if row else None
++
++    def latest_reported_meeting(self) -> str | None:
++        with self.connect() as connection:
++            row = connection.execute(
++                """
++                SELECT meeting_id FROM processed_episodes
++                WHERE status='reported' AND minutes_json IS NOT NULL
++                ORDER BY updated_at DESC LIMIT 1
++                """
++            ).fetchone()
++        return str(row["meeting_id"]) if row else None
++
++    def approval_job_counts(self) -> dict[str, int]:
++        with self.connect() as connection:
++            rows = connection.execute(
++                """
++                SELECT status, COUNT(*) AS count
++                FROM approval_jobs GROUP BY status
++                """
++            ).fetchall()
++        return {str(row["status"]): int(row["count"]) for row in rows}
+diff --git a/pyproject.toml b/pyproject.toml
+index cbc0df780..f01d9388d 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -331,6 +331,8 @@ hegi = [
+   "prompts/v2/*.md",
+   "docs/*.md",
+   "scripts/*.sh",
++  "plugin/*.yaml",
++  "plugin/*.py",
+   "README.md",
+   "CHANGELOG.md",
+   "ROADMAP.md",
+diff --git a/tests/gateway/test_pre_gateway_dispatch.py b/tests/gateway/test_pre_gateway_dispatch.py
+index 530224807..ea1d1a1da 100644
+--- a/tests/gateway/test_pre_gateway_dispatch.py
++++ b/tests/gateway/test_pre_gateway_dispatch.py
+@@ -81,6 +81,26 @@ async def test_hook_skip_short_circuits_dispatch(monkeypatch):
+     runner.pairing_store.generate_code.assert_not_called()
+ 
+ 
++@pytest.mark.asyncio
++async def test_hook_skip_bypasses_active_session_queue(monkeypatch):
++    """Control plugins run before the adapter's busy-session queue."""
++
++    def _fake_hook(name, **kwargs):
++        if name == "pre_gateway_dispatch":
++            return [{"action": "skip", "reason": "durable-control"}]
++        return []
++
++    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
++    runner, _adapter = _make_runner(Platform.TELEGRAM)
++
++    handled = await runner._handle_active_session_busy_message(
++        _make_event("기억해", Platform.TELEGRAM),
++        "telegram:active",
++    )
++
++    assert handled is True
++
++
+ @pytest.mark.asyncio
+ async def test_hook_rewrite_replaces_event_text(monkeypatch):
+     """A plugin returning {'action': 'rewrite', 'text': ...} mutates event.text."""
+diff --git a/tests/hegi/test_approval_integration.py b/tests/hegi/test_approval_integration.py
+new file mode 100644
+index 000000000..085e23608
+--- /dev/null
++++ b/tests/hegi/test_approval_integration.py
+@@ -0,0 +1,170 @@
++from __future__ import annotations
++
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from hegi.approval import process_pending_approvals
++from hegi.config import load_config
++from hegi.gateway_plugin import intercept_telegram_approval
++from hegi.memory import DraftGate
++from hegi.models import MeetingMinutes
++from hegi.state import StateStore
++
++
++class RecordingMemory:
++    def __init__(self):
++        self.searches: list[str] = []
++        self.drafts: list[dict] = []
++
++    def search(self, query: str, limit: int = 5):
++        self.searches.append(query)
++        return {"results": []}
++
++    def create_draft(self, arguments):
++        self.drafts.append(arguments)
++        return {"draft_id": "draft-1", "status": "pending"}
++
++
++def _minutes() -> MeetingMinutes:
++    return MeetingMinutes(
++        meeting_id="meeting-1",
++        title="매체미학 연구회의",
++        background="교수와 세 에이전트가 개념을 검토함",
++        agenda=["인공자연 개념"],
++        discussion_flow=[],
++        agent_positions=[],
++        professor_positions=["기존 장과 연결"],
++        agreements=["인공자연을 매체적 조건으로 정의"],
++        disagreements=[],
++        unresolved_questions=["사례 범위"],
++        new_concepts=[],
++        evidence_and_sources=[],
++        research_direction=["논문 장에 반영"],
++        action_items=[],
++        memory_evaluation=None,
++        confidence=0.9,
++        warnings=[],
++    )
++
++
++def _config(tmp_path, monkeypatch):
++    home = tmp_path / "runtime"
++    hegi = home / "hegi"
++    hegi.mkdir(parents=True)
++    env_path = home / ".env"
++    env_path.write_text("TELEGRAM_BOT_TOKEN=fake-token\n", encoding="utf-8")
++    config_path = hegi / "config.yaml"
++    config_path.write_text(
++        f"""
++enabled: true
++state_db: "{hegi / 'state.db'}"
++telegram:
++  chat_id: "-1001"
++  curator_env: "{env_path}"
++  enabled: true
++agents: []
++archive:
++  local_spool: "{hegi / 'archive'}"
++memory:
++  enabled: true
++  read_server: memory-forest-read
++  draft_server: memory-forest-curator-draft
++  auto_commit: false
++  auto_draft: false
++  require_professor_approval: true
++  professor_user_ids: ["42"]
++  default_project: media_aesthetics
++""",
++        encoding="utf-8",
++    )
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    config = load_config(config_path)
++    state = StateStore(config.state_db)
++    state.save_episode(
++        "meeting-1",
++        "hash-1",
++        {"meeting_id": "meeting-1"},
++        "reported",
++    )
++    state.update_episode("meeting-1", status="reported", minutes=_minutes().to_dict())
++    state.record_delivery(
++        "meeting-1",
++        4,
++        "digest",
++        status="sent",
++        platform_message_id="400",
++    )
++    return config, state
++
++
++def test_approval_job_rechecks_memory_creates_draft_and_never_commits(
++    tmp_path, monkeypatch
++):
++    config, state = _config(tmp_path, monkeypatch)
++    backend = RecordingMemory()
++    gate = DraftGate(state, backend, professor_user_ids=["42"])
++    assert gate.approve(
++        meeting_id="meeting-1",
++        text="기억해",
++        user_id="42",
++        platform_message_id="500",
++    ) == "remember"
++    assert state.enqueue_approval_job(
++        meeting_id="meeting-1",
++        platform_message_id="500",
++        project="media_aesthetics",
++    )
++    sent: list[str] = []
++
++    result = process_pending_approvals(
++        config,
++        backend=backend,
++        sender=lambda _token, _chat, text, **_kwargs: sent.append(text),
++    )
++
++    assert result[0]["status"] == "draft_created"
++    assert result[0]["commit"] == "not_performed"
++    assert backend.searches
++    assert len(backend.drafts) == 1
++    assert backend.drafts[0]["status"] == "provisional"
++    assert "commit" not in backend.drafts[0]
++    assert state.approval_job_counts() == {"completed": 1}
++    assert any("Commit: 수행하지 않음" in item for item in sent)
++
++
++@pytest.mark.asyncio
++async def test_gateway_plugin_intercepts_professor_reply_before_curator_agent(
++    tmp_path, monkeypatch
++):
++    _config(tmp_path, monkeypatch)
++    processed = []
++    monkeypatch.setattr(
++        "hegi.gateway_plugin.process_pending_approvals",
++        lambda config: processed.append(config.chat_id),
++    )
++    adapter = SimpleNamespace(send=AsyncMock(return_value={"message_id": "ack"}))
++    gateway = SimpleNamespace(_adapter_for_source=lambda _source: adapter)
++    event = SimpleNamespace(
++        text="초안 만들어",
++        message_id="501",
++        reply_to_message_id="400",
++        source=SimpleNamespace(
++            platform=SimpleNamespace(value="telegram"),
++            chat_id="-1001",
++            user_id="42",
++        ),
++    )
++
++    decision = intercept_telegram_approval(
++        event=event, gateway=gateway, session_store=None
++    )
++    await asyncio.sleep(0.05)
++
++    assert decision == {"action": "skip", "reason": "hegi-approval-queued"}
++    adapter.send.assert_awaited()
++    assert processed == ["-1001"]
++    state = StateStore(tmp_path / "runtime" / "hegi" / "state.db")
++    assert state.approval_job_counts() == {"pending": 1}
+diff --git a/tests/hegi/test_bootstrap_install.py b/tests/hegi/test_bootstrap_install.py
+new file mode 100644
+index 000000000..a661d77a8
+--- /dev/null
++++ b/tests/hegi/test_bootstrap_install.py
+@@ -0,0 +1,120 @@
++from __future__ import annotations
++
++import os
++import sqlite3
++import subprocess
++from pathlib import Path
++
++import yaml
++
++from hegi.bootstrap import discover_environment
++
++
++def _source_database(path: Path, chat_id: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    connection = sqlite3.connect(path)
++    connection.executescript(
++        """
++        CREATE TABLE sessions (
++            id TEXT PRIMARY KEY, chat_id TEXT, chat_type TEXT
++        );
++        CREATE TABLE messages (
++            id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
++            timestamp REAL, platform_message_id TEXT, active INTEGER,
++            compacted INTEGER
++        );
++        """
++    )
++    connection.execute(
++        "INSERT INTO sessions VALUES ('s', ?, 'group')", (chat_id,)
++    )
++    connection.execute(
++        """
++        INSERT INTO messages VALUES
++        (1, 's', 'assistant', 'configured agent', 100, 'a-1', 1, 0)
++        """
++    )
++    connection.commit()
++    connection.close()
++
++
++def _deployment(tmp_path: Path) -> tuple[Path, Path]:
++    root = tmp_path / ".hermes"
++    curator = root / "profiles" / "memory-curator"
++    curator.mkdir(parents=True)
++    (curator / "config.yaml").write_text(
++        """
++mcp_servers:
++  memory-forest-read:
++    command: /bin/true
++  memory-forest-curator-draft:
++    command: /bin/true
++plugins:
++  enabled: []
++""",
++        encoding="utf-8",
++    )
++    (curator / ".env").write_text(
++        "TELEGRAM_BOT_TOKEN=fake-token\n"
++        "HEGI_GROUP_CHAT_ID=-10042\n",
++        encoding="utf-8",
++    )
++    (root / ".env").write_text(
++        "TELEGRAM_ALLOWED_USERS=4242\n", encoding="utf-8"
++    )
++    _source_database(root / "state.db", "-10042")
++    _source_database(root / "profiles" / "codex-test" / "state.db", "-10042")
++    _source_database(
++        root / "profiles" / "heclaude-test" / "state.db", "-10042"
++    )
++    return root, curator
++
++
++def test_discovery_finds_operational_telegram_profile_and_agent_databases(tmp_path):
++    root, curator = _deployment(tmp_path)
++    result = discover_environment(hermes_root=root, runtime_home=curator)
++
++    assert result.chat_id == "-10042"
++    assert result.professor_user_ids == ("4242",)
++    assert result.runtime_home == curator.resolve()
++    assert {agent.name for agent in result.agents} == {
++        "HeHe",
++        "HeCo",
++        "HeClaude",
++    }
++
++
++def test_install_script_writes_enabled_config_and_gateway_plugin(tmp_path):
++    root, curator = _deployment(tmp_path)
++    repo = Path(__file__).resolve().parents[2]
++    environment = os.environ.copy()
++    environment.pop("HERMES_HOME", None)
++    environment["HOME"] = str(tmp_path)
++    result = subprocess.run(
++        [
++            str(repo / "hegi" / "scripts" / "install.sh"),
++            "--no-systemd",
++            "--hermes-root",
++            str(root),
++            "--runtime-home",
++            str(curator),
++        ],
++        cwd=repo,
++        env=environment,
++        text=True,
++        capture_output=True,
++        timeout=30,
++        check=False,
++    )
++
++    assert result.returncode == 0, result.stderr
++    config = yaml.safe_load((curator / "hegi" / "config.yaml").read_text())
++    assert config["enabled"] is True
++    assert config["telegram"]["enabled"] is True
++    assert config["telegram"]["chat_id"] == "-10042"
++    assert config["memory"]["professor_user_ids"] == ["4242"]
++    assert len(config["agents"]) == 3
++    assert (curator / "plugins" / "hegi-telegram" / "__init__.py").is_file()
++    hermes_config = yaml.safe_load((curator / "config.yaml").read_text())
++    assert "hegi-telegram" in hermes_config["plugins"]["enabled"]
++    assert '"errors": []' in result.stdout
+diff --git a/tests/hegi/test_daemon_lifecycle.py b/tests/hegi/test_daemon_lifecycle.py
+new file mode 100644
+index 000000000..8b15fd580
+--- /dev/null
++++ b/tests/hegi/test_daemon_lifecycle.py
+@@ -0,0 +1,128 @@
++from __future__ import annotations
++
++import json
++import os
++import signal
++import sqlite3
++import subprocess
++import time
++from pathlib import Path
++
++import pytest
++
++
++def _empty_source(path: Path) -> None:
++    connection = sqlite3.connect(path)
++    connection.executescript(
++        """
++        CREATE TABLE sessions (
++            id TEXT PRIMARY KEY, chat_id TEXT, chat_type TEXT
++        );
++        CREATE TABLE messages (
++            id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
++            timestamp REAL, platform_message_id TEXT, active INTEGER,
++            compacted INTEGER
++        );
++        """
++    )
++    connection.commit()
++    connection.close()
++
++
++def _runtime(tmp_path: Path) -> tuple[Path, dict[str, str]]:
++    home = tmp_path / "runtime"
++    home.mkdir()
++    env_path = home / ".env"
++    env_path.write_text("TELEGRAM_BOT_TOKEN=fake-token\n", encoding="utf-8")
++    first = tmp_path / "one.db"
++    second = tmp_path / "two.db"
++    _empty_source(first)
++    _empty_source(second)
++    hegi = home / "hegi"
++    hegi.mkdir()
++    (hegi / "config.yaml").write_text(
++        f"""
++enabled: true
++state_db: "{hegi / 'state.db'}"
++telegram:
++  chat_id: "-1001"
++  curator_env: "{env_path}"
++  enabled: true
++agents:
++  - name: HeHe
++    db_path: "{first}"
++  - name: HeCo
++    db_path: "{second}"
++episode:
++  quiet_minutes: 10
++  max_gap_minutes: 30
++  minimum_agents: 2
++  minimum_messages: 4
++daemon:
++  poll_seconds: 1
++archive:
++  local_spool: "{hegi / 'archive'}"
++memory:
++  enabled: false
++  auto_commit: false
++  auto_draft: false
++  require_professor_approval: true
++  professor_user_ids: ["42"]
++  default_project: research
++""",
++        encoding="utf-8",
++    )
++    environment = os.environ.copy()
++    environment["HERMES_HOME"] = str(home)
++    return home, environment
++
++
++def _run(script: Path, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        [str(script)],
++        env=environment,
++        text=True,
++        capture_output=True,
++        timeout=20,
++        check=False,
++    )
++
++
++@pytest.mark.live_system_guard_bypass
++def test_daemon_duplicate_start_status_stop_and_crash_recovery(tmp_path):
++    home, environment = _runtime(tmp_path)
++    repo = Path(__file__).resolve().parents[2]
++    start = repo / "hegi" / "scripts" / "start.sh"
++    stop = repo / "hegi" / "scripts" / "stop.sh"
++    status = repo / "hegi" / "scripts" / "status.sh"
++    try:
++        first = _run(start, environment)
++        assert first.returncode == 0, first.stderr
++        pidfile = home / "hegi" / "daemon.pid"
++        first_pid = int(pidfile.read_text())
++
++        duplicate = _run(start, environment)
++        assert duplicate.returncode == 0
++        assert "already running" in duplicate.stdout
++        assert int(pidfile.read_text()) == first_pid
++
++        state = _run(status, environment)
++        assert state.returncode == 0, state.stderr
++        assert json.loads(state.stdout)["daemon"]["alive"] is True
++
++        os.kill(first_pid, signal.SIGKILL)
++        for _ in range(50):
++            try:
++                os.kill(first_pid, 0)
++            except ProcessLookupError:
++                break
++            time.sleep(0.05)
++
++        restarted = _run(start, environment)
++        assert restarted.returncode == 0, restarted.stderr
++        second_pid = int(pidfile.read_text())
++        assert second_pid != first_pid
++        assert (home / "hegi" / "daemon.ready").is_file()
++    finally:
++        _run(stop, environment)
++    assert not (home / "hegi" / "daemon.pid").exists()
+diff --git a/tests/hegi/test_migration.py b/tests/hegi/test_migration.py
+new file mode 100644
+index 000000000..812113622
+--- /dev/null
++++ b/tests/hegi/test_migration.py
+@@ -0,0 +1,113 @@
++from __future__ import annotations
++
++import os
++import sqlite3
++import subprocess
++import time
++from pathlib import Path
++
++import yaml
++
++
++def _database(path: Path) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    connection = sqlite3.connect(path)
++    connection.executescript(
++        """
++        CREATE TABLE sessions (
++            id TEXT PRIMARY KEY, chat_id TEXT, chat_type TEXT
++        );
++        CREATE TABLE messages (
++            id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
++            timestamp REAL, platform_message_id TEXT, active INTEGER,
++            compacted INTEGER
++        );
++        INSERT INTO sessions VALUES ('s', '-10077', 'group');
++        INSERT INTO messages VALUES
++        (1, 's', 'assistant', 'agent ready', 100, 'm1', 1, 0);
++        """
++    )
++    connection.commit()
++    connection.close()
++
++
++def test_migrate_apply_stops_v1_backs_up_installs_and_starts_v2(tmp_path):
++    repo = Path(__file__).resolve().parents[2]
++    root = tmp_path / ".hermes"
++    curator = root / "profiles" / "memory-curator"
++    curator.mkdir(parents=True)
++    (curator / "config.yaml").write_text(
++        """
++mcp_servers:
++  memory-forest-read:
++    command: /bin/true
++  memory-forest-curator-draft:
++    command: /bin/true
++plugins:
++  enabled: []
++""",
++        encoding="utf-8",
++    )
++    (curator / ".env").write_text(
++        "TELEGRAM_BOT_TOKEN=fake-token\nHEGI_GROUP_CHAT_ID=-10077\n",
++        encoding="utf-8",
++    )
++    (root / ".env").write_text(
++        "TELEGRAM_ALLOWED_USERS=77\n", encoding="utf-8"
++    )
++    _database(root / "state.db")
++    _database(root / "profiles" / "codex-test" / "state.db")
++    _database(root / "profiles" / "heclaude-test" / "state.db")
++
++    bin_dir = tmp_path / "bin"
++    bin_dir.mkdir()
++    watcher = bin_dir / "hegi-memory-watch-loop"
++    watcher.write_text(
++        "#!/usr/bin/env bash\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n",
++        encoding="utf-8",
++    )
++    watcher.chmod(0o700)
++    process = subprocess.Popen([str(watcher)])
++    v1_state = root / "hegi-watch"
++    v1_state.mkdir()
++    (v1_state / "loop.pid").write_text(str(process.pid), encoding="ascii")
++    (v1_state / "state.json").write_text('{"legacy": true}\n', encoding="utf-8")
++
++    environment = os.environ.copy()
++    environment.pop("HERMES_HOME", None)
++    environment["HOME"] = str(tmp_path)
++    try:
++        result = subprocess.run(
++            [
++                str(repo / "hegi" / "scripts" / "migrate_v1.sh"),
++                "--apply",
++                "--no-systemd",
++            ],
++            cwd=repo,
++            env=environment,
++            text=True,
++            capture_output=True,
++            timeout=40,
++            check=False,
++        )
++        assert result.returncode == 0, result.stderr
++        process.wait(timeout=5)
++        assert list((root / "backups").glob("hegi-watch-*"))
++        config = yaml.safe_load((curator / "hegi" / "config.yaml").read_text())
++        assert config["enabled"] is True
++        assert config["telegram"]["enabled"] is True
++        assert (curator / "hegi" / "daemon.ready").is_file()
++        assert "migration complete" in result.stdout
++    finally:
++        if process.poll() is None:
++            process.kill()
++        stop_environment = environment.copy()
++        stop_environment["HERMES_HOME"] = str(curator)
++        subprocess.run(
++            [str(repo / "hegi" / "scripts" / "stop.sh")],
++            env=stop_environment,
++            capture_output=True,
++            timeout=20,
++            check=False,
++        )
++        time.sleep(0.05)
+diff --git a/tests/hegi/test_operational_flow.py b/tests/hegi/test_operational_flow.py
+new file mode 100644
+index 000000000..cafb59b60
+--- /dev/null
++++ b/tests/hegi/test_operational_flow.py
+@@ -0,0 +1,194 @@
++from __future__ import annotations
++
++import json
++import sqlite3
++from pathlib import Path
++from types import SimpleNamespace
++
++from hegi.approval import process_pending_approvals
++from hegi.config import load_config
++from hegi.llm import HermesLLMClient
++from hegi.memory import DraftGate
++from hegi.pipeline import HegiPipeline
++
++
++class FlowMemory:
++    def __init__(self):
++        self.searches: list[str] = []
++        self.drafts: list[dict] = []
++
++    def search(self, query: str, limit: int = 5):
++        self.searches.append(query)
++        return {"results": []}
++
++    def create_draft(self, arguments):
++        self.drafts.append(arguments)
++        return {"id": "stm-1", "state": "pending"}
++
++
++def _agent_db(path: Path, assistant_id: int, timestamp: float, text: str) -> None:
++    connection = sqlite3.connect(path)
++    connection.executescript(
++        """
++        CREATE TABLE sessions (
++            id TEXT PRIMARY KEY, chat_id TEXT, chat_type TEXT
++        );
++        CREATE TABLE messages (
++            id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
++            timestamp REAL, platform_message_id TEXT, active INTEGER,
++            compacted INTEGER
++        );
++        INSERT INTO sessions VALUES ('s', '-1009', 'group');
++        INSERT INTO messages VALUES
++        (1, 's', 'user', '교수: 인공자연 개념을 논의합시다', 100, 'prof-1', 1, 0);
++        """
++    )
++    connection.execute(
++        "INSERT INTO messages VALUES (?, 's', 'assistant', ?, ?, ?, 1, 0)",
++        (assistant_id, text, timestamp, f"agent-{assistant_id}"),
++    )
++    connection.commit()
++    connection.close()
++
++
++def test_professor_three_agents_quiet_minutes_report_approval_draft_no_commit(
++    tmp_path
++):
++    sources = [
++        ("HeHe", 2, 110, "현상학적 배경을 분석함"),
++        ("HeCo", 3, 120, "반례와 개념 경계를 검토함"),
++        ("HeClaude", 4, 130, "세 관점을 통합해 연구 방향을 제안함"),
++    ]
++    agent_entries = []
++    for name, message_id, timestamp, text in sources:
++        path = tmp_path / f"{name}.db"
++        _agent_db(path, message_id, timestamp, text)
++        agent_entries.append(f'  - name: {name}\n    db_path: "{path}"')
++    env_path = tmp_path / ".env"
++    env_path.write_text("TELEGRAM_BOT_TOKEN=fake-token\n", encoding="utf-8")
++    config_path = tmp_path / "config.yaml"
++    config_path.write_text(
++        f"""
++enabled: true
++state_db: "{tmp_path / 'state.db'}"
++telegram:
++  chat_id: "-1009"
++  curator_env: "{env_path}"
++  enabled: true
++agents:
++{chr(10).join(agent_entries)}
++episode:
++  quiet_minutes: 10
++  max_gap_minutes: 30
++  minimum_agents: 2
++  minimum_messages: 4
++archive:
++  local_spool: "{tmp_path / 'archive'}"
++memory:
++  enabled: true
++  auto_commit: false
++  auto_draft: false
++  require_professor_approval: true
++  professor_user_ids: ["9001"]
++  default_project: media_aesthetics
++""",
++        encoding="utf-8",
++    )
++    minutes_payload = {
++        "title": "인공자연 연구회의",
++        "background": "교수가 세 에이전트와 개념을 검토함",
++        "agenda": ["인공자연 개념의 경계"],
++        "discussion_flow": [
++            {
++                "heading": "세 관점 비교",
++                "summary": "배경, 반례, 통합 방향을 검토함",
++                "source_message_ids": [2, 3, 4],
++            }
++        ],
++        "agent_positions": [
++            {
++                "agent": name,
++                "position": text,
++                "contributions": [],
++                "source_message_ids": [message_id],
++            }
++            for name, message_id, _timestamp, text in sources
++        ],
++        "professor_positions": ["개념 논의 요청"],
++        "agreements": ["인공자연을 매체적 조건으로 다룸"],
++        "disagreements": [],
++        "unresolved_questions": ["사례 범위"],
++        "new_concepts": [],
++        "evidence_and_sources": [],
++        "research_direction": ["논문 장의 핵심 개념으로 발전"],
++        "action_items": [
++            {
++                "title": "사례 범위 정리",
++                "description": "반례를 포함한 사례 목록 작성",
++                "source_message_ids": [3],
++                "owner": "HeCo",
++                "deadline": None,
++                "priority": "high",
++                "project_id": "media_aesthetics",
++                "rationale": "개념 경계 검토",
++            }
++        ],
++        "confidence": 0.9,
++        "warnings": [],
++        "recommendation": "STM Draft 후보",
++    }
++
++    def llm_call(**_kwargs):
++        return SimpleNamespace(
++            choices=[
++                SimpleNamespace(
++                    message=SimpleNamespace(
++                        content=json.dumps(minutes_payload, ensure_ascii=False)
++                    )
++                )
++            ]
++        )
++
++    sent: list[str] = []
++    memory = FlowMemory()
++    pipeline = HegiPipeline(
++        load_config(config_path),
++        llm_client=HermesLLMClient(call=llm_call),
++        memory_backend=memory,
++        telegram_sender=lambda _token, _chat, text, **_kwargs: {
++            "message_id": str(1000 + len(sent) + 1)
++        }
++        if not sent.append(text)
++        else {},
++    )
++
++    reports = pipeline.run_once(dry_run=False, now=730)
++    assert reports[0]["status"] == "reported"
++    assert reports[0]["participants"] == ["HeClaude", "HeCo", "HeHe"]
++    assert len(sent) == 4
++    assert "Action Items" in sent[2]
++    assert "Memory Evaluation" in sent[3]
++
++    meeting_id = reports[0]["meeting_id"]
++    gate = DraftGate(pipeline.state, memory, professor_user_ids=["9001"])
++    assert gate.approve(
++        meeting_id=meeting_id,
++        text="기억해",
++        user_id="9001",
++        platform_message_id="approval-1",
++    ) == "remember"
++    assert pipeline.state.enqueue_approval_job(
++        meeting_id=meeting_id,
++        platform_message_id="approval-1",
++        project="media_aesthetics",
++    )
++    approval_results = process_pending_approvals(
++        pipeline.config,
++        backend=memory,
++        sender=lambda _token, _chat, text, **_kwargs: sent.append(text),
++    )
++
++    assert approval_results[0]["status"] == "draft_created"
++    assert approval_results[0]["commit"] == "not_performed"
++    assert len(memory.drafts) == 1
++    assert "commit" not in memory.drafts[0]
+diff --git a/tests/hegi/test_pipeline_e2e.py b/tests/hegi/test_pipeline_e2e.py
+index edac69427..ccd13ae0e 100644
+--- a/tests/hegi/test_pipeline_e2e.py
++++ b/tests/hegi/test_pipeline_e2e.py
+@@ -79,6 +79,8 @@ memory:
+   auto_commit: false
+   auto_draft: false
+   require_professor_approval: true
++  professor_user_ids: ["42"]
++  default_project: "media_aesthetics"
+ """,
+         encoding="utf-8",
+     )
+diff --git a/tests/hegi/test_replay.py b/tests/hegi/test_replay.py
+new file mode 100644
+index 000000000..0d9d3cf01
+--- /dev/null
++++ b/tests/hegi/test_replay.py
+@@ -0,0 +1,98 @@
++from __future__ import annotations
++
++import json
++import os
++
++from hegi.cli import main
++from hegi.models import MeetingMinutes
++from hegi.state import StateStore
++
++
++def test_replay_uses_checkpointed_telegram_delivery(tmp_path, monkeypatch, capsys):
++    runtime_home = tmp_path / "memory-curator"
++    config_dir = runtime_home / "hegi"
++    config_dir.mkdir(parents=True)
++    env_path = runtime_home / ".env"
++    env_path.write_text("TELEGRAM_BOT_TOKEN=fake-token\n", encoding="utf-8")
++    state_path = config_dir / "state.db"
++    config_path = config_dir / "config.yaml"
++    config_path.write_text(
++        f"""
++enabled: true
++state_db: "{state_path}"
++telegram:
++  chat_id: "-1001"
++  curator_env: "{env_path}"
++  enabled: true
++agents: []
++archive:
++  local_spool: "{tmp_path / 'archive'}"
++memory:
++  auto_commit: false
++  auto_draft: false
++  require_professor_approval: true
++  professor_user_ids: ["42"]
++  default_project: research
++""",
++        encoding="utf-8",
++    )
++    minutes = MeetingMinutes(
++        meeting_id="meeting",
++        title="회의",
++        background="배경",
++        agenda=[],
++        discussion_flow=[],
++        agent_positions=[],
++        professor_positions=[],
++        agreements=[],
++        disagreements=[],
++        unresolved_questions=[],
++        new_concepts=[],
++        evidence_and_sources=[],
++        research_direction=[],
++        action_items=[],
++        memory_evaluation=None,
++        confidence=0.8,
++        warnings=[],
++    )
++    state = StateStore(state_path)
++    state.save_episode("meeting", "hash", {"meeting_id": "meeting"}, "reported")
++    state.update_episode("meeting", status="reported", minutes=minutes.to_dict())
++    sends: list[str] = []
++
++    monkeypatch.setattr(
++        "tools.send_message_tool._send_telegram",
++        lambda _token, _chat, text, **_kwargs: (
++            sends.append(text) or {"message_id": str(len(sends))}
++        ),
++    )
++    monkeypatch.delenv("HERMES_HOME", raising=False)
++
++    assert main(
++        [
++            "--config",
++            str(config_path),
++            "replay",
++            "--meeting-id",
++            "meeting",
++            "--send",
++        ]
++    ) == 0
++    first = json.loads(capsys.readouterr().out)
++    assert len(first["message_ids"]) == 4
++    assert len(sends) == 4
++    assert os.environ["HERMES_HOME"] == str(runtime_home)
++
++    assert main(
++        [
++            "--config",
++            str(config_path),
++            "replay",
++            "--meeting-id",
++            "meeting",
++            "--send",
++        ]
++    ) == 0
++    second = json.loads(capsys.readouterr().out)
++    assert second["message_ids"] == []
++    assert len(sends) == 4
+-- 
+2.43.0
+

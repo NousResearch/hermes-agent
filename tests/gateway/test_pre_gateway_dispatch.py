@@ -82,6 +82,26 @@ async def test_hook_skip_short_circuits_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hook_skip_bypasses_active_session_queue(monkeypatch):
+    """Control plugins run before the adapter's busy-session queue."""
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": "skip", "reason": "durable-control"}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    runner, _adapter = _make_runner(Platform.TELEGRAM)
+
+    handled = await runner._handle_active_session_busy_message(
+        _make_event("기억해", Platform.TELEGRAM),
+        "telegram:active",
+    )
+
+    assert handled is True
+
+
+@pytest.mark.asyncio
 async def test_hook_rewrite_replaces_event_text(monkeypatch):
     """A plugin returning {'action': 'rewrite', 'text': ...} mutates event.text."""
     _clear_auth_env(monkeypatch)

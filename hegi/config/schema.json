@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HEGI v2 Configuration",
+  "type": "object",
+  "required": ["version", "enabled", "telegram", "agents", "episode", "archive", "memory"],
+  "properties": {
+    "version": {"const": 1},
+    "enabled": {"const": true},
+    "telegram": {
+      "type": "object",
+      "required": ["chat_id", "enabled"],
+      "properties": {
+        "chat_id": {"type": "string", "minLength": 1},
+        "curator_env": {"type": "string"},
+        "enabled": {"const": true}
+      }
+    },
+    "agents": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["name", "db_path"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "db_path": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "required": [
+        "auto_commit",
+        "auto_draft",
+        "require_professor_approval",
+        "professor_user_ids",
+        "default_project"
+      ],
+      "properties": {
+        "auto_commit": {"const": false},
+        "auto_draft": {"const": false},
+        "require_professor_approval": {"const": true},
+        "professor_user_ids": {
+          "type": "array",
+          "items": {"type": ["string", "integer"]},
+          "minItems": 1
+        },
+        "default_project": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

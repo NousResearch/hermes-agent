@@ -33,6 +33,11 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     except (ImportError, AttributeError):
         pass
+    try:
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: None)
+    except ImportError:
+        pass
     return tmp_path
 
 
@@ -147,6 +152,12 @@ def _create_test_db(db_path, session_id, messages):
             reasoning TEXT,
             reasoning_details TEXT,
             codex_reasoning_items TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS state_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )
     """)
     conn.execute(
@@ -302,6 +313,64 @@ class TestHelpers:
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
+
+    def test_row_to_index_entry_uses_origin_json(self):
+        import mcp_serve
+
+        entry = mcp_serve._row_to_index_entry({
+            "id": "session-1",
+            "session_key": "agent:main:discord:dm:42",
+            "source": "discord",
+            "chat_type": None,
+            "display_name": None,
+            "origin_json": json.dumps({
+                "platform": "discord",
+                "chat_id": "42",
+                "chat_type": "dm",
+                "chat_name": "Ada",
+                "thread_id": "thread-7",
+            }),
+            "started_at": 1710000000,
+            "last_active": 1710000010,
+            "input_tokens": 12,
+            "output_tokens": 8,
+        })
+
+        assert entry["session_id"] == "session-1"
+        assert entry["platform"] == "discord"
+        assert entry["chat_type"] == "dm"
+        assert entry["display_name"] == "Ada"
+        assert entry["origin"]["thread_id"] == "thread-7"
+        assert entry["total_tokens"] == 20
+
+    def test_load_sessions_index_from_real_session_db(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+        import mcp_serve
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(
+            "session-2",
+            "telegram",
+            session_key="agent:main:telegram:dm:7",
+            chat_id="7",
+            chat_type="dm",
+        )
+        db.record_gateway_session_peer(
+            "session-2",
+            source="telegram",
+            session_key="agent:main:telegram:dm:7",
+            chat_id="7",
+            chat_type="dm",
+            display_name="Grace",
+            origin_json=json.dumps({"chat_id": "7", "user_name": "Grace"}),
+        )
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+
+        result = mcp_serve._load_sessions_index_from_db()
+        entry = result["agent:main:telegram:dm:7"]
+        assert entry["session_id"] == "session-2"
+        assert entry["display_name"] == "Grace"
+        assert entry["origin"]["user_name"] == "Grace"
 
 
 class TestContentExtraction:
@@ -489,6 +558,127 @@ class TestEventBridge:
         from mcp_serve import EventBridge
         r = EventBridge().respond_to_approval("nope", "deny")
         assert "error" in r
+
+    @staticmethod
+    def _make_sqlite_session_db(db_path):
+        class TestDB:
+            def __init__(self):
+                self._conn = sqlite3.connect(str(db_path))
+                self._conn.row_factory = sqlite3.Row
+                self._lock = threading.Lock()
+
+            def get_messages(self, session_id):
+                with self._lock:
+                    rows = self._conn.execute(
+                        "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                        (session_id,),
+                    ).fetchall()
+                return [dict(row) for row in rows]
+
+            def get_meta(self, key):
+                with self._lock:
+                    row = self._conn.execute(
+                        "SELECT value FROM state_meta WHERE key = ?", (key,)
+                    ).fetchone()
+                return row[0] if row else None
+
+            def set_meta(self, key, value):
+                with self._lock:
+                    self._conn.execute(
+                        "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (key, value),
+                    )
+                    self._conn.commit()
+
+            def close(self):
+                self._conn.close()
+
+        return TestDB()
+
+    @staticmethod
+    def _write_sessions_json(sessions_dir, session_key, session_id):
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(json.dumps({
+            session_key: {"session_key": session_key, "session_id": session_id},
+        }))
+
+    def test_cursor_survives_subprocess_restart(self, tmp_path, monkeypatch):
+        import mcp_serve
+
+        session_id = "20260329_160000_cursor_restart"
+        db_path = tmp_path / "state.db"
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "before restart"},
+            {"role": "assistant", "content": "persisted reply"},
+        ])
+        db = self._make_sqlite_session_db(db_path)
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+
+        try:
+            first_bridge = mcp_serve.EventBridge()
+            assert first_bridge._cursor == 4
+            first_bridge._enqueue(mcp_serve.QueueEvent(
+                cursor=0, type="approval_requested", session_key="restart",
+            ))
+            first_bridge._enqueue(mcp_serve.QueueEvent(
+                cursor=0, type="approval_resolved", session_key="restart",
+            ))
+
+            restarted_bridge = mcp_serve.EventBridge()
+            assert restarted_bridge._cursor == 6
+            restarted_bridge._enqueue(mcp_serve.QueueEvent(
+                cursor=0, type="approval_requested", session_key="restart",
+            ))
+            assert restarted_bridge.poll_events(after_cursor=6)["events"][0]["cursor"] == 7
+        finally:
+            db.close()
+
+    def test_multiple_approval_events_do_not_overtake_next_message(
+        self, tmp_path, monkeypatch,
+    ):
+        import mcp_serve
+
+        session_key = "agent:main:telegram:dm:cursor_lane"
+        session_id = "20260329_160000_cursor_lane"
+        sessions_dir = tmp_path / "sessions"
+        db_path = tmp_path / "state.db"
+        self._write_sessions_json(sessions_dir, session_key, session_id)
+        _create_test_db(db_path, session_id, [
+            {"role": "assistant", "content": f"old message {i}"}
+            for i in range(10)
+        ])
+        db = self._make_sqlite_session_db(db_path)
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+        monkeypatch.setattr(
+            mcp_serve, "_load_sessions_index",
+            lambda: {session_key: {"session_id": session_id}},
+        )
+
+        try:
+            bridge = mcp_serve.EventBridge()
+            assert bridge._cursor == 20
+            for event_type in ("approval_requested", "approval_resolved", "approval_requested"):
+                bridge._enqueue(mcp_serve.QueueEvent(
+                    cursor=0, type=event_type, session_key=session_key,
+                ))
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, "assistant", "after approval"),
+            )
+            conn.commit()
+            conn.close()
+            bridge._state_db_mtime = -1.0
+            bridge._poll_once(db)
+
+            events = bridge.poll_events(after_cursor=0)["events"]
+            assert [event["cursor"] for event in events] == [21, 22, 23, 24]
+            assert events[-1]["type"] == "message"
+            assert events[-1]["message_id"] == "11"
+            assert bridge.poll_events(after_cursor=23)["events"][0]["message_id"] == "11"
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------

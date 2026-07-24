@@ -2138,7 +2138,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
         )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
+        adapter._fetch_reply_context = AsyncMock(return_value=("父消息内容", [], []))
         message = SimpleNamespace(
             chat_id="oc_chat",
             thread_id=None,
@@ -5301,3 +5301,116 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFetchReplyContextSingleLookup(unittest.TestCase):
+    """Verify _fetch_reply_context calls message.get exactly once and returns
+    both text and media from a single API response."""
+
+    def _build_adapter(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._message_text_cache = OrderedDict()
+        adapter._client = Mock()
+        adapter._sdk_executor_lock = None
+        adapter._sdk_executor = None
+        adapter._sdk_executor_closing = False
+        return adapter
+
+    def test_image_reply_uses_single_message_get(self):
+        """Quoting an image message: one message.get → text + media."""
+        adapter = self._build_adapter()
+
+        parent = SimpleNamespace(
+            msg_type="image",
+            body=SimpleNamespace(content=json.dumps({"image_key": "img_reply_key"})),
+            mentions=None,
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        # Mock the resource download (separate API, expected)
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/tmp/reply.jpg"], ["image/jpeg"])
+        )
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_reply_context("om_parent_img")
+        )
+
+        # Core assertion: parent message lookup only once
+        self.assertEqual(adapter._client.im.v1.message.get.call_count, 1)
+        # Text for an image message is typically None or placeholder
+        # Media is correctly extracted
+        self.assertEqual(media_urls, ["/tmp/reply.jpg"])
+        self.assertEqual(media_types, ["image/jpeg"])
+
+    def test_plain_text_reply_uses_single_message_get_no_media(self):
+        """Quoting a text message: one message.get → text only, no media download."""
+        adapter = self._build_adapter()
+
+        parent = SimpleNamespace(
+            msg_type="text",
+            body=SimpleNamespace(content=json.dumps({"text": "quoted content"})),
+            mentions=None,
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_reply_context("om_parent_txt")
+        )
+
+        self.assertEqual(adapter._client.im.v1.message.get.call_count, 1)
+        self.assertEqual(text, "quoted content")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    def test_text_cached_after_fetch_reply_context(self):
+        """_fetch_reply_context populates the text cache for future lookups."""
+        adapter = self._build_adapter()
+
+        parent = SimpleNamespace(
+            msg_type="text",
+            body=SimpleNamespace(content=json.dumps({"text": "cached text"})),
+            mentions=None,
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        asyncio.run(adapter._fetch_reply_context("om_cached"))
+
+        # Subsequent _fetch_message_text should use cache, no additional API call
+        adapter._client.im.v1.message.get.reset_mock()
+        result = asyncio.run(adapter._fetch_message_text("om_cached"))
+
+        self.assertEqual(result, "cached text")
+        adapter._client.im.v1.message.get.assert_not_called()
+
+    def test_failed_lookup_returns_none_and_empty_media(self):
+        """API failure gracefully returns (None, [], [])."""
+        adapter = self._build_adapter()
+
+        response = Mock()
+        response.success = Mock(return_value=False)
+        response.code = 99999
+        response.msg = "not found"
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        text, media_urls, media_types = asyncio.run(
+            adapter._fetch_reply_context("om_missing")
+        )
+
+        self.assertIsNone(text)
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])

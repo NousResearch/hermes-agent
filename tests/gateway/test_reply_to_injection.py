@@ -160,10 +160,10 @@ async def test_no_prefix_when_reply_to_text_is_empty():
 
 
 @pytest.mark.asyncio
-async def test_reply_snippet_truncated_to_500_chars():
+async def test_reply_snippet_truncated_to_4000_chars():
     runner = _make_runner()
     source = _source()
-    long_text = "x" * 800
+    long_text = "x" * 5000
     event = MessageEvent(
         text="follow-up",
         source=source,
@@ -178,5 +178,5 @@ async def test_reply_snippet_truncated_to_500_chars():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
-    assert "x" * 501 not in result
+    assert result.startswith('[Replying to: "' + "x" * 4000 + '"]')
+    assert "x" * 4001 not in result

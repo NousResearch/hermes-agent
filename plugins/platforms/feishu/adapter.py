@@ -978,7 +978,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+    text_content = "\n".join(lines).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content=text_content,
@@ -3300,7 +3300,31 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text: Optional[str] = None
+        reply_media_urls: List[str] = []
+        reply_media_types: List[str] = []
+        if reply_to_message_id:
+            (
+                reply_to_text,
+                reply_media_urls,
+                reply_media_types,
+            ) = await self._fetch_reply_context(reply_to_message_id)
+
+        # If the replied-to message contains images (e.g. user quotes a photo
+        # and @bot asks to analyze it), merge them into the current message's
+        # media_urls so the agent can see the image. Duplicates are filtered so
+        # re-quoting an image the current message already includes does not
+        # double-count it.
+        if reply_media_urls:
+            appended = False
+            for url, mtype in zip(reply_media_urls, reply_media_types):
+                if url in media_urls:
+                    continue
+                media_urls.append(url)
+                media_types.append(mtype)
+                appended = True
+            if appended and inbound_type == MessageType.TEXT:
+                inbound_type = MessageType.PHOTO
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -4214,38 +4238,137 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to fetch bot names for %s", bot_ids, exc_info=True)
             return None
 
-    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+    # =========================================================================
+    # Message lookup: query / parse separation
+    # =========================================================================
+
+    async def _fetch_message_items(self, message_id: str) -> Sequence[Any]:
+        """Single Feishu message.get — the only method that calls the SDK lookup.
+
+        Returns the response items tuple, or an empty tuple on failure.
+        """
         if not self._client or not message_id:
-            return None
-        if message_id in self._message_text_cache:
-            self._message_text_cache.move_to_end(message_id)
-            return self._message_text_cache[message_id]
+            return ()
         try:
             request = self._build_get_message_request(message_id)
             response = await self._run_blocking(self._client.im.v1.message.get, request)
             if not response or getattr(response, "success", lambda: False)() is False:
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
-                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
-                return None
-            items = getattr(getattr(response, "data", None), "items", None) or []
-            parent = items[0] if items else None
-            body = getattr(parent, "body", None)
-            msg_type = getattr(parent, "msg_type", "") or ""
-            raw_content = getattr(body, "content", "") or ""
-            parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
-                raw_content=raw_content,
-                mentions=parent_mentions,
-            )
-            self._message_text_cache[message_id] = text
-            while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
-                self._message_text_cache.popitem(last=False)
-            return text
+                logger.warning("[Feishu] Failed to fetch message %s: [%s] %s", message_id, code, msg)
+                return ()
+            return tuple(getattr(getattr(response, "data", None), "items", None) or ())
         except Exception:
-            logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            logger.warning("[Feishu] Failed to fetch message %s", message_id, exc_info=True)
+            return ()
+
+    async def _extract_message_text_from_items(
+        self,
+        message_id: str,
+        items: Sequence[Any],
+    ) -> Optional[str]:
+        """Parse agent-readable text from already-fetched message items."""
+        parent = items[0] if items else None
+        if parent is None:
             return None
+
+        body = getattr(parent, "body", None)
+        msg_type = (getattr(parent, "msg_type", "") or "").strip().lower()
+        raw_content = getattr(body, "content", "") or ""
+        parent_mentions = getattr(parent, "mentions", None)
+
+        return self._extract_text_from_raw_content(
+            msg_type=msg_type,
+            raw_content=raw_content,
+            mentions=parent_mentions,
+        )
+
+    async def _extract_reply_media_from_items(
+        self,
+        message_id: str,
+        items: Sequence[Any],
+    ) -> tuple[List[str], List[str]]:
+        """Extract media resources from already-fetched message items.
+
+        The parent-message lookup is owned by the caller so that text and media
+        reuse the same API response — no duplicate message.get.
+        """
+        if not message_id or not items:
+            return [], []
+        try:
+            parent = items[0] if items else None
+            if not parent:
+                return [], []
+
+            msg_type = (getattr(parent, "msg_type", "") or "").strip().lower()
+            body = getattr(parent, "body", None)
+            raw_content = getattr(body, "content", "") or ""
+
+            # Only process media-bearing message types
+            if msg_type not in {"image", "post", "sticker", "file", "media"}:
+                return [], []
+
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
+                raw_content=raw_content,
+                mentions=getattr(parent, "mentions", None),
+                bot=self._bot_identity(),
+            )
+            return await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
+            )
+        except Exception:
+            logger.debug("[Feishu] Failed to extract reply media for %s", message_id, exc_info=True)
+            return [], []
+
+    def _cache_message_text(self, message_id: str, text: Optional[str]) -> None:
+        """Write to the LRU text cache with eviction."""
+        self._message_text_cache[message_id] = text
+        self._message_text_cache.move_to_end(message_id)
+        while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+            self._message_text_cache.popitem(last=False)
+
+    # =========================================================================
+    # Public entry points (preserve existing interface)
+    # =========================================================================
+
+    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+        """Fetch and cache the text of a single message (compatibility wrapper)."""
+        if not self._client or not message_id:
+            return None
+        if message_id in self._message_text_cache:
+            self._message_text_cache.move_to_end(message_id)
+            return self._message_text_cache[message_id]
+
+        items = await self._fetch_message_items(message_id)
+        if not items:
+            return None
+
+        text = await self._extract_message_text_from_items(message_id, items)
+        self._cache_message_text(message_id, text)
+        return text
+
+    async def _fetch_reply_context(
+        self,
+        message_id: str,
+    ) -> tuple[Optional[str], List[str], List[str]]:
+        """Fetch quoted text and media from a single parent-message lookup.
+
+        This is the preferred entry point when both text and media are needed
+        for a replied-to message — it guarantees only one message.get call.
+        """
+        items = await self._fetch_message_items(message_id)
+        if not items:
+            return None, [], []
+
+        text = await self._extract_message_text_from_items(message_id, items)
+        self._cache_message_text(message_id, text)
+
+        media_urls, media_types = await self._extract_reply_media_from_items(
+            message_id, items
+        )
+        return text, media_urls, media_types
 
     def _extract_text_from_raw_content(
         self,
@@ -4926,7 +5049,20 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return GetMessageRequest.builder().message_id(message_id).build()
+            request = GetMessageRequest.builder().message_id(message_id).build()
+            # Request the user-facing rendered card content. Without this,
+            # JSON 2.0 cards (tables, collapsible panels, etc.) sent to/queried
+            # by clients below the required version return only a fallback
+            # "please upgrade your client" placeholder instead of the real
+            # content. With it, Feishu renders the card body to markdown
+            # (tables become markdown tables), which the agent can read.
+            try:
+                queries = list(getattr(request, "queries", None) or [])
+                queries.append(("card_msg_content_type", "user_card_content"))
+                request.queries = queries
+            except Exception:
+                pass
+            return request
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

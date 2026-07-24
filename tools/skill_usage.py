@@ -210,7 +210,15 @@ def _read_hub_installed_names() -> Set[str]:
     if not lock_path.exists():
         return set()
     try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        # Tolerate non-UTF-8 bytes in the lock file. Hub descriptions can carry
+        # Windows-1252 typographic chars (em-dash 0x97, smart quotes, bullets)
+        # written as single high bytes; a strict utf-8 read raises
+        # UnicodeDecodeError, which is a ValueError sibling (not OSError/
+        # JSONDecodeError) so it escapes the handler below and 500s the whole
+        # /api/skills endpoint. errors="replace" degrades the offending byte to
+        # U+FFFD, keeping the (structurally valid) JSON — and every other
+        # skill — readable. See #68053.
+        data = json.loads(lock_path.read_text(encoding="utf-8", errors="replace"))
         if isinstance(data, dict):
             installed = data.get("installed") or {}
             if isinstance(installed, dict):

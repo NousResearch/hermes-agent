@@ -29,7 +29,7 @@ import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
 import { $billingSettingsRequest } from '@/store/billing-block'
-import { setCronFocusJobId } from '@/store/cron'
+import { invalidateCronJobRuns, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
@@ -810,7 +810,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onTranscribeAudio: transcribeVoiceAudio,
     onTriggerCronJob: jobId => {
       void triggerCronJob(jobId)
-        .then(() => refreshCronJobs())
+        .then(() => {
+          invalidateCronJobRuns(jobId)
+
+          return refreshCronJobs()
+        })
         .catch(() => undefined)
     },
     getGateway: () => gatewayRef.current,

@@ -533,6 +533,15 @@ compression:
   # prune. Default 4096.
   proactive_prune_min_reclaim_tokens: 4096
 
+  # Optional recoverability for the proactive prune above (strict YAML boolean;
+  # default false). When enabled, only old TOOL RESULT bodies that would have
+  # been summarized are redacted and persisted in the active task sandbox,
+  # then replaced by a path + SHA-256 reference. Tool-call arguments remain
+  # byte-for-byte unchanged and persistence failures cancel the entire prune.
+  # References last only as long as that sandbox; sandbox cleanup removes the
+  # backing files. Artifacts from reclaim-gate-rejected attempts are removed.
+  proactive_prune_artifacts: false
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

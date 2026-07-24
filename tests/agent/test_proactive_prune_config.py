@@ -63,6 +63,7 @@ class TestProactivePruneConfig:
         assert cc.proactive_prune_tokens == 0
         assert cc.proactive_prune_min_result_chars == 8000
         assert cc.proactive_prune_min_reclaim_tokens == 4096
+        assert cc.proactive_prune_artifacts is False
 
     def test_custom_values_are_honored(self, monkeypatch, tmp_path):
         agent = _make_agent(
@@ -76,6 +77,24 @@ class TestProactivePruneConfig:
         assert cc.proactive_prune_tokens == 48_000
         assert cc.proactive_prune_min_result_chars == 12_000
         assert cc.proactive_prune_min_reclaim_tokens == 8_192
+
+    def test_artifact_flag_accepts_only_yaml_booleans(self, monkeypatch, tmp_path):
+        enabled = _make_agent(
+            monkeypatch,
+            tmp_path,
+            proactive_prune_tokens=48_000,
+            proactive_prune_artifacts=True,
+        )
+        assert enabled.context_compressor.proactive_prune_artifacts is True
+
+        for invalid in ("true", 1, 1.0, None, [], {}):
+            agent = _make_agent(
+                monkeypatch,
+                tmp_path,
+                proactive_prune_tokens=48_000,
+                proactive_prune_artifacts=invalid,
+            )
+            assert agent.context_compressor.proactive_prune_artifacts is False
 
     def test_boolean_is_rejected_not_coerced(self, monkeypatch, tmp_path):
         # bool subclasses int: YAML `proactive_prune_tokens: true` must fall

@@ -36,6 +36,11 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from tools.tool_result_storage import (
+    PersistedToolArtifact,
+    persist_tool_artifact,
+    remove_created_tool_artifact,
+)
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -319,6 +324,34 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+ARTIFACT_RESULT_TAG = "<tool-result-artifact>"
+ARTIFACT_RESULT_CLOSING_TAG = "</tool-result-artifact>"
+
+
+def _build_tool_result_artifact_stub(
+    artifact: PersistedToolArtifact,
+    *,
+    tool_name: str,
+    tool_call_id: str,
+) -> str:
+    payload = {
+        "v": 1,
+        "path": artifact.path,
+        "chars": artifact.chars,
+        "sha256": artifact.sha256,
+        "redacted": artifact.redacted,
+        "tool": tool_name,
+        "call_id": tool_call_id,
+        "read": (
+            f"Use read_file on {artifact.path}; verify SHA-256 before trusting "
+            "the content."
+        ),
+    }
+    return (
+        f"{ARTIFACT_RESULT_TAG}\n"
+        f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"{ARTIFACT_RESULT_CLOSING_TAG}"
+    )
 
 # Ghost-skill defense (#32106): when compaction reduces an old ``skill_view``
 # result to a 1-line metadata summary, the model still believes the skill is
@@ -1198,6 +1231,8 @@ class ContextCompressor(ContextEngine):
     def name(self) -> str:
         return "compressor"
 
+    supports_proactive_prune_artifacts = True
+
     def on_session_reset(self) -> None:
         """Reset all per-session state for /new or /reset."""
         super().on_session_reset()
@@ -1873,6 +1908,7 @@ class ContextCompressor(ContextEngine):
         proactive_prune_tokens: int = 0,
         proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096,
+        proactive_prune_artifacts: bool = False,
         min_tail_user_messages: int = 1,
     ):
         self.model = model
@@ -1928,6 +1964,7 @@ class ContextCompressor(ContextEngine):
         self.proactive_prune_min_reclaim_tokens = max(
             0, int(proactive_prune_min_reclaim_tokens or 0)
         )
+        self.proactive_prune_artifacts = proactive_prune_artifacts is True
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -2613,8 +2650,150 @@ class ContextCompressor(ContextEngine):
 
         return result, pruned
 
+    def _prune_tool_results_to_artifacts(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        task_id: str | None,
+    ) -> tuple[
+        List[Dict[str, Any]],
+        int,
+        tuple[PersistedToolArtifact, ...],
+        Any,
+    ]:
+        """Artifact-back only outputs the proactive path would summarize."""
+        if not isinstance(task_id, str) or not task_id.strip():
+            return messages, 0, (), None
+
+        result = [m.copy() for m in messages]
+        prune_start = self._protect_head_size(result)
+        prune_boundary = len(result) - self.protect_last_n
+        # Pair each result with the nearest causal call occurrence. Provider
+        # call IDs are not guaranteed unique across a resumed transcript, so a
+        # global last-wins map can mislabel earlier results (and accidentally
+        # bypass protected-skill handling).
+        pending_calls: Dict[str, list[tuple[str, str]]] = {}
+        tool_metadata_by_result_index: Dict[int, tuple[str, str]] = {}
+        for index, msg in enumerate(result):
+            if msg.get("role") == "assistant":
+                for tool_call in msg.get("tool_calls") or []:
+                    if isinstance(tool_call, dict):
+                        call_id = tool_call.get("call_id") or tool_call.get("id") or ""
+                        function = tool_call.get("function") or {}
+                        tool_name = function.get("name") or tool_call.get("name") or "unknown"
+                        tool_args = function.get("arguments")
+                        if tool_args is None:
+                            tool_args = tool_call.get("arguments", "")
+                    else:
+                        call_id = (
+                            getattr(tool_call, "call_id", None)
+                            or getattr(tool_call, "id", None)
+                            or ""
+                        )
+                        function = getattr(tool_call, "function", None)
+                        tool_name = (
+                            getattr(function, "name", None)
+                            or getattr(tool_call, "name", None)
+                            or "unknown"
+                        )
+                        tool_args = getattr(function, "arguments", None)
+                        if tool_args is None:
+                            tool_args = getattr(tool_call, "arguments", "")
+                    pending_calls.setdefault(str(call_id), []).append(
+                        (str(tool_name), tool_args if isinstance(tool_args, str) else "")
+                    )
+            elif msg.get("role") == "tool":
+                call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+                pending = pending_calls.get(call_id)
+                if pending:
+                    tool_metadata_by_result_index[index] = pending.pop(0)
+
+        protected_skills = _collect_protected_skill_names(result, prune_boundary)
+        candidates: list[tuple[int, str, str, str]] = []
+        for index in range(prune_start, max(prune_start, prune_boundary)):
+            msg = result[index]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str) or not content:
+                continue
+            if len(content) <= self.proactive_prune_min_result_chars:
+                continue
+            if content == _PRUNED_TOOL_PLACEHOLDER or content.startswith(ARTIFACT_RESULT_TAG):
+                continue
+            if content.startswith("[Duplicate tool output"):
+                continue
+            if content.startswith("[") and " chars)" in content and len(content) < 400:
+                continue
+            if content.startswith("[screenshot removed"):
+                continue
+            call_id = str(msg.get("tool_call_id", ""))
+            tool_name, tool_args = tool_metadata_by_result_index.get(
+                index, ("unknown", "")
+            )
+            if tool_name == "skill_view" and protected_skills:
+                try:
+                    parsed_args = json.loads(tool_args) if tool_args else {}
+                except (json.JSONDecodeError, TypeError):
+                    parsed_args = {}
+                skill_name = parsed_args.get("name", "") if isinstance(parsed_args, dict) else ""
+                if isinstance(skill_name, str) and skill_name.lower() in protected_skills:
+                    continue
+            candidates.append((index, call_id, tool_name, content))
+
+        if not candidates:
+            return messages, 0, (), None
+
+        try:
+            from tools.terminal_tool import get_active_env
+
+            env = get_active_env(task_id)
+        except Exception:
+            env = None
+        if env is None:
+            return messages, 0, (), None
+
+        artifacts: list[PersistedToolArtifact] = []
+
+        def rollback() -> bool:
+            cleanup_results = [
+                remove_created_tool_artifact(artifact, env)
+                for artifact in artifacts
+                if artifact.created
+            ]
+            return all(cleanup_results)
+
+        for index, call_id, tool_name, content in candidates:
+            artifact = persist_tool_artifact(
+                content,
+                kind="output",
+                tool_name=tool_name,
+                tool_use_id=call_id,
+                task_scope=task_id,
+                env=env,
+                extension=".output.txt",
+            )
+            if artifact is None:
+                if not rollback():
+                    logger.warning("Could not clean rejected proactive-prune artifacts")
+                return messages, 0, (), None
+            artifacts.append(artifact)
+            result[index] = {
+                **result[index],
+                "content": _build_tool_result_artifact_stub(
+                    artifact,
+                    tool_name=tool_name,
+                    tool_call_id=call_id,
+                ),
+            }
+
+        return result, len(artifacts), tuple(artifacts), env
+
     def prune_tool_results_only(
-        self, messages: List[Dict[str, Any]], current_tokens: int | None = None,
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int | None = None,
+        task_id: str | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Deterministic, no-LLM tool-result prune for the cost-oriented path.
 
@@ -2662,12 +2841,19 @@ class ContextCompressor(ContextEngine):
         # Nothing to reclaim until there are messages outside the protected tail.
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
             return messages, 0
-        pruned_msgs, pruned_count = self._prune_old_tool_results(
-            messages,
-            protect_tail_count=self.protect_last_n,
-            protect_tail_tokens=None,
-            min_prune_chars=self.proactive_prune_min_result_chars,
-        )
+        artifacts: tuple[PersistedToolArtifact, ...] = ()
+        artifact_env = None
+        if self.proactive_prune_artifacts:
+            pruned_msgs, pruned_count, artifacts, artifact_env = (
+                self._prune_tool_results_to_artifacts(messages, task_id=task_id)
+            )
+        else:
+            pruned_msgs, pruned_count = self._prune_old_tool_results(
+                messages,
+                protect_tail_count=self.protect_last_n,
+                protect_tail_tokens=None,
+                min_prune_chars=self.proactive_prune_min_result_chars,
+            )
         if not pruned_count:
             # Standard no-op contract: hand back the INPUT object so callers
             # can gate bookkeeping on `result is not input`.
@@ -2679,6 +2865,14 @@ class ContextCompressor(ContextEngine):
             before = sum(_estimate_msg_budget_tokens(m) for m in messages)
             after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
             if (before - after) < self.proactive_prune_min_reclaim_tokens:
+                cleanup_results = [
+                    remove_created_tool_artifact(artifact, artifact_env)
+                    for artifact in artifacts
+                    if artifact.created
+                ]
+                cleanup_ok = all(cleanup_results)
+                if not cleanup_ok:
+                    logger.warning("Could not clean reclaim-rejected proactive-prune artifacts")
                 return messages, 0
         return pruned_msgs, pruned_count
 

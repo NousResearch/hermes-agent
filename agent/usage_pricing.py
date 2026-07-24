@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, cast
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 from utils import base_url_host_matches
@@ -16,6 +16,69 @@ _ONE_MILLION = Decimal("1000000")
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
+
+# Priority ladder for accumulated cost_status (issue #67764). The ranks
+# encode *confidence* (not magnitude): "actual" is the most confident
+# (the provider reported the cost directly), "included" is the next
+# most confident (this row was a subscription-included call and cost a
+# definite $0), "estimated" is a rate-table-derived approximation, and
+# "unknown" is the catch-all. The aggregation rule: take the maximum
+# rank across all contributions. Used by Hermes's session DB SQL
+# aggregations, in-memory agent state writes, and the /insights
+# aggregator — see `sticky_cost_status` below for the Python-side
+# implementation.
+_COST_STATUS_PRIORITY: dict = {
+    "actual": 3,
+    "included": 2,
+    "estimated": 1,
+    "unknown": 0,
+}
+
+
+def sticky_cost_status(
+    current: Optional[CostStatus],
+    new: Optional[CostStatus],
+) -> CostStatus:
+    """Return whichever of ``current`` / ``new`` ranks higher on the
+    sticky cost_status ladder (issue #67764).
+
+    Replaces the previous "latest call wins" semantics at
+    ``agent/conversation_loop.py:2321``, ``agent/codex_runtime.py:150``,
+    and ``agent/insights.py:583``. The aggregated status reflects the
+    *most confident* contribution seen so far — once any call has
+    reported ``"actual"`` for a session, the session's status stays
+    ``"actual"``. A definite-``$0`` ``"included"`` call wins over the
+    latest ``"estimated"`` call, and either wins over ``"unknown"``.
+
+    Tie-breaking: when ``current`` is missing/invalid (rank treated as
+    ``-1``) and ``new`` is a valid rank, the new value wins. When both
+    ranks are equal and both are valid, ``new`` wins (e.g. two
+    consecutive ``"estimated"`` calls keep the latest label, matching
+    the natural reading of "new input replaces equivalent old input").
+    When neither side is a recognized value, the function falls back to
+    ``"estimated"`` so callers always get a valid Literal.
+
+    This function is pure and import-side-effect-free; safe to call
+    from any layer (the SQL COALESCE alternatives in ``hermes_state.py``
+    mirror this ranking manually because SQL aggregation isn't available
+    there).
+    """
+    # ``current=None`` / ``""`` / unknown literal → rank -1, so any valid
+    # ``new`` (rank >= 0) wins by ``>=``. Two valid equal ranks → newest
+    # wins. Bad/new or bad/old → fall back to whichever side is valid,
+    # else default to ``"estimated"``. The ``cast(...)`` calls narrow
+    # the Optional[CostStatus] return value to a Literal for Pyright;
+    # runtime membership checks above guarantee safety.
+    if new in _COST_STATUS_PRIORITY:
+        new_rank = _COST_STATUS_PRIORITY[new]
+        cur_rank = _COST_STATUS_PRIORITY.get(current or "", -1)
+        if new_rank >= cur_rank:
+            return cast(CostStatus, new)
+    if current in _COST_STATUS_PRIORITY:
+        return cast(CostStatus, current)
+    return "estimated"
+
+
 CostSource = Literal[
     "provider_cost_api",
     "provider_generation_api",

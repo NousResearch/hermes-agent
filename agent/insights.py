@@ -21,13 +21,15 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from agent.usage_pricing import (
     CanonicalUsage,
+    CostStatus,
     estimate_usage_cost,
     format_duration_compact,
     has_known_pricing,
+    sticky_cost_status,
 )
 
 
@@ -580,7 +582,17 @@ class InsightsEngine:
                 status = cost_status or "unknown"
             d["cost"] += estimate
             d["actual_cost"] += float(actual_cost or 0.0)
-            d["cost_status"] = status
+            # Sticky aggregation: keep the most-confident status seen so far
+            # (issue #67764). Without this, the per-model dict's `cost_status`
+            # would reflect only the last-iterated row's status, which can be
+            # misleading when a single model has rows of mixed provenance.
+            # ``cast(CostStatus, status)`` narrows Pyright's ``Unknown`` view
+            # of ``status`` (a value carried through SQLite) to the helper's
+            # accepted Literal; runtime path is the same.
+            d["cost_status"] = sticky_cost_status(
+                d.get("cost_status", "unknown"),
+                cast(CostStatus, status),
+            )
             if has_known_pricing(model, provider or None, base_url):
                 d["has_pricing"] = True
             else:

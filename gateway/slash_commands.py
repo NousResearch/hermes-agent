@@ -561,7 +561,8 @@ class GatewaySlashCommandsMixin:
                         + _int_value(row.get("output_tokens"))
                         + _int_value(row.get("cache_read_tokens"))
                         + _int_value(row.get("cache_write_tokens"))
-                        + _int_value(row.get("reasoning_tokens"))
+                        # reasoning_tokens is a subset of output_tokens
+                        # — do NOT add it again.  See #57565.
                     )
             except Exception:
                 db_total_tokens = 0

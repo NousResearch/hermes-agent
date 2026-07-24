@@ -1511,7 +1511,8 @@ def _print_tui_exit_summary(
             + output_tokens
             + cache_read_tokens
             + cache_write_tokens
-            + reasoning_tokens
+            # reasoning_tokens is a subset of output_tokens — do NOT add
+            # it again here or the total will be over-counted.  See #57565.
         )
     except Exception:
         return

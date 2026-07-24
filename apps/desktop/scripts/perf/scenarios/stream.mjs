@@ -119,6 +119,8 @@ export default {
     const tokens = Number(opts.tokens ?? 400)
     const intervalMs = Number(opts.intervalMs ?? 16)
     const flushMinMs = Number(opts.flushMinMs ?? 33)
+    const historyTurns = Number(opts.historyTurns ?? 0)
+    const historySettleMs = Number(opts.historySettleMs ?? 1500)
     // Realistic default: a short markdown paragraph ending in a blank line, so
     // blocks SETTLE as they stream — exactly how real LLM output behaves, and
     // what block-memoization is designed for (only the growing tail re-renders).
@@ -130,6 +132,25 @@ export default {
     const real = Boolean(opts.real)
 
     await cdp.send('Runtime.enable')
+
+    if (historyTurns > 0) {
+      if (real) {
+        throw new Error('--historyTurns is only supported by the synthetic stream scenario')
+      }
+
+      // Preload history before recorders start, then allow a configurable
+      // delay. Source count is verified below; slower renderers may still have
+      // residual mount/highlight work when recording begins.
+      await cdp.eval(`window.__PERF_DRIVE__.loadTranscript(${historyTurns})`)
+      await sleep(historySettleMs)
+      const mountedMessages = Number(await cdp.eval('window.__PERF_DRIVE__.snapshotMsgs()'))
+      const expectedMessages = historyTurns * 2
+
+      if (mountedMessages !== expectedMessages) {
+        throw new Error(`expected ${expectedMessages} preloaded history messages, got ${mountedMessages}`)
+      }
+    }
+
     await cdp.eval(RECORDERS)
 
     if (real) {
@@ -177,7 +198,19 @@ export default {
       )
       await sleep(200)
       await cdp.eval('window.__MO__.arm()')
-      await sleep(tokens * intervalMs + 1500)
+      const syntheticTimeoutMs = Number(opts.timeoutMs ?? Math.max(tokens * intervalMs + 10000, 120000))
+      const deadline = Date.now() + syntheticTimeoutMs
+
+      while (Date.now() < deadline && (await cdp.eval('window.__PERF_DRIVE__.streaming()'))) {
+        await sleep(50)
+      }
+
+      if (await cdp.eval('window.__PERF_DRIVE__.streaming()')) {
+        throw new Error('synthetic stream did not finish before the timeout')
+      }
+
+      // Include the final commit and paint after the driver reports idle.
+      await sleep(250)
     }
 
     const data = JSON.parse(await cdp.eval(COLLECT))
@@ -186,6 +219,9 @@ export default {
       await cdp.eval('window.__PERF_DRIVE__.reset()')
     }
 
-    return analyze(data, real ? 0 : 500)
+    const result = analyze(data, real ? 0 : 500)
+    result.detail.historyTurns = historyTurns
+
+    return result
   }
 }

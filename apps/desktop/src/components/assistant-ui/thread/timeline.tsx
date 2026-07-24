@@ -1,15 +1,15 @@
-import { useAuiState } from '@assistant-ui/react'
+import { type ThreadMessage, useAuiState } from '@assistant-ui/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import {
+  getThreadMessageListToken,
+  getThreadMessageListUpdate
+} from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 
-import {
-  activeTimelineIndex,
-  deriveTimelineEntries,
-  type TimelineEntry,
-  type TimelineSourceMessage
-} from './timeline-data'
+import { deriveTimelineEntries, type TimelineEntry, type TimelineSourceMessage } from './timeline-data'
+import { activeTimelineIndexInViewport } from './timeline-dom'
 
 const MIN_ENTRIES = 4
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
@@ -54,6 +54,33 @@ function userPromptText(content: unknown): string {
   }
 
   return out
+}
+
+const timelineSourceSignatures = new WeakMap<object, string>()
+
+function timelineSourceSignature(messages: readonly ThreadMessage[]): string {
+  const update = getThreadMessageListUpdate(messages)
+  const currentToken = getThreadMessageListToken(messages)
+  const previousSignature = update ? timelineSourceSignatures.get(update.previousToken) : undefined
+
+  if (update && update.previousMessage.role !== 'user' && update.message.role !== 'user' && previousSignature) {
+    timelineSourceSignatures.set(currentToken, previousSignature)
+
+    return previousSignature
+  }
+
+  const rows: TimelineSourceMessage[] = []
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      rows.push({ id: message.id, role: 'user', text: userPromptText(message.content) })
+    }
+  }
+
+  const signature = JSON.stringify(rows)
+  timelineSourceSignatures.set(currentToken, signature)
+
+  return signature
 }
 
 /** Index-keyed ref-array setter — `ref={listRef(refs, i)}`. */
@@ -117,24 +144,14 @@ function scrollToPrompt(id: string) {
 
 /** Right-edge prompt rail — hover previews, click to jump. ≥4 user turns only. */
 export const ThreadTimeline: FC = () => {
-  const sourceSignature = useAuiState(s => {
-    const rows: TimelineSourceMessage[] = []
-
-    for (const message of s.thread.messages) {
-      if (message.role !== 'user') {
-        continue
-      }
-
-      rows.push({ id: message.id, role: 'user', text: userPromptText(message.content) })
-    }
-
-    return JSON.stringify(rows)
-  })
+  const sourceSignature = useAuiState(s => timelineSourceSignature(s.thread.messages))
 
   const entries = useMemo(
     () => deriveTimelineEntries(JSON.parse(sourceSignature) as TimelineSourceMessage[]),
     [sourceSignature]
   )
+
+  const entryIndexById = useMemo(() => new Map(entries.map((entry, index) => [entry.id, index])), [entries])
 
   const [activeIndex, setActiveIndex] = useState(0)
   const [open, setOpen] = useState(false)
@@ -178,7 +195,7 @@ export const ThreadTimeline: FC = () => {
   useEffect(() => {
     const viewport = document.querySelector<HTMLElement>(VIEWPORT)
 
-    if (!viewport || entries.length === 0) {
+    if (!viewport || entryIndexById.size === 0) {
       return
     }
 
@@ -186,16 +203,7 @@ export const ThreadTimeline: FC = () => {
 
     const compute = () => {
       raf = 0
-
-      const top = viewport.getBoundingClientRect().top
-
-      const offsets = entries.map(entry => {
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
-
-        return node ? node.getBoundingClientRect().top - top : null
-      })
-
-      const next = activeTimelineIndex(offsets)
+      const next = activeTimelineIndexInViewport(viewport, entryIndexById)
 
       setActiveIndex(prev => (prev === next ? prev : next))
     }
@@ -207,11 +215,11 @@ export const ThreadTimeline: FC = () => {
     }
 
     // Initial compute rides the same rAF batching as scroll. A sync call here
-    // reads getBoundingClientRect for every user message while other commit
-    // effects are still writing styles — on a session switch that interleaving
-    // forces a full reflow per read on a large transcript. One rAF later the
-    // reads batch into a single layout pass, and back-to-back entries updates
-    // (prefetch paint, then resume reconcile) coalesce into one compute.
+    // reads rendered message geometry while other commit effects are still
+    // writing styles — on a session switch that interleaving can force repeated
+    // reflow. One rAF later the reads batch into a single layout pass, and
+    // back-to-back entries updates (prefetch paint, then resume reconcile)
+    // coalesce into one compute.
     onScroll()
     viewport.addEventListener('scroll', onScroll, { passive: true })
 
@@ -222,7 +230,7 @@ export const ThreadTimeline: FC = () => {
         cancelAnimationFrame(raf)
       }
     }
-  }, [entries])
+  }, [entryIndexById])
 
   if (entries.length < MIN_ENTRIES) {
     return null

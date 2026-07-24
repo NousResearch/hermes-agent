@@ -19,6 +19,14 @@ npm run perf                  # attaches, runs the CI suite, gates on baseline
 # One scenario, with a CPU profile:
 npm run perf -- stream --cpuprofile --tokens 800
 
+# Report-only stream over a preloaded 200-turn transcript. The harness verifies
+# the source count, waits two paints plus a configurable settle delay, then starts
+# recorders; slower machines may still include residual mount/highlight work:
+npm run perf -- stream-history --spawn --prod
+
+# Stronger local stress point (1000 turns / 2000 messages):
+npm run perf -- stream-history --spawn --prod --historyTurns 1000
+
 # Representative PRODUCTION numbers (minified React, not the ~3x-slower dev build):
 npm run perf -- cold-start stream keystroke transcript --spawn --prod
 

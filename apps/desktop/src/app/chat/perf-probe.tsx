@@ -1,5 +1,6 @@
 import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from 'react'
 
+import { updateChatMessageAt } from '@/lib/chat-messages'
 import { $gateway } from '@/store/gateway'
 import { $messages, setBusy, setMessages } from '@/store/session'
 
@@ -24,7 +25,13 @@ declare global {
     }
     __PERF_DRIVE__?: {
       /** Inject an assistant message and grow it by `chunk` every `intervalMs`. Returns a stop handle. */
-      stream: (opts?: { chunk?: string; intervalMs?: number; totalTokens?: number }) => SyntheticDriverHandle
+      stream: (opts?: {
+        chunk?: string
+        intervalMs?: number
+        totalTokens?: number
+        flushMinMs?: number
+      }) => SyntheticDriverHandle
+      streaming: () => boolean
       /**
        * Replace the transcript with `turns` synthetic user/assistant pairs of
        * realistic mixed markdown, then resolve with the ms elapsed from the
@@ -159,6 +166,7 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
 
   window.__PERF_DRIVE__ = {
     snapshotMsgs: () => $messages.get().length,
+    streaming: () => activeHandle !== null,
     connected: () => {
       try {
         return $gateway.get()?.connectionState === 'open'
@@ -242,22 +250,20 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
           return
         }
 
-        setMessages(prev =>
-          prev.map(m => {
-            if (m.id !== msgId) {
-              return m
-            }
+        setMessages(prev => {
+          const index = prev.at(-1)?.id === msgId ? prev.length - 1 : prev.findIndex(message => message.id === msgId)
 
-            const head = m.parts.slice(0, -1)
-            const last = m.parts.at(-1)
+          return updateChatMessageAt(prev, index, message => {
+            const head = message.parts.slice(0, -1)
+            const last = message.parts.at(-1)
             const lastText = last && last.type === 'text' ? last.text : ''
 
             return {
-              ...m,
+              ...message,
               parts: [...head, { type: 'text', text: lastText + delta }]
             }
           })
-        )
+        })
       }
 
       const flushNow = () => {
@@ -281,10 +287,7 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
 
         const since = performance.now() - lastFlushAt
         const wait = Math.max(0, flushMinMs - since)
-        flushHandle =
-          wait <= 0 && typeof requestAnimationFrame === 'function'
-            ? requestAnimationFrame(flushNow)
-            : (setTimeout(flushNow, wait) as unknown as number)
+        flushHandle = setTimeout(flushNow, wait) as unknown as number
       }
 
       const handle: SyntheticDriverHandle = {
@@ -297,7 +300,6 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
 
           if (flushHandle !== null) {
             clearTimeout(flushHandle)
-            cancelAnimationFrame?.(flushHandle)
           }
 
           flushHandle = null
@@ -309,7 +311,11 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
 
           activeHandle = null
           // Mark message finalized.
-          setMessages(prev => prev.map(m => (m.id === msgId ? { ...m, pending: false } : m)))
+          setMessages(prev => {
+            const index = prev.at(-1)?.id === msgId ? prev.length - 1 : prev.findIndex(message => message.id === msgId)
+
+            return updateChatMessageAt(prev, index, message => ({ ...message, pending: false }))
+          })
           setBusy(false)
         }
       }

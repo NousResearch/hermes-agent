@@ -13,6 +13,7 @@ import {
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
+  updateChatMessageAt,
   upsertToolPart
 } from '@/lib/chat-messages'
 import {
@@ -103,7 +104,10 @@ export function useMessageStream({
           const prev = state.messages
           let nextMessages: ChatMessage[]
 
-          if (!prev.some(m => m.id === streamId)) {
+          const lastIndex = prev.length - 1
+          const streamIndex = prev[lastIndex]?.id === streamId ? lastIndex : prev.findIndex(m => m.id === streamId)
+
+          if (streamIndex === -1) {
             nextMessages = [
               ...prev,
               {
@@ -115,15 +119,11 @@ export function useMessageStream({
               }
             ]
           } else {
-            nextMessages = prev.map(m =>
-              m.id === streamId
-                ? {
-                    ...m,
-                    parts: transform(m.parts, m),
-                    pending: opts.pending ? opts.pending(m) : true
-                  }
-                : m
-            )
+            nextMessages = updateChatMessageAt(prev, streamIndex, message => ({
+              ...message,
+              parts: transform(message.parts, message),
+              pending: opts.pending ? opts.pending(message) : true
+            }))
           }
 
           return {

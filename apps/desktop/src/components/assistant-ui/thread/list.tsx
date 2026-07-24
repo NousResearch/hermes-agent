@@ -1,4 +1,4 @@
-import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { type ThreadMessage, ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import {
   type ComponentProps,
   type CSSProperties,
@@ -15,6 +15,10 @@ import {
 import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
+import {
+  getThreadMessageListToken,
+  getThreadMessageListUpdate
+} from '@/lib/incremental-external-store-runtime'
 import { cn } from '@/lib/utils'
 import {
   onScrollToBottomRequest,
@@ -129,6 +133,36 @@ export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: 
 // old turns, not this small live tail).
 export const LIVE_TAIL_GROUPS = 6
 
+const messageStructureSignatures = new WeakMap<object, string>()
+
+function messageStructureSignature(messages: readonly ThreadMessage[]): string {
+  const update = getThreadMessageListUpdate(messages)
+  const currentToken = getThreadMessageListToken(messages)
+  const previousSignature = update ? messageStructureSignatures.get(update.previousToken) : undefined
+  const previousLength = update?.previousMessage.content?.length ?? 1
+  const nextLength = update?.message.content?.length ?? 1
+
+  if (
+    update &&
+    previousSignature &&
+    update.previousMessage.id === update.message.id &&
+    update.previousMessage.role === update.message.role &&
+    previousLength === nextLength
+  ) {
+    messageStructureSignatures.set(currentToken, previousSignature)
+
+    return previousSignature
+  }
+
+  const signature = messages
+    .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
+    .join('\n')
+
+  messageStructureSignatures.set(currentToken, signature)
+
+  return signature
+}
+
 /** True when a visible group is old enough to virtualize (outside the live tail). */
 export function isVirtualizedGroup(indexInVisible: number, visibleCount: number, liveTail = LIVE_TAIL_GROUPS): boolean {
   return indexInVisible < visibleCount - liveTail
@@ -141,11 +175,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionKey
 }) => {
-  const messageSignature = useAuiState(s =>
-    s.thread.messages
-      .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
-      .join('\n')
-  )
+  const messageSignature = useAuiState(s => messageStructureSignature(s.thread.messages))
 
   const { t } = useI18n()
   const groups = buildGroups(messageSignature)

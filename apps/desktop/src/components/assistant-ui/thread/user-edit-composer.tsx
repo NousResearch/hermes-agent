@@ -105,6 +105,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
   const triggerKeyConsumedRef = useRef(false)
+  const composingRef = useRef(false) // true during IME composition (CJK input)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -598,6 +599,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     // hazard on the main composer).
     try {
       aui.composer().send()
+
+      // Clear latch after cooldown to allow re-submission. This prevents rapid
+      // double-Enter but doesn't require tracking when onEdit settles (which may
+      // be synchronous or async, and whose promise we don't have access to).
+      window.setTimeout(() => {
+        setSubmitting(false)
+      }, 200)
     } catch {
       setSubmitting(false)
     }
@@ -657,6 +665,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       composingRef.current = false
     }
 
+    // IME composition: Enter confirms composed text, not a message submission.
     if (composingRef.current || event.nativeEvent.isComposing) {
       return
     }

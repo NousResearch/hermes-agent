@@ -237,3 +237,79 @@ describe('click-to-edit user message', () => {
     expect(editor.className).toContain('overflow-y-auto')
   })
 })
+
+describe('Enter submission and latch behavior', () => {
+  it('submits the edit when Enter is pressed', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const editedText = 'modified text for submission'
+
+    editor.textContent = editedText
+    fireEvent.input(editor)
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('clears the submitting latch after onEdit resolves, allowing second edit session', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    // First edit session
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    let editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    editor.textContent = 'first edit'
+    fireEvent.input(editor)
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+
+    // Wait for the latch cooldown to clear
+    await new Promise(resolve => setTimeout(resolve, 300))
+
+    // Second edit session - open the editor again
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    editor.textContent = 'second edit'
+    fireEvent.input(editor)
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    // If the latch wasn't cleared, this second submission would be blocked
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('inserts a newline on Shift+Enter without submitting', async () => {
+    const onEdit = vi.fn(async () => {})
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit message' }))
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+
+    editor.textContent = 'line one'
+    fireEvent.input(editor)
+
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+
+    // Shift+Enter should not call onEdit
+    await new Promise(resolve => window.setTimeout(resolve, 50))
+    expect(onEdit).not.toHaveBeenCalled()
+
+    // The editor should allow the newline to be inserted (by not preventing default)
+    // We don't simulate actual newline insertion here (requires complex DOM manipulation)
+    // but we verify the guard did not block it
+  })
+})

@@ -253,6 +253,48 @@ class TestCodeBlockExclusion:
 
 
 # ---------------------------------------------------------------------------
+# Markdown link exclusion
+# ---------------------------------------------------------------------------
+
+class TestMarkdownLinkExclusion:
+    """Clickable file references are not implicit attachment requests."""
+
+    def test_markdown_file_link_target_is_not_extracted(self, tmp_path):
+        report = tmp_path / "views.md"
+        report.write_text("# Vault Views\n")
+        content = f"See [views.md]({report}:1) for details."
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert files == []
+        assert cleaned == content
+
+    def test_multiple_markdown_file_links_do_not_extract_attachments(self, tmp_path):
+        paths = []
+        for name in ("views.md", "inventory.json", "scan.yaml"):
+            path = tmp_path / name
+            path.write_text("x\n")
+            paths.append(path)
+        content = "\n".join(f"- [{path.name}]({path}:1)" for path in paths)
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert files == []
+        assert cleaned == content
+
+    def test_bare_local_file_path_still_extracts(self, tmp_path):
+        report = tmp_path / "report.md"
+        report.write_text("# report\n")
+        content = f"Saved the report here: {report}"
+
+        files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert files == [str(report)]
+        assert str(report) not in cleaned
+        assert cleaned == "Saved the report here:"
+
+
+# ---------------------------------------------------------------------------
 # Deduplication
 # ---------------------------------------------------------------------------
 

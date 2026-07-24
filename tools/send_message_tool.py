@@ -52,6 +52,9 @@ _WHATSAPP_JID_RE = re.compile(
     r"^\s*[\w-]+@(?:g\.us|s\.whatsapp\.net|lid|broadcast|newsletter)\s*$",
     re.IGNORECASE,
 )
+# BlueBubbles addresses chats by raw chat GUID (for example,
+# "iMessage;-;handle" or "iMessage;+;groupId").
+_BLUEBUBBLES_GUID_RE = re.compile(r"^\s*[A-Za-z0-9_+-]+;[+-];[^\s;]+\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -603,6 +606,16 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    if platform_name == "bluebubbles":
+        target = target_ref.strip()
+        # Raw chat GUID — adapter._resolve_chat_guid returns it as-is.
+        if _BLUEBUBBLES_GUID_RE.fullmatch(target_ref):
+            return target, None, True
+        # Email handle or E.164 phone — the adapter resolves to a GUID
+        # via /api/v1/chat/query, with a private-API fallback that creates
+        # a fresh chat for the address.
+        if _EMAIL_TARGET_RE.fullmatch(target_ref) or _E164_TARGET_RE.fullmatch(target_ref):
+            return target, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

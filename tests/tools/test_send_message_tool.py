@@ -1921,6 +1921,62 @@ class TestResolveSlackUserTargets:
         assert "im:write" in err["error"]
 
 
+class TestParseTargetRefBlueBubbles:
+    """_parse_target_ref recognizes BlueBubbles raw GUIDs, emails, and phone numbers."""
+
+    def test_raw_dm_guid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "bluebubbles", "iMessage;-;user@example.com"
+        )
+        assert chat_id == "iMessage;-;user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_any_service_phone_guid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "bluebubbles", "any;-;+15551234567"
+        )
+        assert chat_id == "any;-;+15551234567"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_raw_group_guid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "bluebubbles", "iMessage;+;chat1234567890abcdef"
+        )
+        assert chat_id == "iMessage;+;chat1234567890abcdef"
+        assert is_explicit is True
+
+    def test_email_handle_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "bluebubbles", "user@example.com"
+        )
+        assert chat_id == "user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_phone_handle_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_whitespace_is_stripped(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "bluebubbles", "  user@example.com  "
+        )
+        assert chat_id == "user@example.com"
+        assert is_explicit is True
+
+    def test_non_address_is_not_explicit(self):
+        assert _parse_target_ref("bluebubbles", "not-an-address")[2] is False
+        assert _parse_target_ref("bluebubbles", "incomplete@")[2] is False
+        assert _parse_target_ref("bluebubbles", "+")[2] is False
+
+    def test_bluebubbles_pattern_not_explicit_for_other_platforms(self):
+        """Email/phone handles must not flip is_explicit on unrelated platforms."""
+        assert _parse_target_ref("telegram", "user@example.com")[2] is False
+        assert _parse_target_ref("discord", "user@example.com")[2] is False
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

@@ -676,15 +676,49 @@ class QQAdapter(BasePlatformAdapter):
 
         self._heartbeat_interval = 30.0  # reset until Hello
         try:
-            await self._ensure_token()
-            gateway_url = await self._get_gateway_url()
-            await self._open_ws(gateway_url)
-            self._mark_connected()
-            logger.info("[%s] Reconnected", self._log_tag)
-            return True
+            return await self._do_reconnect()
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
-            return False
+
+        # Reconnect with a fresh HTTP client — the existing _http_client may have
+        # stale connection pools after long uptime (days), causing token refresh
+        # and gateway URL requests to hang or fail silently.
+        if self._http_client is not None:
+            logger.info(
+                "[%s] Recreating HTTP client and retrying...", self._log_tag
+            )
+            try:
+                # Don't wait indefinitely for a stale connection pool to drain.
+                await asyncio.wait_for(self._http_client.aclose(), timeout=5.0)
+            except Exception:
+                pass
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            )
+            try:
+                result = await self._do_reconnect()
+                if result:
+                    logger.info(
+                        "[%s] Reconnected (after HTTP client reset)", self._log_tag
+                    )
+                return result
+            except Exception as exc2:
+                logger.warning(
+                    "[%s] Retry also failed: %s", self._log_tag, exc2
+                )
+
+        return False
+
+    async def _do_reconnect(self) -> bool:
+        """Core reconnect logic: refresh token, fetch gateway URL, open WebSocket."""
+        await self._ensure_token()
+        gateway_url = await self._get_gateway_url()
+        await self._open_ws(gateway_url)
+        self._mark_connected()
+        logger.info("[%s] Reconnected", self._log_tag)
+        return True
 
     async def _read_events(self) -> None:
         """Read WebSocket frames until connection closes."""

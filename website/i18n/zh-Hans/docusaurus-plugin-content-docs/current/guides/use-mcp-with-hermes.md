@@ -399,7 +399,7 @@ mcp_servers:
 Inspect the local project files, then create a GitHub issue summarizing the bug you find.
 ```
 
-这就是 MCP 的强大之处：无需修改 Hermes 核心即可实现多系统工作流。
+MCP 好用的地方就在这里：无需修改 Hermes 核心即可实现多系统工作流。
 
 ## 安全使用建议
 

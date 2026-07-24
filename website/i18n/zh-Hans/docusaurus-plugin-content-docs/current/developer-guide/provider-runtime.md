@@ -25,7 +25,7 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 
 `providers/` 中的 `get_provider_profile()` 为给定 provider id 返回一个 `ProviderProfile`。`runtime_provider.py` 在解析时调用它，以获取规范的 `base_url`、`env_vars` 优先级列表、`api_mode` 和 `fallback_models`，无需在多个文件中重复这些数据。在 `plugins/model-providers/<your-provider>/`（或 `$HERMES_HOME/plugins/model-providers/<your-provider>/`）下添加一个调用 `register_provider()` 的新插件，即可让 `runtime_provider.py` 自动识别它——无需在解析器本身中添加分支。
 
-如果你想添加一个新的一等推理 provider，请结合本页阅读 [添加 Provider](./adding-providers.md) 和 [Model Provider 插件指南](./model-provider-plugin.md)。
+如果你想添加一个新的原生推理 provider，请结合本页阅读 [添加 Provider](./adding-providers.md) 和 [Model Provider 插件指南](./model-provider-plugin.md)。
 
 ## 解析优先级
 
@@ -68,7 +68,7 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 - Ollama Cloud
 - LM Studio
 - Tencent TokenHub
-- Custom（`provider: custom`）— 适用于任何 OpenAI 兼容端点的一等 provider
+- Custom（`provider: custom`）— 适用于任何 OpenAI 兼容端点的原生 provider
 - 命名自定义 provider（`config.yaml` 中的 `custom_providers` 列表）
 
 ## 运行时解析的输出

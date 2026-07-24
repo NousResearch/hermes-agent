@@ -88,7 +88,7 @@ Hermes 将搜索网页、阅读结果，并生成类似以下内容：
 
 ## 第二步：创建 Cron 任务
 
-现在让我们将其设置为每天早晨自动运行。有两种方式可以实现。
+接下来把它设成每天早上自动运行。可以用两种方式。
 
 在创建 cron 任务之前，请确保 Hermes 已全局配置了默认模型和 provider。如果你希望某个任务使用不同的值，可在创建时设置该任务专属的 model/provider 覆盖项。
 
@@ -115,7 +115,7 @@ Hermes 将使用统一的 `cronjob` 工具为你创建 cron 任务。
 ### 黄金法则：自包含的 Prompt
 
 :::warning 关键概念
-Cron 任务在**全新会话**中运行 — 不保留之前对话的任何记忆，也不了解你"之前设置"的任何内容。你的 prompt 必须包含 agent 完成任务所需的**一切信息**。
+Cron 任务在**全新会话**中运行 — 不保留之前对话的任何记忆，也不知道你"之前设置"过什么。你的 prompt 必须把任务所需的**所有信息**写全。
 :::
 
 **糟糕的 prompt：**
@@ -197,7 +197,7 @@ Search for the latest news on these topics. Summarize the top 3 stories with lin
 ```
 
 :::tip 定制受众角色
-在 prompt 中加入简报受众的详细信息，能显著提升内容相关性。告诉 agent 你的角色、兴趣以及需要跳过的内容。
+在 prompt 中加入简报受众的详细信息，能显著提升内容相关性。告诉智能体你的角色、兴趣以及需要跳过的内容。
 :::
 
 ## 第四步：管理你的任务
@@ -258,7 +258,7 @@ sudo hermes gateway install --system
 你已经构建了一个可运行的每日简报机器人。以下是一些可以继续探索的方向：
 
 - **[定时任务（Cron）](/user-guide/features/cron)** — 调度格式、重复限制和推送选项的完整参考
-- **[委托](/user-guide/features/delegation)** — 深入了解并行子 agent 工作流
+- **[委托](/user-guide/features/delegation)** — 了解并行子智能体工作流
 - **[消息推送平台](/user-guide/messaging)** — 设置 Telegram、Discord 或其他推送目标
 - **[Memory](/user-guide/features/memory)** — 跨会话的持久上下文
 - **[技巧与最佳实践](/guides/tips)** — 更多 prompt 工程建议

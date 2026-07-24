@@ -176,7 +176,7 @@ if platform.system() != "Windows":
 
 ## 安全注意事项
 
-Hermes 拥有终端访问权限，安全至关重要。
+Hermes 拥有终端访问权限，所以安全性很重要。
 
 ### 现有保护措施
 

@@ -6,7 +6,7 @@ description: "将 Hermes Agent 与 Amazon Bedrock 配合使用——原生 Conve
 
 # AWS Bedrock
 
-Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 OpenAI 兼容端点。这让你可以完整访问 Bedrock 生态系统：IAM 身份验证、Guardrails、跨区域推理配置文件以及所有基础模型。
+Hermes Agent 原生支持 Amazon Bedrock 的 **Converse API**，不是走 OpenAI 兼容端点。这样可以直接使用 Bedrock 的 IAM 身份验证、Guardrails、跨区域推理配置文件和各类基础模型。
 
 ## 前提条件
 

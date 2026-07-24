@@ -313,7 +313,7 @@ hermes slack manifest --write      # 写入 ~/.hermes/slack-manifest.json
 hermes slack manifest --slashes-only  # 仅输出 features.slash_commands 数组
 ```
 
-生成一个 Slack app manifest，将 `COMMAND_REGISTRY` 中的每条 gateway 命令（`/btw`、`/stop`、`/model` 等）注册为一等公民 Slack 斜杠命令——与 Discord 和 Telegram 保持一致。将输出粘贴到你的 Slack app 配置中：[https://api.slack.com/apps](https://api.slack.com/apps) → 你的 app → **Features → App Manifest → Edit**，然后点击 **Save**。如果 scope 或斜杠命令有变化，Slack 会提示重新安装。
+生成一个 Slack app manifest，将 `COMMAND_REGISTRY` 中的每条 gateway 命令（`/btw`、`/stop`、`/model` 等）注册为原生 Slack 斜杠命令——与 Discord 和 Telegram 保持一致。将输出粘贴到你的 Slack app 配置中：[https://api.slack.com/apps](https://api.slack.com/apps) → 你的 app → **Features → App Manifest → Edit**，然后点击 **Save**。如果 scope 或斜杠命令有变化，Slack 会提示重新安装。
 
 | 标志 | 默认值 | 用途 |
 |------|---------|---------|
@@ -561,7 +561,7 @@ config_overrides:
 - 在 GitHub 上报告 bug——将 dump 粘贴到 issue 中
 - 在 Discord 中寻求帮助——在代码块中分享
 - 与他人对比设置
-- 出现问题时快速进行健全性检查
+- 出现问题时快速做一次基础诊断
 
 :::tip
 `hermes dump` 专为分享而设计。交互式诊断请使用 `hermes doctor`。可视化概览请使用 `hermes status`。

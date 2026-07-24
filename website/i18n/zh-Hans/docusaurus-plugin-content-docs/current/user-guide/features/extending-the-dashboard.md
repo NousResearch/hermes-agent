@@ -83,7 +83,7 @@ palette:
 
 #### 调色板（3 层）
 
-调色板由三层颜色加一个暖光晕（warm-glow）颜色和一个噪点颗粒倍增器组成。Dashboard 的设计系统级联通过 CSS `color-mix()` 从这三层颜色派生出所有兼容 shadcn 的 token（card、popover、muted、border、primary、destructive、ring 等）。覆盖三个颜色即可级联影响整个 UI。
+调色板由三层颜色加一个暖光晕（warm-glow）颜色和一个噪点颗粒倍增器组成。Dashboard 的设计系统通过 CSS `color-mix()` 进行级联，从这三层颜色派生出所有兼容 shadcn 的 token（card、popover、muted、border、primary、destructive、ring 等）。覆盖三个颜色即可级联影响整个 UI。
 
 | 键 | 描述 |
 |-----|-------------|

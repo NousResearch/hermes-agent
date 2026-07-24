@@ -20,7 +20,7 @@ Hermes Agent 使用 SQLite 数据库（`~/.hermes/state.db`）跨 CLI 和 gatewa
 关键设计决策：
 - **WAL 模式**：支持并发读取 + 单写入（gateway 多平台）
 - **FTS5 虚拟表**：跨所有会话消息的快速全文搜索
-- **会话血缘**：通过 `parent_session_id` 链实现（压缩触发的会话分割）
+- **会话继承链**：通过 `parent_session_id` 链实现（压缩触发的会话分割）
 - **来源标记**（`cli`、`telegram`、`discord` 等）：用于平台过滤
 - 批量运行器和 RL 轨迹不存储于此（独立系统）
 
@@ -287,11 +287,11 @@ results = db.search_messages("help", role_filter=["user"])
 - 移除悬空的布尔运算符（`hello AND` → `hello`）
 
 
-## 会话血缘
+## 会话继承链
 
 会话可通过 `parent_session_id` 形成链。这发生在 gateway 中上下文压缩触发会话分割时。
 
-### 查询：查找会话血缘
+### 查询：查找会话继承链
 
 ```sql
 -- 查找会话的所有祖先

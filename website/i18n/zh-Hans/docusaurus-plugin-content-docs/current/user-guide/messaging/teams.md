@@ -168,7 +168,7 @@ platforms:
 
 ### 会议摘要投递（Teams 会议 Pipeline）
 
-当 [Teams 会议 pipeline 插件](/user-guide/messaging/msgraph-webhook)启用后，此适配器同时负责会议摘要的出站投递——一个 Teams 集成面，而非两个。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
+当 [Teams 会议 pipeline 插件](/user-guide/messaging/msgraph-webhook)启用后，此适配器同时负责会议摘要的出站投递——使用同一个 Teams 集成入口，而不是两个独立入口。会议转录摘要生成后，写入器会将摘要发布到你指定的 Teams 目标。
 
 Pipeline 摘要投递在 `teams` 平台条目下与机器人配置并列配置：
 

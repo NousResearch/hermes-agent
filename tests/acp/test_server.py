@@ -36,7 +36,11 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import (
+    ACP_MAX_MODELS_PER_PROVIDER,
+    HermesACPAgent,
+    HERMES_VERSION,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -303,8 +307,59 @@ class TestSessionOps:
             refresh=False,
             probe_custom_providers=False,
             probe_current_custom_provider=False,
-            max_models=None,
+            max_models=ACP_MAX_MODELS_PER_PROVIDER,
         )
+
+    @pytest.mark.asyncio
+    async def test_new_session_bounds_models_and_keeps_current_selection(self):
+        """A large provider catalog stays bounded and never drops the selection.
+
+        Asserts the contract (bounded row + current model reachable), not a
+        specific catalog size, so growing the shared inventory cannot break it.
+        """
+        oversized = [
+            f"model-{index}" for index in range(ACP_MAX_MODELS_PER_PROVIDER * 2)
+        ]
+        current = oversized[-1]
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model=current,
+                provider="openrouter",
+                base_url="",
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+
+        def bounded_payload(_context, **kwargs):
+            # Mirror the shared inventory's per-provider slicing so the test
+            # exercises the cap Hermes actually requests.
+            cap = kwargs.get("max_models")
+            models = oversized if cap is None else oversized[:cap]
+            return {
+                "providers": [
+                    {"slug": "openrouter", "name": "OpenRouter", "models": models}
+                ]
+            }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", side_effect=bounded_payload),
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert isinstance(resp.models, SessionModelState)
+        model_ids = [model.model_id for model in resp.models.available_models]
+
+        # Bounded: the emitted list must not exceed the requested cap, plus at
+        # most the one current-model entry re-inserted by the fallback.
+        assert len(model_ids) <= ACP_MAX_MODELS_PER_PROVIDER + 1
+        # Selection preserved: a current model outside the cap is still offered.
+        assert resp.models.current_model_id == f"openrouter:{current}"
+        assert resp.models.current_model_id in model_ids
+        # No duplicates leak through the dedup path.
+        assert len(model_ids) == len(set(model_ids))
 
     @pytest.mark.asyncio
     async def test_new_session_keeps_current_model_missing_from_inventory(self):

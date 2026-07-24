@@ -1807,6 +1807,17 @@ def compress_context(
             new_system_prompt = agent._build_system_prompt(system_message)
             agent._cached_system_prompt = new_system_prompt
 
+        # Refresh the content-block parts so the next API call uses
+        # up-to-date stable/volatile split after compression.
+        if not getattr(agent, "_cached_system_prompt_parts", None):
+            # Only rebuild when parts are missing; when the cached prompt
+            # was reused above the parts stay valid from the original build.
+            try:
+                from agent.system_prompt import build_system_prompt_parts as _build_parts
+                agent._cached_system_prompt_parts = _build_parts(agent, system_message=system_message)
+            except Exception:
+                pass
+
         _session_commit_succeeded = False
         split_status = "not_applicable"
         if agent._session_db:

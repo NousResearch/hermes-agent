@@ -84,9 +84,12 @@ class TestCodingContextBlock:
         _init_code_repo(tmp_path)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
-        stable = _stable_prompt(agent)
-        assert "coding agent" in stable
-        assert "Workspace" in stable
+        parts = build_system_prompt_parts(agent)
+        # coding_context moved from stable to context tier for cross-session cache (#68191)
+        assert "coding agent" in parts["context"], (
+            "coding_context should be in the context tier, not stable"
+        )
+        assert "Workspace" in parts["context"]
 
     def test_absent_when_off(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)
@@ -94,8 +97,8 @@ class TestCodingContextBlock:
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         # Drive the real path: force the resolved mode to "off" via config.
         with patch("agent.coding_context._coding_mode", return_value="off"):
-            stable = _stable_prompt(agent)
-        assert "coding agent" not in stable
+            parts = build_system_prompt_parts(agent)
+        assert "coding agent" not in parts["context"]
 
     def test_absent_without_tools(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)

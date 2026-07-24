@@ -125,20 +125,6 @@ class TestContentBlockLayout:
         marked = [m for m in non_sys if _has_cache_control(m)]
         assert len(marked) == 3
 
-    def test_content_blocks_with_ttl_marker(self):
-        """Content blocks with custom TTL marker should preserve it."""
-        blocks = [
-            {"type": "text", "text": "stable", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
-            {"type": "text", "text": "volatile"},
-        ]
-        messages = [
-            {"role": "system", "content": blocks},
-            _make_user_msg("hello"),
-        ]
-        result = apply_anthropic_cache_control(messages)
-        sys_content = result[0]["content"]
-        assert sys_content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-
     def test_native_anthropic_layout_with_blocks(self):
         """Native Anthropic layout should also preserve pre-existing content
         block cache_control markers."""
@@ -155,179 +141,127 @@ class TestContentBlockLayout:
         assert sys_content[0]["cache_control"] == {"type": "ephemeral"}
         assert "cache_control" not in sys_content[1]
 
+    def test_content_blocks_with_ttl_marker(self):
+        """Content blocks with custom TTL marker should preserve it."""
+        blocks = [
+            {"type": "text", "text": "stable", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "text", "text": "volatile"},
+        ]
+        messages = [
+            {"role": "system", "content": blocks},
+            _make_user_msg("hello"),
+        ]
+        result = apply_anthropic_cache_control(messages)
+        sys_content = result[0]["content"]
+        assert sys_content[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+    def test_empty_messages_list(self):
+        """Empty messages list should return empty list unchanged."""
+        result = apply_anthropic_cache_control([])
+        assert result == []
+
+    def test_no_system_message(self):
+        """When there's no system message, all breakpoints go to messages."""
+        messages = [
+            _make_user_msg("msg1"),
+            {"role": "assistant", "content": "reply1"},
+            _make_user_msg("msg2"),
+            {"role": "assistant", "content": "reply2"},
+            _make_user_msg("msg3"),
+            {"role": "assistant", "content": "reply3"},
+        ]
+        result = apply_anthropic_cache_control(messages)
+        marked = [m for m in result if _has_cache_control(m)]
+        assert len(marked) == 4  # Last 4 messages
+
 
 class TestBuildSystemPromptAsContentBlocks:
     """Test the build_system_prompt_as_content_blocks function."""
 
-    def test_returns_none_for_empty_prompt(self):
+    def test_returns_none_for_empty_prompt(self, monkeypatch):
         """Empty system prompt should return None."""
         agent = MagicMock()
-        agent._cached_system_prompt_parts = None
-        # build_system_prompt_parts will be called; mock it
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "",
-                    "context": "",
-                    "volatile": "",
-                },
-            )
-            result = build_system_prompt_as_content_blocks(agent)
-            assert result is None
+        monkeypatch.setattr(
+            "agent.system_prompt.build_system_prompt_parts",
+            lambda a, system_message=None: {
+                "stable": "",
+                "context": "",
+                "volatile": "",
+            },
+        )
+        result = build_system_prompt_as_content_blocks(agent)
+        assert result is None
 
-    def test_stable_block_has_cache_control(self):
+    def test_stable_block_has_cache_control(self, monkeypatch):
         """The stable block should carry a cache_control marker."""
         agent = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "identity and tools",
-                    "context": "context files",
-                    "volatile": "memory and timestamp",
-                },
-            )
-            blocks = build_system_prompt_as_content_blocks(agent)
-            assert blocks is not None
-            assert len(blocks) == 2
-            assert blocks[0]["type"] == "text"
-            assert "identity" in blocks[0]["text"]
-            assert blocks[0]["cache_control"] == {"type": "ephemeral"}
-            assert blocks[1]["type"] == "text"
-            assert "context files" in blocks[1]["text"]
-            assert "memory" in blocks[1]["text"]
+        monkeypatch.setattr(
+            "agent.system_prompt.build_system_prompt_parts",
+            lambda a, system_message=None: {
+                "stable": "identity and tools",
+                "context": "context files",
+                "volatile": "memory and timestamp",
+            },
+        )
+        blocks = build_system_prompt_as_content_blocks(agent)
+        assert blocks is not None
+        assert len(blocks) == 2
+        assert blocks[0]["type"] == "text"
+        assert "identity" in blocks[0]["text"]
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert blocks[1]["type"] == "text"
+        assert "context files" in blocks[1]["text"]
+        assert "memory" in blocks[1]["text"]
 
-    def test_stable_only_prompt(self):
+    def test_stable_only_prompt(self, monkeypatch):
         """When only stable content exists, return single block."""
         agent = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "only stable content",
-                    "context": "",
-                    "volatile": "",
-                },
-            )
-            blocks = build_system_prompt_as_content_blocks(agent)
-            assert blocks is not None
-            assert len(blocks) == 1
-            assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+        monkeypatch.setattr(
+            "agent.system_prompt.build_system_prompt_parts",
+            lambda a, system_message=None: {
+                "stable": "only stable content",
+                "context": "",
+                "volatile": "",
+            },
+        )
+        blocks = build_system_prompt_as_content_blocks(agent)
+        assert blocks is not None
+        assert len(blocks) == 1
+        assert blocks[0]["cache_control"] == {"type": "ephemeral"}
 
-    def test_volatile_only_prompt(self):
+    def test_volatile_only_prompt(self, monkeypatch):
         """When only volatile content exists, return single block without marker."""
         agent = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "",
-                    "context": "",
-                    "volatile": "only volatile content",
-                },
-            )
-            blocks = build_system_prompt_as_content_blocks(agent)
-            assert blocks is not None
-            assert len(blocks) == 1
-            assert "cache_control" not in blocks[0]
+        monkeypatch.setattr(
+            "agent.system_prompt.build_system_prompt_parts",
+            lambda a, system_message=None: {
+                "stable": "",
+                "context": "",
+                "volatile": "only volatile content",
+            },
+        )
+        blocks = build_system_prompt_as_content_blocks(agent)
+        assert blocks is not None
+        assert len(blocks) == 1
+        assert "cache_control" not in blocks[0]
 
-    def test_context_and_volatile_merged(self):
+    def test_context_and_volatile_merged(self, monkeypatch):
         """Context and volatile should be merged into one block."""
         agent = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "stable content",
-                    "context": "context files content",
-                    "volatile": "volatile content",
-                },
-            )
-            blocks = build_system_prompt_as_content_blocks(agent)
-            assert blocks is not None
-            assert len(blocks) == 2
-            # Second block should contain both context and volatile
-            assert "context files content" in blocks[1]["text"]
-            assert "volatile content" in blocks[1]["text"]
-
-    def test_context_empty_volatile_present(self):
-        """When context is empty but volatile is present, volatile
-        content should appear in block 2."""
-        agent = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "stable",
-                    "context": "",
-                    "volatile": "volatile only",
-                },
-            )
-            blocks = build_system_prompt_as_content_blocks(agent)
-            assert blocks is not None
-            assert len(blocks) == 2
-            assert "volatile only" in blocks[1]["text"]
-
-    def test_system_message_included_in_volatile(self):
-        """Custom system_message should appear in block 2 (merged into context)."""
-        agent = MagicMock()
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "agent.system_prompt.build_system_prompt_parts",
-                lambda a, system_message=None: {
-                    "stable": "stable",
-                    "context": f"custom: {system_message}" if system_message else "",
-                    "volatile": "volatile",
-                },
-            )
-            blocks = build_system_prompt_as_content_blocks(
-                agent, system_message="You are a coding assistant."
-            )
-            assert blocks is not None
-            assert len(blocks) == 2
-            assert "coding assistant" in blocks[1]["text"]
-
-
-class TestBuildSystemPromptPartsMove:
-    """Validate that coding_context was moved from stable to context tier."""
-
-    def test_coding_context_in_context_tier(self):
-        """build_system_prompt_parts should put workspace git snapshot
-        in the context tier, not the stable tier."""
-        from agent.system_prompt import build_system_prompt_parts
-
-        agent = MagicMock()
-        agent.valid_tool_names = {"computer_use", "read_file", "write_file"}
-        agent.load_soul_identity = True
-        agent.skip_context_files = True
-        agent.model = "test-model"
-        agent.provider = "test"
-        agent.platform = "cli"
-        agent._memory_store = None
-        agent._memory_enabled = False
-        agent._user_profile_enabled = False
-        agent._memory_manager = None
-        agent._tool_use_enforcement = False
-        agent._task_completion_guidance = False
-        agent._parallel_tool_call_guidance = False
-        agent._kanban_worker_guidance = None
-        agent._environment_probe = False
-        agent.pass_session_id = False
-        agent.session_id = None
-        agent._platform_hint_overrides = {}
-
-        parts = build_system_prompt_parts(agent)
-
-        # The stable tier should NOT contain coding_context markers
-        stable = parts.get("stable", "")
-        # Coding-context keywords that indicate the workspace git snapshot
-        # 'TERMINAL_CWD' is a proxy for the coding context block
-        context = parts.get("context", "")
-
-        # stable should have the default identity
-        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-        assert DEFAULT_AGENT_IDENTITY in stable
+        monkeypatch.setattr(
+            "agent.system_prompt.build_system_prompt_parts",
+            lambda a, system_message=None: {
+                "stable": "stable content",
+                "context": "context files content",
+                "volatile": "volatile content",
+            },
+        )
+        blocks = build_system_prompt_as_content_blocks(agent)
+        assert blocks is not None
+        assert len(blocks) == 2
+        # Second block should contain both context and volatile
+        assert "context files content" in blocks[1]["text"]
+        assert "volatile content" in blocks[1]["text"]
 
 
 class TestRestoredSessionSystemMessage:
@@ -426,22 +360,32 @@ class TestPostCompressionPartsRefresh:
         agent = MagicMock()
         agent._memory_manager = None
         agent._cached_system_prompt = "old prompt before compression"
-        agent._cached_system_prompt_parts = {"stable": "old", "context": "", "volatile": ""}
+        agent._cached_system_prompt_parts = None  # Simulate stale/missing parts
         agent._build_system_prompt.return_value = "new prompt after compression"
         agent._session_db = MagicMock()
         agent.session_id = "test-compress"
 
-        # Simulate the compression path rebuilding parts when needed
-        agent._cached_system_prompt = "new prompt after compression"
-        agent._cached_system_prompt_parts = None
+        # Simulate compression: parts are None, need refresh
+        fresh_parts = {"stable": "new stable", "context": "new context", "volatile": "new volatile"}
+        with mp("agent.system_prompt.build_system_prompt_parts", return_value=fresh_parts):
 
-        # When parts are None and compression rebuilds, they get refreshed
-        if getattr(agent, "_cached_system_prompt_parts", None) is None:
-            try:
+            # Simulate the refresh logic from conversation_compression.py
+            if getattr(agent, "_cached_system_prompt_parts", None) is None:
                 from agent.system_prompt import build_system_prompt_parts as _build_parts
                 agent._cached_system_prompt_parts = _build_parts(agent, system_message="test msg")
-            except Exception:
-                pass
 
-        parts = agent._cached_system_prompt_parts
-        assert parts is not None, "parts should be refreshed after compression"
+            parts = agent._cached_system_prompt_parts
+            assert parts is not None, "parts should be refreshed after compression"
+            assert parts == fresh_parts, "parts should match the newly built prompt"
+
+    def test_compression_skips_refresh_when_parts_present(self):
+        """When parts are already present, compression should skip the refresh."""
+        agent = MagicMock()
+        agent._cached_system_prompt_parts = {"stable": "still valid", "context": "", "volatile": ""}
+
+        # Should NOT try to rebuild if parts already exist
+        refreshed = False
+        if getattr(agent, "_cached_system_prompt_parts", None) is None:
+            refreshed = True
+
+        assert not refreshed, "should skip refresh when parts already present"

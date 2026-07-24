@@ -268,8 +268,8 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 # List available models for your provider
 hermes model
 
-# Set a valid model
-hermes config set HERMES_MODEL anthropic/claude-opus-4.7
+# Set a valid model (writes to model.default in ~/.hermes/config.yaml)
+hermes config set model.default anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct

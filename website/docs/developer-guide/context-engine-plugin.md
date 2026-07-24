@@ -129,10 +129,35 @@ def on_turn_complete(self, messages, usage=None, **kwargs):
 
 Contract:
 
-- **No-op by default, fail-open.** Both default to `return None`. A missing hook, an exception, or an invalid return value leaves the request untouched — so a failing engine is never worse than not installing one.
+- **No-op by default, fail-open.** Both default to `return None`. A missing hook, an exception, or an invalid return value leaves the request untouched — so a failing engine is never worse than not installing one. The host also identity-checks for the inherited ABC default and skips it entirely, so non-implementing engines (including the built-in compressor) pay no per-request work at all.
 - **`select_context()` is request-only.** The returned list replaces the messages for a single provider call; persisted history is never written. Returning `None`, `[]`, a non-list, or a list containing non-dicts all fall open to the unmodified request.
 - **Ordering / cache stability.** The hook runs **before** prompt cache-control and every request sanitizer, so (a) a replacement still passes the same validation as any request, and (b) the no-op default leaves the request byte-identical — prompt-cache behaviour is unchanged for non-implementing engines. An engine that replaces the list changes only its own cache prefix. Evaluated per provider request (re-runs on retries).
 - **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only. **Coverage is best-effort:** it fires from the standard turn-finalization seam. Some abnormal early-return paths in the loop (e.g. a content-policy block or a provider terminal failure) persist and return without routing through finalization, so they do not currently emit this hook — treat it as a best-effort observation for completed turns, not a guaranteed callback for every early exit. Unifying all terminal paths behind one finalization seam is a separate follow-up.
+
+### When to use these hooks — and when NOT to
+
+- **Implement `select_context()` only when your engine must *replace* the
+  per-request context** — retrieval-augmented selection, topic/branch routing,
+  role switching. It is the only verb that can swap which messages enter a
+  request: the `pre_llm_call` plugin hook is inject-only by documented design
+  (it appends to the user message and never rewrites the list, to preserve the
+  prompt-cache prefix). If you don't need replacement, don't implement it.
+- **If your plugin only needs post-turn observation / ingestion** (indexing,
+  memory sync, analytics), implement a **memory provider** (`sync_turn()` —
+  see [Memory Provider Plugins](./memory-provider-plugin.md)) instead of a
+  context engine. A context engine takes ownership of the session's compaction
+  policy; a memory provider observes turns without owning anything.
+  `on_turn_complete()` exists as the observation mirror for engines that
+  *already* need `select_context()` — so the same component can learn from the
+  turn it just routed — not as a general-purpose turn callback.
+- **Prompt-cache impact of a real `select_context()`.** A non-no-op selection
+  naturally changes the prompt-cache prefix for the turns where it changes the
+  selection — that request's prefix no longer matches the provider's cached
+  prefix, so those turns re-write cache instead of reading it. Engines should
+  return **stable selections when nothing has changed** (same object or an
+  equal list), and only reshape the context when the routing decision actually
+  differs; a selection that shuffles per turn silently forfeits cache reuse
+  every turn.
 
 ## Engine tools
 

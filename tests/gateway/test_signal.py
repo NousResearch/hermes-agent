@@ -261,6 +261,44 @@ class TestSignalHelpers:
             m4a_bytes, ext = result
             assert ext == ".m4a"
 
+    def test_remux_cleans_up_temp_on_write_failure(self, monkeypatch):
+        """Regression: a failure writing the source temp file (e.g. disk full)
+        must not leak the .aac temp file.
+
+        The cleanup used to live in an inner try/finally that was only entered
+        after the ffmpeg subprocess started, so an IOError in ``src.write()``
+        (before that point) left the ``.aac`` temp orphaned on disk.
+        """
+        import os
+        import tempfile as _tempfile
+        import gateway.platforms.signal as sig
+
+        # Pretend ffmpeg exists so we reach the temp-file creation step.
+        monkeypatch.setattr(sig.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+        created = []
+        real_ntf = _tempfile.NamedTemporaryFile
+
+        def fake_ntf(*args, **kwargs):
+            f = real_ntf(*args, **kwargs)
+            created.append(f.name)
+
+            def _boom(_data):
+                raise OSError("No space left on device")
+
+            f.write = _boom
+            return f
+
+        monkeypatch.setattr(sig.tempfile, "NamedTemporaryFile", fake_ntf)
+
+        result = sig._remux_aac_to_m4a(b"\xff\xf1 aac payload")
+
+        assert result is None
+        assert created, "temp file was never created"
+        assert not os.path.exists(created[0]), (
+            f"temp .aac file leaked on write failure: {created[0]}"
+        )
+
     def test_guess_extension_unknown(self):
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x01\x02\x03" * 10) == ".bin"

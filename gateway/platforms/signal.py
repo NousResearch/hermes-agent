@@ -160,37 +160,48 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
     if not ffmpeg:
         logger.debug("Signal: ffmpeg not found, skipping AAC→M4A remux")
         return None
+    src_path = None
+    dst_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as src:
-            src.write(aac_data)
+            # Capture the name before writing: NamedTemporaryFile has already
+            # created the file on disk, so if src.write() fails the finally
+            # below can still unlink it.
             src_path = src.name
+            src.write(aac_data)
         dst_path = src_path[:-4] + ".m4a"
-        try:
-            proc = subprocess.run(
-                [ffmpeg, "-y", "-loglevel", "error", "-i", src_path,
-                 "-c:a", "copy", "-movflags", "+faststart", dst_path],
-                capture_output=True, timeout=10,
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", src_path,
+             "-c:a", "copy", "-movflags", "+faststart", dst_path],
+            capture_output=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
+                proc.returncode, proc.stderr.decode("utf-8", "replace")[:300],
             )
-            if proc.returncode != 0:
-                logger.warning(
-                    "Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
-                    proc.returncode, proc.stderr.decode("utf-8", "replace")[:300],
-                )
-                return None
-            with open(dst_path, "rb") as f:
-                return f.read(), ".m4a"
-        finally:
-            for p in (src_path, dst_path):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            return None
+        with open(dst_path, "rb") as f:
+            return f.read(), ".m4a"
     except subprocess.TimeoutExpired:
         logger.warning("Signal: AAC→M4A remux timed out (>10s)")
         return None
     except Exception:
         logger.exception("Signal: AAC→M4A remux error")
         return None
+    finally:
+        # Clean up temp files across the whole operation. The previous cleanup
+        # sat in an inner try/finally that was only entered after the ffmpeg
+        # subprocess started, so a failure in NamedTemporaryFile creation or
+        # src.write() (e.g. a disk-full IOError) left the .aac temp orphaned on
+        # disk. src_path/dst_path are None until each is created, so unlinking
+        # is skipped for whatever wasn't reached.
+        for p in (src_path, dst_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 def _render_mentions(text: str, mentions: list) -> str:

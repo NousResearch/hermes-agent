@@ -811,15 +811,26 @@ def _project_facts(root: Path) -> list[str]:
     return facts
 
 
+def _project_root_for_facts(cwd: Path) -> Optional[Path]:
+    """Return the closest project root for manifest/verification facts.
+
+    Prefer the nearest marker root over an outer git root. This keeps nested
+    projects (and temporary test projects under a git-managed parent such as
+    ``/tmp``) from losing their local ``package.json`` / ``pyproject.toml`` verify
+    commands to the parent repository.
+    """
+    return _marker_root(cwd) or _git_root(cwd)
+
+
 def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, Any]]:
     """Structured project facts for ``cwd`` — ``None`` outside a workspace.
 
-    Same detection the system-prompt snapshot uses (git root, else marker root),
-    exposed for non-prompt consumers (the desktop verify UI) so they never
+    Same detection the system-prompt snapshot uses (nearest marker root, else git
+    root), exposed for non-prompt consumers (the desktop verify UI) so they never
     re-derive "are we coding?" or duplicate the verify-command sniffing.
     """
     resolved = _resolve_cwd(cwd)
-    root = _git_root(resolved) or _marker_root(resolved)
+    root = _project_root_for_facts(resolved)
     if root is None:
         return None
 
@@ -842,7 +853,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
     """
     resolved = _resolve_cwd(cwd)
     git_root = _git_root(resolved)
-    root = git_root or _marker_root(resolved)
+    root = _project_root_for_facts(resolved)
     if root is None:
         return ""
 

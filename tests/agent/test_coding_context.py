@@ -254,6 +254,25 @@ class TestProjectFacts:
         for cmd in facts["verifyCommands"]:
             assert cmd in verify_line
 
+    def test_nearest_manifest_root_wins_over_parent_git_repository(self, tmp_path):
+        """Nested projects expose their own verify loop, not the parent's facts."""
+        _git_init(tmp_path)
+        nested = tmp_path / "packages" / "widget"
+        nested.mkdir(parents=True)
+        (nested / "package.json").write_text(json.dumps({"scripts": {"test": "vitest"}}))
+        (nested / "pnpm-lock.yaml").write_text("")
+        source_dir = nested / "src"
+        source_dir.mkdir()
+
+        facts = cc.project_facts_for(source_dir)
+        block = cc.build_coding_workspace_block(source_dir)
+
+        assert facts is not None
+        assert facts["root"] == str(nested.resolve())
+        assert facts["verifyCommands"] == ["pnpm run test"]
+        assert f"Root: {nested.resolve()}" in block
+        assert "pnpm run test" in block
+
     def test_project_facts_for_none_outside_workspace(self, tmp_path):
         assert cc.project_facts_for(tmp_path) is None
 

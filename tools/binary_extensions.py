@@ -16,8 +16,9 @@ BINARY_EXTENSIONS = frozenset({
     # Executables/binaries
     ".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib",
     ".app", ".msi", ".deb", ".rpm",
-    # Documents (exclude .pdf — text-based, agents may want to inspect)
-    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    # Documents (PDF is binary despite having an ASCII header; read_file dumps
+    # raw bytes that exceed context windows — see #43059)
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
     ".odt", ".ods", ".odp",
     # Fonts
     ".ttf", ".otf", ".woff", ".woff2", ".eot",

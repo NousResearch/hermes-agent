@@ -8,6 +8,7 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
+from tools.binary_extensions import BINARY_EXTENSIONS, has_binary_extension
 from tools.file_operations import ShellFileOperations, _parse_search_context_line
 
 
@@ -74,6 +75,21 @@ class TestIsLikelyBinary:
         # Remaining 1000 chars: all NUL → ignored by [:1000] slice
         sample = "\x00" * 200 + "a" * 800 + "\x00" * 1000
         assert ops._is_likely_binary("file.xyz", content_sample=sample) is False
+
+    def test_pdf_extension_returns_true(self, ops):
+        """PDF files are binary even when their first bytes are printable."""
+        assert ".pdf" in BINARY_EXTENSIONS
+        assert has_binary_extension("report.PDF") is True
+        assert ops._is_likely_binary("report.pdf", content_sample="%PDF-1.4\n1 0 obj") is True
+
+    def test_pdf_magic_number_returns_true_without_pdf_extension(self, ops):
+        """Renamed PDFs should be caught by magic number, not only by extension."""
+        assert ops._is_likely_binary("report.txt", content_sample="%PDF-1.4\n1 0 obj") is True
+
+    def test_pdf_magic_number_only_matches_file_start(self, ops):
+        """Plain text that mentions PDF syntax remains readable as text."""
+        text = "Notes about the %PDF-1.4 header in a text document.\n"
+        assert ops._is_likely_binary("notes.txt", content_sample=text) is False
 
 
 # =========================================================================

@@ -15,6 +15,17 @@ from tools.file_tools import (
 
 class TestReadFileHandler:
     @patch("tools.file_tools._get_file_ops")
+    def test_pdf_extension_guard_rejects_before_reading(self, mock_get):
+        """read_file should refuse PDFs through the public tool path."""
+        from tools.file_tools import read_file_tool
+
+        result = json.loads(read_file_tool("/tmp/report.pdf"))
+
+        assert "Cannot read binary file" in result["error"]
+        assert "(.pdf)" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()

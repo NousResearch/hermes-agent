@@ -300,15 +300,19 @@ async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     runner._background_tasks = set()
 
     class _FakeRegistry:
-        def list_sessions(self):
-            return [
+        def list_sessions(self, task_id=None, session_key=None):
+            procs = [
                 {
                     "session_id": "proc-1",
                     "status": "running",
                     "uptime_seconds": 17,
                     "command": "sleep 30",
+                    "session_key": session_key or build_session_key(_make_source()),
                 }
             ]
+            if session_key is not None:
+                return [p for p in procs if p.get("session_key") == session_key]
+            return procs
 
     monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())
 
@@ -317,7 +321,310 @@ async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     assert "**Active agents:** 1" in result
     assert "**Running background processes:** 1" in result
     assert "proc-1" in result
+    # Non-admin scoped view omits process-global async job counts.
+    assert "**Gateway async jobs:**" not in result
     running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agents_hides_other_sessions_agents_and_processes(monkeypatch):
+    """Non-admin /agents must not enumerate other gateway sessions (CWE-639)."""
+    source_a = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="user-a",
+        chat_id="chat-a",
+        user_name="Alice",
+        chat_type="dm",
+    )
+    source_b = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="user-b",
+        chat_id="chat-b",
+        user_name="Bob",
+        chat_type="dm",
+    )
+    key_a = build_session_key(source_a)
+    key_b = build_session_key(source_b)
+    entry_a = SessionEntry(
+        session_key=key_a,
+        session_id="sess-a",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(entry_a)
+    runner._resume_caller_is_admin = lambda _src: False
+    runner._running_agents = {
+        key_a: SimpleNamespace(session_id="sid-a", model="model-a"),
+        key_b: SimpleNamespace(session_id="sid-b-secret", model="model-b-secret"),
+    }
+    runner._running_agents_ts = {
+        key_a: time.time() - 5,
+        key_b: time.time() - 3,
+    }
+    runner._background_tasks = [SimpleNamespace(done=lambda: False)]
+
+    class _FakeRegistry:
+        def list_sessions(self, task_id=None, session_key=None):
+            procs = [
+                {
+                    "session_id": "proc-a",
+                    "status": "running",
+                    "uptime_seconds": 10,
+                    "command": "echo mine",
+                    "session_key": key_a,
+                },
+                {
+                    "session_id": "proc-b-secret",
+                    "status": "running",
+                    "uptime_seconds": 20,
+                    "command": "curl http://internal/secret",
+                    "session_key": key_b,
+                },
+            ]
+            if session_key is not None:
+                return [p for p in procs if p.get("session_key") == session_key]
+            return procs
+
+    monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())
+
+    event = MessageEvent(text="/agents", source=source_a, message_id="m-a")
+    result = await runner._handle_agents_command(event)
+
+    assert "sid-a" in result
+    assert "model-a" in result
+    assert "proc-a" in result
+    assert "sid-b-secret" not in result
+    assert "model-b-secret" not in result
+    assert key_b not in result
+    assert "proc-b-secret" not in result
+    assert "curl http://internal/secret" not in result
+    assert "**Active agents:** 1" in result
+    assert "**Running background processes:** 1" in result
+    # Non-empty global _background_tasks must stay invisible without admin --all.
+    assert "**Gateway async jobs:**" not in result
+
+
+@pytest.mark.asyncio
+async def test_agents_admin_all_shows_other_sessions(monkeypatch):
+    """Configured slash admin with --all may see cross-session agents."""
+    source_a = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="admin",
+        chat_id="chat-a",
+        user_name="Admin",
+        chat_type="dm",
+    )
+    source_b = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="user-b",
+        chat_id="chat-b",
+        user_name="Bob",
+        chat_type="dm",
+    )
+    key_a = build_session_key(source_a)
+    key_b = build_session_key(source_b)
+    entry_a = SessionEntry(
+        session_key=key_a,
+        session_id="sess-a",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(entry_a)
+    runner._resume_caller_is_admin = lambda _src: True
+    runner._running_agents = {
+        key_a: SimpleNamespace(session_id="sid-a", model="model-a"),
+        key_b: SimpleNamespace(session_id="sid-b", model="model-b"),
+    }
+    runner._running_agents_ts = {
+        key_a: time.time() - 5,
+        key_b: time.time() - 3,
+    }
+    runner._background_tasks = [SimpleNamespace(done=lambda: False)]
+
+    class _FakeRegistry:
+        def list_sessions(self, task_id=None, session_key=None):
+            return [
+                {
+                    "session_id": "proc-b",
+                    "status": "running",
+                    "uptime_seconds": 20,
+                    "command": "sleep 99",
+                    "session_key": key_b,
+                }
+            ]
+
+    monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())
+
+    event = MessageEvent(text="/agents --all", source=source_a, message_id="m-a")
+    result = await runner._handle_agents_command(event)
+
+    assert "**Active agents:** 2" in result
+    assert "sid-b" in result
+    assert "model-b" in result
+    assert key_b in result
+    assert "proc-b" in result
+    assert "**Gateway async jobs:** 1" in result
+
+
+@pytest.mark.asyncio
+async def test_agents_non_admin_all_still_scoped(monkeypatch):
+    """--all without a configured slash admin must not widen the listing."""
+    source_a = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="user-a",
+        chat_id="chat-a",
+        user_name="Alice",
+        chat_type="dm",
+    )
+    source_b = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="user-b",
+        chat_id="chat-b",
+        user_name="Bob",
+        chat_type="dm",
+    )
+    key_a = build_session_key(source_a)
+    key_b = build_session_key(source_b)
+    entry_a = SessionEntry(
+        session_key=key_a,
+        session_id="sess-a",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(entry_a)
+    runner._resume_caller_is_admin = lambda _src: False
+    runner._running_agents = {
+        key_a: SimpleNamespace(session_id="sid-a", model="model-a"),
+        key_b: SimpleNamespace(session_id="sid-b-secret", model="model-b-secret"),
+    }
+    runner._running_agents_ts = {
+        key_a: time.time() - 5,
+        key_b: time.time() - 3,
+    }
+    runner._background_tasks = [SimpleNamespace(done=lambda: False)]
+
+    class _FakeRegistry:
+        def list_sessions(self, task_id=None, session_key=None):
+            return []
+
+    monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())
+
+    event = MessageEvent(text="/agents --all", source=source_a, message_id="m-a")
+    result = await runner._handle_agents_command(event)
+
+    assert "sid-b-secret" not in result
+    assert "model-b-secret" not in result
+    assert key_b not in result
+    assert "**Active agents:** 1" in result
+    assert "**Gateway async jobs:**" not in result
+
+
+@pytest.mark.asyncio
+async def test_agents_matrix_redacts_session_key(monkeypatch):
+    """Matrix /agents must fingerprint session keys like /status."""
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        user_id="@alice:example.org",
+        chat_id="!room:example.org",
+        user_name="Alice",
+        chat_type="room",
+    )
+    session_key = build_session_key(source)
+    entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-m",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.MATRIX,
+        chat_type="room",
+        total_tokens=0,
+    )
+    runner = _make_runner(entry, platform=Platform.MATRIX)
+    runner._resume_caller_is_admin = lambda _src: False
+    runner._running_agents = {
+        session_key: SimpleNamespace(session_id="sid-m", model="model-m"),
+    }
+    runner._running_agents_ts = {session_key: time.time() - 2}
+    runner._background_tasks = set()
+
+    class _FakeRegistry:
+        def list_sessions(self, task_id=None, session_key=None):
+            return []
+
+    monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())
+
+    event = MessageEvent(text="/agents", source=source, message_id="m1")
+    result = await runner._handle_agents_command(event)
+
+    assert session_key not in result
+    assert session_key[:8] not in result
+    assert "sha256:" in result
+    assert "sid-m" in result
+
+
+@pytest.mark.asyncio
+async def test_agents_admin_all_redacts_matrix_keys_from_other_platform(monkeypatch):
+    """Admin --all from Telegram must still fingerprint Matrix session keys."""
+    tg_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="admin",
+        chat_id="chat-admin",
+        user_name="Admin",
+        chat_type="dm",
+    )
+    mx_source = SessionSource(
+        platform=Platform.MATRIX,
+        user_id="@bob:example.org",
+        chat_id="!secret:example.org",
+        user_name="Bob",
+        chat_type="room",
+    )
+    key_tg = build_session_key(tg_source)
+    key_mx = build_session_key(mx_source)
+    entry = SessionEntry(
+        session_key=key_tg,
+        session_id="sess-tg",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(entry)
+    runner._resume_caller_is_admin = lambda _src: True
+    runner._running_agents = {
+        key_tg: SimpleNamespace(session_id="sid-tg", model="model-tg"),
+        key_mx: SimpleNamespace(session_id="sid-mx", model="model-mx"),
+    }
+    runner._running_agents_ts = {
+        key_tg: time.time() - 5,
+        key_mx: time.time() - 3,
+    }
+    runner._background_tasks = set()
+
+    class _FakeRegistry:
+        def list_sessions(self, task_id=None, session_key=None):
+            return []
+
+    monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())
+
+    event = MessageEvent(text="/agents --all", source=tg_source, message_id="m1")
+    result = await runner._handle_agents_command(event)
+
+    assert key_mx not in result
+    assert "!secret:example.org" not in result
+    assert "sha256:" in result
+    assert "sid-mx" in result
+    assert key_tg in result
 
 
 @pytest.mark.asyncio
@@ -335,7 +642,7 @@ async def test_tasks_alias_routes_to_agents_command(monkeypatch):
     runner._background_tasks = set()
 
     class _FakeRegistry:
-        def list_sessions(self):
+        def list_sessions(self, task_id=None, session_key=None):
             return []
 
     monkeypatch.setattr("tools.process_registry.process_registry", _FakeRegistry())

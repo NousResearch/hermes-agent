@@ -102,7 +102,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
-               aliases=("tasks",)),
+               aliases=("tasks",), args_hint="[--all]"),
     CommandDef("journey", "Open the learning journey timeline",
                "Session", aliases=("learning", "memory-graph"), cli_only=True,
                args_hint="[list|delete <id>|edit <id>]",

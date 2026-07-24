@@ -504,7 +504,7 @@ class TestRegression_ToolsetScoping:
         model_tools.get_tool_definitions(
             enabled_toolsets=["mcp-pollute"], quiet_mode=True,
         )
-        before = set(model_tools._last_resolved_tool_names)
+        before = set(model_tools._get_last_resolved_tool_names())
         assert "terminal" not in before
 
         # A scoped tool_search call must not widen the process-global
@@ -515,7 +515,7 @@ class TestRegression_ToolsetScoping:
             function_args={"query": "pollute"},
             enabled_toolsets=["mcp-pollute"],
         )
-        after = set(model_tools._last_resolved_tool_names)
+        after = set(model_tools._get_last_resolved_tool_names())
         assert "terminal" not in after, (
             "bridge dispatch polluted _last_resolved_tool_names with "
             "out-of-scope tools"

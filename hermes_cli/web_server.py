@@ -17673,16 +17673,7 @@ async def console_ws(ws: WebSocket) -> None:
         await ws.close(code=4404, reason="embedded chat disabled")
         return
 
-    auth_reason, cred = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning(
-            "console auth rejected reason=%s mode=%s cred=%s peer=%s",
-            auth_reason, mode, cred, peer,
-        )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return
-
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("console refused: %s peer=%s", host_origin_reason, peer)
@@ -17693,6 +17684,15 @@ async def console_ws(ws: WebSocket) -> None:
     if client_reason is not None:
         _log.warning("console refused: %s", client_reason)
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        return
+
+    auth_reason, cred = _ws_auth_reason(ws)
+    if auth_reason is not None:
+        _log.warning(
+            "console auth rejected reason=%s mode=%s cred=%s peer=%s",
+            auth_reason, mode, cred, peer,
+        )
+        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
 
     await ws.accept()
@@ -18023,22 +18023,13 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4404, reason="embedded chat disabled")
         return
 
-    # --- auth + host/origin/peer check (before accept so we can close
+    # --- host/origin/peer + auth check (before accept so we can close
     #     cleanly AND tell the client WHY via the close code + reason).
     #     Each gate maps to a distinct close code so the log and the
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning(
-            "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
-            auth_reason, mode, cred, peer,
-        )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return
-
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("pty refused: %s peer=%s", host_origin_reason, peer)
@@ -18049,6 +18040,15 @@ async def pty_ws(ws: WebSocket) -> None:
     if client_reason is not None:
         _log.warning("pty refused: %s", client_reason)
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        return
+
+    auth_reason, cred = _ws_auth_reason(ws)
+    if auth_reason is not None:
+        _log.warning(
+            "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
+            auth_reason, mode, cred, peer,
+        )
+        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
 
     await ws.accept()
@@ -18207,12 +18207,12 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
         return
 
     from tui_gateway.ws import handle_ws
@@ -18238,12 +18238,12 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
         return
 
     channel = _channel_or_close_code(ws)
@@ -18266,12 +18266,12 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
         return
 
     channel = _channel_or_close_code(ws)

@@ -3677,6 +3677,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
+    # Absolute hard ceiling, INDEPENDENT of _stream_stale_timeout. Local
+    # providers disable the stale detector (inf) so slow prefill is never
+    # killed — but that also leaves a half-dead connection (server quiet, no
+    # terminator, socket open) able to wedge the _call thread in read()
+    # forever. The outer t.join() loop then never returns and the worker
+    # process can never exit (confirmed via py-spy: Thread blocked in
+    # httpcore read(), joined-on by the run loop). This ceiling force-closes
+    # the client after a long no-chunk gap so the deadlock is broken. It does
+    # NOT regress slow prefill: healthy prefill delivers chunks that refresh
+    # last_chunk_time, so only a genuinely dead connection is reaped.
+    try:
+        _stream_hard_timeout = float(
+            os.getenv("HERMES_STREAM_HARD_TIMEOUT", 600.0))
+    except (TypeError, ValueError):
+        _stream_hard_timeout = 600.0
+    if _stream_hard_timeout <= 0:
+        _stream_hard_timeout = float("inf")  # 0 → opt out
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
@@ -3724,6 +3742,35 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
         _stale_elapsed = time.time() - last_chunk_time["t"]
+
+        # Hard ceiling (independent of _stream_stale_timeout): break the
+        # deadlock when a half-dead connection delivers nothing for far longer
+        # than any legitimate prefill. Without this, local providers (stale
+        # timeout = inf) wedge the worker permanently — it never exits and
+        # holds an inference slot open. Force-close exactly like the stale
+        # path; the blocked read() unwinds with EOF and the join() returns.
+        if (
+            _stale_elapsed > _stream_hard_timeout
+            and _stream_hard_timeout != float("inf")
+        ):
+            logger.warning(
+                "Stream hard timeout: no chunks for %.0fs (ceiling %.0fs, "
+                "stale_timeout=%s). model=%s — force-closing to avoid a "
+                "wedged worker.",
+                _stale_elapsed, _stream_hard_timeout,
+                _stream_stale_timeout, api_kwargs.get("model", "unknown"),
+            )
+            try:
+                _close_request_client_once("stream_hard_timeout_kill")
+            except Exception:
+                pass
+            try:
+                agent._replace_primary_openai_client(
+                    reason="stream_hard_timeout_pool_cleanup")
+            except Exception:
+                pass
+            last_chunk_time["t"] = time.time()
+
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             logger.warning(

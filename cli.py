@@ -11193,7 +11193,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy"
+                f"Install with: {sys.executable} -m pip install sounddevice numpy\n"
+                "After installing, type /voice on to retry (no restart needed).\n"
+                "Tip: ctrl+b may be intercepted by your terminal (Terminal.app, SSH, etc.)\n"
+                "  — use /voice on instead for reliable voice input."
             )
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
             raise RuntimeError(
@@ -11574,6 +11577,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"  {_BOLD}Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
                 else:
                     _cprint(f"\n  {_BOLD}Install: {sys.executable} -m pip install {' '.join(reqs['missing_packages'])}{_RST}")
+                    _cprint(f"  {_DIM}(After installing, type /voice on to retry — no restart needed){_RST}")
+            _cprint(f"  {_DIM}(Tip: ctrl+b may not work in Terminal.app or over SSH — use /voice on instead){_RST}")
             return
 
         with self._voice_lock:

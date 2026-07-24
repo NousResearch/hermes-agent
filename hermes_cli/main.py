@@ -461,6 +461,7 @@ from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.agui import build_agui_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
@@ -12468,6 +12469,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "plugins",
         "security",
         "acp",
+        "agui",
         "webhook",
         "memory",
         "dump",
@@ -13852,7 +13854,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "agui", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -14278,6 +14280,36 @@ def cmd_acp(args):
         print("ACP dependencies not installed.", file=sys.stderr)
         print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_agui(args):
+    """Launch Hermes as an AG-UI HTTP/SSE server (see `agui_adapter`)."""
+    if getattr(args, "check", False):
+        try:
+            import fastapi  # noqa: F401
+            import uvicorn  # noqa: F401
+
+            from agui_adapter.server import create_app  # noqa: F401
+        except ImportError as exc:
+            print(f"AG-UI dependencies not installed: {exc}", file=sys.stderr)
+            print("Install them with:  pip install -e '.[agui]'", file=sys.stderr)
+            sys.exit(1)
+        print("Hermes AG-UI check OK")
+        return
+
+    try:
+        from agui_adapter.entry import main as agui_main
+    except ImportError:
+        print("AG-UI dependencies not installed.", file=sys.stderr)
+        print("Install them with:  pip install -e '.[agui]'", file=sys.stderr)
+        sys.exit(1)
+    # Flags override config.yaml (`agui` section) / the token env var per
+    # invocation — no HERMES_AGUI_* behavioral env vars involved.
+    agui_main(
+        host=getattr(args, "agui_host", None),
+        port=getattr(args, "agui_port", None),
+        token=getattr(args, "agui_token", None),
+    )
 
 
 def cmd_tools(args):
@@ -16251,6 +16283,11 @@ def main():
     # acp command  (parser built in hermes_cli/subcommands/acp.py)
     # =========================================================================
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
+
+    # =========================================================================
+    # agui command  (parser built in hermes_cli/subcommands/agui.py)
+    # =========================================================================
+    build_agui_parser(subparsers, cmd_agui=cmd_agui)
 
     # =========================================================================
     # profile command  (parser built in hermes_cli/subcommands/profile.py)

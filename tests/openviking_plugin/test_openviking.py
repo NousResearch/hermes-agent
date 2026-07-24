@@ -1697,7 +1697,7 @@ class TestEnsureClientReloadsEnv:
         assert results == {"first": None, "second": None}
         assert all(client is not stale_client for client in results.values())
 
-    def test_handle_tool_call_after_reload_to_local_endpoint_starts_runtime_recovery(
+    def test_handle_tool_call_after_reload_to_self_managed_local_does_not_start_it(
         self,
         tmp_path,
         monkeypatch,
@@ -1756,9 +1756,9 @@ class TestEnsureClientReloadsEnv:
         start_calls = []
         waiter_calls = []
         monkeypatch.setattr(
-            openviking_plugin,
-            "_start_local_openviking_server",
-            lambda endpoint: start_calls.append(endpoint) or (True, "started"),
+            openviking_plugin.local_server,
+            "start_local_server",
+            lambda endpoint, **kwargs: start_calls.append(endpoint),
         )
         monkeypatch.setattr(
             provider,
@@ -1774,10 +1774,12 @@ class TestEnsureClientReloadsEnv:
 
         assert "not connected" in out["error"]
         assert provider._client is None
-        assert start_calls == ["http://127.0.0.1:31933"]
-        assert len(waiter_calls) == 1
+        assert start_calls == []
+        assert waiter_calls == []
 
-    def test_repeated_access_while_local_runtime_starts_does_not_spawn_again(self, monkeypatch):
+    def test_repeated_access_while_managed_local_runtime_starts_does_not_spawn_again(
+        self, tmp_path, monkeypatch
+    ):
         class _AliveThread:
             def is_alive(self):
                 return True
@@ -1792,14 +1794,29 @@ class TestEnsureClientReloadsEnv:
         monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:31933")
         monkeypatch.setenv("OPENVIKING_API_KEY", "")
-
-        start_calls = []
-        provider = OpenVikingMemoryProvider()
-        provider._env_refresh_enabled = True
+        server_config = tmp_path / "ov.conf"
+        server_config.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(
             openviking_plugin,
-            "_start_local_openviking_server",
-            lambda endpoint: start_calls.append(endpoint) or (True, "started"),
+            "_load_hermes_openviking_config",
+            lambda: {
+                "deployment": openviking_plugin._MANAGED_LOCAL_DEPLOYMENT,
+                "server_config_path": str(server_config),
+            },
+        )
+
+        start_calls = []
+        process = object()
+        provider = OpenVikingMemoryProvider()
+        provider._hermes_home = str(tmp_path / "hermes")
+        provider._env_refresh_enabled = True
+        monkeypatch.setattr(
+            openviking_plugin.local_server,
+            "start_local_server",
+            lambda endpoint, **kwargs: (
+                start_calls.append((endpoint, kwargs))
+                or openviking_plugin._LocalServerStartResult(process, "started")
+            ),
         )
         monkeypatch.setattr(
             provider,
@@ -1811,29 +1828,49 @@ class TestEnsureClientReloadsEnv:
         assert provider._ensure_client() is None
         assert provider._ensure_client() is None
 
-        assert start_calls == ["http://127.0.0.1:31933"]
+        assert start_calls == [
+            (
+                "http://127.0.0.1:31933",
+                {
+                    "hermes_home": tmp_path / "hermes",
+                    "config_path": server_config,
+                },
+            )
+        ]
 
-    def test_concurrent_local_runtime_recovery_starts_once(self, monkeypatch):
+    def test_concurrent_managed_local_runtime_recovery_starts_once(
+        self, tmp_path, monkeypatch
+    ):
         class _AliveThread:
             def is_alive(self):
                 return True
 
         provider = OpenVikingMemoryProvider()
         provider._endpoint = "http://127.0.0.1:31933"
+        provider._hermes_home = str(tmp_path / "hermes")
+        server_config = tmp_path / "ov.conf"
+        server_config.write_text("{}", encoding="utf-8")
+        provider._managed_local_server_config = server_config
         start_calls = []
         start_lock = threading.Lock()
         first_start_entered = threading.Event()
         release_start = threading.Event()
         second_started = threading.Event()
 
-        def start_local(endpoint):
+        process = object()
+
+        def start_local(endpoint, **kwargs):
             with start_lock:
-                start_calls.append(endpoint)
+                start_calls.append((endpoint, kwargs))
             first_start_entered.set()
             release_start.wait(timeout=2)
-            return True, "started"
+            return openviking_plugin._LocalServerStartResult(process, "started")
 
-        monkeypatch.setattr(openviking_plugin, "_start_local_openviking_server", start_local)
+        monkeypatch.setattr(
+            openviking_plugin.local_server,
+            "start_local_server",
+            start_local,
+        )
         monkeypatch.setattr(
             provider,
             "_start_runtime_openviking_waiter",
@@ -1870,7 +1907,15 @@ class TestEnsureClientReloadsEnv:
             assert not thread.is_alive()
 
         assert errors == []
-        assert start_calls == ["http://127.0.0.1:31933"]
+        assert start_calls == [
+            (
+                "http://127.0.0.1:31933",
+                {
+                    "hermes_home": tmp_path / "hermes",
+                    "config_path": server_config,
+                },
+            )
+        ]
 
     def test_handle_tool_call_uses_ensure_client(self, monkeypatch):
         provider = OpenVikingMemoryProvider()

@@ -16,7 +16,6 @@ import {
   net as electronNet,
   ipcMain,
   Menu,
-  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -115,6 +114,7 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import { imageContextMenuItems } from './image-context-menu'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { oauthSessionIsLive, resolveJsonBody, resolveOauthRestAuth } from './native-auth-decisions'
@@ -4374,17 +4374,6 @@ async function resourceBufferFromUrl(rawUrl) {
   })
 }
 
-async function copyImageFromUrl(rawUrl) {
-  const { buffer } = (await resourceBufferFromUrl(rawUrl)) as any
-  const image = nativeImage.createFromBuffer(buffer)
-
-  if (image.isEmpty()) {
-    throw new Error('Could not read image')
-  }
-
-  clipboard.writeImage(image)
-}
-
 async function saveImageFromUrl(rawUrl) {
   const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
   const fallbackName = filenameFromUrl(rawUrl, `image${extensionForMimeType(mimeType) || '.png'}`)
@@ -5065,39 +5054,19 @@ function installContextMenu(window) {
   window.webContents.on('context-menu', (_event, params) => {
     const template = []
     const hasSelection = Boolean(params.selectionText?.trim())
-    const hasImage = params.mediaType === 'image' && Boolean(params.srcURL)
     const hasLink = Boolean(params.linkURL)
     const isEditable = Boolean(params.isEditable)
 
-    if (hasImage) {
-      template.push(
-        {
-          label: 'Open Image',
-          click: () => {
-            if (params.srcURL && !params.srcURL.startsWith('data:')) {
-              openExternalUrl(params.srcURL)
-            }
-          },
-          enabled: !params.srcURL.startsWith('data:')
-        },
-        {
-          label: 'Copy Image',
-          click: () => {
-            void copyImageFromUrl(params.srcURL).catch(error => rememberLog(`Copy image failed: ${error.message}`))
-          }
-        },
-        {
-          label: 'Copy Image Address',
-          click: () => clipboard.writeText(params.srcURL)
-        },
-        {
-          label: 'Save Image As...',
-          click: () => {
-            void saveImageFromUrl(params.srcURL).catch(error => rememberLog(`Save image failed: ${error.message}`))
-          }
+    template.push(
+      ...imageContextMenuItems(params, {
+        copyImageAt: (x, y) => window.webContents.copyImageAt(x, y),
+        openImage: openExternalUrl,
+        copyImageAddress: url => clipboard.writeText(url),
+        saveImage: url => {
+          void saveImageFromUrl(url).catch(error => rememberLog(`Save image failed: ${error.message}`))
         }
-      )
-    }
+      })
+    )
 
     if (hasLink) {
       if (template.length) {

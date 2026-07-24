@@ -357,6 +357,30 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
+def _resolve_allow_list_source(config_extra: dict, *config_keys: str, env_vars: tuple[str, ...] | list[str]):
+    """Resolve an allowlist source with explicit-empty-means-deny-all semantics.
+
+    If any of ``config_keys`` is present in ``config_extra`` (even if its
+    value is an empty list or empty string), that value wins and we never
+    fall back to the environment. Only when none of the config keys are
+    present at all do we fall back to the first non-empty env var in
+    ``env_vars``. This prevents an explicit ``allow_from: []`` in config
+    from silently widening to a stale environment allowlist.
+    """
+    for key in config_keys:
+        if key in config_extra:
+            return config_extra[key]
+    for env_var in env_vars:
+        value = os.getenv(env_var)
+        if value is not None and str(value).strip() != "":
+            return value
+    # Last env var wins even if empty so callers can still see "" vs None.
+    for env_var in env_vars:
+        if os.getenv(env_var) is not None:
+            return os.getenv(env_var)
+    return None
+
+
 class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """
     WhatsApp adapter.
@@ -407,9 +431,40 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        # Prefer PlatformConfig.extra (YAML / plugin bridge), then the documented
+        # env vars. Without the env fallback, a wizard/.env-only install ends up
+        # with dm_policy=allowlist and an EMPTY allowlist — every inbound DM and
+        # (with group_policy=allowlist) every group message is silently dropped
+        # after the bridge has already queued it. Mirrors WhatsApp Cloud
+        # (WHATSAPP_CLOUD_ALLOWED_USERS) and the documented WHATSAPP_* vars.
+        # Key-presence semantics: explicit empty config stays deny-all.
+        self._allow_from = self._coerce_allow_list(
+            _resolve_allow_list_source(
+                config.extra,
+                "allow_from",
+                "allowFrom",
+                env_vars=("WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM"),
+            )
+        )
+        # WHATSAPP_ALLOW_ALL_USERS=* / true is the documented open-DM opt-in.
+        # Only apply when no allowlist source was configured at all.
+        _allow_all = (os.getenv("WHATSAPP_ALLOW_ALL_USERS") or "").strip().lower()
+        if (
+            not self._allow_from
+            and "allow_from" not in config.extra
+            and "allowFrom" not in config.extra
+            and _allow_all in {"true", "1", "yes", "on", "*"}
+        ):
+            self._allow_from = {"*"}
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._group_allow_from = self._coerce_allow_list(
+            _resolve_allow_list_source(
+                config.extra,
+                "group_allow_from",
+                "groupAllowFrom",
+                env_vars=("WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM"),
+            )
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None

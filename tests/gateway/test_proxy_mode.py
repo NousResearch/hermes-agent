@@ -303,6 +303,10 @@ class TestRunAgentViaProxy:
 
         assert "Proxy error (401)" in result["final_response"]
         assert result["api_calls"] == 0
+        assert result.get("failed") is True
+        assert result.get("completed") is False
+        assert "Unauthorized" in result.get("error", "")
+        assert result.get("agent_persisted") is False
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
@@ -333,6 +337,32 @@ class TestRunAgentViaProxy:
                     )
 
         assert "Proxy connection error" in result["final_response"]
+        assert result.get("failed") is True
+        assert result.get("completed") is False
+        assert "Connection refused" in result.get("error", "")
+        assert result.get("agent_persisted") is False
+
+    @pytest.mark.asyncio
+    async def test_missing_proxy_url_is_failed_result(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = await runner._run_agent_via_proxy(
+                message="hi",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="test",
+            )
+
+        assert "Proxy URL not configured" in result["final_response"]
+        assert result.get("failed") is True
+        assert result.get("completed") is False
+        assert "Proxy URL not configured" in result.get("error", "")
+        assert result.get("agent_persisted") is False
 
     @pytest.mark.asyncio
     async def test_rejects_proxy_sse_without_line_boundary_after_buffer_cap(self, monkeypatch):
@@ -359,6 +389,35 @@ class TestRunAgentViaProxy:
         assert "Proxy connection error" in result["final_response"]
         assert "exceeded max buffer size" in result["final_response"]
         assert result["api_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_missing_aiohttp_is_failed_result(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source()
+
+        import builtins
+        real_import = builtins.__import__
+
+        def _no_aiohttp(name, *args, **kwargs):
+            if name == "aiohttp":
+                raise ImportError("no aiohttp")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_no_aiohttp):
+            result = await runner._run_agent_via_proxy(
+                message="hi",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="test",
+            )
+
+        assert "requires aiohttp" in result["final_response"]
+        assert result.get("failed") is True
+        assert result.get("completed") is False
+        assert "requires aiohttp" in result.get("error", "")
+        assert result.get("agent_persisted") is False
 
     @pytest.mark.asyncio
     async def test_skips_tool_messages_in_history(self, monkeypatch):

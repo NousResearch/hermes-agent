@@ -190,9 +190,10 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.getenv(name, str(default)))
+        value = float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+    return value if math.isfinite(value) else default
 
 
 def _codex_wait_notice_recovery(

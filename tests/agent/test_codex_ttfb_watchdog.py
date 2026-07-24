@@ -57,6 +57,14 @@ def _make_codex_agent(tmp_path, monkeypatch):
     return agent
 
 
+@pytest.mark.parametrize("raw_value", ["inf", "-inf", "nan"])
+def test_watchdog_env_float_rejects_non_finite_values(monkeypatch, raw_value):
+    from agent.chat_completion_helpers import _env_float
+
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raw_value)
+    assert _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0) == 120.0
+
+
 def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
     """Backend accepts the connection but emits no event -> killed at the TTFB
     cutoff, well before the 60s wall-clock stale timeout, with a retryable

@@ -2294,6 +2294,23 @@ def test_psql_json_accepts_single_lf_framing_but_rejects_noncanonical_output(
             runtime._psql_json({}, "SELECT '{}'::jsonb::text;")
 
 
+def test_observation_sql_uses_schema_qualifiable_epoch_function(
+    tmp_path,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    path = Path(manifest["artifacts"]["production-observe"]["path"])
+    runtime = _load_artifact(path, "production_observation_epoch_artifact")
+    sql = runtime._observation_sql("public.canonical_event_log")
+    assert "pg_catalog.extract(" not in sql
+    assert (
+        "pg_catalog.date_part(\n"
+        "        'epoch', pg_catalog.clock_timestamp())"
+    ) in sql
+
+
 def test_database_state_distinguishes_reconciled_migrated_and_terminal(tmp_path, monkeypatch):
     release = _release(tmp_path)
     manifest = package.build_release_artifacts(

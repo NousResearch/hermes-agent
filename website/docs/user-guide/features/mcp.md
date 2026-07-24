@@ -396,6 +396,14 @@ Examples:
 
 In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
 
+## Tool results with images
+
+MCP tool calls can return image content blocks as well as text. This is common with browser, Playwright, Puppeteer, Blockbench, Grafana, and other visual MCP servers that return screenshots or rendered panels.
+
+When an MCP tool returns a valid image block, Hermes decodes the image, validates that the bytes look like an image, caches it in the shared Hermes image cache, and adds a `MEDIA:<path>` tag to the tool result. That gives the agent a local file handle it can inspect with vision tools or include in the final response on platforms that support native media delivery.
+
+Malformed base64, non-image MIME types, or payloads that claim to be images but fail validation are logged and dropped from the result instead of failing the entire MCP tool call. Any text or structured content from the same tool result still comes through.
+
 ## MCP utility tools
 
 When supported, Hermes also registers utility tools around MCP resources and prompts:

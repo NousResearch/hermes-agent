@@ -173,6 +173,14 @@ def start(
         # The subprocess now owns the log fd; we can close ours.
         log_fh.close()
 
+    # Capture the kernel start-time fingerprint so stop() can verify
+    # the PID still belongs to this bot after a potential PID recycle.
+    try:
+        from gateway.status import get_process_start_time
+        _kernel_start = get_process_start_time(proc.pid)
+    except Exception:
+        _kernel_start = None
+
     record = {
         "pid": proc.pid,
         "meeting_id": meeting_id,
@@ -182,6 +190,7 @@ def start(
         "session_id": session_id,
         "log_path": str(log_path),
         "mode": mode,
+        "kernel_start_time": _kernel_start,
     }
     _write_active(record)
     return {"ok": True, **record}
@@ -300,6 +309,21 @@ def stop(*, reason: str = "requested") -> Dict[str, Any]:
     transcript_path = Path(out_dir) / "transcript.txt" if out_dir else None
 
     if pid and _pid_alive(pid):
+        recorded_start = active.get("kernel_start_time")
+        if recorded_start is not None:
+            try:
+                from gateway.status import get_process_start_time
+                current_start = get_process_start_time(pid)
+            except Exception:
+                current_start = None
+            if current_start is not None and current_start != recorded_start:
+                _clear_active()
+                return {
+                    "ok": True,
+                    "reason": "stale PID (recycled), cleared pointer",
+                    "meetingId": active.get("meeting_id"),
+                    "transcriptPath": str(transcript_path) if transcript_path else None,
+                }
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:

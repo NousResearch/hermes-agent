@@ -242,6 +242,33 @@ def test_stop_signals_process_and_clears_pointer(tmp_path):
     assert pm._read_active() is None
 
 
+def test_stop_detects_recycled_pid_and_clears_pointer(tmp_path):
+    """When the recorded kernel_start_time no longer matches the live PID's
+    start time, stop() must treat the PID as recycled — clear the pointer
+    without sending SIGTERM to an unrelated process."""
+    from plugins.google_meet import process_manager as pm
+
+    pm._write_active({
+        "pid": 22222, "meeting_id": "r-e-c",
+        "out_dir": str(tmp_path / "r-e-c"),
+        "url": "https://meet.google.com/r-e-c",
+        "started_at": 0,
+        "kernel_start_time": 1000.0,
+    })
+
+    kills = []
+
+    with patch.object(pm, "_pid_alive", return_value=True), \
+         patch("gateway.status.get_process_start_time", return_value=9999.0), \
+         patch.object(pm.os, "kill", side_effect=lambda *a: kills.append(a)):
+        res = pm.stop()
+
+    assert res["ok"] is True
+    assert "stale" in res.get("reason", "").lower() or "recycled" in res.get("reason", "").lower()
+    assert kills == [], "must not SIGTERM a recycled PID"
+    assert pm._read_active() is None
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers — JSON shape + safety gates
 # ---------------------------------------------------------------------------

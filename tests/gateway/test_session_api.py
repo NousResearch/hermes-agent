@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -209,6 +210,15 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+    stored_fork = session_db.get_session(fork["id"])
+    cfg = json.loads(stored_fork["model_config"]) if stored_fork["model_config"] else {}
+    assert cfg["_branched_from"] == source_id
+    assert fork["id"] in [s["id"] for s in session_db.list_sessions_rich()]
+
+    session_db.reopen_session(source_id)
+    session_db.end_session(source_id, "tui_shutdown")
+    assert fork["id"] in [s["id"] for s in session_db.list_sessions_rich()]
 
 
 @pytest.mark.asyncio

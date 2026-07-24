@@ -1,7 +1,7 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 class TestTokenValidation:
@@ -105,6 +105,140 @@ class TestResolveToken:
             token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
+
+
+class TestGhCliToken:
+    """_try_gh_cli_token subprocess command construction."""
+
+    def _run_with_env(self, monkeypatch, env_overrides, *, gh_stdout="gho_tok"):
+        """Helper: call _try_gh_cli_token with controlled env and capture the subprocess command."""
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        for var in ("COPILOT_GH_HOST", "COPILOT_GH_USER", "GITHUB_TOKEN", "GH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        for k, v in env_overrides.items():
+            monkeypatch.setenv(k, v)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = gh_stdout
+
+        with (
+            patch(
+                "hermes_cli.copilot_auth._gh_cli_candidates",
+                return_value=["/usr/bin/gh"],
+            ),
+            patch(
+                "hermes_cli.copilot_auth.subprocess.run", return_value=mock_result
+            ) as mock_run,
+        ):
+            token = _try_gh_cli_token()
+
+        return token, mock_run
+
+    def test_no_user_flag_when_unset(self, monkeypatch):
+        token, mock_run = self._run_with_env(monkeypatch, {})
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["/usr/bin/gh", "auth", "token"]
+        assert token == "gho_tok"
+
+    def test_user_flag_when_set(self, monkeypatch):
+        token, mock_run = self._run_with_env(monkeypatch, {"COPILOT_GH_USER": "myuser"})
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["/usr/bin/gh", "auth", "token", "--user", "myuser"]
+        assert token == "gho_tok"
+
+    def test_hostname_flag_when_set(self, monkeypatch):
+        token, mock_run = self._run_with_env(
+            monkeypatch, {"COPILOT_GH_HOST": "github.example.com"}
+        )
+        cmd = mock_run.call_args[0][0]
+        assert cmd == [
+            "/usr/bin/gh",
+            "auth",
+            "token",
+            "--hostname",
+            "github.example.com",
+        ]
+
+    def test_both_hostname_and_user(self, monkeypatch):
+        token, mock_run = self._run_with_env(
+            monkeypatch,
+            {
+                "COPILOT_GH_HOST": "github.example.com",
+                "COPILOT_GH_USER": "myuser",
+            },
+        )
+        cmd = mock_run.call_args[0][0]
+        assert cmd == [
+            "/usr/bin/gh",
+            "auth",
+            "token",
+            "--hostname",
+            "github.example.com",
+            "--user",
+            "myuser",
+        ]
+
+    def test_user_whitespace_stripped(self, monkeypatch):
+        token, mock_run = self._run_with_env(
+            monkeypatch, {"COPILOT_GH_USER": "  myuser  "}
+        )
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["/usr/bin/gh", "auth", "token", "--user", "myuser"]
+
+    def test_empty_user_not_passed(self, monkeypatch):
+        token, mock_run = self._run_with_env(monkeypatch, {"COPILOT_GH_USER": "   "})
+        cmd = mock_run.call_args[0][0]
+        assert cmd == ["/usr/bin/gh", "auth", "token"]
+
+    def test_strips_github_token_from_subprocess_env(self, monkeypatch):
+        """GH_TOKEN and GITHUB_TOKEN must be stripped so gh reads hosts.yml."""
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_should_strip")
+        monkeypatch.setenv("GH_TOKEN", "gho_also_strip")
+        monkeypatch.delenv("COPILOT_GH_HOST", raising=False)
+        monkeypatch.delenv("COPILOT_GH_USER", raising=False)
+
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "gho_from_hosts"
+
+        with (
+            patch(
+                "hermes_cli.copilot_auth._gh_cli_candidates",
+                return_value=["/usr/bin/gh"],
+            ),
+            patch(
+                "hermes_cli.copilot_auth.subprocess.run", return_value=mock_result
+            ) as mock_run,
+        ):
+            _try_gh_cli_token()
+
+        passed_env = mock_run.call_args[1]["env"]
+        assert "GITHUB_TOKEN" not in passed_env
+        assert "GH_TOKEN" not in passed_env
+
+    def test_returns_none_on_failure(self, monkeypatch):
+        """Non-zero exit returns None."""
+        monkeypatch.delenv("COPILOT_GH_HOST", raising=False)
+        monkeypatch.delenv("COPILOT_GH_USER", raising=False)
+
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+
+        with (
+            patch(
+                "hermes_cli.copilot_auth._gh_cli_candidates",
+                return_value=["/usr/bin/gh"],
+            ),
+            patch("hermes_cli.copilot_auth.subprocess.run", return_value=mock_result),
+        ):
+            assert _try_gh_cli_token() is None
 
 
 class TestRequestHeaders:

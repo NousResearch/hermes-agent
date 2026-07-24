@@ -26,6 +26,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API — first priority (OAuth `gho_*` or fine-grained PAT `github_pat_*`; classic PATs `ghp_*` are **not supported**) |
 | `GH_TOKEN` | GitHub token — second priority for Copilot (also used by `gh` CLI) |
 | `GITHUB_TOKEN` | GitHub token — third priority for Copilot |
+| `COPILOT_GH_HOST` | GitHub hostname passed to the `gh auth token` fallback with `--hostname` |
+| `COPILOT_GH_USER` | GitHub account passed to the `gh auth token` fallback with `--user`; useful when `gh` has multiple authenticated accounts |
 | `HERMES_COPILOT_ACP_COMMAND` | Override Copilot ACP CLI binary path (default: `copilot`) |
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |

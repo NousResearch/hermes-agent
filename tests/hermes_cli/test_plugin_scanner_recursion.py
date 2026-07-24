@@ -287,6 +287,24 @@ class TestBundledBackendAutoLoad:
         assert loaded.manifest.kind == "backend"
         assert loaded.enabled is True, f"error: {loaded.error}"
 
+    def test_bundled_platform_plugins_use_path_derived_keys(self, tmp_path, monkeypatch):
+        """Bundled platform plugins should use the same path-derived key as
+        ``hermes plugins list`` and user-installed platform plugins.
+
+        Regression: the runtime used to scan ``plugins/platforms/`` as a
+        separate root, so Teams loaded as ``teams-platform`` while the CLI
+        surfaced ``platforms/teams``. Enabling/disabling the listed key then
+        had no effect on the runtime manifest.
+        """
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "platforms/teams" in mgr._plugins
+        loaded = mgr._plugins["platforms/teams"]
+        assert loaded.manifest.name == "teams-platform"
+        assert loaded.manifest.kind == "platform"
+        assert loaded.enabled is True, f"error: {loaded.error}"
+
 
 # ── PluginContext.register_image_gen_provider ───────────────────────────────
 

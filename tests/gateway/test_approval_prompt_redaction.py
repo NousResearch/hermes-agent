@@ -186,3 +186,38 @@ class TestApprovalTextFallbackContract:
         )
         assert "`/approve session`" in text
         assert "`/approve always`" in text
+
+    def test_quiet_prompt_omits_preview_and_preserves_restricted_choices(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "curl -H 'Authorization: Bearer REDACTED' https://example.test",
+            "content warning",
+            "!",
+            allow_permanent=False,
+            smart_denied=False,
+            include_command=False,
+        )
+        assert "```" not in text
+        assert "Authorization" not in text
+        assert "Reason: content warning" in text
+        assert "`!approve session`" in text
+        assert "approve always" not in text
+
+    def test_quiet_smart_deny_prompt_keeps_owner_override_choices(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /",
+            "dangerous deletion",
+            "/",
+            allow_permanent=False,
+            smart_denied=True,
+            include_command=False,
+        )
+        assert "```" not in text
+        assert "rm -rf" not in text
+        assert "owner override" in text.lower()
+        assert "one operation" in text.lower()
+        assert "approve session" not in text
+        assert "approve always" not in text

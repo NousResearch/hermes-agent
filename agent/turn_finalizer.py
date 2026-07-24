@@ -290,6 +290,69 @@ def finalize_turn(
             from agent.message_sanitization import close_interrupted_tool_sequence
             close_interrupted_tool_sequence(messages, final_response)
 
+        # Turn-completion explainer must run BEFORE the #43849 append /
+        # persist chokepoint. When inbound final_response is falsy
+        # ("" / None), the explainer synthesizes the user-visible
+        # "⚠️ No reply: …" text; if that happens after persist, the
+        # caller receives an explanation while the durable transcript
+        # still ends on a tool result — violating
+        # "delivered final_response ⇒ assistant row" and recreating
+        # #48879 tool→user risk on the next turn.
+        #
+        # When a turn ends abnormally after substantive work — empty
+        # content after retries, a partial/truncated stream, a
+        # still-pending tool result, or an iteration/budget limit — the
+        # user otherwise gets a blank or fragmentary response box with
+        # no consolidated reason why the agent stopped (#34452).
+        #
+        # Gate carefully so healthy turns stay quiet:
+        #   - ``text_response(...)`` exits never produce an explanation
+        #     (handled inside the formatter), so a terse ``Done.`` is silent.
+        #   - We only ACT when there is no genuinely usable reply this turn:
+        #     an empty response, the "(empty)" terminal sentinel, or a
+        #     suspiciously short partial fragment with no terminating
+        #     punctuation (e.g. "The").  A real short answer keeps its text.
+        if not interrupted:
+            try:
+                if agent._turn_completion_explainer_enabled():
+                    _stripped = (final_response or "").strip()
+                    _is_empty_terminal = _stripped == "" or _stripped == "(empty)"
+                    # A short fragment that is not a normal text_response exit
+                    # and lacks sentence-ending punctuation is treated as a
+                    # truncated partial (the "The" case from #34452).
+                    _is_partial_fragment = (
+                        not _is_empty_terminal
+                        and not preserved_verification_fallback
+                        and not str(_turn_exit_reason).startswith("text_response")
+                        and len(_stripped) <= 24
+                        and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
+                    )
+                    _is_partial_stream_recovery = (
+                        str(_turn_exit_reason) == "partial_stream_recovery"
+                    )
+                    if (
+                        _is_empty_terminal
+                        or _is_partial_fragment
+                        or _is_partial_stream_recovery
+                    ):
+                        _explanation = agent._format_turn_completion_explanation(
+                            _turn_exit_reason
+                        )
+                        if _explanation:
+                            if _is_empty_terminal:
+                                # Replace the bare "(empty)"/blank sentinel with
+                                # the actionable explanation.
+                                final_response = _explanation
+                            else:
+                                # Keep the partial fragment, append the reason so
+                                # the user sees both what arrived and why it
+                                # stopped.
+                                final_response = (
+                                    _stripped + "\n\n" + _explanation
+                                )
+            except Exception as _exp_err:
+                logger.debug("turn-completion explainer failed: %s", _exp_err)
+
         # Some recovery/fallback paths return a real final_response without
         # adding a closing assistant message to the transcript (e.g. the
         # partial-stream and prior-turn-content recovery ``break`` sites in
@@ -422,63 +485,6 @@ def finalize_turn(
                     final_response = final_response.rstrip() + "\n\n" + footer
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
-
-    # Turn-completion explainer.
-    # When a turn ends abnormally after substantive work — empty content
-    # after retries, a partial/truncated stream, a still-pending tool
-    # result, or an iteration/budget limit — the user otherwise gets a
-    # blank or fragmentary response box with no consolidated reason why
-    # the agent stopped (#34452).  Surface a single user-visible
-    # explanation derived from ``_turn_exit_reason``, mirroring the
-    # file-mutation verifier footer pattern above.
-    #
-    # Gate carefully so healthy turns stay quiet:
-    #   - ``text_response(...)`` exits never produce an explanation
-    #     (handled inside the formatter), so a terse ``Done.`` is silent.
-    #   - We only ACT when there is no genuinely usable reply this turn:
-    #     an empty response, the "(empty)" terminal sentinel, or a
-    #     suspiciously short partial fragment with no terminating
-    #     punctuation (e.g. "The").  A real short answer keeps its text.
-    if not interrupted:
-        try:
-            if agent._turn_completion_explainer_enabled():
-                _stripped = (final_response or "").strip()
-                _is_empty_terminal = _stripped == "" or _stripped == "(empty)"
-                # A short fragment that is not a normal text_response exit
-                # and lacks sentence-ending punctuation is treated as a
-                # truncated partial (the "The" case from #34452).
-                _is_partial_fragment = (
-                    not _is_empty_terminal
-                    and not preserved_verification_fallback
-                    and not str(_turn_exit_reason).startswith("text_response")
-                    and len(_stripped) <= 24
-                    and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
-                )
-                _is_partial_stream_recovery = (
-                    str(_turn_exit_reason) == "partial_stream_recovery"
-                )
-                if (
-                    _is_empty_terminal
-                    or _is_partial_fragment
-                    or _is_partial_stream_recovery
-                ):
-                    _explanation = agent._format_turn_completion_explanation(
-                        _turn_exit_reason
-                    )
-                    if _explanation:
-                        if _is_empty_terminal:
-                            # Replace the bare "(empty)"/blank sentinel with
-                            # the actionable explanation.
-                            final_response = _explanation
-                        else:
-                            # Keep the partial fragment, append the reason so
-                            # the user sees both what arrived and why it
-                            # stopped.
-                            final_response = (
-                                _stripped + "\n\n" + _explanation
-                            )
-        except Exception as _exp_err:
-            logger.debug("turn-completion explainer failed: %s", _exp_err)
 
     _response_transformed = False
 

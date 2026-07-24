@@ -35,6 +35,7 @@ class FakeAgent:
         self._persist_user_message_idx: int | None = None
         self._persist_user_message_override: Any = None
         self._persist_user_message_timestamp: float | None = None
+        self._turn_completion_explainer = False
 
     def _handle_max_iterations(self, messages, api_call_count):
         raise AssertionError("not expected")
@@ -69,7 +70,10 @@ class FakeAgent:
         return False
 
     def _turn_completion_explainer_enabled(self):
-        return False
+        return self._turn_completion_explainer
+
+    def _format_turn_completion_explanation(self, reason):
+        return f"⚠️ No reply: explained ({reason})"
 
     def _drain_pending_steer(self):
         return None
@@ -196,6 +200,94 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_empty_final_response_explainer_closes_tool_tail_before_persist(monkeypatch):
+    """Explainer-synthesized replies must hit the #43849 persist chokepoint.
+
+    When inbound ``final_response`` is falsy (``""`` / ``None``), the append
+    gate used to skip, persist left a tool-tailed transcript, and only then
+    did the turn-completion explainer replace the delivered text — so the
+    caller saw an explanation while durable history still ended on ``tool``,
+    recreating #48879 ``tool → user`` risk on the next turn.
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._turn_completion_explainer = True
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="empty_response_exhausted",
+    )
+
+    assert "No reply" in (result["final_response"] or "")
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == result["final_response"]
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["role"] == "assistant"
+    assert agent.persisted_messages[-1]["content"] == result["final_response"]
+
+
+def test_none_final_response_explainer_closes_tool_tail_before_persist(monkeypatch):
+    """Same invariant as the empty-string case, with inbound ``None``."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._turn_completion_explainer = True
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="empty_response_exhausted",
+    )
+
+    assert "No reply" in (result["final_response"] or "")
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == result["final_response"]
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["content"] == result["final_response"]
 
 
 def test_final_response_fills_pure_tool_call_tail(monkeypatch):

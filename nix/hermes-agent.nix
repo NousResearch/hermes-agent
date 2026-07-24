@@ -186,6 +186,7 @@ stdenv.mkDerivation (finalAttrs: {
     ${lib.concatMapStringsSep "\n"
       (name: ''
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
+          --prefix PATH : "${hermesVenv}/bin" \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
           --set HERMES_OPTIONAL_SKILLS $out/share/hermes-agent/optional-skills \

@@ -8,8 +8,9 @@ from tools import env_probe
 
 
 @pytest.fixture(autouse=True)
-def reset_probe_cache():
-    """Each test starts with a clean cache."""
+def reset_probe_cache(monkeypatch):
+    """Each test starts with a clean cache and no HERMES_PYTHON override."""
+    monkeypatch.delenv("HERMES_PYTHON", raising=False)
     env_probe._reset_cache_for_tests()
     yield
     env_probe._reset_cache_for_tests()
@@ -141,6 +142,79 @@ class TestCaching:
         # Only the first call probes — caller-counting confirms it.
         # Two calls (python3 + python) on first invocation, zero after.
         assert len(calls) == 2
+
+
+class TestHermesPythonOverride:
+    """The HERMES_PYTHON env var must be picked up when set, and the
+    bare name ``python3`` must be used when it's unset."""
+
+    CUSTOM_PYTHON = "/nix/store/x3k9f2a-python3-3.12.4/bin/python3"
+
+    def test_hermes_python_used_when_set(self, monkeypatch):
+        """HERMES_PYTHON=/path/to/python3 → that path is passed to the
+        version/pip/pep668 helpers instead of bare ``python3``."""
+        monkeypatch.setenv("HERMES_PYTHON", self.CUSTOM_PYTHON)
+
+        called_with: list[str] = []
+
+        def spy_version(b: str) -> str | None:
+            called_with.append(b)
+            return "3.12.4" if b == self.CUSTOM_PYTHON else None
+
+        def spy_has_pip(b: str) -> bool:
+            called_with.append(b)
+            return b == self.CUSTOM_PYTHON
+
+        def spy_pep668(b: str) -> bool:
+            called_with.append(b)
+            return False
+
+        monkeypatch.setattr(env_probe, "_python_version_of", spy_version)
+        monkeypatch.setattr(env_probe, "_has_pip_module", spy_has_pip)
+        monkeypatch.setattr(env_probe, "_detect_pep668", spy_pep668)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        line = env_probe.get_environment_probe_line()
+        # Should be silent — we faked a healthy env
+        assert line == "", f"expected empty line, got: {line!r}"
+        # The custom path was used, not bare "python3"
+        assert self.CUSTOM_PYTHON in called_with, (
+            f"expected {self.CUSTOM_PYTHON!r} in called_with, got {called_with}"
+        )
+        assert "python3" not in called_with or called_with == ["python"], (
+            f"bare 'python3' should not be called, got: {called_with}"
+        )
+
+    def test_hermes_python_unset_falls_back_to_bare_python3(self, monkeypatch):
+        """HERMES_PYTHON unset → helpers receive bare ``python3``."""
+        monkeypatch.delenv("HERMES_PYTHON", raising=False)
+
+        called_with: list[str] = []
+
+        def spy_version(b: str) -> str | None:
+            called_with.append(b)
+            return "3.12.4" if b == "python3" else None
+
+        def spy_has_pip(b: str) -> bool:
+            called_with.append(b)
+            return b == "python3"
+
+        def spy_pep668(b: str) -> bool:
+            called_with.append(b)
+            return False
+
+        monkeypatch.setattr(env_probe, "_python_version_of", spy_version)
+        monkeypatch.setattr(env_probe, "_has_pip_module", spy_has_pip)
+        monkeypatch.setattr(env_probe, "_detect_pep668", spy_pep668)
+        monkeypatch.setattr(env_probe, "_pip_python_version", lambda: "3.12")
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+
+        line = env_probe.get_environment_probe_line()
+        assert line == "", f"expected empty line, got: {line!r}"
+        assert "python3" in called_with, (
+            f"expected 'python3' in called_with, got {called_with}"
+        )
 
 
 class TestRobustness:

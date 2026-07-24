@@ -1021,3 +1021,167 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+# ---------------------------------------------------------------------------
+# Per-turn trace_id (#32005 / #29776).
+#
+# Pre-fix, ``_start_root_trace`` seeded ``client.create_trace_id`` with a
+# string derived only from ``session_id`` and ``task_id``. Both values are
+# stable across turns:
+#   - CLI mode: ``task_id`` is empty, seed = "<session>::session:<session>"
+#   - TUI/Gateway mode: ``task_id == session_id``, seed = "<session>::<session>"
+# ``create_trace_id`` is deterministic in the seed, so every turn produced
+# the same trace_id. The Langfuse UI showed only one or two traces for a
+# 15-turn conversation because later turns overwrote the first one.
+#
+# The fix injects a per-call UUID nonce into the seed. These tests pin
+# that behaviour for both affected modes plus the gateway-style aliasing.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingClient:
+    """Minimal stand-in for ``langfuse.Langfuse`` that records every
+    seed passed to ``create_trace_id`` and returns a fresh deterministic
+    id per call, so the test can assert on the seeds the plugin chose."""
+
+    def __init__(self):
+        self.seeds: list[str] = []
+
+    def create_trace_id(self, *, seed: str) -> str:
+        self.seeds.append(seed)
+        # Use the seed itself as the trace_id so the assertion can show
+        # both values when it fails — the SDK's real hash isn't needed
+        # to prove distinctness.
+        return f"trace::{seed}"
+
+    def start_as_current_observation(self, **kwargs):
+        return _RecordingSpan()
+
+    def flush(self):
+        pass
+
+
+class _RecordingSpan:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def set_trace_io(self, **kwargs):
+        pass
+
+    def update(self, **kwargs):
+        pass
+
+    def end(self):
+        pass
+
+    def start_observation(self, **kwargs):
+        return _RecordingObservation()
+
+
+class _RecordingObservation:
+    def update(self, **kwargs):
+        pass
+
+    def end(self):
+        pass
+
+
+class TestPerTurnTraceId:
+    def _fresh_plugin(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        mod._TRACE_STATE.clear()
+        # ``propagate_attributes`` is an optional langfuse SDK helper used as
+        # a context manager around the trace start. The plugin falls through
+        # when it's ``None``, which is what we want for these unit tests.
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+        return mod
+
+    def test_cli_mode_two_turns_get_distinct_trace_ids(self, monkeypatch):
+        """CLI: ``task_id`` is empty and ``session_id`` is stable across
+        turns. Pre-fix the seed was constant; post-fix the nonce makes
+        each call distinct."""
+        mod = self._fresh_plugin(monkeypatch)
+        client = _RecordingClient()
+        kwargs = dict(
+            task_id="",
+            session_id="20260525_100629_ba5465",
+            platform="cli",
+            provider="anthropic",
+            model="claude-x",
+            api_mode="messages",
+            messages=[],
+            client=client,
+        )
+        state1 = mod._start_root_trace(
+            mod._trace_key(kwargs["task_id"], kwargs["session_id"]),
+            **kwargs,
+        )
+        state2 = mod._start_root_trace(
+            mod._trace_key(kwargs["task_id"], kwargs["session_id"]),
+            **kwargs,
+        )
+        assert state1.trace_id != state2.trace_id, (
+            "Both CLI turns reused the same trace_id — #32005 / #29776 "
+            "regressed."
+        )
+        assert len(set(client.seeds)) == 2, (
+            f"create_trace_id was seeded with same value across turns: "
+            f"{client.seeds!r}"
+        )
+
+    def test_gateway_mode_task_id_equals_session_id_distinct_trace_ids(self, monkeypatch):
+        """Gateway/TUI: gateway passes ``task_id == session_id``. The
+        pre-fix seed degenerated to the same string both times."""
+        mod = self._fresh_plugin(monkeypatch)
+        client = _RecordingClient()
+        sess = "20260525_100629_ba5465"
+        kwargs = dict(
+            task_id=sess,
+            session_id=sess,
+            platform="gateway",
+            provider="openai",
+            model="gpt-x",
+            api_mode="responses",
+            messages=[],
+            client=client,
+        )
+        state1 = mod._start_root_trace(
+            mod._trace_key(kwargs["task_id"], kwargs["session_id"]),
+            **kwargs,
+        )
+        state2 = mod._start_root_trace(
+            mod._trace_key(kwargs["task_id"], kwargs["session_id"]),
+            **kwargs,
+        )
+        assert state1.trace_id != state2.trace_id, (
+            "Gateway-mode turns reused the same trace_id — #32005 / #29776 "
+            "regressed."
+        )
+
+    def test_task_scoped_traces_still_distinct(self, monkeypatch):
+        """Sanity guard for the existing kanban/delegate path: distinct
+        ``task_id`` values must still produce distinct trace_ids. The
+        nonce shouldn't accidentally collide them either."""
+        mod = self._fresh_plugin(monkeypatch)
+        client = _RecordingClient()
+
+        def _make(task_id):
+            return mod._start_root_trace(
+                mod._trace_key(task_id, ""),
+                task_id=task_id,
+                session_id="",
+                platform="cli",
+                provider="anthropic",
+                model="claude-x",
+                api_mode="messages",
+                messages=[],
+                client=client,
+            )
+
+        a = _make("sa-0-aaaa")
+        b = _make("sa-0-bbbb")
+        assert a.trace_id != b.trace_id

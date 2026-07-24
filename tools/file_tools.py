@@ -2047,9 +2047,22 @@ SEARCH_FILES_SCHEMA = {
 }
 
 
+# Tool names in this toolset, kept next to the registry.register() calls below
+# so it can't silently drift if a tool is added/removed. Mirrors the format
+# conversation_loop.py's _invalid_tool_name_error_content() already uses
+# (sorted, comma-separated) so the two error paths read consistently.
+_FILE_TOOLSET_TOOL_NAMES = "patch, read_file, search_files, write_file"
+
+
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    if not args.get("path") or not isinstance(args.get("path"), str):
+        return tool_error(
+            "read_file: missing required field 'path'. This tool call was not "
+            "executed. Do not re-emit the same empty call — set 'path' to a real "
+            f"file path. Available tools in this toolset: {_FILE_TOOLSET_TOOL_NAMES}."
+        )
+    return read_file_tool(path=args["path"], offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -2081,8 +2094,32 @@ def _handle_write_file(args, **kw):
 
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
+    mode = args.get("mode", "replace")
+    if mode == "replace":
+        missing = []
+        if not args.get("path"):
+            missing.append("path")
+        if not args.get("old_string"):
+            missing.append("old_string")
+        if "new_string" not in args or args.get("new_string") is None:
+            missing.append("new_string")
+        if missing:
+            return tool_error(
+                "patch: mode='replace' is missing required field(s): "
+                f"{', '.join(missing)}. This tool call was not executed. Do not "
+                "re-emit the same incomplete call — set all three fields together. "
+                f"Available tools in this toolset: {_FILE_TOOLSET_TOOL_NAMES}."
+            )
+    elif mode == "patch":
+        if not args.get("patch"):
+            return tool_error(
+                "patch: mode='patch' is missing required field 'patch'. This tool "
+                "call was not executed. Do not re-emit the same empty call — set "
+                "'patch' to real V4A patch content. Available tools in this "
+                f"toolset: {_FILE_TOOLSET_TOOL_NAMES}."
+            )
     return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
+        mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
@@ -2092,11 +2129,18 @@ def _handle_patch(args, **kw):
 
 def _handle_search_files(args, **kw):
     tid = kw.get("task_id") or "default"
+    if not args.get("pattern") or not isinstance(args.get("pattern"), str):
+        return tool_error(
+            "search_files: missing required field 'pattern'. This tool call was not "
+            "executed. Do not re-emit the same empty call — set 'pattern' to a real "
+            "search pattern or glob. Available tools in this toolset: "
+            f"{_FILE_TOOLSET_TOOL_NAMES}."
+        )
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=args["pattern"], target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 

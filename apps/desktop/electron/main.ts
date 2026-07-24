@@ -55,7 +55,7 @@ import {
   resolveTestWsUrl,
   tokenPreview
 } from './connection-config'
-import { adoptServedDashboardToken } from './dashboard-token'
+import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -6980,6 +6980,60 @@ async function startHermes() {
     // is detected stale), THEN start the backend. Local backends only; remote
     // connections returned above and never touch the install tree.
     await waitForUpdateToFinish()
+
+    // ── Detect an existing local backend on the default port ──────────
+    // Before spawning our own backend, check if one is already listening on
+    // the default dashboard port (9119) — e.g. from `hermes dashboard` on
+    // the CLI. If one is already running, connect to it instead of starting
+    // a competing backend. This prevents the boot loop (#69925) where the
+    // desktop spawns a backend that finds a conflicting process/resource,
+    // exits with code 1, and is respawned by the renderer's retry loop.
+    const EXISTING_BACKEND_PORT = 9119
+    const EXISTING_BACKEND_PROBE_TIMEOUT_MS = 2_000
+
+    try {
+      await fetchJson(`http://127.0.0.1:${EXISTING_BACKEND_PORT}/api/status`, '', { timeoutMs: EXISTING_BACKEND_PROBE_TIMEOUT_MS })
+
+      rememberLog(`[boot] existing backend detected on port ${EXISTING_BACKEND_PORT}; connecting instead of spawning new backend`)
+
+      // Read the session token from the served dashboard HTML so WebSocket
+      // connections authenticate correctly. Best-effort: if token extraction
+      // fails (e.g. headless backend that 404s on /), use empty string.
+      let servedToken = ''
+
+      try {
+        servedToken = await resolveServedDashboardToken(
+          `http://127.0.0.1:${EXISTING_BACKEND_PORT}`,
+          '',
+          { rememberLog, timeoutMs: EXISTING_BACKEND_PROBE_TIMEOUT_MS }
+        )
+      } catch {
+        rememberLog(`[boot] could not read served dashboard token from port ${EXISTING_BACKEND_PORT}`)
+      }
+
+      const baseUrl = `http://127.0.0.1:${EXISTING_BACKEND_PORT}`
+
+      updateBootProgress({
+        phase: 'backend.ready',
+        message: `Connected to existing Hermes backend on port ${EXISTING_BACKEND_PORT}`,
+        progress: 94,
+        running: true,
+        error: null
+      })
+
+      return {
+        baseUrl,
+        mode: 'local',
+        source: 'local',
+        authMode: 'token',
+        token: servedToken,
+        wsUrl: `ws://127.0.0.1:${EXISTING_BACKEND_PORT}/api/ws?token=${encodeURIComponent(servedToken)}`,
+        logs: hermesLog.slice(-80),
+        ...getWindowState()
+      }
+    } catch {
+      rememberLog(`[boot] no existing backend detected on port ${EXISTING_BACKEND_PORT}; spawning local backend`)
+    }
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.

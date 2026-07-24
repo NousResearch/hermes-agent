@@ -6177,6 +6177,22 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def get_messages_after(self, session_id: str, after_id: int) -> List[Dict[str, Any]]:
+        """Load messages for a session with id > after_id, ordered by insertion order."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, role, content FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC",
+                (session_id, after_id),
+            )
+            rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            result.append(msg)
+        return result
+
     def get_messages_around(
         self,
         session_id: str,

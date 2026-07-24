@@ -4238,7 +4238,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+
+        # Track last seen message id for out-of-process SQLite polling
+        self._last_seen_msg_id = 0
+        self._last_oop_poll = 0.0  # monotonic timestamp of last SQLite poll
+        if self._session_db:
+            try:
+                with self._session_db._lock:
+                    row = self._session_db._conn.execute(
+                        "SELECT COALESCE(MAX(id), 0) FROM messages WHERE session_id = ?",
+                        (self.session_id,),
+                    ).fetchone()
+                self._last_seen_msg_id = row[0] if row else 0
+            except Exception:
+                pass
+
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
@@ -6674,6 +6688,65 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         with _suspend_output_history():
             console.print(panel)
         return buf.getvalue().rstrip("\n").splitlines()
+
+    def _poll_and_display_out_of_process_messages(self) -> None:
+        """Poll SQLite for messages written by another process and render them.
+
+        Throttled to OOP_POLL_INTERVAL seconds (matching the pattern used by
+        _check_config_mcp_changes) so we avoid a DB read on every ~100ms idle
+        tick when nothing has changed. The process_registry drain runs every tick
+        because it checks an in-memory queue — no IO. SQLite reads are fast but
+        not free, especially under concurrent writers using WAL.
+        """
+        OOP_POLL_INTERVAL = 1.0  # seconds between SQLite reads
+
+        now = time.monotonic()
+        if now - self._last_oop_poll < OOP_POLL_INTERVAL:
+            return
+        self._last_oop_poll = now
+
+        if not self._session_db:
+            return
+        new_msgs = self._session_db.get_messages_after(
+            self.session_id, self._last_seen_msg_id
+        )
+        if not new_msgs:
+            return
+        for msg in new_msgs:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            msg_id = msg.get("id")
+            if role == "user":
+                self._print_user_message_preview(content)
+                self.conversation_history.append({"role": "user", "content": content})
+            elif role == "assistant":
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    _oop_label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+                    _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                except Exception:
+                    _oop_label = "⚕ Hermes"
+                    _resp_color = _maybe_remap_for_light_mode("#CD7F32")
+                    _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+                ChatConsole().print(Panel(
+                    _render_final_assistant_content(content, mode=self.final_response_markdown),
+                    title=f"[{_resp_color} bold]{_oop_label}[/]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    style=_resp_text,
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 4),
+                    width=self._scrollback_box_width(),
+                ))
+                self.conversation_history.append({"role": "assistant", "content": content})
+            elif role == "tool":
+                self.conversation_history.append({"role": "tool", "content": content})
+            if msg_id is not None and msg_id > self._last_seen_msg_id:
+                self._last_seen_msg_id = msg_id
+        # Repaint the status bar after rendering injected messages.
+        self._invalidate(min_interval=0.0)
 
     def _try_attach_clipboard_image(self) -> bool:
         """Check clipboard for an image and attach it if found.
@@ -12714,6 +12787,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
+            # Update _last_seen_msg_id so idle polling doesn't re-display messages
+            # that were already rendered by this local turn.
+            if self._session_db:
+                try:
+                    with self._session_db._lock:
+                        row = self._session_db._conn.execute(
+                            "SELECT COALESCE(MAX(id), 0) FROM messages WHERE session_id = ?",
+                            (self.session_id,),
+                        ).fetchone()
+                    self._last_seen_msg_id = row[0] if row else 0
+                except Exception:
+                    pass
+
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync
             # the CLI's session_id so /status, /resume, title generation,
@@ -15504,6 +15590,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             # and watch pattern matches) while agent is idle.
                             try:
                                 self._drain_process_notifications("cli-idle")
+                            except Exception:
+                                pass
+                            # Poll for out-of-process messages written to SQLite
+                            try:
+                                self._poll_and_display_out_of_process_messages()
                             except Exception:
                                 pass
                         continue

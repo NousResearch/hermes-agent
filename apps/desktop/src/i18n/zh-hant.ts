@@ -1931,8 +1931,7 @@ export const zhHant = defineLocale({
     installTo: '將安裝至',
     retryAfterRun: '我已執行 -- 重試',
     setupChoiceTitle: '設定 Hermes Desktop',
-    setupChoiceDesc:
-      '將此應用程式連線到您已執行的 Hermes 閘道，或在這台電腦上本機安裝 Hermes。',
+    setupChoiceDesc: '將此應用程式連線到您已執行的 Hermes 閘道，或在這台電腦上本機安裝 Hermes。',
     connectExistingTitle: '連線到現有 Hermes',
     connectExistingShort: '連線現有環境',
     connectExistingDesc: '使用工作階段權杖或瀏覽器登入連線遠端後端。不會啟動本機安裝。',

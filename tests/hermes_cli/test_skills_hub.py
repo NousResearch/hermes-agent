@@ -292,8 +292,9 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
 
     scanned = {}
 
-    def _scan_skill(skill_path, source="community"):
+    def _scan_skill(skill_path, source="community", allow_origin_markers=True):
         scanned["source"] = source
+        scanned["allow_origin_markers"] = allow_origin_markers
         return guard.ScanResult(
             skill_name="frontend-design",
             source=source,
@@ -315,6 +316,7 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
 
     assert scanned["source"] == canonical_identifier
+    assert scanned["allow_origin_markers"] is False
 
 
 def test_do_install_scans_official_bundles_with_source_provenance(
@@ -346,8 +348,9 @@ def test_do_install_scans_official_bundles_with_source_provenance(
 
     scanned = {}
 
-    def _scan_skill(skill_path, source="community"):
+    def _scan_skill(skill_path, source="community", allow_origin_markers=True):
         scanned["source"] = source
+        scanned["allow_origin_markers"] = allow_origin_markers
         return guard.ScanResult(
             skill_name="prunus-gaia",
             source=source,
@@ -369,6 +372,108 @@ def test_do_install_scans_official_bundles_with_source_provenance(
     do_install("official/agent/prunus-gaia", console=console, skip_confirm=True)
 
     assert scanned["source"] == "official"
+    assert scanned["allow_origin_markers"] is True
+
+
+def test_do_install_does_not_treat_marketplace_slug_official_as_builtin(
+    monkeypatch, tmp_path, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    class _SlugSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": "official",
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "official",
+                "files": {"SKILL.md": "# Official"},
+                "source": "skills.sh",
+                "identifier": "official",
+                "trust_level": "community",
+                "metadata": {},
+            })()
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "official"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Official")
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community", allow_origin_markers=True):
+        scanned["source"] = source
+        scanned["allow_origin_markers"] = allow_origin_markers
+        return guard.ScanResult(
+            skill_name="official",
+            source=source,
+            trust_level="community",
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_SlugSource()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
+    monkeypatch.setattr("hermes_cli.skills_hub._resolve_short_name", lambda name, sources, console: "official")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install("official", console=console, skip_confirm=True)
+
+    assert scanned["source"] == "official"
+    assert scanned["allow_origin_markers"] is False
+
+
+def test_do_audit_does_not_treat_identifier_official_as_builtin(monkeypatch, tmp_path, hub_env):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_dir = tmp_path / "skills" / "community" / "official"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Official")
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community", allow_origin_markers=True):
+        scanned["source"] = source
+        scanned["allow_origin_markers"] = allow_origin_markers
+        return guard.ScanResult(
+            skill_name="official",
+            source=source,
+            trust_level="community",
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(
+        hub,
+        "HubLockFile",
+        lambda: type("Lock", (), {
+            "list_installed": lambda self: [{
+                "name": "official",
+                "install_path": "community/official",
+                "source": "skills.sh",
+                "identifier": "official",
+            }],
+        })(),
+    )
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    cli_hub.do_audit(name="official", console=console)
+
+    assert scanned["source"] == "official"
+    assert scanned["allow_origin_markers"] is False
 
 
 def test_do_install_preserves_nested_official_optional_path(
@@ -462,8 +567,11 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     )
     monkeypatch.setattr(
         guard, "scan_skill",
-        lambda skill_path, source="community": guard.ScanResult(
-            skill_name="pending", source=source, trust_level="community", verdict="safe",
+        lambda skill_path, source="community", allow_origin_markers=True: guard.ScanResult(
+            skill_name="pending",
+            source=source,
+            trust_level="community",
+            verdict="safe",
         ),
     )
     monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
@@ -780,4 +888,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

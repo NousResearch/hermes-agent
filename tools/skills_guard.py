@@ -629,7 +629,12 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(
+    skill_path: Path,
+    source: str = "community",
+    *,
+    allow_origin_markers: bool = True,
+) -> ScanResult:
     """
     Scan all files in a skill directory for security threats.
 
@@ -649,12 +654,17 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     Args:
         skill_path: Path to the skill directory (must contain SKILL.md)
         source: Source identifier for trust level resolution (e.g. "openai/skills")
+        allow_origin_markers: Whether reserved provenance markers like
+            "official" and "agent-created" may elevate trust.
 
     Returns:
         ScanResult with verdict, findings, and trust metadata
     """
     skill_name = skill_path.name
-    trust_level = _resolve_trust_level(source)
+    trust_level = _resolve_trust_level(
+        source,
+        allow_origin_markers=allow_origin_markers,
+    )
 
     all_findings: List[Finding] = []
 
@@ -717,13 +727,16 @@ def scan_skill_cached(
     skill_path: Path,
     source: str = "community",
     *,
+    allow_origin_markers: bool = True,
     source_url: str = "",
     cache_dir: Path | None = None,
 ) -> Tuple[ScanResult, dict]:
     """Return a scan plus attestation, caching only exact current content."""
     bundle_hash = full_content_hash(skill_path)
     cache_root = cache_dir or skill_path.parent / ".scan-cache"
-    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    source_identity = hashlib.sha256(
+        f"{source}\0{int(allow_origin_markers)}\0{source_url}".encode("utf-8")
+    ).hexdigest()[:16]
     cache_file = cache_root / f"{bundle_hash.split(':', 1)[1]}-{source_identity}.json"
     try:
         cached = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -733,6 +746,7 @@ def scan_skill_cached(
             and cached.get("bundle_hash") == bundle_hash
             and cached.get("scanner_version") == SCANNER_VERSION
             and cached.get("source") == source
+            and cached.get("allow_origin_markers", True) == allow_origin_markers
             and cached.get("source_url") == source_url):
         result = ScanResult(
             skill_name=skill_path.name, source=source,
@@ -745,10 +759,17 @@ def scan_skill_cached(
         result.scan_provenance = provenance
         return result, provenance
 
-    result = scan_skill(skill_path, source=source)
+    result = scan_skill(
+        skill_path,
+        source=source,
+        allow_origin_markers=allow_origin_markers,
+    )
     findings = [_finding_dict(item) for item in result.findings]
     provenance = {
-        "source": source, "source_url": source_url, "bundle_hash": bundle_hash,
+        "source": source,
+        "allow_origin_markers": allow_origin_markers,
+        "source_url": source_url,
+        "bundle_hash": bundle_hash,
         "scanner_version": SCANNER_VERSION, "verdict": result.verdict,
         "trust_level": result.trust_level, "findings": findings,
         "rules": sorted({item["pattern_id"] for item in findings}),
@@ -1099,7 +1120,7 @@ def _load_skill_ignore(skill_dir: Path):
     return ignore
 
 
-def _resolve_trust_level(source: str) -> str:
+def _resolve_trust_level(source: str, *, allow_origin_markers: bool = True) -> str:
     """Map a source identifier to a trust level."""
     prefix_aliases = (
         "skills-sh/",
@@ -1114,11 +1135,11 @@ def _resolve_trust_level(source: str) -> str:
             break
 
     # Agent-created skills get their own permissive trust level
-    if normalized_source == "agent-created":
+    if allow_origin_markers and normalized_source == "agent-created":
         return "agent-created"
     # Official optional skills must be identified by source provenance, not by
     # user-controlled GitHub identifiers such as "official/<repo>".
-    if normalized_source == "official":
+    if allow_origin_markers and normalized_source == "official":
         return "builtin"
     # Check if source matches any trusted repo exactly, or a skill path inside
     # that repo. Do not trust sibling repositories that merely share a prefix.

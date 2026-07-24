@@ -46,6 +46,11 @@ class TestResolveTrustLevel:
     def test_official_source_provenance_resolves_to_builtin(self):
         assert _resolve_trust_level("official") == "builtin"
 
+    def test_official_marker_does_not_elevate_without_provenance(self):
+        assert _resolve_trust_level("official", allow_origin_markers=False) == "community"
+        assert _resolve_trust_level("agent-created", allow_origin_markers=False) == "community"
+        assert _resolve_trust_level("skills-sh/official", allow_origin_markers=False) == "community"
+
     def test_trusted_repos(self):
         assert _resolve_trust_level("openai/skills") == "trusted"
         assert _resolve_trust_level("anthropics/skills") == "trusted"

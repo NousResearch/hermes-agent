@@ -368,6 +368,12 @@ class TestUnsupportedPlatform:
              patch("tools.tirith_security.platform.machine", return_value="riscv64"):
             assert _tirith_mod.is_platform_supported() is False
 
+    def test_detect_target_prefers_musl_on_termux(self):
+        with patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="aarch64"), \
+             patch("tools.tirith_security.is_termux", return_value=True):
+            assert _tirith_mod._detect_target() == "aarch64-unknown-linux-musl"
+
     @patch("tools.tirith_security._load_security_config")
     def test_ensure_installed_unsupported_returns_none_no_thread(self, mock_cfg):
         """Windows: don't start a background install thread, don't write a
@@ -538,6 +544,50 @@ class TestExplicitPathNoAutoDownload:
         assert result == "/auto/tirith"
 
         _tirith_mod._resolved_path = None
+
+
+class TestDownloadFile:
+    def test_download_file_uses_proxy_handler_and_longer_default_timeout(self, tmp_path):
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = io.BytesIO(b"payload")
+        dest = tmp_path / "tirith.tar.gz"
+
+        with patch("tools.tirith_security.urllib.request.getproxies", return_value={"https": "http://proxy:8080"}), \
+             patch("tools.tirith_security.urllib.request.ProxyHandler") as mock_proxy_handler, \
+             patch("tools.tirith_security.urllib.request.build_opener", return_value=opener) as mock_build_opener:
+            _tirith_mod._download_file("https://example.com/tirith.tar.gz", str(dest))
+
+        mock_proxy_handler.assert_called_once_with({"https": "http://proxy:8080"})
+        mock_build_opener.assert_called_once()
+        _, kwargs = opener.open.call_args
+        assert kwargs["timeout"] == 60
+        assert dest.read_bytes() == b"payload"
+
+    def test_download_file_uses_curl_for_socks_proxy(self, tmp_path):
+        dest = tmp_path / "tirith.tar.gz"
+
+        with patch("tools.tirith_security.urllib.request.getproxies", return_value={"https": "socks5h://127.0.0.1:7890"}), \
+             patch("tools.tirith_security.shutil.which", return_value="/usr/bin/curl"), \
+             patch("tools.tirith_security.subprocess.run") as mock_run, \
+             patch("tools.tirith_security.urllib.request.build_opener") as mock_build_opener:
+            _tirith_mod._download_file("https://example.com/tirith.tar.gz", str(dest))
+
+        mock_build_opener.assert_not_called()
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:6] == [
+            "/usr/bin/curl",
+            "-fL",
+            "--max-time",
+            "60",
+            "-o",
+            str(dest),
+        ]
+        assert cmd[-3:] == [
+            "-x",
+            "socks5h://127.0.0.1:7890",
+            "https://example.com/tirith.tar.gz",
+        ]
 
 
 # ---------------------------------------------------------------------------

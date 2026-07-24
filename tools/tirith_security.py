@@ -32,9 +32,10 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +257,7 @@ def _detect_target() -> str | None:
     if system == "Darwin":
         plat = "apple-darwin"
     elif system in {"Linux", "Android"}:
-        plat = "unknown-linux-gnu"
+        plat = "unknown-linux-musl" if is_termux() else "unknown-linux-gnu"
     else:
         return None
 
@@ -280,13 +281,38 @@ def is_platform_supported() -> bool:
     return _detect_target() is not None
 
 
-def _download_file(url: str, dest: str, timeout: int = 10):
+def _proxy_url_for_download(url: str) -> str | None:
+    """Return the best proxy URL for a download target, if configured."""
+    proxies = urllib.request.getproxies()
+    scheme = urllib.parse.urlparse(url).scheme
+    return (
+        proxies.get(scheme)
+        or proxies.get("all")
+        or os.getenv("SOCKS_PROXY")
+        or os.getenv("socks_proxy")
+    )
+
+
+def _download_file(url: str, dest: str, timeout: int = 60):
     """Download a URL to a local file."""
+    timeout = max(1, _env_int("TIRITH_DOWNLOAD_TIMEOUT", timeout))
     req = urllib.request.Request(url)
     token = os.getenv("GITHUB_TOKEN")
     if token:
         req.add_header("Authorization", f"token {token}")
-    with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:
+    proxy_url = _proxy_url_for_download(url)
+    if proxy_url and proxy_url.lower().startswith(("socks4://", "socks4a://", "socks5://", "socks5h://")):
+        curl = shutil.which("curl")
+        if curl:
+            cmd = [curl, "-fL", "--max-time", str(timeout), "-o", dest]
+            if token:
+                cmd.extend(["-H", f"Authorization: token {token}"])
+            cmd.extend(["-x", proxy_url, url])
+            subprocess.run(cmd, check=True, capture_output=True)
+            return
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies()))
+    with opener.open(req, timeout=timeout) as resp, open(dest, "wb") as f:
         shutil.copyfileobj(resp, f)
 
 

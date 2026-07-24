@@ -4333,7 +4333,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
-        self._voice_tts_queue: "queue.Queue[str]" = queue.Queue()
+        self._voice_tts_queue: "queue.Queue[tuple[str, int]]" = queue.Queue()
         self._voice_tts_worker_lock = threading.Lock()
         self._voice_tts_worker = None
         self._voice_tts_generation = 0
@@ -11417,12 +11417,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
         with self._voice_tts_worker_lock:
             self._voice_tts_done.clear()
-            self._voice_tts_queue.put(text)
+            item_generation = self._voice_tts_generation
+            self._voice_tts_queue.put((text, item_generation))
             if self._voice_tts_worker is None:
-                my_generation = self._voice_tts_generation
                 self._voice_tts_worker = threading.Thread(
                     target=self._voice_tts_worker_loop,
-                    args=(my_generation,),
                     daemon=True,
                 )
                 try:
@@ -11449,11 +11448,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 break
             self._voice_tts_queue.task_done()
 
-    def _voice_tts_worker_loop(self, generation: int) -> None:
+    def _voice_tts_worker_loop(self) -> None:
         """Drain queued responses in order on a single playback worker."""
         while True:
             try:
-                text = self._voice_tts_queue.get_nowait()
+                text, item_generation = self._voice_tts_queue.get_nowait()
             except queue.Empty:
                 with self._voice_tts_worker_lock:
                     if self._voice_tts_queue.empty():
@@ -11462,13 +11461,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         return
                 continue
 
-            with self._voice_tts_worker_lock:
-                if self._voice_tts_generation != generation or not self._voice_tts:
-                    self._voice_tts_queue.task_done()
-                    continue
-
             try:
-                self._voice_speak_response(text, update_done_event=False)
+                self._voice_speak_response(
+                    text,
+                    update_done_event=False,
+                    item_generation=item_generation,
+                )
             except Exception:
                 logger.exception("Queued voice TTS playback failed")
             finally:
@@ -11479,6 +11477,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         text: str,
         *,
         update_done_event: bool = True,
+        item_generation: Optional[int] = None,
     ) -> None:
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         if not self._voice_tts:
@@ -11517,10 +11516,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Re-check after synthesis — disable/toggle may have fired while
             # we were waiting on the network, so skip playback entirely.
+            # Validate item_generation so a cancelled item doesn't play even
+            # if TTS was re-enabled before synthesis returned.
+            if item_generation is not None:
+                with self._voice_tts_worker_lock:
+                    generation_stale = self._voice_tts_generation != item_generation
+            else:
+                generation_stale = False
+
             if (
                 os.path.isfile(mp3_path)
                 and os.path.getsize(mp3_path) > 0
                 and self._voice_tts
+                and not generation_stale
             ):
                 play_audio_file(mp3_path)
                 # Clean up
@@ -13708,7 +13716,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
-        self._voice_tts_queue: "queue.Queue[str]" = queue.Queue()
+        self._voice_tts_queue: "queue.Queue[tuple[str, int]]" = queue.Queue()
         self._voice_tts_worker_lock = threading.Lock()
         self._voice_tts_worker = None
         self._voice_tts_generation = 0

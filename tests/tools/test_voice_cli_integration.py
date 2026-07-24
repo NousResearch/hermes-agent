@@ -1095,6 +1095,57 @@ class TestVoiceSpeakResponseReal:
 
     @patch("cli._cprint")
     @patch("tools.voice_mode.stop_playback")
+    def test_cancel_reenable_race_old_item_skipped_fresh_item_plays(self, _stop, _cp):
+        """Cancel during synthesis, re-enable, enqueue fresh: old never plays, fresh plays once."""
+        cli = _make_voice_cli(_voice_mode=True, _voice_tts=True)
+        old_synthesis_started = threading.Event()
+        release_old_synthesis = threading.Event()
+        fresh_started = threading.Event()
+        release_fresh = threading.Event()
+        played = []
+
+        def synthesize(**kwargs):
+            text = kwargs.get("text", "")
+            if text == "old":
+                old_synthesis_started.set()
+                assert release_old_synthesis.wait(timeout=2)
+            elif text == "fresh":
+                fresh_started.set()
+                assert release_fresh.wait(timeout=2)
+            return '{"success": true}'
+
+        def play(path):
+            played.append(path)
+
+        with (
+            patch("tools.tts_tool.text_to_speech_tool", side_effect=synthesize),
+            patch("tools.voice_mode.play_audio_file", side_effect=play),
+            patch("tools.voice_mode.stop_playback"),
+            patch("cli.os.makedirs"),
+            patch("cli.os.path.isfile", return_value=True),
+            patch("cli.os.path.getsize", return_value=1000),
+            patch("cli.os.unlink"),
+        ):
+            cli._voice_speak_response_async("old")
+            assert old_synthesis_started.wait(timeout=2)
+            worker = cli._voice_tts_worker
+            assert worker is not None
+
+            cli._disable_voice_mode()
+            cli._voice_mode = True
+            cli._voice_tts = True
+
+            cli._voice_speak_response_async("fresh")
+            release_old_synthesis.set()
+            assert fresh_started.wait(timeout=2)
+            release_fresh.set()
+            worker.join(timeout=2)
+
+        assert len(played) == 1
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
     def test_toggle_off_cancels_active_playback(self, stop_playback, _cp):
         cli = _make_voice_cli(_voice_mode=True, _voice_tts=True)
         cli._voice_tts_done.clear()

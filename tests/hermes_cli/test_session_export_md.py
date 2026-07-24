@@ -87,6 +87,39 @@ def test_safe_session_filename_is_deterministic_and_path_safe():
     assert "?" not in filename
 
 
+def test_safe_session_filename_sanitizes_traversal_id():
+    # Session ids can come from the untrusted X-Hermes-Session-Id header and
+    # are interpolated raw into the export filename; a traversal-shaped id must
+    # collapse to a single path-free segment.
+    filename = safe_session_filename(
+        _session(id="../../../../tmp/pwned", title="x"), fmt="md"
+    )
+
+    assert "/" not in filename
+    assert ".." not in filename
+    assert filename.endswith(".md")
+
+
+def test_safe_session_filename_strips_non_ascii_session_id():
+    # ``\w`` is Unicode-aware in Python, so a naive ``[^\w-]`` class would let
+    # Unicode homoglyphs (e.g. a Cyrillic "а") survive into the filename. The
+    # sanitizer must be ASCII-only so only ``[A-Za-z0-9_-]`` pass through.
+    filename = safe_session_filename(_session(id="аdmin", title="x"), fmt="md")
+
+    assert "а" not in filename
+    # The Cyrillic char collapses to "_" (stripped from the head), the ASCII
+    # tail survives, and a disambiguating hash is appended since the id changed.
+    assert filename.startswith("dmin_")
+
+
+def test_write_session_markdown_contains_traversal_id_within_output_dir(tmp_path):
+    path = write_session_markdown(_session(id="../pwned", title="x"), tmp_path)
+
+    resolved = path.resolve()
+    assert resolved.is_file()
+    assert tmp_path.resolve() in resolved.parents
+
+
 def test_render_session_markdown_includes_logical_lineage_segments():
     rendered = render_session_markdown(
         _session(

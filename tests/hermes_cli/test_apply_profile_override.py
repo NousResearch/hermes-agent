@@ -44,6 +44,11 @@ def _run_apply_profile_override(
 
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
 
+    # Clear the PID-scoped run-once sentinel from issue #66907 so that
+    # _apply_profile_override actually executes inside this test process
+    # (previous test functions in the same pytest process may have set it).
+    os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
+
     from hermes_cli.main import _apply_profile_override
     _apply_profile_override()
 
@@ -105,6 +110,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
 
         from hermes_cli.main import _apply_profile_override
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") == str(profile_dir), (
@@ -144,6 +150,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
 
         from hermes_cli.main import _apply_profile_override
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") == str(profile_dir)
@@ -160,6 +167,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         (hermes_root / "active_profile").write_text("default")
 
         from hermes_cli.main import _apply_profile_override
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
@@ -194,6 +202,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(sys, "argv", list(argv))
 
         from hermes_cli.main import _apply_profile_override
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
@@ -278,6 +287,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "run"])
 
         from hermes_cli.main import _apply_profile_override
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") == str(hermes_root), (
@@ -317,6 +327,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
 
         from hermes_cli.main import _apply_profile_override
+        os.environ.pop("_HERMES_PROFILE_OVERRIDE_APPLIED", None)
         _apply_profile_override()
 
         result = os.environ.get("HERMES_HOME")

@@ -503,6 +503,17 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    # PID-scoped run-once sentinel: under `python -m hermes_cli.main` the
+    # module executes twice (once as __main__, once as import).  The first
+    # pass strips --profile from sys.argv; the second pass would then fall
+    # through to active_profile and silently rebind HERMES_HOME to a
+    # different profile.  This guard prevents the second pass.
+    # See issue #66907.
+    _sentinel_key = "_HERMES_PROFILE_OVERRIDE_APPLIED"
+    if os.environ.get(_sentinel_key) == str(os.getpid()):
+        return
+    os.environ[_sentinel_key] = str(os.getpid())
+
     argv = sys.argv[1:]
     profile_name = None
     consume = 0

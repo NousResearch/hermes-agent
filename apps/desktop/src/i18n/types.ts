@@ -723,6 +723,11 @@ export interface Translations {
       messages: (count: number) => string
       restored: string
       deleteConfirm: (title: string) => string
+      autoArchiveTitle: string
+      autoArchiveDesc: string
+      autoArchiveDaysLabel: string
+      autoArchiveDaysUnit: string
+      autoArchiveFailed: string
       defaultDirTitle: string
       defaultDirDesc: string
       defaultDirUpdated: string

@@ -546,6 +546,19 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   })
 }
 
+// Mirror a sidebar pin to the backend "keep" flag so the sessions.auto_archive
+// sweep (which runs backend-side, blind to Desktop localStorage) never hides a
+// pinned chat. Best-effort: the sidebar stays localStorage-driven for its own
+// display; this only feeds the backend policy.
+export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { pinned }
+  })
+}
+
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
   return window.hermesDesktop.api<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`

@@ -1632,3 +1632,66 @@ class TestListenForSpeechCapture:
         monkeypatch.setattr("tools.voice_mode._import_audio", MagicMock(side_effect=OSError("no audio")))
         from tools.voice_mode import listen_for_speech
         assert listen_for_speech(lambda: False, capture=True) is None
+
+
+# ============================================================================
+# Device-native input sample rate — mics that reject 16 kHz capture
+# ============================================================================
+
+class TestDefaultInputSamplerate:
+    def test_uses_device_default_rate(self):
+        from tools.voice_mode import _default_input_samplerate
+
+        sd = MagicMock()
+        sd.query_devices.return_value = {"default_samplerate": 44100.0}
+        assert _default_input_samplerate(sd) == 44100
+
+    def test_falls_back_when_query_fails(self):
+        from tools.voice_mode import SAMPLE_RATE, _default_input_samplerate
+
+        sd = MagicMock()
+        sd.query_devices.side_effect = RuntimeError("no device")
+        assert _default_input_samplerate(sd) == SAMPLE_RATE
+
+    def test_falls_back_on_non_numeric_rate(self):
+        from tools.voice_mode import SAMPLE_RATE, _default_input_samplerate
+
+        sd = MagicMock()
+        sd.query_devices.return_value = {"default_samplerate": None}
+        assert _default_input_samplerate(sd) == SAMPLE_RATE
+
+    def test_recorder_opens_stream_at_device_rate(self, mock_sd):
+        mock_sd.query_devices.return_value = {"default_samplerate": 48000.0}
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()
+
+        assert recorder.is_recording is True
+        assert mock_sd.InputStream.call_args.kwargs["samplerate"] == 48000
+
+    def test_wav_written_at_capture_rate(self, mock_sd, temp_voice_dir):
+        np = pytest.importorskip("numpy")
+
+        mock_sd.query_devices.return_value = {"default_samplerate": 48000.0}
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder.start()
+
+        # 1 second of loud audio at the device rate (above RMS threshold)
+        frame = np.full((48000, 1), 1000, dtype="int16")
+        recorder._frames = [frame]
+        recorder._peak_rms = 1000
+
+        wav_path = recorder.stop()
+
+        assert wav_path is not None
+        with wave.open(wav_path, "rb") as wf:
+            assert wf.getframerate() == 48000

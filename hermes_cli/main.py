@@ -15086,6 +15086,14 @@ def main():
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
     )
+    sessions_list.add_argument(
+        "--sort",
+        choices=("started", "last-active"),
+        default=None,
+        help="Sort order: 'started' by session creation time, "
+        "'last-active' by most recent message "
+        "(default: sessions.list_sort from config.yaml)",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -15441,8 +15449,17 @@ def main():
         if action == "list":
             from hermes_state import workspace_key as _ws_key
 
+            # Resolve sort: CLI flag > config > default
+            _sort = getattr(args, "sort", None)
+            if _sort is None:
+                from hermes_cli.config import load_config as _load_cfg
+                _sort = (_load_cfg().get("sessions") or {}).get("list_sort", "last-active")
+
             sessions = db.list_sessions_rich(
-                source=args.source, exclude_sources=_exclude, limit=args.limit
+                source=args.source,
+                exclude_sources=_exclude,
+                limit=args.limit,
+                order_by_last_active=(_sort == "last-active"),
             )
 
             # Workspace filter: match a session by its workspace key (git repo

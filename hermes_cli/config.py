@@ -3277,6 +3277,10 @@ DEFAULT_CONFIG = {
         # attributable per query shape. 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS (internal carrier).
         "search_slow_ms": 1000,
+        # Default sort order for ``hermes sessions list``:
+        #   "started" — session creation time (old default)
+        #   "last-active" — most recent message timestamp
+        "list_sort": "last-active",
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).

@@ -475,6 +475,56 @@ def _secure_file(path: Path):
         pass
 
 
+def _resolve_hermes_uid_gid() -> tuple:
+    """Read HERMES_UID / HERMES_GID env vars set by Docker deployments.
+
+    Returns ``(uid, gid)`` parsed from the env vars, or ``(None, None)``
+    when either is missing/invalid. Returns ``(None, None)`` on Windows
+    too (where chown is a no-op anyway).
+    """
+    if os.name == "nt":
+        return None, None
+    uid_str = os.environ.get("HERMES_UID", "").strip()
+    gid_str = os.environ.get("HERMES_GID", "").strip()
+    try:
+        uid = int(uid_str) if uid_str else None
+    except ValueError:
+        uid = None
+    try:
+        gid = int(gid_str) if gid_str else None
+    except ValueError:
+        gid = None
+    return uid, gid
+
+
+def _chown_to_hermes_uid(path: Path) -> None:
+    """Chown ``path`` to ``HERMES_UID:HERMES_GID`` if those env vars are set.
+
+    No-op when:
+      - Either env var is unset/invalid
+      - The current process isn't root (chown will EPERM — silently ignored)
+      - On Windows (chown semantics don't apply)
+
+    Prevents root lockout on Docker deployments where ``hermes cron`` CLI
+    runs as root (via ``docker exec``) and would otherwise create
+    ``jobs.json`` owned by root:root with mode 0600, making it unreadable
+    by the gateway user (#68483).
+    """
+    uid, gid = _resolve_hermes_uid_gid()
+    if uid is None and gid is None:
+        return
+    try:
+        os.chown(
+            path,
+            uid if uid is not None else -1,
+            gid if gid is not None else -1,
+        )
+    except (OSError, AttributeError, NotImplementedError):
+        # OSError covers EPERM (not running as root) and ENOENT (race),
+        # both of which are non-fatal.
+        pass
+
+
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     store = _current_cron_store()
@@ -482,6 +532,8 @@ def ensure_dirs():
     store.output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(store.cron_dir)
     _secure_dir(store.output_dir)
+    _chown_to_hermes_uid(store.cron_dir)
+    _chown_to_hermes_uid(store.output_dir)
 
 
 # =============================================================================
@@ -935,6 +987,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
             os.fsync(f.fileno())
         atomic_replace(tmp_path, jobs_file)
         _secure_file(jobs_file)
+        _chown_to_hermes_uid(jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)

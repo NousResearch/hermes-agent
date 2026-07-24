@@ -437,6 +437,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
+        assert "OOMPolicy=continue" in unit
         # The default drain is immediate, so keep a bounded 60-second stop
         # budget without forcing every restart to wait 90 seconds.
         assert self._expected_timeout_stop_sec() in unit
@@ -555,6 +556,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
+        assert "OOMPolicy=continue" in unit
         # The default drain is immediate, so keep a bounded 60-second stop
         # budget without forcing every restart to wait 90 seconds.
         assert self._expected_timeout_stop_sec() in unit

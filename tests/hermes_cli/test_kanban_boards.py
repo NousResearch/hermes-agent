@@ -61,6 +61,8 @@ def fresh_home(tmp_path, monkeypatch):
         pass
     # Kanban module-level init cache must not leak between tests.
     kb._INITIALIZED_PATHS.clear()
+    # ContextVar must not leak between tests (activate_board sets it).
+    kb._CURRENT_BOARD_OVERRIDE.set(None)
     return home
 
 
@@ -206,6 +208,50 @@ class TestCurrentBoard:
         kb.set_current_board("my-proj")
         expected = fresh_home / "kanban" / "boards" / "my-proj" / "kanban.db"
         assert kb.kanban_db_path() == expected
+
+    def test_boards_switch_takes_effect_with_env_pinned(self, fresh_home, monkeypatch):
+        """Switching boards in-session must override the env var pinned at
+        chat boot (#53180).
+
+        ``_pin_kanban_board_for_chat`` sets ``HERMES_KANBAN_BOARD`` at chat
+        startup so in-process and shelled-out calls agree.  Without an
+        in-session override, ``boards switch`` writes the ``current`` file
+        but the pinned env var shadows it and the running session keeps the
+        old board.
+        """
+        import argparse
+        from hermes_cli import kanban
+
+        kb.create_board("alpha")
+        kb.create_board("beta")
+        # Simulate _pin_kanban_board_for_chat at chat boot.
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "alpha")
+        assert kb.get_current_board() == "alpha"
+
+        args = argparse.Namespace(slug="beta")
+        rc = kanban._cmd_boards_switch(args)
+        assert rc == 0
+
+        # The switch must take effect in the running session, not just on disk.
+        assert kb.get_current_board() == "beta"
+
+    def test_activate_board_overrides_pinned_env(self, fresh_home, monkeypatch):
+        """``activate_board`` sets the ContextVar so it beats a pinned env var."""
+        kb.create_board("alpha")
+        kb.create_board("beta")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "alpha")
+        assert kb.get_current_board() == "alpha"
+
+        kb.activate_board("beta")
+        assert kb.get_current_board() == "beta"
+        # Env var is also synced so shelled-out calls agree.
+        assert os.environ["HERMES_KANBAN_BOARD"] == "beta"
+
+    def test_activate_board_persists_file(self, fresh_home):
+        """``activate_board`` also writes the ``current`` file for future sessions."""
+        kb.create_board("alpha")
+        kb.activate_board("alpha")
+        assert kb.current_board_path().read_text(encoding="utf-8").strip() == "alpha"
 
 
 # ---------------------------------------------------------------------------

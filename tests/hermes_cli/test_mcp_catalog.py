@@ -895,3 +895,176 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# Issue #33119: validate mcp_servers entries on load (skip-with-warning).
+#
+# Third-party tools (e.g. `codegraph install -t hermes`) can write malformed
+# rows directly to ~/.hermes/config.yaml. Both `_get_mcp_servers` (CLI picker)
+# and `tools.mcp_tool._load_mcp_config` (runtime discovery) must:
+#   - drop entries whose value is not a dict
+#   - drop entries with neither `command` (stdio) nor `url` (http)
+#   - log a warning naming the bad entry + concrete reason
+#   - leave valid entries unchanged
+# ---------------------------------------------------------------------------
+
+
+class TestMcpConfigValidation:
+    """Validate `mcp_servers` entries at load time — issue #33119."""
+
+    # ---- CLI side: hermes_cli.mcp_config._get_mcp_servers ----------------
+
+    def test_cli_skips_non_dict_entry(self, caplog):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        config = {"mcp_servers": {"broken": "oops_string"}}
+        with caplog.at_level("WARNING", logger="hermes_cli.mcp_config"):
+            result = _get_mcp_servers(config)
+
+        assert result == {}
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "broken" in joined
+        assert "not a dict" in joined
+
+    def test_cli_skips_entry_missing_command_and_url(self, caplog):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        config = {"mcp_servers": {"empty": {"args": ["--help"]}}}
+        with caplog.at_level("WARNING", logger="hermes_cli.mcp_config"):
+            result = _get_mcp_servers(config)
+
+        assert result == {}
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "empty" in joined
+        assert "command" in joined and "url" in joined
+
+    def test_cli_passes_valid_stdio_entry_through(self):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        good = {"command": "codex", "args": ["mcp-server"]}
+        config = {"mcp_servers": {"codex": good}}
+        result = _get_mcp_servers(config)
+
+        assert result == {"codex": good}
+
+    def test_cli_passes_valid_http_entry_through(self):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        good = {"url": "https://example.com/mcp"}
+        config = {"mcp_servers": {"remote": good}}
+        result = _get_mcp_servers(config)
+
+        assert result == {"remote": good}
+
+    def test_cli_mixed_config_keeps_good_drops_bad(self, caplog):
+        from hermes_cli.mcp_config import _get_mcp_servers
+
+        good = {"command": "codex", "args": ["mcp-server"]}
+        config = {
+            "mcp_servers": {
+                "codex": good,
+                "broken_str": "oops",
+                "broken_empty": {"args": []},
+                "broken_list": [1, 2, 3],
+                "broken_none": None,
+                "remote": {"url": "https://example.com/mcp"},
+            }
+        }
+        with caplog.at_level("WARNING", logger="hermes_cli.mcp_config"):
+            result = _get_mcp_servers(config)
+
+        assert set(result.keys()) == {"codex", "remote"}
+        assert result["codex"] == good
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        for bad in ("broken_str", "broken_empty", "broken_list", "broken_none"):
+            assert bad in joined, f"warning missing for {bad}: {joined!r}"
+
+    # ---- Runtime side: tools.mcp_tool._load_mcp_config -------------------
+
+    def test_runtime_skips_non_dict_entry(self, caplog, monkeypatch):
+        import tools.mcp_tool as mcp_mod
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "_load_mcp_config",
+            mcp_mod._load_mcp_config,  # use real function
+        )
+        # Stub hermes_cli.config.load_config so we control the input.
+        import hermes_cli.config as cfg_mod
+        monkeypatch.setattr(
+            cfg_mod, "load_config",
+            lambda: {"mcp_servers": {"broken": "oops_string"}},
+        )
+
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            result = mcp_mod._load_mcp_config()
+
+        assert result == {}
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "broken" in joined
+        assert "not a dict" in joined
+
+    def test_runtime_skips_entry_missing_command_and_url(self, caplog, monkeypatch):
+        import tools.mcp_tool as mcp_mod
+        import hermes_cli.config as cfg_mod
+
+        monkeypatch.setattr(
+            cfg_mod, "load_config",
+            lambda: {"mcp_servers": {"empty": {"args": ["--foo"]}}},
+        )
+
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            result = mcp_mod._load_mcp_config()
+
+        assert result == {}
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "empty" in joined
+        assert "command" in joined and "url" in joined
+
+    def test_runtime_mixed_config_keeps_good_drops_bad(self, caplog, monkeypatch):
+        import tools.mcp_tool as mcp_mod
+        import hermes_cli.config as cfg_mod
+
+        good = {"command": "codex", "args": ["mcp-server"]}
+        monkeypatch.setattr(
+            cfg_mod, "load_config",
+            lambda: {
+                "mcp_servers": {
+                    "codex": good,
+                    "broken_str": "oops",
+                    "broken_empty": {"timeout": 5},
+                    "remote": {"url": "https://example.com/mcp"},
+                }
+            },
+        )
+
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            result = mcp_mod._load_mcp_config()
+
+        assert set(result.keys()) == {"codex", "remote"}
+        assert result["codex"] == good
+        joined = " ".join(rec.getMessage() for rec in caplog.records)
+        assert "broken_str" in joined
+        assert "broken_empty" in joined
+
+    def test_runtime_validate_entry_helper(self):
+        from tools.mcp_tool import _validate_mcp_entry
+
+        ok, reason = _validate_mcp_entry("good", {"command": "x"})
+        assert ok is True and reason == ""
+
+        ok, reason = _validate_mcp_entry("good", {"url": "https://x"})
+        assert ok is True and reason == ""
+
+        ok, reason = _validate_mcp_entry("bad_str", "oops")
+        assert ok is False and "not a dict" in reason
+
+        ok, reason = _validate_mcp_entry("bad_list", [1, 2])
+        assert ok is False and "not a dict" in reason
+
+        ok, reason = _validate_mcp_entry("bad_none", None)
+        assert ok is False and "not a dict" in reason
+
+        ok, reason = _validate_mcp_entry("bad_empty", {"timeout": 5})
+        assert ok is False and "command" in reason and "url" in reason

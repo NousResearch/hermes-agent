@@ -76,13 +76,39 @@ def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
-    """Return the ``mcp_servers`` dict from config, or empty dict."""
+    """Return the ``mcp_servers`` dict from config, or empty dict.
+
+    Malformed entries (non-dict values, or entries missing both
+    ``command`` and ``url``) are filtered out with a warning so a single
+    bad row written by a third-party installer cannot break the
+    ``hermes mcp`` picker / list / test commands (issue #33119). The
+    rules mirror :func:`tools.mcp_tool._validate_mcp_entry`.
+    """
     if config is None:
         config = load_config()
     servers = config.get("mcp_servers")
     if not servers or not isinstance(servers, dict):
         return {}
-    return servers
+    validated: Dict[str, dict] = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            logger.warning(
+                "Skipping malformed mcp_servers entry %r: entry value is "
+                "not a dict (got %s). Fix or remove this entry in "
+                "~/.hermes/config.yaml.",
+                name, type(cfg).__name__,
+            )
+            continue
+        if not cfg.get("command") and not cfg.get("url"):
+            logger.warning(
+                "Skipping malformed mcp_servers entry %r: declares "
+                "neither 'command' (stdio) nor 'url' (http). Fix or "
+                "remove this entry in ~/.hermes/config.yaml.",
+                name,
+            )
+            continue
+        validated[name] = cfg
+    return validated
 
 
 def _save_mcp_server(name: str, server_config: dict) -> bool:

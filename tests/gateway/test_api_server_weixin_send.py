@@ -301,6 +301,50 @@ class TestAuditLogging:
         assert "result=ok" in line
 
     @pytest.mark.asyncio
+    async def test_audit_log_uses_x_forwarded_for(self, caplog):
+        adapter = _make_adapter()
+        wx = _fake_weixin_adapter(success=True, message_id="msg-1")
+        adapter._peer_adapters[Platform.WEIXIN] = wx
+        app = _create_app(adapter)
+
+        with caplog.at_level(logging.INFO, logger="gateway.platforms.api_server"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/api/weixin/send",
+                    json={"chat_id": VALID_CHAT_ID, "message": "test"},
+                    headers={"X-Forwarded-For": "203.0.113.1, 10.0.0.1"},
+                )
+
+        assert resp.status == 200
+
+        audit_lines = [r.message for r in caplog.records
+                       if "[weixin-send-audit]" in r.message]
+        assert len(audit_lines) == 1
+        assert "caller=203.0.113.1" in audit_lines[0]
+
+    @pytest.mark.asyncio
+    async def test_audit_log_on_auth_failed(self, caplog):
+        adapter = _make_adapter()
+        adapter._api_key = "correct-key"
+        app = _create_app(adapter)
+
+        with caplog.at_level(logging.INFO, logger="gateway.platforms.api_server"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/api/weixin/send",
+                    json={"chat_id": VALID_CHAT_ID, "message": "test"},
+                    headers={"Authorization": "Bearer wrong-key"},
+                )
+
+        assert resp.status == 401
+
+        audit_lines = [r.message for r in caplog.records
+                       if "[weixin-send-audit]" in r.message]
+        assert len(audit_lines) == 1
+        assert "result=auth_failed" in audit_lines[0]
+        assert "caller=" in audit_lines[0]
+
+    @pytest.mark.asyncio
     async def test_audit_log_on_failure(self, caplog):
         adapter = _make_adapter()
         wx = _fake_weixin_adapter(success=False, error="timeout")

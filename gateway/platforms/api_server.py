@@ -1368,7 +1368,16 @@ class APIServerAdapter(BasePlatformAdapter):
         Returns: {"success": true/false, "message_id": "...", "error": "..."}
         """
         # --- caller identity for audit ---
-        caller = request.remote or "unknown"
+        # X-Forwarded-For is trusted only when the deployment's reverse proxy
+        # strips external values (e.g. nginx proxy_set_header).  Without a
+        # trusted proxy the header can be spoofed -- do not rely on it for
+        # authentication; it is used only for audit logging.
+        caller = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or request.remote
+            or "unknown"
+        )
 
         auth_err = self._check_auth(request)
         if auth_err:
@@ -1432,10 +1441,11 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             result = await weixin_adapter.send(chat_id=chat_id, content=message)
             logger.info(
-                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=%s error=%s",
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=%s msg_id=%s error=%s",
                 time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
                 chat_id, len(message),
                 "ok" if result.success else "send_failed",
+                result.message_id or "",
                 result.error or "",
             )
             resp: Dict[str, Any] = {"success": result.success}
@@ -1452,6 +1462,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
                 chat_id, len(message), error_str,
             )
+            logger.exception("weixin send failed for %s", chat_id)
             # iLink session conflicts surface as ret=-2
             if "ret=-2" in error_str or "session" in error_str.lower():
                 return web.json_response(

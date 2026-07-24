@@ -226,6 +226,22 @@ def test_equivalent_windows_cwds_collapse_into_one_auto_project():
     assert len(project["repos"][0]["groups"][0]["sessions"]) == 3
 
 
+def test_windows_main_checkout_uses_path_identity_not_display_spelling():
+    cwd = r"D:\IvoDimitrov-Universe"
+    resolve = _resolver({cwd: (cwd, "D:/IvoDimitrov-Universe")})
+
+    tree = pt.build_tree([], [_session(cwd, branch="master")], [], resolve, hydrate=True)
+    project = tree["projects"][0]
+    repo = project["repos"][0]
+
+    assert repo["id"] == cwd
+    assert repo["path"] == cwd
+    assert len(repo["groups"]) == 1
+    assert repo["groups"][0]["isMain"] is True
+    assert repo["groups"][0]["id"] == f"{cwd}::branch::master"
+    assert repo["groups"][0]["path"] == cwd
+
+
 def test_windows_path_identity_preserves_explicit_project_priority():
     explicit = _project("p_notes", "Notes", ["C:/Work/Notes"])
     session = _session("c:\\work\\notes\\")

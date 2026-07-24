@@ -181,7 +181,7 @@ export function mergeRepoWorktreeGroups(
     const branch = worktree.branch?.trim()
 
     if (wtPath && branch && !worktree.detached) {
-      liveBranchByPath.set(wtPath, branch)
+      liveBranchByPath.set(pathKey(wtPath), branch)
       livePathByBranch.set(branch.toLowerCase(), worktree.path.trim())
     }
   }
@@ -207,7 +207,7 @@ export function mergeRepoWorktreeGroups(
       return group
     }
 
-    const branchForPath = liveBranchByPath.get(normalizePath(group.path))
+    const branchForPath = liveBranchByPath.get(pathKey(group.path))
 
     if (branchForPath) {
       return branchForPath !== group.label ? { ...group, label: branchForPath } : group
@@ -215,7 +215,7 @@ export function mergeRepoWorktreeGroups(
 
     const livePath = livePathByBranch.get(normalize(group.label))
 
-    if (livePath && normalizePath(livePath) !== normalizePath(group.path)) {
+    if (livePath && pathKey(livePath) !== pathKey(group.path)) {
       return { ...group, id: livePath, path: livePath }
     }
 
@@ -258,7 +258,7 @@ export function mergeRepoWorktreeGroups(
   const merged: SidebarSessionGroup[] = []
 
   for (const group of reconciled) {
-    const key = !group.isMain && group.path ? normalizePath(group.path) : ''
+    const key = !group.isMain && group.path ? pathKey(group.path) : ''
     const existing = key ? byPath.get(key) : undefined
 
     if (existing) {
@@ -278,7 +278,7 @@ export function mergeRepoWorktreeGroups(
   }
 
   const seenIds = new Set(merged.map(group => group.id))
-  const seenPaths = new Set(merged.map(group => group.path).filter((path): path is string => Boolean(path)))
+  const seenPaths = new Set(merged.map(group => pathKey(group.path)).filter(Boolean))
   // Dedupe by branch label too: a branch shows once even if it's checked out in
   // a linked worktree AND already has a session lane.
   const seenLabels = new Set(merged.map(group => group.label.toLowerCase()))
@@ -310,7 +310,7 @@ export function mergeRepoWorktreeGroups(
     const id = worktree.isMain ? branchLaneId(repo.id, label) : wtPath
 
     const alreadySeen =
-      seenIds.has(id) || seenLabels.has(label.toLowerCase()) || (!worktree.isMain && seenPaths.has(wtPath))
+      seenIds.has(id) || seenLabels.has(label.toLowerCase()) || (!worktree.isMain && seenPaths.has(pathKey(wtPath)))
 
     if (alreadySeen) {
       continue
@@ -318,7 +318,7 @@ export function mergeRepoWorktreeGroups(
 
     merged.push({ id, isMain: worktree.isMain, label, path: wtPath, sessions: [] })
     seenIds.add(id)
-    seenPaths.add(wtPath)
+    seenPaths.add(pathKey(wtPath))
     seenLabels.add(label.toLowerCase())
   }
 

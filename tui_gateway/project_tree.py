@@ -171,7 +171,7 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
     if info and info.get("repo_root") and info.get("worktree_root"):
         repo_root = info["repo_root"]
         worktree_root = info["worktree_root"]
-        is_main = worktree_root == repo_root or bool(info.get("is_main"))
+        is_main = _path_key(worktree_root) == _path_key(repo_root) or bool(info.get("is_main"))
 
         if is_main:
             # Unrecorded branch folds into the one trunk lane, so a repo never

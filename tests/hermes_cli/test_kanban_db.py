@@ -2086,6 +2086,63 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_active_pr_requires_requeue_after_latest_pr_comment(
+    kanban_home,
+):
+    """A recognized requeue resumes the existing PR lane, but not a newer PR."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="repair-existing-pr", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 30),
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, ?, ?)",
+            (t, "operator_requeue", now - 20),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'New PR: https://github.com/totemx-AI/subsidysmart/pull/43', ?)",
+            (t, now - 10),
+        )
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
+@pytest.mark.parametrize(
+    "event_kind",
+    ("status", "promoted", "promoted_manual", "unblocked", "reclaimed"),
+)
+def test_respawn_guard_active_pr_rejects_non_requeue_lifecycle_events(
+    kanban_home, event_kind,
+):
+    """Only an operator requeue can restart a lane that already has a PR."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reject-implicit-pr-respawn", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 30),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, ?, ?)",
+            (t, event_kind, now - 20),
+        )
+
+        assert kb.check_respawn_guard(conn, t) == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):

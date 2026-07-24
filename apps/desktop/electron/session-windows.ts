@@ -17,8 +17,8 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // false`, so a streamed answer stalled until the window regained focus.
 //
 // `backgroundThrottling: false` is load-bearing: the transcript streams to the
-// screen through a requestAnimationFrame-gated flush, which Chromium pauses for
-// blurred/occluded windows. A streaming chat app must keep painting in the
+// screen through a bounded timer flush, which Chromium clamps for blurred/
+// occluded windows. A streaming chat app must keep painting in the
 // background, so every chat window opts out. The preload path is injected
 // because it depends on the Electron entry's __dirname.
 function chatWindowWebPreferences(preloadPath: string) {

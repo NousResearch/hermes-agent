@@ -215,3 +215,29 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_loopback_websocket_accepts_configured_public_url_origin(self, monkeypatch):
+        """Cloudflare/SSH-tunnel dashboards keep the backend bound to 127.0.0.1
+        while the browser's WebSocket Origin is the configured public URL."""
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(
+            ws,
+            "load_config",
+            lambda: {"dashboard": {"public_url": "https://jarvis.sw-dev.uk"}},
+        )
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "localhost:9119",
+                "Origin": "https://jarvis.sw-dev.uk",
+            },
+        ):
+            pass

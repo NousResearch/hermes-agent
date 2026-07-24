@@ -77,10 +77,11 @@ def test_install_psutil_android_compat_uses_patched_tree(tmp_path):
         shutil.copyfile(archive, dest)
         return str(dest), None
 
-    def fake_run_install(cmd: list[str], *, env=None):
+    def fake_run_install(cmd: list[str], *, env=None, cwd=None):
         src_root = Path(cmd[-1])
         captured["cmd"] = cmd
         captured["env"] = env
+        captured["cwd"] = cwd
         captured["common_py"] = (src_root / "psutil" / "_common.py").read_text(
             encoding="utf-8"
         )

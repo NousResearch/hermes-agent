@@ -101,6 +101,7 @@ class TestVerifyConsoleScriptsInstalled:
             ["uv", "pip", "install", "-e", ".[all]"],
             env={"VIRTUAL_ENV": "x"},
             scripts_dir=None,
+            cwd=None,
         )
         mock_verify.assert_called_once_with(["uv", "pip"], env={"VIRTUAL_ENV": "x"})
 

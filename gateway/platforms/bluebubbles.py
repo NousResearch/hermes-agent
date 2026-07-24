@@ -310,10 +310,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """Compute the external webhook URL for BlueBubbles registration."""
+        """Compute the external webhook URL for BlueBubbles registration.
+
+        Normalises loopback and wildcard hosts to ``127.0.0.1`` (explicit
+        IPv4).  On macOS, Node.js (used by the BlueBubbles server) resolves
+        ``localhost`` to IPv6 ``::1`` first, but the aiohttp webhook listener
+        only binds IPv4 ``127.0.0.1`` — so a ``localhost`` URL causes webhook
+        deliveries to fail with ``ECONNREFUSED ::1``.  Using the IPv4 literal
+        ensures BlueBubbles POSTs to the address the listener is actually on.
+        """
         host = self.webhook_host
         if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property
@@ -356,11 +364,46 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         BlueBubbles requires webhooks to be registered via API before
         it will send events.  Checks for an existing registration first
         to avoid duplicates (e.g. after a crash without clean shutdown).
+
+        Also migrates any stale ``localhost``-based registrations left by
+        earlier Hermes versions that normalised loopback hosts to
+        ``localhost`` instead of ``127.0.0.1``.  Without this cleanup the
+        old registration persists as a dead entry (the cleanup in
+        :meth:`_unregister_webhook` only removes the *current* URL), and
+        BlueBubbles may still attempt to deliver to the broken URL.
         """
         if not self.client:
             return False
 
         webhook_url = self._webhook_register_url
+
+        # Migrate stale localhost registrations from pre-IPv4-fix versions
+        for legacy_url in self._legacy_webhook_urls:
+            legacy_with_pw = (
+                f"{legacy_url}?password={quote(self.password, safe='')}"
+                if self.password else legacy_url
+            )
+            stale = await self._find_registered_webhooks(legacy_with_pw)
+            for wh in stale:
+                wh_id = wh.get("id")
+                if wh_id:
+                    try:
+                        await self.client.delete(
+                            self._api_url(f"/api/v1/webhook/{wh_id}")
+                        )
+                        logger.info(
+                            "[bluebubbles] migrated legacy localhost webhook "
+                            "(id=%s) → %s",
+                            wh_id,
+                            self._webhook_register_url_for_log,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[bluebubbles] failed to remove legacy webhook "
+                            "id=%s (non-critical): %s",
+                            wh_id,
+                            exc,
+                        )
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
@@ -398,6 +441,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 exc,
             )
             return False
+
+    @property
+    def _legacy_webhook_urls(self) -> list[str]:
+        """Prior webhook URL variants that may have stale registrations.
+
+        Before the IPv4 fix, local hosts were normalised to ``localhost``.
+        Any existing BlueBubbles registration using that old URL will not
+        be found by :meth:`_find_registered_webhooks` (which matches the
+        *current* URL) and will survive as a dead registration unless we
+        explicitly clean it up.
+        """
+        urls: list[str] = []
+        # The pre-fix code normalised all loopback/wildcard hosts to
+        # "localhost", so if the current host is one of those, the old
+        # registration would have used "localhost" as the host.
+        if self.webhook_host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
+            legacy = f"http://localhost:{self.webhook_port}{self.webhook_path}"
+            if legacy != self._webhook_url:
+                urls.append(legacy)
+        return urls
 
     async def _unregister_webhook(self) -> bool:
         """Unregister this webhook URL from the BlueBubbles server.

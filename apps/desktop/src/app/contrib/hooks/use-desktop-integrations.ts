@@ -14,7 +14,7 @@ import {
 } from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
-import { isSecondaryWindow } from '@/store/windows'
+import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
@@ -28,6 +28,17 @@ interface DesktopIntegrationsParams {
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
+}
+
+export function shouldRestoreRememberedLocation(
+  locationPathname: string,
+  newSessionWindow: boolean
+): boolean {
+  return locationPathname === NEW_CHAT_ROUTE && !newSessionWindow
+}
+
+export function shouldPersistRememberedLocation(newSessionWindow: boolean): boolean {
+  return !newSessionWindow
 }
 
 /**
@@ -68,8 +79,13 @@ export function useDesktopIntegrations({
   // Remember the open chat (session id for notifications/resume) AND the last
   // non-overlay route (a page like /skills, or a session route) so a relaunch
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
-  // you don't want to boot into a modal.
+  // you don't want to boot into a modal. Compact `new=1` windows stay isolated,
+  // so they neither restore nor overwrite the shared remembered history.
   useEffect(() => {
+    if (!shouldPersistRememberedLocation(isNewSessionWindow())) {
+      return
+    }
+
     if (routedSessionId) {
       setRememberedSessionId(
         routedSessionId,
@@ -84,11 +100,13 @@ export function useDesktopIntegrations({
 
   const restoredRef = useRef(false)
 
-  // Restore once on cold start — only when the renderer booted at the default
-  // route (a hidden-then-shown window keeps its own route). Prefer the full
-  // remembered route (covers pages); fall back to the last session id.
+  // Restore once on cold start — only when the primary renderer booted at the
+  // default route (a hidden-then-shown window keeps its own route). A compact
+  // `new=1` window deliberately starts there too, but must remain an isolated
+  // draft instead of inheriting this shared localStorage history. Prefer the
+  // full remembered route (covers pages); fall back to the last session id.
   useEffect(() => {
-    if (restoredRef.current || locationPathname !== NEW_CHAT_ROUTE) {
+    if (restoredRef.current || !shouldRestoreRememberedLocation(locationPathname, isNewSessionWindow())) {
       restoredRef.current = true
 
       return
@@ -151,7 +169,7 @@ export function useDesktopIntegrations({
 
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\"')}"` : v
 
           return `${k}=${sval}`
         })

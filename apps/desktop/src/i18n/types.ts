@@ -295,6 +295,7 @@ export interface Translations {
       billing: string
       notifications: string
       plugins: string
+      backToChat: string
     }
     plugins: {
       title: string

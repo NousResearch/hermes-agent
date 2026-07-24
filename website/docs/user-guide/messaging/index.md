@@ -420,6 +420,13 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
+For periodic long-running heartbeat updates, Hermes can use generic status
+phrase catalogs instead of the default raw heartbeat. Enable the generic mode
+with `display.long_running_notifications: generic` globally, or with
+`display.platforms.<platform>.long_running_notifications: generic` per
+channel, then configure the matching `status_phrases` catalog; see
+[Gateway status phrases](/user-guide/configuration#gateway-status-phrases).
+
 ## Background Sessions
 
 Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:

@@ -11,7 +11,7 @@ changes.
 - [x] Build in small, testable increments and commit each coherent slice.
 - [x] Preserve the upstream architecture: stable prompt caching and a narrow
       core, with capabilities added through skills, plugins, and gated tools.
-- [ ] Record commands and evidence for every completed milestone below.
+- [x] Record commands and evidence for every completed milestone below.
 
 ## Milestone 0 — Establish the baseline
 
@@ -35,7 +35,7 @@ changes.
 
 ## Milestone 2 — CLI and local model path
 
-- [ ] Verify CLI help, diagnostics, setup, and non-interactive entry points.
+- [x] Verify CLI help, diagnostics, setup, and non-interactive entry points.
   - [x] `hermes --help` and `hermes doctor --help` load with isolated state.
   - [x] Run non-mutating diagnostics with repository-isolated state.
 - [x] Verify configuration can target the existing local Ollama service without
@@ -70,15 +70,15 @@ changes.
       documentation.
 - [x] Run dependency and secret scans available without external account setup.
 - [x] Review network listeners, command approval boundaries, and safe defaults.
-- [ ] Verify clean-start and upgrade paths using only repository-local fixtures.
+- [x] Verify clean-start and upgrade paths using only repository-local fixtures.
 
 ## Milestone 6 — Completion
 
 - [ ] Run the complete repository verification matrix.
-- [ ] Reconcile documentation with observed behavior.
+- [x] Reconcile documentation with observed behavior.
 - [x] Produce a concise operator guide for this machine.
 - [ ] Confirm the worktree is intentional and all changes are committed.
-- [ ] Record remaining items that truly require credentials, external services,
+- [x] Record remaining items that truly require credentials, external services,
       hardware, or user decisions.
 
 ## Evidence log
@@ -139,3 +139,12 @@ changes.
   audit reports zero vulnerabilities. Hermes OSV reports zero high/critical
   findings; setuptools 81 retains one moderate macOS-only finding because the
   fixed 83.x line conflicts with the documented Torch `<82` constraint.
+- 2026-07-24: Tracked-file secret-pattern scan found no candidates outside
+  explicit examples, documentation, redaction fixtures, skills, and tests.
+- 2026-07-24: Clean-start, setup, non-interactive CLI, installer divergence,
+  lockfile churn, no-initial-commit, and update paths passed under repository-
+  local fixtures in the complete suite.
+- 2026-07-24: Remaining external choice: install or select a local model with
+  a true >=64K context and reliable structured tool calling, or configure a
+  compatible remote provider. No model download or production credential was
+  added without user approval.

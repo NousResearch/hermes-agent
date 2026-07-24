@@ -192,6 +192,35 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
 # Argparse builder
 # ---------------------------------------------------------------------------
 
+def _nonneg_int(value: str) -> int:
+    """argparse type for a limit: reject negatives (0 = unlimited is kept)."""
+    iv = int(value)
+    if iv < 0:
+        raise argparse.ArgumentTypeError("must be >= 0 (0 = unlimited)")
+    return iv
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for a refresh interval: must be strictly positive.
+
+    A 0 would make the --tail loop time.sleep(0) and busy-spin; a negative
+    value only fails once Rich's Live alternate screen is already active.
+    Reject both at parse time.
+    """
+    iv = int(value)
+    if iv < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer (seconds)")
+    return iv
+
+
+# Kanban subcommands that render an unbounded live view (a `while True` loop
+# exited only by Ctrl-C). run_slash captures stdout synchronously, so over the
+# slash / gateway path these never return and hang the worker thread; reject
+# them there. Keyed by (action, requires --tail): "board" only loops with
+# --tail, while "tail"/"watch" always loop.
+_SLASH_UNBOUNDED_ACTIONS = frozenset({"tail", "watch"})
+
+
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Attach the ``kanban`` subcommand tree under an existing subparsers.
 
@@ -450,6 +479,46 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
+    )
+
+    # --- board (visual table view) ---
+    p_board = sub.add_parser(
+        "board",
+        help="Render the kanban board as a visual table",
+        description="Show all tasks grouped by status as columns in a Rich table.",
+    )
+    p_board.add_argument(
+        "--limit", type=_nonneg_int, default=5,
+        help="Max tasks per column (default 5; 0 = unlimited)",
+    )
+    p_board.add_argument(
+        "--show-all", "--all", action="store_true", dest="show_all",
+        help="Include the done and archived columns",
+    )
+    p_board.add_argument(
+        "--mine", action="store_true",
+        help="Only tasks assigned to $HERMES_PROFILE",
+    )
+    p_board.add_argument(
+        "--assignee", default=None,
+        help="Filter by assignee profile name",
+    )
+    p_board.add_argument(
+        "--json", action="store_true",
+        help="Output a flat JSON task list instead of the table",
+    )
+    p_board.add_argument(
+        "--tail", action="store_true",
+        help="Continuously refresh the board view (Ctrl+C to stop)",
+    )
+    p_board.add_argument(
+        "--refresh", type=_positive_int, default=5,
+        help="Seconds between refreshes in --tail mode (default 5)",
+    )
+    p_board.add_argument(
+        "--layout", choices=("auto", "columns", "stack"), default="auto",
+        help="auto (default: stack on narrow terminals), columns (force the "
+             "wide table), or stack (force the vertical list)",
     )
 
     # --- assign ---
@@ -1026,6 +1095,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "list":     _cmd_list,
             "ls":       _cmd_list,
             "show":     _cmd_show,
+            "board":    _cmd_board,
             "assign":   _cmd_assign,
             "set-model": _cmd_set_model,
             "reclaim":  _cmd_reclaim,
@@ -1546,6 +1616,102 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print("Workers: " + ", ".join(created.worker_ids))
         print(f"Verifier: {created.verifier_id}")
         print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
+def _cmd_board(args: argparse.Namespace) -> int:
+    """Handle ``hermes kanban board`` — render the board as a Rich table.
+
+    Board scope is already applied by ``kanban_command`` (the global
+    ``--board`` flag), so connections here open against the ambient board.
+    """
+    import time
+
+    from rich.console import Console
+
+    from hermes_cli.kanban_board_render import (
+        render_board,
+        render_board_stacked,
+        should_stack,
+    )
+
+    board_slug = kb.get_current_board()
+
+    assignee = args.assignee
+    if args.mine and not assignee:
+        assignee = _profile_author()
+
+    try:
+        other_count = max(0, len(kb.list_boards(include_archived=False)) - 1)
+    except Exception:
+        other_count = 0
+
+    limit = args.limit if (args.limit and args.limit > 0) else None
+
+    def _fetch_tasks() -> "list[kb.Task]":
+        with kb.connect_closing() as conn:
+            kb.recompute_ready(conn)
+            return kb.list_tasks(
+                conn, assignee=assignee, include_archived=args.show_all
+            )
+
+    if args.json:
+        tasks = _fetch_tasks()
+        print(json.dumps(
+            [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status,
+                    "assignee": t.assignee,
+                    "priority": t.priority,
+                }
+                for t in tasks
+            ],
+            indent=2,
+            ensure_ascii=False,
+        ))
+        return 0
+
+    console = Console()
+
+    def _build_view():
+        tasks = _fetch_tasks()
+        use_stack = args.layout == "stack" or (
+            args.layout == "auto"
+            and should_stack(console.size.width, show_all=args.show_all)
+        )
+        renderer = render_board_stacked if use_stack else render_board
+        return renderer(
+            tasks,
+            board_slug=board_slug,
+            other_board_count=other_count,
+            show_all=args.show_all,
+            limit=limit,
+        )
+
+    if args.tail:
+        from rich.live import Live
+
+        # Smooth in-place updates on the alternate screen (like top/htop),
+        # re-querying and re-rendering every --refresh seconds. screen=True
+        # restores the prior terminal contents on exit; auto_refresh=False
+        # stops Rich from redrawing the unchanged view between our updates.
+        try:
+            with Live(
+                _build_view(),
+                console=console,
+                screen=True,
+                auto_refresh=False,
+            ) as live:
+                while True:
+                    time.sleep(args.refresh)
+                    live.update(_build_view(), refresh=True)
+        except KeyboardInterrupt:
+            pass
+        return 0
+
+    console.print(_build_view())
     return 0
 
 
@@ -3197,6 +3363,19 @@ def run_slash(rest: str) -> str:
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
+
+    # Reject unbounded live views on the slash path: run_slash captures stdout
+    # synchronously, so a `while True` view never returns and hangs the gateway
+    # worker thread. "board" only loops with --tail; "tail"/"watch" always do.
+    _action = getattr(args, "kanban_action", None)
+    if _action in _SLASH_UNBOUNDED_ACTIONS or (
+        _action == "board" and getattr(args, "tail", False)
+    ):
+        _what = "board --tail" if _action == "board" else _action
+        return (
+            f"⚠ /kanban {_what} runs a live view that never returns here. "
+            f"Run it in an interactive terminal: hermes kanban {_what}."
+        )
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

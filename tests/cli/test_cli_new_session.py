@@ -53,8 +53,16 @@ class _FakeAgent:
         self.session_cost_source = "openrouter"
         self.context_compressor = _FakeCompressor()
 
-    def reset_session_state(self):
+    def reset_session_state(self, previous_messages=None, old_session_id=None, carry_over_context=False):
         """Mirror the real AIAgent.reset_session_state()."""
+        self.last_reset_call = {
+            "previous_messages": previous_messages,
+            "old_session_id": old_session_id,
+            "carry_over_context": carry_over_context,
+        }
+        engine = getattr(self, "context_compressor", None)
+        if carry_over_context and old_session_id and hasattr(engine, "carry_over_new_session_context"):
+            engine.carry_over_new_session_context(old_session_id, self.session_id)
         self.session_total_tokens = 0
         self.session_input_tokens = 0
         self.session_output_tokens = 0
@@ -229,6 +237,46 @@ def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
     cli.process_command("/new")
 
     assert engine_calls == [(old_session_id, [{"role": "user", "content": "hello"}])]
+
+
+def test_new_session_forwards_carry_over_to_engines_that_implement_it(tmp_path):
+    """/new must forward old_session_id/previous_messages/carry_over_context=True
+    to reset_session_state() when the active engine implements
+    carry_over_new_session_context (#33750's contract), so external context
+    engines (e.g. hermes-lcm) can carry retained state into the new session.
+
+    Regression: /new called reset_session_state() with no arguments at all,
+    so carry_over_context defaulted to False and the hook was never invoked
+    for ANY engine, even ones that support it (#70139).
+    """
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    cli.agent.context_compressor.carry_over_new_session_context = MagicMock()
+
+    cli.process_command("/new")
+
+    assert cli.agent.last_reset_call["carry_over_context"] is True
+    assert cli.agent.last_reset_call["old_session_id"] == old_session_id
+    assert cli.agent.last_reset_call["previous_messages"] == [{"role": "user", "content": "hello"}]
+    cli.agent.context_compressor.carry_over_new_session_context.assert_called_once_with(
+        old_session_id, cli.agent.session_id
+    )
+
+
+def test_new_session_skips_carry_over_for_builtin_compressor(tmp_path):
+    """The built-in ContextCompressor doesn't implement
+    carry_over_new_session_context -- /new must keep passing no transition
+    arguments for it, exactly as before this fix (no behavior change)."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    assert not hasattr(cli.agent.context_compressor, "carry_over_new_session_context")
+
+    cli.process_command("/new")
+
+    assert cli.agent.last_reset_call == {
+        "previous_messages": None,
+        "old_session_id": None,
+        "carry_over_context": False,
+    }
 
 
 def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):

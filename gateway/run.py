@@ -23812,6 +23812,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             except Exception as e:
                 logger.debug("Planned stop marker check failed: %s", e)
 
+            # systemd-initiated SIGTERM: when the service manager itself
+            # sends SIGTERM (e.g. `systemctl stop`), the stop is "planned"
+            # by definition.  Only exit non-zero for signals that did NOT
+            # come from the service manager (external kill, OOM, container
+            # signal, etc.) so that `Restart=on-failure` / `Restart=always`
+            # can revive the gateway.  Issue #41631.
+            if (
+                not planned_stop
+                and received_signal == signal.SIGTERM
+                and os.environ.get("INVOCATION_ID")
+            ):
+                planned_stop = True
+                logger.info(
+                    "SIGTERM received under systemd (INVOCATION_ID=%s) — "
+                    "treating as service-manager-initiated planned stop",
+                    os.environ.get("INVOCATION_ID"),
+                )
+
         # Fast (<10ms) snapshot of who's asking us to shut down — runs
         # synchronously inside the asyncio signal handler, so we keep it
         # purely stdlib + /proc reads, no subprocesses.  See PR #15826
@@ -24148,8 +24166,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     #   - hermes update killing the gateway mid-work
     #   - External kill commands
     #   - WSL2/container runtime sending unexpected signals
-    # `hermes gateway stop` and interactive Ctrl+C are handled above as
-    # planned stops and should not trigger service-manager revival.
+    # Note: systemd-initiated SIGTERM (via `systemctl stop`) is treated as
+    # a planned stop in the signal handler (detected via INVOCATION_ID), so
+    # `_signal_initiated_shutdown` is False in that case and we exit 0.
+    # Issue #41631.
     if _signal_initiated_shutdown and not runner._restart_requested:
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "

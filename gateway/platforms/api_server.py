@@ -55,7 +55,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, MutableMapping, MutableSet, Optional
 
 # Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
 # names a profile this gateway does not serve (→ 404). Distinct from None
@@ -82,6 +82,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.run_service import RunRegistry
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
@@ -1047,17 +1048,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created: Dict[str, float] = {}
         # Runs with a connected SSE consumer; their queue is actively draining.
         self._run_stream_subscribers: set[str] = set()
-        # Active run agent/task references for stop support
-        self._active_run_agents: Dict[str, Any] = {}
-        self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
-        # Stop is cooperative: the executor thread may outlive the HTTP request.
-        self._stopping_run_ids: set[str] = set()
-        # Pollable run status for dashboards and external control-plane UIs.
-        self._run_statuses: Dict[str, Dict[str, Any]] = {}
-        # Active approval session key for each run_id.  The approval core
-        # resolves requests by session key, while API clients address the
-        # in-flight run by run_id.
-        self._run_approval_sessions: Dict[str, str] = {}
+        # Retained status, stop-control references, and approval-session
+        # ownership share one lock-aware lifecycle owner.
+        self._run_registry = RunRegistry()
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_db_lock: Optional[asyncio.Lock] = None  # Single-flight for lazy init
         # Concurrency cap shared across all agent-serving endpoints
@@ -1091,7 +1084,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return (
                 int(getattr(self, "_pending_agent_requests", 0))
                 + int(self._inflight_agent_runs)
-                + sum(not task.done() for task in self._active_run_tasks.values())
+                + self._run_registry.active_task_count()
             )
         except Exception:
             return 0
@@ -1135,17 +1128,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
-        active_api_runs = sum(
-            1
-            for status in self._run_statuses.values()
-            # "stopping" (set by _handle_stop_run) is not terminal: the run
-            # stays in this state, doing real executor-thread work, until the
-            # agent actually notices the interrupt and the task settles to
-            # "cancelled" — an unbounded window, not the old ~5s hard-timeout
-            # wait. Excluding it here undercounts active_api_runs for the
-            # whole duration of a cooperative stop.
-            if status.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
-        )
+        active_api_runs = self._run_registry.active_status_count()
         process_depth = 0
         active_delegations = 0
         try:
@@ -4839,27 +4822,58 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
+    # These aliases retain compatibility for existing API code/tests while the
+    # registry remains the sole owner of each authoritative map.
+    @property
+    def _run_statuses(self) -> MutableMapping[str, Dict[str, Any]]:
+        return self._run_registry.statuses
+
+    @_run_statuses.setter
+    def _run_statuses(self, values: Dict[str, Dict[str, Any]]) -> None:
+        self._run_registry.replace_statuses(values)
+
+    @property
+    def _active_run_agents(self) -> MutableMapping[str, Any]:
+        return self._run_registry.agents
+
+    @_active_run_agents.setter
+    def _active_run_agents(self, values: Dict[str, Any]) -> None:
+        self._run_registry.replace_agents(values)
+
+    @property
+    def _active_run_tasks(self) -> MutableMapping[str, "asyncio.Task"]:
+        return self._run_registry.tasks
+
+    @_active_run_tasks.setter
+    def _active_run_tasks(self, values: Dict[str, "asyncio.Task"]) -> None:
+        self._run_registry.replace_tasks(values)
+
+    @property
+    def _run_approval_sessions(self) -> MutableMapping[str, str]:
+        return self._run_registry.approval_sessions
+
+    @_run_approval_sessions.setter
+    def _run_approval_sessions(self, values: Dict[str, str]) -> None:
+        self._run_registry.replace_approval_sessions(values)
+
+    @property
+    def _stopping_run_ids(self) -> MutableSet[str]:
+        return self._run_registry.stopping_ids
+
+    @_stopping_run_ids.setter
+    def _stopping_run_ids(self, values: set[str]) -> None:
+        self._run_registry.replace_stopping_ids(values)
+
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
-        now = time.time()
-        current = self._run_statuses.get(run_id, {})
-        current.update({
-            "object": "hermes.run",
-            "run_id": run_id,
-            "status": status,
-            "updated_at": now,
-        })
-        current.setdefault("created_at", fields.pop("created_at", now))
-        current.update(fields)
-        self._run_statuses[run_id] = current
-        return current
+        return self._run_registry.set_status(run_id, status, **fields)
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
+                self._run_registry.status_value(run_id, "status", "running"),
                 last_event=event.get("event"),
             )
             q = self._run_streams.get(run_id)
@@ -4988,7 +5002,9 @@ class APIServerAdapter(BasePlatformAdapter):
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
-        self._run_approval_sessions[run_id] = approval_session_key
+        self._run_registry.register_approval_session(
+            run_id, approval_session_key
+        )
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -5030,7 +5046,7 @@ class APIServerAdapter(BasePlatformAdapter):
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
-                if run_id in self._stopping_run_ids:
+                if self._run_registry.is_stopping(run_id):
                     _put_event_if_active({
                         "event": "run.cancelled",
                         "run_id": run_id,
@@ -5051,7 +5067,18 @@ class APIServerAdapter(BasePlatformAdapter):
                         gateway_session_key=gateway_session_key,
                         route=route,
                     )
-                self._active_run_agents[run_id] = agent
+                if not self._run_registry.register_agent(run_id, agent):
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                    return
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -5141,7 +5168,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
-                if run_id in self._stopping_run_ids:
+                if self._run_registry.is_stopping(run_id):
                     _put_event_if_active({
                         "event": "run.cancelled",
                         "run_id": run_id,
@@ -5234,14 +5261,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     _put_event_if_active(None)
                 except Exception:
                     pass
-                self._active_run_agents.pop(run_id, None)
-                self._active_run_tasks.pop(run_id, None)
-                self._run_approval_sessions.pop(run_id, None)
-                self._stopping_run_ids.discard(run_id)
+                self._run_registry.remove_control(run_id)
 
         self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())
-        self._active_run_tasks[run_id] = task
+        self._run_registry.register_task(run_id, task)
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -5265,7 +5289,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        status = self._run_statuses.get(run_id)
+        status = self._run_registry.get(run_id)
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
@@ -5332,8 +5356,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        status = self._run_statuses.get(run_id)
-        if status is None:
+        if not self._run_registry.contains(run_id):
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
@@ -5357,7 +5380,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        approval_session_key = self._run_approval_sessions.get(run_id)
+        approval_session_key = self._run_registry.approval_session_for(run_id)
         if not approval_session_key:
             return web.json_response(
                 _openai_error(
@@ -5420,22 +5443,24 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        agent = self._active_run_agents.get(run_id)
-        task = self._active_run_tasks.get(run_id)
-
-        if agent is None and task is None:
-            return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
-
-        self._set_run_status(run_id, "stopping", last_event="run.stopping")
-        self._stopping_run_ids.add(run_id)
-
-        if agent is not None:
+        target = self._run_registry.claim_stop_target(run_id)
+        if target is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        if target.owns_lease:
             try:
-                agent.interrupt("Stop requested via API")
-            except Exception:
-                pass
+                if target.agent is not None:
+                    try:
+                        target.agent.interrupt("Stop requested via API")
+                    except Exception:
+                        pass
+            finally:
+                self._run_registry.release_stop_target(run_id)
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
+
 
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically expire transport buffers and terminal status records."""
@@ -5455,13 +5480,15 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale:
             logger.debug("[api_server] sweeping expired run transport %s", run_id)
-            task = self._active_run_tasks.get(run_id)
+            task = self._run_registry.task_for(run_id)
             task_done = task is None or task.done()
             if task_done:
                 try:
                     from tools.approval import unregister_gateway_notify
 
-                    approval_session_key = self._run_approval_sessions.get(run_id)
+                    approval_session_key = (
+                        self._run_registry.approval_session_for(run_id)
+                    )
                     if approval_session_key:
                         unregister_gateway_notify(approval_session_key)
                 except Exception:
@@ -5471,19 +5498,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._run_streams.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
             if task_done:
-                self._active_run_agents.pop(run_id, None)
-                self._active_run_tasks.pop(run_id, None)
-                self._run_approval_sessions.pop(run_id, None)
-                self._stopping_run_ids.discard(run_id)
+                self._run_registry.remove_control(run_id)
 
-        stale_statuses = [
-            run_id
-            for run_id, status in list(self._run_statuses.items())
-            if status.get("status") in {"completed", "failed", "cancelled"}
-            and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL
-        ]
-        for run_id in stale_statuses:
-            self._run_statuses.pop(run_id, None)
+        self._run_registry.expire_terminal_statuses(now, self._RUN_STATUS_TTL)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

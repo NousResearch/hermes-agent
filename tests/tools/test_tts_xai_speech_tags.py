@@ -528,3 +528,77 @@ def test_generate_xai_tts_provider_speed_overrides_global(tmp_path, monkeypatch)
     )
 
     assert captured["json"]["speed"] == 0.7
+
+
+def test_generate_xai_tts_omits_text_normalization_by_default(tmp_path, monkeypatch):
+    """text_normalization is not sent when unset (API default is False)."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en"}},
+    )
+
+    assert "text_normalization" not in captured["json"]
+
+
+def test_generate_xai_tts_sends_text_normalization_when_enabled(tmp_path, monkeypatch):
+    """tts.xai.text_normalization: true flows into the POST body."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en", "text_normalization": True}},
+    )
+
+    assert captured["json"]["text_normalization"] is True
+
+
+def test_generate_xai_tts_omits_text_normalization_when_explicit_false(
+    tmp_path, monkeypatch
+):
+    """text_normalization: false is the API default; field is not sent."""
+    captured = {}
+
+    fake_response = Mock()
+    fake_response.content = b"mp3"
+    fake_response.raise_for_status.return_value = None
+
+    def fake_post(url, headers, json, timeout):
+        captured["json"] = json
+        return fake_response
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+    monkeypatch.setattr("requests.post", fake_post)
+
+    _generate_xai_tts(
+        "Hello world.",
+        str(tmp_path / "out.mp3"),
+        {"xai": {"voice_id": "ara", "language": "en", "text_normalization": False}},
+    )
+
+    assert "text_normalization" not in captured["json"]

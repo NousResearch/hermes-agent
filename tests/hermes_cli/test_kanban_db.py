@@ -236,10 +236,23 @@ def test_create_task_initial_block_is_atomic_and_survives_recompute(kanban_home)
 
     assert task is not None
     assert task.status == "blocked"
+    assert task.block_kind == "needs_input"
+    assert task.block_recurrences == 1
     assert promoted == 0
     assert [event.kind for event in events[-2:]] == ["created", "blocked"]
     assert events[-1].payload is not None
     assert events[-1].payload["kind"] == "needs_input"
+
+    with kb.connect() as conn:
+        assert kb.unblock_task(conn, tid)
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+        assert kb.block_task(conn, tid, reason="still held", kind="needs_input")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.status == "triage"
+    assert task.block_kind == "needs_input"
+    assert task.block_recurrences == 2
 
 
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):

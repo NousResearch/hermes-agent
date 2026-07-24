@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -70,6 +71,79 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
     r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*",
     re.IGNORECASE,
 )
+
+
+# The ChatGPT Codex backend reserves these Harmony wire tokens. If their
+# literal spellings are replayed anywhere in request text, the backend rejects
+# the request before inference with ``invalid_prompt: Request blocked.``.
+# Category-Cf handling covers persisted sessions from an earlier U+200B weak
+# defang; fullwidth bars survive format-character stripping while keeping the
+# inspected source legible.
+_HARMONY_CONTROL_TOKEN_RE = re.compile(
+    r"<\|(start|end|channel|message|constrain|return|call)\|>"
+)
+_FULLWIDTH_PIPE = "\uff5c"
+
+
+def _neutralize_harmony_tokens(text: str) -> str:
+    """Keep Harmony source readable without emitting reserved wire tokens."""
+    if not text or "<" not in text or "|" not in text:
+        return text
+
+    replacement = rf"<{_FULLWIDTH_PIPE}\1{_FULLWIDTH_PIPE}>"
+    if not any(unicodedata.category(char) == "Cf" for char in text):
+        return _HARMONY_CONTROL_TOKEN_RE.sub(replacement, text)
+
+    # U+200B is confirmed to be stripped by the Codex backend before its
+    # reserved-token check. Treat every Unicode format control equivalently so
+    # moving the character elsewhere in the token (or swapping in another Cf)
+    # cannot recreate the same visually hidden form.
+    visible_chars: List[str] = []
+    original_positions: List[int] = []
+    for index, char in enumerate(text):
+        if unicodedata.category(char) == "Cf":
+            continue
+        visible_chars.append(char)
+        original_positions.append(index)
+
+    visible_text = "".join(visible_chars)
+    matches = list(_HARMONY_CONTROL_TOKEN_RE.finditer(visible_text))
+    if not matches:
+        return text
+
+    result: List[str] = []
+    original_cursor = 0
+    for match in matches:
+        original_start = original_positions[match.start()]
+        original_end = original_positions[match.end() - 1] + 1
+        result.append(text[original_cursor:original_start])
+        result.append(f"<{_FULLWIDTH_PIPE}{match.group(1)}{_FULLWIDTH_PIPE}>")
+        original_cursor = original_end
+    result.append(text[original_cursor:])
+    return "".join(result)
+
+
+def _neutralize_harmony_structure(value: Any) -> Any:
+    """Neutralize JSON-like values; normalize tuples and reject unsafe keys.
+
+    Rewriting an object key could desynchronize a tool schema from the executor
+    contract, so a reserved token there is rejected explicitly instead.
+    """
+    if isinstance(value, str):
+        return _neutralize_harmony_tokens(value)
+    if isinstance(value, (list, tuple)):
+        return [_neutralize_harmony_structure(item) for item in value]
+    if isinstance(value, dict):
+        normalized = {}
+        for key, item in value.items():
+            if isinstance(key, str) and _neutralize_harmony_tokens(key) != key:
+                raise ValueError(
+                    "Reserved Harmony tokens in a JSON object key cannot be "
+                    "neutralized without changing its contract."
+                )
+            normalized[key] = _neutralize_harmony_structure(item)
+        return normalized
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -604,10 +678,16 @@ def _preflight_codex_input_items(
     raw_items: Any,
     *,
     is_github_responses: bool = False,
+    sanitize_harmony_tokens: bool = False,
 ) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
 
+    sanitize_text = (
+        _neutralize_harmony_tokens
+        if sanitize_harmony_tokens
+        else lambda text: text
+    )
     normalized: List[Dict[str, Any]] = []
     seen_ids: set = set()
     for idx, item in enumerate(raw_items):
@@ -628,7 +708,7 @@ def _preflight_codex_input_items(
                 arguments = json.dumps(arguments, ensure_ascii=False)
             elif not isinstance(arguments, str):
                 arguments = str(arguments)
-            arguments = arguments.strip() or "{}"
+            arguments = sanitize_text(arguments.strip() or "{}")
 
             normalized.append(
                 {
@@ -662,7 +742,7 @@ def _preflight_codex_input_items(
                     if ptype == "input_text":
                         text = part.get("text")
                         if isinstance(text, str) and text:
-                            cleaned.append({"type": "input_text", "text": text})
+                            cleaned.append({"type": "input_text", "text": sanitize_text(text)})
                     elif ptype == "input_image":
                         url = part.get("image_url")
                         if isinstance(url, str) and url:
@@ -686,7 +766,7 @@ def _preflight_codex_input_items(
                 {
                     "type": "function_call_output",
                     "call_id": call_id.strip(),
-                    "output": output,
+                    "output": sanitize_text(output),
                 }
             )
             continue
@@ -699,14 +779,21 @@ def _preflight_codex_input_items(
                     if item_id in seen_ids:
                         continue
                     seen_ids.add(item_id)
-                reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
+                reasoning_item: Dict[str, Any] = {
+                    "type": "reasoning",
+                    "encrypted_content": encrypted,
+                }
                 # Do NOT include the "id" in the outgoing item — with
                 # store=False (our default) the API tries to resolve the
                 # id server-side and returns 404.  The id is still used
                 # above for local deduplication via seen_ids.
                 summary = item.get("summary")
                 if isinstance(summary, list):
-                    reasoning_item["summary"] = summary
+                    reasoning_item["summary"] = (
+                        _neutralize_harmony_structure(summary)
+                        if sanitize_harmony_tokens
+                        else summary
+                    )
                 else:
                     reasoning_item["summary"] = []
                 normalized.append(reasoning_item)
@@ -735,7 +822,7 @@ def _preflight_codex_input_items(
                     text = ""
                 if not isinstance(text, str):
                     text = str(text)
-                normalized_content.append({"type": "output_text", "text": text})
+                normalized_content.append({"type": "output_text", "text": sanitize_text(text)})
             if not normalized_content:
                 raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
             normalized_item: Dict[str, Any] = {
@@ -775,7 +862,7 @@ def _preflight_codex_input_items(
                 for part_idx, part in enumerate(content):
                     if isinstance(part, str):
                         if part:
-                            validated.append({"type": text_type, "text": part})
+                            validated.append({"type": text_type, "text": sanitize_text(part)})
                         continue
                     if not isinstance(part, dict):
                         raise ValueError(
@@ -786,7 +873,7 @@ def _preflight_codex_input_items(
                         text = part.get("text", "")
                         if not isinstance(text, str):
                             text = str(text or "")
-                        validated.append({"type": text_type, "text": text})
+                        validated.append({"type": text_type, "text": sanitize_text(text)})
                     elif ptype in {"input_image", "image_url"}:
                         image_ref = part.get("image_url", "")
                         detail = part.get("detail")
@@ -810,7 +897,7 @@ def _preflight_codex_input_items(
             if not isinstance(content, str):
                 content = str(content)
 
-            normalized.append({"role": role, "content": content})
+            normalized.append({"role": role, "content": sanitize_text(content)})
             continue
 
         raise ValueError(
@@ -825,6 +912,7 @@ def _preflight_codex_api_kwargs(
     *,
     allow_stream: bool = False,
     is_github_responses: bool = False,
+    sanitize_harmony_tokens: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -845,10 +933,13 @@ def _preflight_codex_api_kwargs(
     if not isinstance(instructions, str):
         instructions = str(instructions)
     instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
+    if sanitize_harmony_tokens:
+        instructions = _neutralize_harmony_tokens(instructions)
 
     normalized_input = _preflight_codex_input_items(
         api_kwargs.get("input"),
         is_github_responses=is_github_responses,
+        sanitize_harmony_tokens=sanitize_harmony_tokens,
     )
 
     tools = api_kwargs.get("tools")
@@ -904,6 +995,9 @@ def _preflight_codex_api_kwargs(
                     "parameters": parameters,
                 }
             )
+
+    if sanitize_harmony_tokens and normalized_tools is not None:
+        normalized_tools = _neutralize_harmony_structure(normalized_tools)
 
     store = api_kwargs.get("store", False)
     if store is not False:

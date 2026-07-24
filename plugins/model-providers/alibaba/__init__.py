@@ -8,6 +8,7 @@ alibaba = ProviderProfile(
     aliases=("dashscope", "alibaba-cloud", "qwen-dashscope"),
     env_vars=("DASHSCOPE_API_KEY",),
     base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    misreports_model_identity=True,
 )
 
 register_provider(alibaba)

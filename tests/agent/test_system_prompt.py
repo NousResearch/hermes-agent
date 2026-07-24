@@ -104,6 +104,35 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
+class TestModelIdentityWorkaround:
+    """The identity line is driven by the profile's misreports_model_identity
+    flag, not a hard-coded provider name (#2314 originally targeted the
+    coding plan; the name check went stale when alibaba-coding-plan became a
+    first-class provider)."""
+
+    IDENTITY_MARKER = "You are powered by the model named"
+
+    def test_injected_for_alibaba(self):
+        agent = _make_agent(provider="alibaba", model="qwen3.7-max")
+        stable = _stable_prompt(agent)
+        assert self.IDENTITY_MARKER in stable
+        assert "qwen3.7-max" in stable
+
+    def test_injected_for_alibaba_coding_plan(self):
+        # The regression case: coding-plan sessions lost the workaround when
+        # the provider split off from "alibaba".
+        agent = _make_agent(provider="alibaba-coding-plan", model="qwen3.7-max")
+        assert self.IDENTITY_MARKER in _stable_prompt(agent)
+
+    def test_absent_for_provider_without_flag(self):
+        agent = _make_agent(provider="deepseek", model="deepseek-v3.2")
+        assert self.IDENTITY_MARKER not in _stable_prompt(agent)
+
+    def test_absent_for_unknown_provider(self):
+        agent = _make_agent(provider="no-such-provider", model="some-model")
+        assert self.IDENTITY_MARKER not in _stable_prompt(agent)
+
+
 class TestTelegramRichMessagesHint:
     """Verify that TELEGRAM_RICH_MESSAGES_HINT is conditionally included."""
 

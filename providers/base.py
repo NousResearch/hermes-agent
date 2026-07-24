@@ -81,6 +81,13 @@ class ProviderProfile:
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
     hostname: str = ""
 
+    # True when the provider's API reports a wrong model name in responses
+    # (e.g. Alibaba's coding/token-plan gateways return a fixed name
+    # regardless of the requested model). system_prompt.py injects an
+    # explicit model-identity line for these providers so the agent can
+    # answer "what model are you" correctly.
+    misreports_model_identity: bool = False
+
     # ── Client-level quirks (set once at client construction) ─
     default_headers: dict[str, str] = field(default_factory=dict)
 

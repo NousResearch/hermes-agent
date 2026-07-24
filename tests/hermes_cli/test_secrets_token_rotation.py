@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from unittest import mock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -31,6 +32,12 @@ def _bw_args(**overrides):
 @pytest.fixture
 def bw_env(monkeypatch, tmp_path):
     saved = {}
+    # #70697: secrets_cli now lazy-imports bitwarden via _bw(); patch _bw
+    # to return a MagicMock so tests can set attributes on it.
+    _mock_bw = MagicMock()
+    _mock_bw.find_bws.return_value = Path("/fake/bws")
+    _mock_bw.clear_caches.return_value = None
+    monkeypatch.setattr(bw_cli, "_bw", lambda: _mock_bw)
     monkeypatch.setattr(bw_cli, "load_config", lambda: {
         "secrets": {"bitwarden": {
             "enabled": True,
@@ -44,10 +51,6 @@ def bw_env(monkeypatch, tmp_path):
         lambda name, value: saved.__setitem__(name, value),
     )
     monkeypatch.setattr(bw_cli, "get_env_path", lambda: tmp_path / ".env")
-    monkeypatch.setattr(
-        bw_cli.bw, "find_bws",
-        lambda install_if_missing=True: Path("/fake/bws"),
-    )
     return saved
 
 
@@ -67,7 +70,7 @@ def test_bw_token_accepted_token_persisted_and_caches_cleared(bw_env, monkeypatc
         bw_cli, "_list_projects",
         lambda binary, token, console, server_url="": [{"id": "proj-1"}],
     )
-    monkeypatch.setattr(bw_cli.bw, "clear_caches", lambda *a, **kw: cleared.append(True))
+    monkeypatch.setattr(bw_cli._bw(), "clear_caches", lambda *a, **kw: cleared.append(True))
     rc = bw_cli.cmd_token(_bw_args(access_token="0.fresh"))
     assert rc == 0
     assert bw_env == {"BWS_ACCESS_TOKEN": "0.fresh"}
@@ -79,7 +82,7 @@ def test_bw_token_warns_when_project_not_visible(bw_env, monkeypatch, capsys):
         bw_cli, "_list_projects",
         lambda binary, token, console, server_url="": [{"id": "other-proj"}],
     )
-    monkeypatch.setattr(bw_cli.bw, "clear_caches", lambda *a, **kw: None)
+    monkeypatch.setattr(bw_cli._bw(), "clear_caches", lambda *a, **kw: None)
     rc = bw_cli.cmd_token(_bw_args(access_token="0.fresh"))
     assert rc == 0  # stored anyway — the token itself is valid
     out = capsys.readouterr().out
@@ -89,7 +92,7 @@ def test_bw_token_warns_when_project_not_visible(bw_env, monkeypatch, capsys):
 def test_bw_token_no_verify_skips_probe(bw_env, monkeypatch):
     probe = mock.Mock()
     monkeypatch.setattr(bw_cli, "_list_projects", probe)
-    monkeypatch.setattr(bw_cli.bw, "clear_caches", lambda *a, **kw: None)
+    monkeypatch.setattr(bw_cli._bw(), "clear_caches", lambda *a, **kw: None)
     rc = bw_cli.cmd_token(_bw_args(access_token="0.x", no_verify=True))
     assert rc == 0
     probe.assert_not_called()

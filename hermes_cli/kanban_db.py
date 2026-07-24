@@ -7399,6 +7399,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error_text = f"pid {pid} killed by signal {code}"
                 else:
                     error_text = f"pid {pid} not alive"
+                # Read the worker log tail to surface the actual crash cause
+                # (e.g. "Error: Unknown skill(s): foo") instead of just
+                # "pid N exited with code 1".
+                log_cause = _extract_crash_cause_from_log(row["id"])
+                if log_cause:
+                    error_text = f"{error_text}\n  → {log_cause}"
                 event_kind = "crashed"
                 event_payload = {"pid": pid, "claimer": row["claim_lock"]}
                 if code is not None and kind != "unknown":
@@ -9598,6 +9604,37 @@ def read_worker_log(
         return data.decode("utf-8", errors="replace")
     except OSError:
         return None
+
+
+def _extract_crash_cause_from_log(
+    task_id: str, *, tail_bytes: int = 2048,
+) -> Optional[str]:
+    """Read the tail of a worker log and return the most relevant error line.
+
+    Looks for lines starting with common error prefixes (``Error:``,
+    ``Traceback``, ``Exception``, ``Fatal``). Falls back to the last
+    non-empty line if no error-pattern match is found.
+
+    Returns ``None`` when the log file does not exist or cannot be read.
+    """
+    log = read_worker_log(task_id, tail_bytes=tail_bytes)
+    if not log:
+        return None
+    # Scan backwards for an error-like line.
+    _ERROR_PREFIXES = ("error:", "traceback", "exception", "fatal")
+    for line in reversed(log.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if any(lower.startswith(p) for p in _ERROR_PREFIXES):
+            return stripped[:300]
+    # Fallback: last non-empty line (often the actual crash message).
+    for line in reversed(log.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped[:300]
+    return None
 
 
 # ---------------------------------------------------------------------------

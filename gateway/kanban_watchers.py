@@ -1049,6 +1049,28 @@ class GatewayKanbanWatchersMixin:
                         "kanban dispatcher: max_in_progress_per_profile=%d",
                         max_in_progress_per_profile,
                     )
+        # Read kanban.max_in_progress_per_profile_overrides — per-profile
+        # concurrency caps that override the global value. Dict of
+        # {profile_name: int}. When global is null, only listed profiles
+        # are capped; unlisted profiles run unconstrained.
+        raw_overrides = kanban_cfg.get("max_in_progress_per_profile_overrides", None)
+        max_in_progress_per_profile_overrides: dict[str, int] = {}
+        if isinstance(raw_overrides, dict):
+            for k, v in raw_overrides.items():
+                try:
+                    cap = int(v)
+                    if cap >= 1:
+                        max_in_progress_per_profile_overrides[k] = cap
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "kanban dispatcher: invalid override %r=%r; skipping",
+                        k, v,
+                    )
+            if max_in_progress_per_profile_overrides:
+                logger.info(
+                    "kanban dispatcher: max_in_progress_per_profile_overrides=%s",
+                    max_in_progress_per_profile_overrides,
+                )
 
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
@@ -1143,6 +1165,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    max_in_progress_per_profile_overrides=max_in_progress_per_profile_overrides,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

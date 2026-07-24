@@ -7981,6 +7981,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile_overrides: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8015,6 +8016,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_profile_overrides=max_in_progress_per_profile_overrides,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8031,6 +8033,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_profile_overrides=max_in_progress_per_profile_overrides,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8051,6 +8054,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile_overrides: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -8156,8 +8160,17 @@ def _dispatch_once_locked(
         isinstance(max_in_progress_per_profile, int)
         and max_in_progress_per_profile > 0
     ) else None
+    _per_profile_overrides: dict[str, int] = {}
+    if isinstance(max_in_progress_per_profile_overrides, dict):
+        for _ok, _ov in max_in_progress_per_profile_overrides.items():
+            try:
+                _ovi = int(_ov)
+                if _ovi >= 1:
+                    _per_profile_overrides[str(_ok)] = _ovi
+            except (TypeError, ValueError):
+                pass
     _per_profile_running: dict[str, int] = {}
-    if _per_profile_cap is not None:
+    if _per_profile_cap is not None or _per_profile_overrides:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -8256,9 +8269,13 @@ def _dispatch_once_locked(
         # quota / browser pool from being overwhelmed by a fan-out
         # while the global max_in_progress / max_spawn caps still allow
         # work on OTHER profiles.
-        if _per_profile_cap is not None:
+        if _per_profile_cap is not None or _per_profile_overrides:
             current = _per_profile_running.get(row_assignee, 0)
-            if current >= _per_profile_cap:
+            # Per-profile override takes priority over global cap.
+            effective_cap = _per_profile_overrides.get(
+                row_assignee, _per_profile_cap
+            )
+            if effective_cap is not None and current >= effective_cap:
                 result.skipped_per_profile_capped.append(
                     (row["id"], row_assignee, current)
                 )
@@ -8290,7 +8307,7 @@ def _dispatch_once_locked(
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
             # under-reports the capped subset (#21582).
-            if _per_profile_cap is not None and row_assignee:
+            if (_per_profile_cap is not None or _per_profile_overrides) and row_assignee:
                 _per_profile_running[row_assignee] = (
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
@@ -8345,7 +8362,7 @@ def _dispatch_once_locked(
             # Track the new in-flight count for this profile so later
             # iterations in this same tick respect the per-profile cap
             # (#21582). Subsequent ticks re-query from the DB.
-            if _per_profile_cap is not None and claimed.assignee:
+            if (_per_profile_cap is not None or _per_profile_overrides) and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )

@@ -4668,48 +4668,76 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        # Resolve whether the message should land in a Feishu thread/topic.
+        # Two knobs matter:
+        #   1. ``self.config.extra.get("reply_in_thread", True)`` — platform-wide
+        #      opt-out mirroring the Slack adapter. When False, top-level
+        #      channel messages send direct channel replies instead of opening
+        #      a synthetic thread.
+        #   2. DM hard rule — Feishu p2p chats have no topic concept, and the
+        #      reply API silently routes the response into a new "thread" the
+        #      client renders as a discussion. Force ``reply_in_thread=False``
+        #      on DM regardless of config so DMs stay flat even when the
+        #      gateway layer stamps metadata.thread_id onto the routing state.
+        md = metadata or {}
+        thread_id = md.get("thread_id")
+        chat_type = (md.get("chat_type") or "").strip().lower()
+        is_dm = chat_type in {"p2p", "dm", "direct_message"}
+        reply_in_thread_enabled = bool(self.config.extra.get("reply_in_thread", True))
+        # Note: we intentionally do NOT try to detect "synthetic" thread_ids
+        # by comparing ``reply_to_message_id`` against ``thread_id``. Inbound
+        # processing maps ``root_id`` into BOTH fields for genuine root-topic
+        # replies (``plugins/platforms/feishu/adapter.py`` ~3252), so an
+        # equality check would mistakenly suppress real topic replies.
+        # The chat_type DM rule + the ``extra.reply_in_thread`` knob are the
+        # two sufficient signals the adapter needs.
+        reply_in_thread = bool(thread_id) and reply_in_thread_enabled and not is_dm
+
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
-        if effective_reply_to:
+
+        if effective_reply_to and reply_in_thread:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
-                reply_in_thread=reply_in_thread,
+                reply_in_thread=True,
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
+        # For topic/thread messages (reply disabled, DM, or synthetic thread),
+        # use thread_id as receive_id so the message lands in the topic
+        # instead of being routed back to the main chat or forced into a
+        # reply chain that opens a fresh thread. Critically, DM targets
+        # must NOT use thread_id as receive_id either — that would create
+        # a fresh p2p topic inside the DM.
+        if thread_id and not is_dm:
             body = self._build_create_message_body(
-                receive_id=_thread_id,
+                receive_id=thread_id,
                 msg_type=msg_type,
                 content=payload,
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+            return await self._run_blocking(self._client.im.v1.message.create, request)
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
+
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod

@@ -2736,6 +2736,14 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+        # MCP Streamable HTTP / SSE servers REQUIRE the Accept header to
+        # declare both `application/json` and `text/event-stream` per the
+        # MCP spec (2025-11-25). Servers return `-32600 "Not Acceptable"`
+        # without it (caught on af-forge 2026-06-18 against minimax-code
+        # on :18091 — and ~10 other servers in the same gateway boot).
+        # Seed as default so user-configured headers can still override.
+        if not any(key.lower() == "accept" for key in headers):
+            headers["Accept"] = "application/json, text/event-stream"
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)

@@ -233,13 +233,29 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        self._policy_hooks: list[callable] = []
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def register_policy_hook(self, hook: callable) -> None:
+        """Register a policy hook that runs before the built-in checks.
+
+        Each hook receives (tool_name: str, args: dict|None) and must return
+        a ToolCallGuardrailDecision or None. If None is returned by all hooks,
+        the normal guardrail logic proceeds.
+        """
+        if callable(hook) and hook not in self._policy_hooks:
+            self._policy_hooks.append(hook)
+
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        # arifOS policy hooks run first — short-circuit if any returns a decision
+        for _hook in self._policy_hooks:
+            _result = _hook(tool_name, args)
+            if _result is not None:
+                return _result
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 

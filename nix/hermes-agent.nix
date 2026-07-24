@@ -194,6 +194,7 @@ stdenv.mkDerivation (finalAttrs: {
           --set HERMES_OPTIONAL_MCPS $out/share/hermes-agent/optional-mcps \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
+          --set-default HERMES_BIN $out/bin/hermes \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
           --set HERMES_NODE ${lib.getExe nodejs}${
             # Fold the line continuation INTO the optionalString: a bare

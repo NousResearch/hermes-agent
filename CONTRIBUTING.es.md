@@ -174,7 +174,7 @@ hermes-agent/
 │   ├── code_execution_tool.py    # Python sandboxado con acceso a herramientas vía RPC
 │   ├── session_search_tool.py    # Búsqueda en conversaciones pasadas con FTS5 + ventanas ancladas
 │   ├── cronjob_tools.py          # Gestión de tareas programadas
-│   ├── skill_tools.py            # Búsqueda, carga y gestión de habilidades
+│   ├── skills_tool.py             # Búsqueda, carga y gestión de habilidades
 │   └── environments/             # Backends de ejecución del terminal
 │       ├── base.py                   # ABC BaseEnvironment
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
@@ -182,9 +182,10 @@ hermes-agent/
 ├── gateway/                  # Gateway de mensajería
 │   ├── run.py                    # GatewayRunner — ciclo de vida de plataformas, enrutamiento de mensajes, cron
 │   ├── config.py                 # Resolución de configuración de plataformas
-│   ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
-│   └── platforms/                # Adaptadores de plataformas
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│   └── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
+│
+├── plugins/platforms/        # Adaptadores de canales (telegram, discord, slack, whatsapp, etc.)
+│   └── <platform>/adapter.py     # Un subdirectorio por plataforma, p. ej. plugins/platforms/telegram/adapter.py
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS

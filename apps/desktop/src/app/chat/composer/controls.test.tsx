@@ -65,14 +65,32 @@ describe('ComposerControls shortcut tooltips', () => {
     await expectShortcutTooltip('Send', '↵')
   })
 
+  it('shows Esc for Stop', async () => {
+    renderControls({ busy: true, busyAction: 'stop' })
+
+    await expectShortcutTooltip('Stop', 'Esc')
+  })
+
   it('shows Enter for Steer', async () => {
     renderControls({ busy: true, busyAction: 'steer' })
 
     await expectShortcutTooltip('Steer the current run', '↵')
   })
 
-  it('shows Ctrl+Enter for Queue', async () => {
+  it('shows Enter for Queue when queue is the configured busy action', async () => {
     renderControls({ busy: true, busyAction: 'queue' })
+
+    await expectShortcutTooltip('Queue message', '↵')
+  })
+
+  it('shows Redirect on Enter', async () => {
+    renderControls({ busy: true, busyAction: 'redirect' })
+
+    await expectShortcutTooltip('Redirect the current run', '↵')
+  })
+
+  it('shows the secondary Queue shortcut beside Redirect', async () => {
+    renderControls({ busy: true, busyAction: 'redirect' })
 
     await expectShortcutTooltip('Queue message', 'Ctrl+↵')
   })

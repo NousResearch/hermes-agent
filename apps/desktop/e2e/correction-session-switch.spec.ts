@@ -29,14 +29,13 @@ async function send(page: Page, text: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
-async function steer(page: Page, text: string): Promise<void> {
+async function redirect(page: Page, text: string): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()
   const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
 
   await composer.waitFor({ state: 'visible', timeout: 15_000 })
   await composer.click()
   await composer.type(text, { delay: 5 })
-  await expect(primary).toHaveAttribute('aria-label', /Steer/)
   await primary.click()
 }
 
@@ -157,9 +156,9 @@ test.describe('correction session switch', () => {
     await waitForTranscriptText(page, TOOL_STARTED)
     await waitForTranscriptText(page, ORIGINAL_PROMPT)
 
-    // The historical session redirects while a foreground terminal task is
-    // running. Use the visible Steer action to cover the real composer path.
-    await steer(page, CORRECTION)
+    // Redirect immediately while the foreground terminal task is still live.
+    // Waiting for an old control label here races the action into a plain Send.
+    await redirect(page, CORRECTION)
     await waitForTranscriptText(page, CORRECTION)
 
     const orderBeforeSwitch = relevantOrder(await transcriptTextOrder(page))

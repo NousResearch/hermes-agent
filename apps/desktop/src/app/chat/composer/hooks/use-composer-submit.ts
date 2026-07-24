@@ -6,6 +6,7 @@ import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 
+import type { BusyInputMode } from '../busy-input-mode'
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { composerPlainText } from '../rich-editor'
@@ -17,6 +18,7 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
+  busyInputMode: BusyInputMode
   compacting: boolean
   clearDraft: () => void
   disabled: boolean
@@ -30,6 +32,7 @@ interface UseComposerSubmitArgs {
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
+  onToolSteer: ChatBarProps['onToolSteer']
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
@@ -43,15 +46,14 @@ interface UseComposerSubmitArgs {
  * queue meet. `submitDraft` is the one decision tree (queue-edit save · slash-
  * now-while-busy · queue · drain · send · stop); `dispatchSubmit` is the shared
  * send-with-restore primitive (re-loads + re-stashes the draft if the gateway
- * rejects, so nothing is ever lost); `steerDraft` redirects the live turn. Reads
- * the draft + queue APIs; owns no state of its own beyond the stable
- * external-submit listener ref.
+ * rejects, so nothing is ever lost).
  */
 export function useComposerSubmit({
   activeQueueSessionKey,
   activeQueueSessionKeyRef,
   attachments,
   busy,
+  busyInputMode,
   compacting,
   clearDraft,
   disabled,
@@ -65,6 +67,7 @@ export function useComposerSubmit({
   onCancel,
   onSteer,
   onSubmit,
+  onToolSteer,
   queueCurrentDraft,
   queueEdit,
   queuedPrompts,
@@ -110,6 +113,48 @@ export function useComposerSubmit({
     [inputDisabled]
   )
 
+  const queueFallback = (text: string) => {
+    if (activeQueueSessionKey) {
+      enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+    }
+  }
+
+  const redirectDraft = () => {
+    const text = draftRef.current.trim()
+
+    if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+      return
+    }
+
+    triggerHaptic('submit')
+    clearDraft()
+
+    void Promise.resolve(onSteer(text)).then(accepted => {
+      if (!accepted) {
+        queueFallback(text)
+      }
+    })
+  }
+
+  const toolSteerDraft = () => {
+    const text = draftRef.current.trim()
+
+    if (!onToolSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+      queueCurrentDraft()
+      return
+    }
+
+    triggerHaptic('submit')
+    clearDraft()
+
+    void Promise.resolve(onToolSteer(text)).then(accepted => {
+      if (!accepted) {
+        queueFallback(text)
+      }
+    })
+  }
+
   const submitDraft = () => {
     if (disabled) {
       return
@@ -140,29 +185,23 @@ export function useComposerSubmit({
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      // Slash commands should execute immediately even while the agent is
-      // busy — they're client-side operations (/yolo, /skin, /new, /help,
-      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
-      // routes them to executeSlashCommand, which has its own per-command
-      // busy guard for commands that genuinely need an idle session (skill
-      // /send directives).  Queuing them would make every slash command wait
-      // for the current turn to finish, which is how the TUI never behaves.
+      // Slash commands execute immediately even while the agent is busy.
       if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
         triggerHaptic('submit')
         clearDraft()
         dispatchSubmit(text)
       } else if (!compacting && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        steerDraft()
+        if (busyInputMode === 'queue') {
+          queueCurrentDraft()
+        } else if (busyInputMode === 'steer') {
+          toolSteerDraft()
+        } else {
+          redirectDraft()
+        }
       } else if (payloadPresent) {
-        // Attachments can't ride a redirect (no tool-result image carriage) —
-        // queue the whole payload for the next turn.
+        // Attachments cannot ride either redirect or tool-boundary steering.
         queueCurrentDraft()
       } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
@@ -180,28 +219,6 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  // Redirect the live turn with a correction. The gateway either restarts the
-  // active model request with its displayed context or waits for the current
-  // tool boundary. If the turn already ended, queue the words instead.
-  const steerDraft = () => {
-    const text = draftRef.current.trim()
-
-    // Guard on live editor state, not the render-lagged `canSteer`: a redirect
-    // fired on a fast Enter must not be dropped because state hasn't synced.
-    if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
-      return
-    }
-
-    triggerHaptic('submit')
-    clearDraft()
-
-    void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-      }
-    })
-  }
-
   const queueDraft = () => {
     if (disabled || !busy) {
       return
@@ -211,5 +228,5 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
+  return { dispatchSubmit, queueDraft, redirectDraft, toolSteerDraft, submitDraft }
 }

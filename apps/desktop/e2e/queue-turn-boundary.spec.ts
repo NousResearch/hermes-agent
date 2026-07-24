@@ -12,9 +12,9 @@ import { expect, test, type Page } from './test'
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { MOCK_REPLY } from './mock-server'
 
-const ACTIVE_PROMPT = 'E2E_QUEUE_TURN_BOUNDARY_ACTIVE'
+const ACTIVE_PROMPT = 'write me a short story'
 const QUEUED_PROMPT = 'E2E_QUEUE_TURN_BOUNDARY_QUEUED'
-const STEER_PROMPT = 'E2E_STEER_TURN_BOUNDARY_CORRECTION'
+const STEER_PROMPT = 'actually just say hi'
 
 async function send(page: Page, text: string): Promise<void> {
   const composer = page.locator('[contenteditable="true"]').first()
@@ -100,7 +100,7 @@ test.describe('queued prompt turn boundary', () => {
     await expect.poll(() => mock.receivedPrompts.filter(prompt => prompt === QUEUED_PROMPT)).toHaveLength(1)
   })
 
-  test('places a steer prompt before the reply it redirects', async () => {
+  test('redirect replaces the live turn once and restarts inference with the correction', async () => {
     const { mock, page } = fixture!
 
     await send(page, ACTIVE_PROMPT)
@@ -114,6 +114,9 @@ test.describe('queued prompt turn boundary', () => {
       { timeout: 60_000 }
     )
 
-    expect(steerTurnOrder(await transcriptMessageOrder(page))).toEqual([ACTIVE_PROMPT, STEER_PROMPT, MOCK_REPLY])
+    const messages = await transcriptMessageOrder(page)
+    expect(steerTurnOrder(messages)).toEqual([ACTIVE_PROMPT, STEER_PROMPT, MOCK_REPLY])
+    await expect.poll(() => mock.receivedPrompts.filter(prompt => prompt === ACTIVE_PROMPT || prompt === STEER_PROMPT))
+      .toEqual([ACTIVE_PROMPT, STEER_PROMPT])
   })
 })

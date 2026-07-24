@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useMemo, useState } from 'react'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
+import { normalizeBusyInputMode } from '@/app/chat/composer/busy-input-mode'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Kbd, KbdCombo } from '@/components/ui/kbd'
@@ -36,6 +38,12 @@ export function KeybindSettings() {
   const { t } = useI18n()
   const bindings = useStore($bindings)
   const k = t.keybinds
+  const { data: configRecord } = useHermesConfigRecord()
+  const config = configRecord?.config as { display?: { busy_input_mode?: unknown } } | undefined
+  const busyInputMode = normalizeBusyInputMode(config?.display?.busy_input_mode)
+  const busyActionId = busyInputMode === 'interrupt' ? 'composer.redirect' : `composer.${busyInputMode}`
+  const readonlyLabel = (shortcut: KeybindReadonly) =>
+    shortcut.id === 'composer.busyAction' ? (k.actions[busyActionId] ?? busyActionId) : (k.actions[shortcut.id] ?? shortcut.id)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   // Subscribe so contributed actions appear/disappear live in the map.
   useContributions(KEYBINDS_AREA)
@@ -87,11 +95,11 @@ export function KeybindSettings() {
     const lower = query.toLowerCase()
 
     return KEYBIND_READONLY.filter(shortcut => {
-      const label = k.actions[shortcut.id] ?? shortcut.id
+      const label = readonlyLabel(shortcut)
 
       return label.toLowerCase().includes(lower) || shortcut.id.includes(lower)
     })
-  }, [isSearching, query, k.actions])
+  }, [isSearching, query, k.actions, busyActionId])
 
   return (
     <SettingsContent>
@@ -132,7 +140,7 @@ export function KeybindSettings() {
                 <KeybindRow action={action} key={action.id} />
               ))}
               {filteredReadonly?.map(shortcut => (
-                <ReadonlyRow key={shortcut.id} shortcut={shortcut} />
+                <ReadonlyRow key={shortcut.id} label={readonlyLabel(shortcut)} shortcut={shortcut} />
               ))}
             </>
           )}
@@ -160,7 +168,7 @@ export function KeybindSettings() {
                   open={sectionOpen}
                 />
                 {sectionOpen && actions.map(action => <KeybindRow action={action} key={action.id} />)}
-                {sectionOpen && readonly.map(shortcut => <ReadonlyRow key={shortcut.id} shortcut={shortcut} />)}
+                {sectionOpen && readonly.map(shortcut => <ReadonlyRow key={shortcut.id} label={readonlyLabel(shortcut)} shortcut={shortcut} />)}
               </section>
             )
           })}
@@ -255,10 +263,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
 
 // Fixed shortcut: same layout as KeybindRow but the caps aren't interactive and
 // the trailing reset slot stays empty (spacer keeps the columns aligned).
-function ReadonlyRow({ shortcut }: { shortcut: KeybindReadonly }) {
-  const { t } = useI18n()
-  const k = t.keybinds
-  const label = k.actions[shortcut.id] ?? shortcut.id
+function ReadonlyRow({ label, shortcut }: { label: string; shortcut: KeybindReadonly }) {
 
   return (
     <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-1">

@@ -8,6 +8,7 @@ import { useComposerSubmit } from './use-composer-submit'
 interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
+  busyInputMode?: 'interrupt' | 'queue' | 'steer'
   compacting?: boolean
   text?: string
 }
@@ -15,6 +16,7 @@ interface SubmitHarnessOptions {
 function renderSubmitHook({
   attachments = [],
   busy = false,
+  busyInputMode = 'interrupt',
   compacting = false,
   text = ''
 }: SubmitHarnessOptions = {}) {
@@ -25,6 +27,7 @@ function renderSubmitHook({
   const editorRef = { current: editor }
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
+  const onToolSteer = vi.fn(async () => true)
   const onSubmit = vi.fn(async () => true)
   const queueCurrentDraft = vi.fn(() => true)
 
@@ -39,6 +42,7 @@ function renderSubmitHook({
       activeQueueSessionKeyRef: { current: 'stored-session' },
       attachments,
       busy,
+      busyInputMode,
       compacting,
       clearDraft,
       disabled: false,
@@ -52,6 +56,7 @@ function renderSubmitHook({
       onCancel,
       onSteer,
       onSubmit,
+      onToolSteer,
       queueCurrentDraft,
       queueEdit: null,
       queuedPrompts: [],
@@ -61,7 +66,7 @@ function renderSubmitHook({
     })
   )
 
-  return { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft }
+  return { clearDraft, hook, onCancel, onSteer, onSubmit, onToolSteer, queueCurrentDraft }
 }
 
 describe('useComposerSubmit busy-turn routing', () => {
@@ -70,7 +75,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     vi.restoreAllMocks()
   })
 
-  it('steers a plain-text follow-up instead of queueing or stopping', async () => {
+  it('redirects a plain-text follow-up in interrupt mode instead of queueing or stopping', async () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
       text: 'change course'
@@ -84,6 +89,38 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('queues a plain-text follow-up in queue mode', () => {
+    const { hook, onSteer, onToolSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'queue',
+      text: 'wait for it'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onToolSteer).not.toHaveBeenCalled()
+  })
+
+  it('uses tool-boundary steering in steer mode', async () => {
+    const { hook, onSteer, onToolSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      busyInputMode: 'steer',
+      text: 'after the next tool call'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onToolSteer).toHaveBeenCalledWith('after the next tool call'))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
   })
 
   it('queues a plain-text follow-up while the active turn is compacting', () => {

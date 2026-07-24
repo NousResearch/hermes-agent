@@ -2569,7 +2569,6 @@ class APIServerAdapter(BasePlatformAdapter):
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
-            ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
         )
@@ -2656,7 +2655,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
-                    ephemeral_system_prompt=system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
@@ -2757,15 +2755,7 @@ class APIServerAdapter(BasePlatformAdapter):
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
             raw_content = msg.get("content", "")
-            if role == "system":
-                # System messages don't support images (Anthropic rejects, OpenAI
-                # text-model systems don't render them).  Flatten to text.
-                content = _normalize_chat_content(raw_content)
-                if system_prompt is None:
-                    system_prompt = content
-                else:
-                    system_prompt = system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
+            if role in {"user", "assistant"}:
                 try:
                     content = _normalize_multimodal_content(raw_content)
                 except ValueError as exc:
@@ -2937,7 +2927,6 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
@@ -2961,7 +2950,6 @@ class APIServerAdapter(BasePlatformAdapter):
             return await self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,

@@ -1908,6 +1908,19 @@ def compress_context(
                     except Exception:
                         pass
                     agent._session_db_created = False
+                    # The rotation child must stay on the parent's profile —
+                    # mirror _ensure_db_session's stamp ("default" persists as
+                    # NULL). _insert_session_row's parent backfill additionally
+                    # COALESCEs from the parent row, covering app-global remote
+                    # sessions whose thread lacks the HERMES_HOME context.
+                    try:
+                        from hermes_cli.profiles import get_active_profile_name
+
+                        _profile_for_child = get_active_profile_name()
+                        if _profile_for_child == "default":
+                            _profile_for_child = None
+                    except Exception:
+                        _profile_for_child = None
                     try:
                         agent._session_db.create_session(
                             session_id=agent.session_id,
@@ -1915,6 +1928,7 @@ def compress_context(
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
+                            profile_name=_profile_for_child,
                         )
                     except Exception as _cs_err:
                         # The child row could not be created (e.g. FK constraint,

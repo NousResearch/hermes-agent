@@ -1102,8 +1102,12 @@ describe('branchStoredSession desktop source tagging', () => {
       session_id: 'stored-parent'
     } as never)
 
-    const requestGateway = vi.fn(async (method: string) => {
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.create') {
+        createParams = params
+
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 
@@ -1120,8 +1124,70 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-parent', 'work')
+    // The create itself must carry the owning profile: in app-global remote
+    // mode the soft gateway swap alone is not enough — an omitted profile
+    // lands the branch on the launch (default) profile's state.db.
+    expect(createParams).toMatchObject({ parent_session_id: 'stored-parent', profile: 'work' })
 
     vi.mocked(getSession).mockReset()
+  })
+
+  it('creates the branch on the cached parent session profile', async () => {
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1, profile: 'work' })])
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
+    expect(createParams).toMatchObject({ profile: 'work' })
+  })
+
+  it('omits profile for a profile-less parent so single-profile users are unchanged', async () => {
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(createParams).toBeDefined()
+    expect(createParams).not.toHaveProperty('profile')
   })
 })
 

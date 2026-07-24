@@ -1293,15 +1293,17 @@ Unified plugin management — general plugins, memory providers, and context eng
 | `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
 | `update <name>` | Pull latest changes for an installed plugin. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
-| `enable <name>` | Enable a disabled plugin. |
-| `disable <name>` | Disable a plugin without removing it. |
+| `enable <name>` | Enable a disabled plugin (writes to `plugins.enabled` in the active profile config). |
+| `disable <name>` | Disable a plugin without removing it (removes from `plugins.enabled` and adds to `plugins.disabled`). |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
 
 Provider plugin selections are saved to `config.yaml`:
 - `memory.provider` — active memory provider (empty = built-in only)
 - `context.engine` — active context engine (`"compressor"` = built-in default)
 
-General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
+General plugin state is stored in `config.yaml` under `plugins.enabled` and `plugins.disabled` (active profile config; `~/.hermes/config.yaml` by default).
+
+`hermes plugins enable/disable` currently has no per-repository scope flag; changes apply to the active profile.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 

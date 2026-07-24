@@ -89,7 +89,9 @@ def register(ctx):
 
 Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the model can immediately call `hello_world`. The hook prints a log line after every tool invocation.
 
-Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
+Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable project discovery only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
+
+Discovery is project-local, but enable/disable state is profile-global: `hermes plugins enable/disable` updates `plugins.enabled` / `plugins.disabled` in the active profile config (`~/.hermes/config.yaml` by default), not a repo-local `.hermes/config.yaml`.
 
 ## What plugins can do
 
@@ -162,6 +164,8 @@ hermes plugins                    # interactive toggle (space to check/uncheck)
 hermes plugins enable <name>      # add to allow-list
 hermes plugins disable <name>     # remove from allow-list + add to disabled
 ```
+
+Scope note: these commands write to the active profile config (`~/.hermes/config.yaml` by default), so the setting follows that profile across repositories/sessions.
 
 After `hermes plugins install owner/repo`, you're asked `Enable 'name' now? [y/N]` — defaults to no. Skip the prompt for scripted installs with `--enable` or `--no-enable`.
 

@@ -347,6 +347,35 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert provider._hermes_server_name == "srv"
 
 
+@pytest.mark.asyncio
+async def test_configured_scope_is_ceiling_at_authorization(tmp_path, monkeypatch):
+    """SDK metadata discovery must not expand an explicitly configured scope."""
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider(
+        "mesh", "https://mcp.example.com/mcp", {"scope": "openid read"}
+    )
+    provider.context.client_metadata.scope = "openid read write"
+    observed = {}
+
+    async def _capture_scope(self):
+        observed["scope"] = self.context.client_metadata.scope
+        return "authorization-request"
+
+    monkeypatch.setattr(OAuthClientProvider, "_perform_authorization", _capture_scope)
+
+    result = await provider._perform_authorization()
+
+    assert result == "authorization-request"
+    assert observed["scope"] == "openid read"
+
+
 def test_manager_fails_fast_noninteractive_without_cached_tokens(tmp_path, monkeypatch):
     """A daemon without cached MCP OAuth tokens must not enter browser auth."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

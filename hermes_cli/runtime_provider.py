@@ -98,6 +98,64 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     return _loopback_hostname(base_url_hostname(bu))
 
 
+# Track MiniMax base URLs we've already warned about so the hint fires
+# once per URL instead of on every runtime resolution (which can happen
+# many times per session — auxiliary client setup, /model switch,
+# delegation child task, etc.).
+_MINIMAX_BASE_URL_WARNED: set[str] = set()
+
+
+def _warn_if_minimax_base_url_misconfigured(base_url: str) -> None:
+    """Emit a one-time hint for MiniMax base URLs that will return 401.
+
+    Issue #31977 (and several support reports before it) trace back to
+    users typing ``https://api.minimax.io/v1/chat/completions`` into
+    ``model.base_url`` because that's the standard OpenAI-compatible
+    pattern.  MiniMax's *Global* endpoint (``api.minimax.io``) only
+    speaks the Anthropic Messages protocol — under ``/anthropic``.  The
+    OpenAI-compatible chat-completions API only lives on the *China*
+    hosts (``api.minimaxi.com``, legacy ``api.minimax.chat``).  Hitting
+    ``/v1`` on ``api.minimax.io`` returns 401 with no useful body, which
+    is essentially impossible to debug from the user's side.
+
+    Detect that exact misconfiguration and log a clear hint pointing at
+    the three valid endpoints.  Intentionally narrow: only fires when
+    the host is ``api.minimax.io`` *and* the path is non-empty and
+    doesn't end with ``/anthropic`` (so the supported global Anthropic
+    endpoint stays warning-free).
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return
+    if base_url_hostname(raw) != "api.minimax.io":
+        return
+    normalized = raw.lower().rstrip("/")
+    # Strip the scheme + host, keep only the path portion for the suffix
+    # check.  ``api.minimax.io`` (no path) is harmless — it's the bare
+    # host users type before they finish configuring; only warn once
+    # they've committed to a non-anthropic path.
+    try:
+        from urllib.parse import urlparse
+        path = urlparse(raw if "://" in raw else f"https://{raw}").path or ""
+    except Exception:
+        path = ""
+    path = path.rstrip("/")
+    if not path or path == "/anthropic":
+        return
+    if normalized.endswith("/anthropic"):
+        return
+    if normalized in _MINIMAX_BASE_URL_WARNED:
+        return
+    _MINIMAX_BASE_URL_WARNED.add(normalized)
+    logger.warning(
+        "MiniMax base_url %s likely returns 401: api.minimax.io only serves "
+        "the Anthropic-compatible API at /anthropic. For the OpenAI-compatible "
+        "chat-completions API use api.minimaxi.com/v1 (China) or "
+        "api.minimax.chat/v1 (legacy China). See issue #31977.",
+        raw,
+    )
+
+
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
@@ -118,9 +176,14 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
       Anthropic Messages protocol (the /coding route accepts Claude
       Code's native request shape).
+
+    Also surfaces a one-time warning for MiniMax misconfigurations
+    (#31977) so users hitting 401 from ``api.minimax.io/v1`` don't have
+    to grep changelogs to discover the path was never supported.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
+    _warn_if_minimax_base_url_misconfigured(base_url)
     if hostname == "api.x.ai":
         return "codex_responses"
     if hostname == "api.openai.com":

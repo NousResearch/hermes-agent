@@ -3083,6 +3083,7 @@ class TestConcurrentToolExecution:
                 skip_tool_request_middleware=True,
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
+                include_subagent_only=False,
                 tool_request_middleware_trace=[],
             )
             assert result == "result"

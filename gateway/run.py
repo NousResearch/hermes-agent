@@ -16308,7 +16308,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # edit; gateway agents are per-session and may be
                             # deliberately locked down. (Contract is asserted by
                             # test_reload_mcp_preserves_per_agent_toolset_overrides.)
-                            refresh_agent_mcp_tools(_agent, quiet_mode=True)
+                            refresh_agent_mcp_tools(
+                                _agent, quiet_mode=True,
+                                include_subagent_only=(getattr(_agent, "platform", None) == "subagent"),
+                            )
             except Exception as _exc:
                 logger.debug(
                     "Failed to update cached agent tools after MCP reload: %s",

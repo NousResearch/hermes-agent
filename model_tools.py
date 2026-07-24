@@ -290,9 +290,9 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    include_subagent_only: bool = False,
 ) -> List[Dict[str, Any]]:
-    """
-    Get tool definitions for model API calls with toolset-based filtering.
+    """Get tool definitions for model API calls with toolset-based filtering.
 
     All tools must be part of a toolset to be accessible.
 
@@ -305,6 +305,10 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        include_subagent_only: When True (delegated subagents, which are
+            constructed with platform="subagent"), expose tools whose
+            ``scope="subagent_only"``. When False (default, MAIN agents), those
+            tools are withheld from the returned schemas.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -333,6 +337,7 @@ def get_tool_definitions(
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
             _is_delegated_child_context(),
+            bool(include_subagent_only),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -345,7 +350,8 @@ def get_tool_definitions(
             return list(cached)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+                                       skip_tool_search_assembly=skip_tool_search_assembly,
+                                       include_subagent_only=include_subagent_only)
     if quiet_mode:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -369,6 +375,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    include_subagent_only: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -456,7 +463,9 @@ def _compute_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(
+        tools_to_include, quiet=quiet_mode, include_subagent_only=include_subagent_only,
+    )
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
@@ -1081,6 +1090,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    include_subagent_only: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1142,6 +1152,7 @@ def handle_function_call(
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=True, skip_tool_search_assembly=True,
+                include_subagent_only=include_subagent_only,
             ) or []
         except Exception:
             current_defs = []

@@ -5211,6 +5211,31 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     return f"{MCP_TOOL_NAME_PREFIX}{safe_server}{_MCP_NAME_DELIM}{safe_tool}"
 
 
+# Allowed values for the MCP server `scope` config key (server-level or
+# inside `tools:`). Anything else is treated as "main" with a warning so a
+# typo never silently hides a tool from the MAIN agent.
+_MCP_SCOPE_ALLOWED = ("main", "subagent_only")
+
+
+def _normalize_mcp_scope(value, where: str) -> str:
+    """Validate and normalize an MCP `scope` config value.
+
+    Returns "main" or "subagent_only". Unknown/empty/absent values default to
+    "main" and emit a warning. This is the single normalization point so the
+    registry only ever sees a valid scope.
+    """
+    if not value:
+        return "main"
+    if value not in _MCP_SCOPE_ALLOWED:
+        logger.warning(
+            "MCP server config %s: unknown scope value %r; defaulting to "
+            "'main' (tool visible to MAIN agent). Allowed values: %s",
+            where, value, ", ".join(_MCP_SCOPE_ALLOWED),
+        )
+        return "main"
+    return value
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -5486,12 +5511,38 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     include_set = _normalize_name_filter(tools_filter.get("include"), f"mcp_servers.{name}.tools.include")
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
 
+    # Visibility scope (see ToolEntry.scope). Server-level `scope` applies to
+    # all of this server's tools (and its utility tools). A `scope` inside the
+    # `tools:` block overrides for the include/exclude-selected tools when a
+    # filter is present; when no include/exclude filter is set, `tools.scope`
+    # applies to ALL tools of the server (so `tools: { scope: subagent_only }`
+    # without a filter does not silently leave every tool at "main").
+    server_scope = _normalize_mcp_scope(config.get("scope"), f"mcp_servers.{name}.scope")
+    tools_scope = _normalize_mcp_scope(
+        tools_filter.get("scope"), f"mcp_servers.{name}.tools.scope"
+    )
+
     def _should_register(tool_name: str) -> bool:
         if include_set:
             return tool_name in include_set
         if exclude_set:
             return tool_name not in exclude_set
         return True
+
+    def _tool_scope(tool_name: str) -> str:
+        if tools_filter.get("scope"):
+            if include_set or exclude_set:
+                # Per-tool scope applies only to the include/exclude-selected
+                # set. Mirrors include/exclude precedence.
+                if _should_register(tool_name):
+                    return tools_scope
+            else:
+                # No include/exclude filter: tools.scope applies to ALL tools
+                # of this server. Without this, `tools: { scope: subagent_only }`
+                # would silently leave every tool at "main" — the same failure
+                # class (inverted) that _normalize_mcp_scope warns against.
+                return tools_scope
+        return server_scope
 
     for mcp_tool in server._tools:
         if not _should_register(mcp_tool.name):
@@ -5522,6 +5573,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],
+            scope=_tool_scope(mcp_tool.name),
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
@@ -5559,6 +5611,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            scope=server_scope,
         )
         _track_mcp_tool_server(util_name, name)
         registered_names.append(util_name)
@@ -5990,6 +6043,7 @@ def refresh_agent_mcp_tools(
     enabled_override=None,
     disabled_override=None,
     quiet_mode: bool = True,
+    include_subagent_only: bool = False,
 ) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry.
 
@@ -6058,6 +6112,7 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            include_subagent_only=include_subagent_only,
         )
         or []
     )

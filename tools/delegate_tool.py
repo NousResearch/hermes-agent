@@ -526,6 +526,30 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _registered_mcp_toolsets() -> List[str]:
+    """Return every MCP toolset currently registered in the tool registry.
+
+    Used when deriving a delegated child's toolsets from the parent's
+    *main-visible* ``valid_tool_names``. Subagent-only-scoped MCP tools are
+    deliberately withheld from that set (see ``ToolEntry.scope``), so a naive
+    derivation would drop their ``mcp-<server>`` toolset and leave the child
+    unable to call them. We fold the registered MCP toolsets back in so a
+    child (which passes ``include_subagent_only=True`` to the schema builder)
+    still receives every configured MCP server's toolsets.
+    """
+    try:
+        from tools.registry import registry
+
+        names = [
+            ts
+            for ts in registry.get_available_toolsets()
+            if _is_mcp_toolset_name(ts)
+        ]
+    except Exception:
+        names = []
+    return names
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -1129,7 +1153,14 @@ def _build_child_agent(
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
+        # enabled_toolsets is None (all tools) — derive from loaded tool names.
+        # NOTE: valid_tool_names is the *main-visible* schema, so subagent_only
+        # scoped MCP tools are intentionally absent (see ToolEntry.scope). When
+        # MCP toolset inheritance is on, fold the registered mcp-* toolsets back
+        # in so delegated children still receive them — a child passes
+        # include_subagent_only=True to the schema builder, so it can call the
+        # scoped tools that MAIN cannot. Without this, scope=subagent_only would
+        # hide the tool from the child too (defeating the feature).
         import model_tools
 
         parent_toolsets = {
@@ -1137,6 +1168,8 @@ def _build_child_agent(
             for name in parent_agent.valid_tool_names
             if (ts := model_tools.get_toolset_for_tool(name)) is not None
         }
+        if _get_inherit_mcp_toolsets():
+            parent_toolsets.update(_registered_mcp_toolsets())
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 

@@ -122,6 +122,11 @@ def is_camofox_mode() -> bool:
     ``browser_tool._get_cdp_override()``'s precedence. (Previously only the env
     var suppressed Camofox, so ``CAMOFOX_URL`` + a config CDP override still
     routed navigation through Camofox.)
+
+    This is a routing/configuration check, not a reachability probe: it reads
+    the configured CDP URL without HTTP discovery so a temporarily stopped
+    Chrome endpoint does not flip routing back to Camofox or mutate schema
+    eligibility.
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
         return False

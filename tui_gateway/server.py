@@ -16596,21 +16596,23 @@ def _(rid, params: dict) -> dict:
 def _resolve_browser_cdp_url() -> str:
     """Return the configured browser CDP override without network I/O.
 
-    ``/browser status`` must be fast — calling
-    ``tools.browser_tool._get_cdp_override`` would invoke
-    ``_resolve_cdp_override``, which performs an HTTP probe to
-    ``.../json/version`` for discovery-style URLs.  That probe has
-    a multi-second timeout and would block the TUI on a slow or
-    unreachable host even though status only needs to report whether
+    ``/browser status`` must be fast — resolving discovery-style URLs through
+    ``.../json/version`` has a multi-second timeout and would block the TUI on
+    a slow or unreachable host even though status only needs to report whether
     an override is set.
 
-    Mirrors the env/config precedence of ``_get_cdp_override`` (env
-    var first, then ``browser.cdp_url`` from config.yaml) without the
-    websocket-resolution step, so the answer reflects user intent
-    even when the configured host is not currently reachable.  The
-    actual WS normalization happens in ``browser_navigate`` on the
-    next tool call.
+    Uses ``tools.browser_tool._get_cdp_override(resolve=False)`` so the
+    env/config precedence stays in one place and the answer reflects user
+    intent even when the configured host is not currently reachable. The
+    actual WS normalization happens in ``browser_navigate`` on the next tool
+    call.
     """
+    try:
+        from tools.browser_tool import _get_cdp_override
+
+        return (_get_cdp_override(resolve=False) or "").strip()
+    except Exception:
+        pass
     env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
     if env_url:
         return env_url

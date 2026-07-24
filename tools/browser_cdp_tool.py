@@ -104,6 +104,11 @@ def _resolve_cdp_endpoint() -> str:
 
     1. ``BROWSER_CDP_URL`` env var (live override from ``/browser connect``)
     2. ``browser.cdp_url`` in ``config.yaml``
+
+    This is the invocation-time path: it performs bounded HTTP discovery for
+    ``http://`` endpoints so the WebSocket call receives a concrete
+    ``ws://`` URL. Schema-time checks use ``_has_configured_cdp_endpoint``
+    instead and never call this helper.
     """
     try:
         from tools.browser_tool import _get_cdp_override  # type: ignore[import-not-found]
@@ -634,12 +639,31 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _has_configured_cdp_endpoint() -> bool:
+    """Whether a CDP endpoint is configured, without network I/O.
+
+    Schema-time availability must be a pure configuration/dependency check.
+    Resolving an HTTP discovery endpoint through ``/json/version`` belongs to
+    invocation time; a temporarily unreachable Chrome must not mutate the
+    tool schema.
+    """
+    try:
+        from tools.browser_tool import _get_cdp_override  # type: ignore[import-not-found]
+
+        return bool((_get_cdp_override(resolve=False) or "").strip())
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("browser_cdp: failed to read configured CDP endpoint: %s", exc)
+        return False
+
+
 def _browser_cdp_check() -> bool:
     """Availability check for browser_cdp.
 
-    The tool is only offered when the Python side can actually reach a CDP
-    endpoint right now — meaning a static URL is set via ``/browser connect``
-    (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in ``config.yaml``.
+    The tool is only offered when a static CDP URL is configured via
+    ``/browser connect`` (``BROWSER_CDP_URL``) or ``browser.cdp_url`` in
+    ``config.yaml``. This check performs no HTTP/WebSocket I/O, so a
+    configured but temporarily dead endpoint stays schema-eligible and
+    reports endpoint unavailability at invocation time.
 
     Backends that do *not* currently expose CDP to us — Camofox (REST-only),
     the default local agent-browser mode (Playwright hides its internal CDP
@@ -653,7 +677,6 @@ def _browser_cdp_check() -> bool:
     """
     try:
         from tools.browser_tool import (  # type: ignore[import-not-found]
-            _get_cdp_override,
             check_browser_requirements,
         )
     except ImportError as exc:  # pragma: no cover — defensive
@@ -661,7 +684,7 @@ def _browser_cdp_check() -> bool:
         return False
     if not check_browser_requirements():
         return False
-    return bool(_get_cdp_override())
+    return _has_configured_cdp_endpoint()
 
 
 registry.register(

@@ -22,7 +22,8 @@ Phase scope (this file evolves across phases):
             media download via the Graph media endpoint, voice-note opus
             conversion via ffmpeg with graceful MP3 fallback when ffmpeg
             isn't on PATH. Document text injection for readable types.
-- Phase 5 — 24-hour conversation window + template fallback.
+- Phase 5 — explicit approved template sends outside the 24-hour window.
+            Hermes does not track the window or fall back automatically.
 
 Required env vars to enable the adapter:
 - WHATSAPP_CLOUD_PHONE_NUMBER_ID  (the Graph URL path component)
@@ -99,6 +100,15 @@ WAMID_DEDUP_CACHE_SIZE = 5000
 # Cap for the interactive-button state dicts and the per-chat last-wamid
 # cache. Generous for any realistic number of in-flight prompts / chats.
 INTERACTIVE_STATE_CACHE_SIZE = 1000
+_TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9_]{1,512}$")
+_TEMPLATE_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?$")
+_TEMPLATE_RECIPIENT_RE = re.compile(r"^\d{7,15}$")
+_TEMPLATE_COMPONENT_TYPES = frozenset({"header", "body", "button"})
+_TEMPLATE_BODY_PARAMETER_TYPES = frozenset({"text"})
+_TEMPLATE_HEADER_PARAMETER_TYPES = frozenset(
+    {"text", "image", "video", "document"}
+)
+_TEMPLATE_BUTTON_SUB_TYPES = frozenset({"quick_reply", "url"})
 
 # Per-type size caps documented by Meta for the Cloud API /media endpoint.
 # These are the hard limits; we refuse uploads above them with a clean
@@ -557,6 +567,282 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             rich_sent_store.record(chat_id, last_message_id, formatted)
 
         return SendResult(success=True, message_id=last_message_id)
+
+    @staticmethod
+    def _require_template_keys(
+        value: Dict[str, Any],
+        allowed: set[str] | frozenset[str],
+        context: str,
+    ) -> None:
+        unknown = set(value) - set(allowed)
+        if unknown:
+            raise ValueError(
+                f"{context} contains unsupported field(s): "
+                f"{', '.join(sorted(unknown))}"
+            )
+
+    @classmethod
+    def _normalize_template_parameter(
+        cls,
+        parameter: Dict[str, Any],
+        allowed_types: frozenset[str],
+        context: str,
+    ) -> Dict[str, Any]:
+        if not isinstance(parameter, dict):
+            raise ValueError(f"{context} must be an object")
+        parameter_type = parameter.get("type")
+        if parameter_type not in allowed_types:
+            raise ValueError(f"{context} type is not supported")
+        if parameter_type == "text":
+            cls._require_template_keys(parameter, {"type", "text"}, context)
+            text = parameter.get("text")
+            if not isinstance(text, str) or not text:
+                raise ValueError(f"{context} text must be a non-empty string")
+            return {"type": "text", "text": text}
+
+        cls._require_template_keys(parameter, {"type", parameter_type}, context)
+        media = parameter.get(parameter_type)
+        if not isinstance(media, dict):
+            raise ValueError(f"{context} {parameter_type} must be an object")
+        allowed = {"id", "link"}
+        if parameter_type == "document":
+            allowed.add("filename")
+        cls._require_template_keys(media, allowed, f"{context} {parameter_type}")
+        media_id = media.get("id")
+        link = media.get("link")
+        if bool(media_id) == bool(link):
+            raise ValueError(
+                f"{context} {parameter_type} must contain exactly one of id or link"
+            )
+        normalized_media: Dict[str, Any] = {}
+        if media_id:
+            if not isinstance(media_id, str):
+                raise ValueError(f"{context} {parameter_type} id must be a string")
+            normalized_media["id"] = media_id
+        else:
+            if not isinstance(link, str) or not re.match(r"^https?://", link):
+                raise ValueError(
+                    f"{context} {parameter_type} link must be an http(s) URL"
+                )
+            normalized_media["link"] = link
+        if "filename" in media:
+            filename = media["filename"]
+            if not isinstance(filename, str) or not filename:
+                raise ValueError(
+                    f"{context} document filename must be a non-empty string"
+                )
+            normalized_media["filename"] = filename
+        return {"type": parameter_type, parameter_type: normalized_media}
+
+    @classmethod
+    def _normalize_template_button(
+        cls,
+        component: Dict[str, Any],
+        context: str,
+    ) -> tuple[Dict[str, Any], tuple[str, str]]:
+        cls._require_template_keys(
+            component,
+            {"type", "sub_type", "index", "parameters"},
+            context,
+        )
+        sub_type = component.get("sub_type")
+        if sub_type not in _TEMPLATE_BUTTON_SUB_TYPES:
+            raise ValueError(f"{context} sub_type must be quick_reply or url")
+        index = component.get("index")
+        if isinstance(index, int) and not isinstance(index, bool):
+            index = str(index)
+        if not isinstance(index, str) or not re.fullmatch(r"[0-9]", index):
+            raise ValueError(f"{context} index must be a digit from 0 to 9")
+
+        parameters = component.get("parameters")
+        if not isinstance(parameters, list) or len(parameters) != 1:
+            raise ValueError(f"{context} parameters must contain exactly one item")
+        parameter = parameters[0]
+        if not isinstance(parameter, dict):
+            raise ValueError(f"{context} parameter must be an object")
+
+        value_field = "payload" if sub_type == "quick_reply" else "text"
+        cls._require_template_keys(
+            parameter,
+            {"type", value_field},
+            f"{context} {sub_type} button",
+        )
+        value = parameter.get(value_field)
+        expected_type = "payload" if sub_type == "quick_reply" else "text"
+        if (
+            parameter.get("type") != expected_type
+            or not isinstance(value, str)
+            or not value
+            or (sub_type == "quick_reply" and len(value) > 256)
+        ):
+            requirement = (
+                "one non-empty payload parameter up to 256 characters"
+                if sub_type == "quick_reply"
+                else "one non-empty text parameter"
+            )
+            raise ValueError(f"{context} {sub_type} button requires {requirement}")
+
+        normalized = {
+            "type": "button",
+            "sub_type": sub_type,
+            "index": index,
+            "parameters": [{"type": expected_type, value_field: value}],
+        }
+        return normalized, (sub_type, index)
+
+    @classmethod
+    def _normalize_template_components(
+        cls,
+        components: Optional[list[Dict[str, Any]]],
+    ) -> list[Dict[str, Any]]:
+        if components is None:
+            return []
+        if not isinstance(components, list):
+            raise ValueError("template components must be an array")
+        if len(components) > 12:
+            raise ValueError("template components cannot contain more than 12 items")
+
+        normalized: list[Dict[str, Any]] = []
+        seen_singletons: set[str] = set()
+        seen_buttons: set[tuple[str, str]] = set()
+        for component_index, component in enumerate(components):
+            context = f"template component {component_index}"
+            if not isinstance(component, dict):
+                raise ValueError(f"{context} must be an object")
+            component_type = component.get("type")
+            if component_type not in _TEMPLATE_COMPONENT_TYPES:
+                raise ValueError(f"{context} type must be header, body, or button")
+
+            if component_type == "button":
+                normalized_button, button_key = cls._normalize_template_button(
+                    component,
+                    context,
+                )
+                if button_key in seen_buttons:
+                    raise ValueError(
+                        "template components contain duplicate "
+                        f"{button_key[0]} button {button_key[1]}"
+                    )
+                seen_buttons.add(button_key)
+                normalized.append(normalized_button)
+                continue
+
+            cls._require_template_keys(component, {"type", "parameters"}, context)
+            if component_type in seen_singletons:
+                raise ValueError(
+                    f"template components can contain only one {component_type}"
+                )
+            seen_singletons.add(component_type)
+            parameters = component.get("parameters")
+            if not isinstance(parameters, list) or not parameters:
+                raise ValueError(f"{context} parameters must be a non-empty array")
+            if component_type == "header" and len(parameters) != 1:
+                raise ValueError("template header must contain exactly one parameter")
+            allowed_types = (
+                _TEMPLATE_HEADER_PARAMETER_TYPES
+                if component_type == "header"
+                else _TEMPLATE_BODY_PARAMETER_TYPES
+            )
+            normalized.append(
+                {
+                    "type": component_type,
+                    "parameters": [
+                        cls._normalize_template_parameter(
+                            parameter,
+                            allowed_types,
+                            f"{component_type} parameter {parameter_index}",
+                        )
+                        for parameter_index, parameter in enumerate(parameters)
+                    ],
+                }
+            )
+        return normalized
+
+    async def send_template(
+        self,
+        chat_id: str,
+        template_name: str,
+        language_code: str,
+        components: Optional[list[Dict[str, Any]]] = None,
+    ) -> SendResult:
+        """Send an approved Meta message template to one WhatsApp recipient."""
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            if not isinstance(chat_id, str):
+                raise ValueError("template recipient must be a string")
+            recipient = chat_id.strip()
+            if recipient.startswith("+"):
+                recipient = recipient[1:]
+            if not _TEMPLATE_RECIPIENT_RE.fullmatch(recipient):
+                raise ValueError(
+                    "template recipient must be 7-15 digits, with an optional leading +"
+                )
+            if not isinstance(template_name, str):
+                raise ValueError("template name must be a string")
+            name = template_name.strip()
+            if not _TEMPLATE_NAME_RE.fullmatch(name):
+                raise ValueError(
+                    "template name must use lowercase letters, numbers, and underscores"
+                )
+            if not isinstance(language_code, str):
+                raise ValueError("template language code must be a string")
+            language = language_code.strip()
+            if not _TEMPLATE_LANGUAGE_RE.fullmatch(language):
+                raise ValueError(
+                    "template language code must use a Meta locale such as en or es_MX"
+                )
+            normalized_components = self._normalize_template_components(components)
+        except (TypeError, ValueError) as exc:
+            return SendResult(success=False, error=f"Invalid template: {exc}")
+
+        template: Dict[str, Any] = {
+            "name": name,
+            "language": {"code": language},
+        }
+        if normalized_components:
+            template["components"] = normalized_components
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient,
+            "type": "template",
+            "template": template,
+        }
+        url = self._graph_url("messages")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] template send failed")
+            return SendResult(success=False, error=str(exc))
+
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] template rejected (status=%d): %s",
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
+        message_id: Optional[str] = None
+        try:
+            data = resp.json()
+            messages = data.get("messages") or []
+            if messages:
+                message_id = messages[0].get("id")
+        except Exception:
+            pass
+        return SendResult(success=True, message_id=message_id)
 
     # ------------------------------------------------------------------ typing indicator + read receipts
     #
@@ -2079,3 +2365,46 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
         )
+
+
+async def send_template_standalone(
+    config: PlatformConfig,
+    chat_id: str,
+    template_name: str,
+    language_code: str,
+    components: Optional[list[Dict[str, Any]]] = None,
+) -> SendResult:
+    """Send one template without starting the inbound webhook server."""
+    if not HTTPX_AVAILABLE:
+        return SendResult(success=False, error="httpx is required for whatsapp_cloud")
+
+    adapter = WhatsAppCloudAdapter(config)
+    if not adapter._phone_number_id or not adapter._access_token:
+        return SendResult(
+            success=False,
+            error=(
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID and "
+                "WHATSAPP_CLOUD_ACCESS_TOKEN are required"
+            ),
+        )
+
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+
+    adapter._http_client = httpx.AsyncClient(
+        timeout=30.0,
+        limits=platform_httpx_limits(),
+    )
+    client = adapter._http_client
+    try:
+        return await adapter.send_template(
+            chat_id,
+            template_name,
+            language_code,
+            components,
+        )
+    finally:
+        try:
+            await client.aclose()
+        except Exception:
+            logger.exception("[whatsapp_cloud] one-shot client close failed")
+        adapter._http_client = None

@@ -1089,13 +1089,12 @@ class TestPromptBuilderConstants:
 
     def test_whatsapp_cloud_hint_mentions_24h_window(self):
         """The Cloud API's 24-hour conversation window is a hard rule the
-        agent should know about. Phase 5 (template fallback) was deferred,
-        so the model needs to know free-form replies outside the window
-        will fail with Graph error 131047 — otherwise it'll cheerfully
-        try to schedule delayed messages that silently break."""
+        agent should know about. Free-form replies outside the window fail
+        with Graph error 131047, while approved templates remain available."""
         hint = PLATFORM_HINTS["whatsapp_cloud"]
         assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
         assert "131047" in hint
+        assert "send_template" in hint
 
     def test_whatsapp_cloud_hint_advertises_media(self):
         """Cloud adapter supports the same MEDIA:/path/ convention as
@@ -1723,5 +1722,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

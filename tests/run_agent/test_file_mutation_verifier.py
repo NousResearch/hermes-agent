@@ -129,6 +129,7 @@ def _bare_agent() -> AIAgent:
     """
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
+    agent._turn_failed_tools = []
     agent._turn_file_mutation_paths = set()
     return agent
 
@@ -271,6 +272,63 @@ class TestRecordFileMutationResult:
         )
         assert set(agent._turn_failed_file_mutations) == {"/tmp/a.md", "/tmp/b.md"}
 
+
+class TestRecordFailedToolResult:
+    def test_non_error_ignored(self):
+        agent = _bare_agent()
+        agent._record_failed_tool_result(
+            "web_search", {"q": "hi"}, json.dumps({"success": True}), is_error=False
+        )
+        assert agent._turn_failed_tools == []
+
+    def test_file_mutation_tools_deferred_to_dedicated_footer(self):
+        agent = _bare_agent()
+        agent._record_failed_tool_result(
+            "patch", {"path": "/tmp/a.py"}, json.dumps({"error": "boom"}), is_error=True
+        )
+        assert agent._turn_failed_tools == []
+
+    def test_error_is_recorded(self):
+        agent = _bare_agent()
+        agent._record_failed_tool_result(
+            "terminal",
+            {"command": "git push origin main"},
+            json.dumps({"error": "push failed"}),
+            is_error=True,
+        )
+        assert agent._turn_failed_tools == [
+            {
+                "tool": "terminal",
+                "blocked": False,
+            }
+        ]
+
+    def test_blocked_terminal_records_only_categorical_metadata(self):
+        agent = _bare_agent()
+        agent._record_failed_tool_result(
+            "terminal",
+            {"command": "git push origin main"},
+            json.dumps({"error": "Blocked by policy"}),
+            is_error=True,
+            blocked=True,
+        )
+        assert agent._turn_failed_tools == [{"tool": "terminal", "blocked": True}]
+
+    def test_sensitive_command_and_error_are_not_retained(self):
+        agent = _bare_agent()
+        secret = "ghp_super_secret_token"
+        agent._record_failed_tool_result(
+            "terminal",
+            {"command": f"git clone https://user:{secret}@github.com/org/private.git"},
+            json.dumps({"error": f"Authorization: Bearer {secret}"}),
+            is_error=True,
+        )
+
+        recorded = json.dumps(agent._turn_failed_tools)
+        assert agent._turn_failed_tools == [{"tool": "terminal", "blocked": False}]
+        assert secret not in recorded
+        assert "Authorization" not in recorded
+
     def test_no_state_dict_silent_noop(self):
         """When called outside run_conversation the state dict is absent.
 
@@ -377,6 +435,52 @@ class TestFormatFooter:
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_failed_tool_footer_empty_returns_empty_string(self):
+        assert AIAgent._format_failed_tool_footer([]) == ""
+
+    def test_failed_tool_footer_mentions_unverified_external_state(self):
+        secret = "ghp_super_secret_token"
+        out = AIAgent._format_failed_tool_footer(
+            [
+                {
+                    "tool": "terminal",
+                    "blocked": True,
+                    "error_preview": f"Authorization: Bearer {secret}",
+                    "command_preview": f"git push https://user:{secret}@github.com/org/repo.git",
+                }
+            ]
+        )
+        assert "Tool-failure verifier" in out
+        assert "historical record" in out
+        assert "do not establish whether a later call recovered" in out
+        assert "unverified" in out
+        assert "`terminal`" in out
+        assert "blocked before execution" in out
+        assert secret not in out
+        assert "Authorization" not in out
+        assert "command:" not in out
+
+    def test_later_success_keeps_explicitly_historical_failure_record(self):
+        agent = _bare_agent()
+        agent._record_failed_tool_result(
+            "terminal",
+            {"command": "git push origin main"},
+            json.dumps({"error": "push failed"}),
+            is_error=True,
+        )
+        agent._record_failed_tool_result(
+            "terminal",
+            {"command": "git ls-remote origin"},
+            json.dumps({"exit_code": 0}),
+            is_error=False,
+        )
+
+        assert agent._turn_failed_tools == [{"tool": "terminal", "blocked": False}]
+        out = AIAgent._format_failed_tool_footer(agent._turn_failed_tools)
+        assert "historical record" in out
+        assert "do not establish whether a later call recovered" in out
+        assert "later successful tool result" in out
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ rate-limited provider concurrently.
 """
 
 import random
+import re
 import threading
 import time
 from typing import Any
@@ -31,6 +32,10 @@ _ZAI_CODING_OVERLOAD_LONG_BACKOFF = (30.0, 60.0, 90.0, 120.0)
 # long-tier entry is reachable). Keeping it a single module constant prevents
 # the two from silently desyncing if the short-retry count is ever tuned.
 _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS = 3
+
+# A short RPM/TPM throttle usually clears without changing models. Count
+# failures, including the initial request, before the fallback chain may run.
+_SHORT_WINDOW_RATE_LIMIT_ATTEMPTS = 3
 
 
 def jittered_backoff(
@@ -83,6 +88,56 @@ def _error_text(error: Any) -> str:
         getattr(error, "response", None),
     ]
     return " ".join(str(part) for part in parts if part is not None).lower()
+
+
+def is_short_window_rate_limit_error(error: Any) -> bool:
+    """Return True for explicit per-minute RPM/TPM HTTP 429 throttles.
+
+    Bare quota errors are intentionally excluded. They may represent daily,
+    monthly, subscription, or billing walls where waiting on the same model
+    only wastes the retry budget.
+    """
+    response = getattr(error, "response", None)
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(response, "status_code", None)
+    if status != 429:
+        return False
+
+    text = _error_text(error)
+    permanent_signals = (
+        "insufficient credit",
+        "insufficient balance",
+        "payment required",
+        "billing",
+        "subscription",
+        "per day",
+        "daily",
+        "per week",
+        "weekly",
+        "per month",
+        "monthly",
+    )
+    if any(signal in text for signal in permanent_signals):
+        return False
+
+    return bool(
+        re.search(r"\b(?:rpm|tpm)\b", text)
+        or re.search(r"\b(?:requests?|tokens?)\s*(?:/|per[- ]?)\s*minute\b", text)
+        or "per-minute" in text
+    )
+
+
+def should_retry_short_window_rate_limit(
+    error: Any,
+    *,
+    retry_count: int,
+    max_retries: int,
+    attempt_budget: int = _SHORT_WINDOW_RATE_LIMIT_ATTEMPTS,
+) -> bool:
+    """Whether a short-window 429 still has same-model retry budget."""
+    retry_ceiling = min(max(0, max_retries), max(0, attempt_budget))
+    return retry_count < retry_ceiling and is_short_window_rate_limit_error(error)
 
 
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:

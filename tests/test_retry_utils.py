@@ -5,7 +5,13 @@ import threading
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import (
+    adaptive_rate_limit_backoff,
+    is_short_window_rate_limit_error,
+    is_zai_coding_overload_error,
+    jittered_backoff,
+    should_retry_short_window_rate_limit,
+)
 
 
 def test_backoff_is_exponential():
@@ -117,6 +123,62 @@ def test_backoff_uses_locked_tick_for_seed(monkeypatch):
 
     assert len(recorded_seeds) == 2
     assert len(set(recorded_seeds)) == 2, f"Expected unique seeds, got {recorded_seeds}"
+
+
+def _rate_limit_error(message, *, status_code=429):
+    return SimpleNamespace(
+        status_code=status_code,
+        body={"error": {"message": message}},
+    )
+
+
+def test_short_window_rate_limit_classifier_accepts_explicit_minute_windows():
+    for message in (
+        "Rate limit reached for requests per minute",
+        "TPM limit exceeded",
+        "tokens/minute quota exceeded",
+        "Per-minute request limit reached",
+    ):
+        assert is_short_window_rate_limit_error(_rate_limit_error(message))
+
+
+def test_short_window_rate_limit_classifier_rejects_long_term_and_ambiguous_limits():
+    for message in (
+        "Quota exceeded",
+        "Daily token quota exceeded",
+        "Monthly usage limit reached",
+        "Subscription limit reached",
+        "Insufficient credits for requests per minute",
+    ):
+        assert not is_short_window_rate_limit_error(_rate_limit_error(message))
+    assert not is_short_window_rate_limit_error(
+        _rate_limit_error("requests per minute", status_code=400)
+    )
+
+
+def test_short_window_rate_limit_uses_bounded_same_model_budget():
+    error = _rate_limit_error("Rate limit reached: 100 requests per minute")
+
+    assert should_retry_short_window_rate_limit(
+        error, retry_count=1, max_retries=5
+    )
+    assert should_retry_short_window_rate_limit(
+        error, retry_count=2, max_retries=5
+    )
+    assert not should_retry_short_window_rate_limit(
+        error, retry_count=3, max_retries=5
+    )
+
+
+def test_short_window_rate_limit_respects_smaller_configured_retry_ceiling():
+    error = _rate_limit_error("TPM limit exceeded")
+
+    assert should_retry_short_window_rate_limit(
+        error, retry_count=1, max_retries=2
+    )
+    assert not should_retry_short_window_rate_limit(
+        error, retry_count=2, max_retries=2
+    )
 
 
 def _zai_overload_error():

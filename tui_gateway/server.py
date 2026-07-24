@@ -10215,23 +10215,51 @@ def _(rid, params: dict) -> dict:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            # Reject out-of-range ordinals on BOTH ends. A negative value would
-            # otherwise sail past the upper-bound check and hit Python's negative
-            # indexing below (user_indices[-1] -> the LAST user turn), silently
-            # truncating history to everything before it and persisting that loss
-            # via replace_messages — an unrecoverable overwrite of the session DB.
-            if ordinal < 0 or ordinal >= len(user_indices):
+            if ordinal < 0:
                 return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
+            # session["history"] is only refreshed on resume (session.resume) —
+            # it does not track writes made by other clients sharing this same
+            # session_key (e.g. the REST gateway used by a web UI). Re-read the
+            # current segment from the DB before truncating so replace_messages
+            # does not operate on a stale in-memory snapshot.
+            #
+            # The Desktop ordinal is based on the full displayed lineage, while
+            # session["history"] and the model context contain only the current
+            # segment. Subtract the immutable ancestor display prefix instead of
+            # loading ancestors into `history`: persisting those rows into the
+            # tip would duplicate compressed history on every later resume.
+            db = _get_db()
+            history = list(session.get("history", []))
+            prefix_user_count = sum(
+                1
+                for message in session.get("display_history_prefix", [])
+                if message.get("role") == "user"
+            )
+            segment_ordinal = ordinal - prefix_user_count
+            if db is not None and session.get("session_key"):
+                try:
+                    history = db.get_messages_as_conversation(
+                        session["session_key"], repair_alternation=True
+                    )
+                except Exception as exc:
+                    # This path immediately performs a destructive transcript
+                    # replacement. If the authoritative read fails, do not fall
+                    # back to the stale snapshot and risk overwriting newer rows.
+                    return _err(rid, 5000, f"failed to load current session history: {exc}")
+            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+            # An ordinal that points into the display-only ancestor prefix is
+            # not editable from this continuation segment. Reject it on the same
+            # stale-target path as an ordinal beyond the current segment.
+            if segment_ordinal < 0 or segment_ordinal >= len(user_indices):
+                return _err(rid, 4018, "target user message is no longer in session history")
+            truncated = history[: user_indices[segment_ordinal]]
+            if db is not None:
                 try:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+                    return _err(rid, 5000, f"failed to truncate session history: {exc}")
+            session["history"] = truncated
+            session["history_version"] = int(session.get("history_version", 0)) + 1
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()

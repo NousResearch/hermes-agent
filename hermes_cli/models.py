@@ -3230,6 +3230,53 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     )
 
 
+def _is_google_gemini_base_url(base_url: Optional[str]) -> bool:
+    """Return whether ``base_url`` is Google's native Gemini endpoint."""
+    normalized = (base_url or "").strip().rstrip("/")
+    try:
+        parsed = urllib.parse.urlsplit(normalized)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https":
+        return False
+    if (parsed.hostname or "").lower().rstrip(".") != "generativelanguage.googleapis.com":
+        return False
+    path_segments = {
+        segment.lower()
+        for segment in parsed.path.split("/")
+        if segment
+    }
+    return "openai" not in path_segments
+
+
+def _fetch_google_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch model IDs from Google AI Studio using native query-key auth."""
+    if not api_key:
+        return None
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = "https://generativelanguage.googleapis.com/v1beta"
+    url = f"{normalized}/models?{urllib.parse.urlencode({'key': api_key})}"
+    request = urllib.request.Request(url, headers={"User-Agent": _HERMES_USER_AGENT})
+    try:
+        with _urlopen_model_catalog_request(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode())
+    except Exception:
+        return None
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
+    return [
+        str(model["name"]).split("/")[-1]
+        for model in models
+        if isinstance(model, dict) and model.get("name")
+    ]
+
+
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
     """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
@@ -3892,6 +3939,22 @@ def probe_api_models(
             "models": models,
             "probed_url": COPILOT_MODELS_URL,
             "resolved_base_url": COPILOT_BASE_URL,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    # Google AI Studio's native API uses query-key auth and a ``models``
+    # response shape. Its /openai compatibility endpoint stays generic.
+    if _is_google_gemini_base_url(normalized):
+        models = _fetch_google_models(
+            api_key=api_key,
+            base_url=normalized,
+            timeout=timeout,
+        )
+        return {
+            "models": models,
+            "probed_url": f"{normalized}/models",
+            "resolved_base_url": normalized,
             "suggested_base_url": None,
             "used_fallback": False,
         }

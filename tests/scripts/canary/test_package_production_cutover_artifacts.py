@@ -2250,6 +2250,8 @@ def test_psql_json_accepts_single_lf_framing_but_rejects_noncanonical_output(
         b'{"ok":true}\n',
         b'\n{"ok":true}',
         b'\n{"ok":true}\n',
+        b'\n{"ok": true}\n',
+        b'\n{"z": false, "ok": true}\n',
     ):
         monkeypatch.setattr(
             runtime.subprocess,
@@ -2261,13 +2263,19 @@ def test_psql_json_accepts_single_lf_framing_but_rejects_noncanonical_output(
                 stderr=b"",
             ),
         )
-        assert runtime._psql_json({}, "SELECT '{}'::jsonb::text;") == {"ok": True}
+        expected = (
+            {"ok": True, "z": False}
+            if b'"z"' in stdout
+            else {"ok": True}
+        )
+        assert runtime._psql_json({}, "SELECT '{}'::jsonb::text;") == expected
 
     for stdout in (
-        b' {"ok":true}\n',
-        b'\n{"ok":true} \n',
         b'\n{"ok":true}\n{"ok":false}\n',
         b'\n\n{"ok":true}\n',
+        b'\n{"ok":true,"ok":false}\n',
+        b'\n[{"ok":true}]\n',
+        b'\n{"ok":NaN}\n',
     ):
         monkeypatch.setattr(
             runtime.subprocess,

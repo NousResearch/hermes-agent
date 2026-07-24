@@ -2156,7 +2156,31 @@ def _run_psql(plan: Mapping[str, Any], sql: str, *, read_only: bool) -> bytes:
 
 def _psql_json(plan: Mapping[str, Any], sql: str, *, read_only: bool = True) -> Mapping[str, Any]:
     payload = _run_psql(plan, sql, read_only=read_only)
-    return _strict_json(payload, "artifact_database_observation_invalid")
+    if payload != payload.strip():
+        raise ArtifactError("artifact_database_observation_invalid")
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            payload.decode("utf-8", errors="strict"),
+            object_pairs_hook=pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ArtifactError("artifact_database_observation_invalid") from exc
+    if not isinstance(value, Mapping):
+        raise ArtifactError("artifact_database_observation_invalid")
+    return _strict_json(
+        _canonical_bytes(value),
+        "artifact_database_observation_invalid",
+    )
 
 
 STATE_SQL = r"""

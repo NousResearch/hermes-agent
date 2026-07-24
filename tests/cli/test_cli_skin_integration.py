@@ -106,6 +106,23 @@ class TestCliSkinPromptIntegration:
         assert "Prompt + TUI colors updated." in output
         assert cli._app.style is not None
 
+    def test_handle_skin_command_persists_auto_selector(self, capsys):
+        cli = _make_cli_stub()
+
+        with (
+            patch(
+                "hermes_cli.skin_engine._resolve_auto_skin_name",
+                return_value="daylight",
+            ),
+            patch("cli.save_config_value", return_value=True) as save_config,
+        ):
+            cli._handle_skin_command("/skin auto")
+
+        output = capsys.readouterr().out
+        assert "Skin set to: auto (saved)" in output
+        assert get_active_skin().name == "daylight"
+        save_config.assert_called_once_with("display.skin", "auto")
+
 
 class TestAnsiRichTextHelper:
     def test_preserves_literal_brackets(self):

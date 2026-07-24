@@ -2949,7 +2949,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     # this marker after prior conversation turns, and strict OpenAI-compatible
     # providers (vLLM, Qwen) reject system messages that are not at the
     # beginning of the API message list (#48338).
-    entry = {"role": "user", "content": marker}
+    entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
 
     lock = session.get("history_lock")
     if lock is not None:
@@ -2964,14 +2964,22 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         agent = session.get("agent")
         db = getattr(agent, "_session_db", None) if agent is not None else None
         if db is not None:
-            db.append_message(session_id=session_key, role="user", content=marker)
+            db.append_message(
+                session_id=session_key,
+                role="user",
+                content=marker,
+                display_kind="model_switch",
+            )
             return
 
         _ensure_session_db_row(session)
         with _session_db(session) as scoped_db:
             if scoped_db is not None:
                 scoped_db.append_message(
-                    session_id=session_key, role="user", content=marker
+                    session_id=session_key,
+                    role="user",
+                    content=marker,
+                    display_kind="model_switch",
                 )
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)
@@ -3642,6 +3650,14 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         )
 
 
+class CompressionLockHeld(Exception):
+    """Raised by _compress_session_history when compression skipped due
+    to a concurrent lock on the session's compression_locks row."""
+    def __init__(self, holder: str | None = None):
+        self.holder = holder
+        super().__init__(f"Compression lock held: {holder or 'unknown'}")
+
+
 def _compress_session_history(
     session: dict,
     focus_topic: str | None = None,
@@ -3649,10 +3665,29 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
 ) -> tuple[int, dict]:
+    """Compress a session's history — the single choke point shared by all
+    three manual-compress routes (session.compress RPC, command.dispatch
+    /compress|/compact, and the slash-exec mirror).
+
+    ``focus_topic`` is the RAW argument string after ``/compress``. It is
+    parsed here with :func:`parse_partial_compress_args` so boundary-aware
+    forms (``here [N]``, ``up to here``, ``--keep N``) trigger a partial
+    compress — head summarized, most recent ``keep_last`` exchanges kept
+    verbatim — on EVERY route, mirroring cli.py's ``_manual_compress`` and
+    gateway/slash_commands.py (PR #35252). Parsing at the choke point (not
+    per-route) is what fixes #35533: previously "/compress here 3" reached
+    this helper unparsed and ran a FULL compress focused on the literal
+    text "here 3".
+    """
     from agent.conversation_compression import (
         finalize_context_engine_compression_notification,
     )
     from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_cli.partial_compress import (
+        parse_partial_compress_args,
+        rejoin_compressed_head_and_tail,
+        split_history_for_partial_compress,
+    )
 
     agent = session["agent"]
     # Snapshot history under the lock so the LLM-bound compression call
@@ -3667,6 +3702,18 @@ def _compress_session_history(
     if len(history) < 4:
         usage = _get_usage(agent)
         return 0, usage
+    partial, keep_last, focus_topic = parse_partial_compress_args(focus_topic or "")
+    # Boundary-aware split: only the head is summarized; the most recent
+    # `keep_last` exchanges ride along verbatim. A degenerate split (empty
+    # tail — everything would be kept, or no head left to compress) falls
+    # back to full compression so the user still gets an action.
+    tail: list = []
+    head = history
+    if partial:
+        head, tail = split_history_for_partial_compress(history, keep_last)
+        if not tail:
+            partial = False
+            head = history
     if approx_tokens is None:
         # Include system prompt + tool schemas so the figure reflects real
         # request pressure, not a transcript-only underestimate (#6217).
@@ -3687,9 +3734,12 @@ def _compress_session_history(
     # and gateway handlers.
     try:
         compressed, _ = agent._compress_context(
-            history,
+            head,
             None,
             approx_tokens=approx_tokens,
+            # Partial compress has no focus topic (the modes are exclusive;
+            # parse_partial_compress_args returns focus_topic=None for the
+            # boundary-aware forms).
             focus_topic=focus_topic or None,
             force=True,
             defer_context_engine_notification=True,
@@ -3700,6 +3750,26 @@ def _compress_session_history(
             committed=False,
         )
         raise
+    # If _compress_context returned unchanged because a concurrent
+    # compression lock is held, raise so callers can surface a clear
+    # message instead of the misleading "No changes from compression" text.
+    # Type-pinned (is True / str): real values are None/True/holder-string;
+    # bare truthiness is fooled by MagicMock auto-attrs on test doubles.
+    _lock_skipped = getattr(agent, "_compression_skipped_due_to_lock", None)
+    if _lock_skipped is True or isinstance(_lock_skipped, str):
+        agent._compression_skipped_due_to_lock = None
+        # No boundary was committed on a lock-skip; discard any pending
+        # deferred context-engine notification (exactly-once, no-op safe).
+        finalize_context_engine_compression_notification(
+            agent,
+            committed=False,
+        )
+        raise CompressionLockHeld(
+            _lock_skipped if isinstance(_lock_skipped, str) else None
+        )
+
+    if partial and tail:
+        compressed = rejoin_compressed_head_and_tail(compressed, tail)
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
@@ -4361,6 +4431,43 @@ def _on_tool_progress(
         return
     if event_type == "moa.aggregating":
         _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
+        return
+    if event_type == "moa.progress":
+        # Per-reference completion — drives the status-bar progress indicator
+        # (`MOA: 2/3 refs done`) requested in issue #59546. Only emitted when
+        # both counters are present so the client can render deterministically.
+        refs_done = _kwargs.get("moa_refs_done")
+        refs_total = _kwargs.get("moa_refs_total")
+        if refs_done is None or refs_total is None:
+            return
+        _emit(
+            "moa.progress",
+            sid,
+            {
+                "label": str(name or ""),
+                "refs_done": int(refs_done),
+                "refs_total": int(refs_total),
+            },
+        )
+        return
+    if event_type == "moa.phase":
+        # Phase transition — currently only ``phase="aggregator"`` fires once
+        # the fan-out completes and the aggregator is about to act. Tells the
+        # client which phase of the MoA pipeline is currently running so it
+        # can swap status-bar copy accordingly.
+        phase = _kwargs.get("moa_phase")
+        if not phase:
+            return
+        phase_payload: dict[str, object] = {"phase": str(phase)}
+        refs_done = _kwargs.get("moa_refs_done")
+        refs_total = _kwargs.get("moa_refs_total")
+        if refs_done is not None:
+            phase_payload["refs_done"] = int(refs_done)
+        if refs_total is not None:
+            phase_payload["refs_total"] = int(refs_total)
+        if name:
+            phase_payload["aggregator"] = str(name)
+        _emit("moa.phase", sid, phase_payload)
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -5745,6 +5852,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
+        # Forward display-only timeline metadata so the TUI can render
+        # model switches and delegation completions as events instead of
+        # opaque user messages, and hide compaction handoffs entirely.
+        if m.get("display_kind"):
+            msg["display_kind"] = m["display_kind"]
+        if m.get("display_metadata"):
+            msg["display_metadata"] = m["display_metadata"]
         messages.append(msg)
 
     return messages
@@ -9310,6 +9424,16 @@ def _(rid, params: dict) -> dict:
             # reverts to neutral whether compaction succeeded, was a
             # no-op, or raised.
             _status_update(sid, "ready")
+    except CompressionLockHeld as e:
+        _status_update(sid, "ready")
+        from agent.manual_compression_feedback import (
+            describe_compression_lock_skip,
+        )
+        return _ok(rid, {
+            "compressed": False,
+            "lock_held": True,
+            "message": describe_compression_lock_skip(e.holder),
+        })
     except Exception as e:
         finalize_context_engine_compression_notification(
             session["agent"],
@@ -9957,7 +10081,7 @@ def _(rid, params: dict) -> dict:
                 "error",
                 sid,
                 {
-                    "message": err.get("error", {}).get(
+                    "message": (err.get("error") or {}).get(
                         "message", "agent initialization failed"
                     )
                 },
@@ -10243,7 +10367,17 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            if evt.get("type") == "async_delegation":
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    display_kind="async_delegation_complete",
+                    display_metadata=_async_delegation_display_metadata(evt),
+                )
+            else:
+                _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10311,7 +10445,17 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            if evt.get("type") == "async_delegation":
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    display_kind="async_delegation_complete",
+                    display_metadata=_async_delegation_display_metadata(evt),
+                )
+            else:
+                _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10326,6 +10470,33 @@ def _notification_poller_loop(
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
         process_registry.completion_queue.put(evt)
+
+
+def _async_delegation_display_metadata(evt: dict) -> dict:
+    """Build display-only metadata before the completion event is formatted."""
+    raw_results = evt.get("results")
+    results: list[dict] = [
+        result for result in raw_results if isinstance(result, dict)
+    ] if isinstance(raw_results, list) else []
+    task_count = len(results) or 1
+    completed_count = sum(
+        1 for result in results
+        if result.get("status") in {"completed", "success"}
+    )
+    failed_count = sum(
+        1 for result in results
+        if result.get("status") in {"failed", "error"}
+    )
+    metadata = {
+        "delegation_id": str(evt.get("delegation_id") or ""),
+        "task_count": task_count,
+        "completed_count": completed_count or task_count - failed_count,
+        "failed_count": failed_count,
+    }
+    duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
+    if isinstance(duration, (int, float)):
+        metadata["duration_seconds"] = duration
+    return metadata
 
 
 def _wire_agent_terminal_output() -> None:
@@ -10409,7 +10580,10 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
+    display_metadata: dict | None = None,
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -10519,6 +10693,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         _provider,
                         _model,
                         _cfg,
+                        requested_provider=getattr(
+                            agent, "requested_provider", ""
+                        ),
                     )
                     if getattr(agent, "api_mode", "") == "codex_app_server":
                         _mode = "text"
@@ -10607,6 +10784,27 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
+            if display_kind and isinstance(text, str):
+                db = getattr(agent, "_session_db", None)
+                current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
+                if db is not None:
+                    try:
+                        db.set_latest_matching_message_display_kind(
+                            current_session_id,
+                            role="user",
+                            content=text,
+                            display_kind=display_kind,
+                            display_metadata=display_metadata,
+                        )
+                    except Exception:
+                        logger.debug("failed to stamp synthetic display kind", exc_info=True)
+                if isinstance(result, dict) and isinstance(result.get("messages"), list):
+                    for message in reversed(result["messages"]):
+                        if message.get("role") == "user" and message.get("content") == text:
+                            message["display_kind"] = display_kind
+                            if display_metadata:
+                                message["display_metadata"] = display_metadata
+                            break
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.
@@ -13802,6 +14000,10 @@ def _(rid, params: dict) -> dict:
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
     try:
+        # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless
+        # parent, this spawn otherwise flashes a console (#56747).
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
@@ -13812,6 +14014,7 @@ def _(rid, params: dict) -> dict:
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
@@ -13871,6 +14074,8 @@ def _(rid, params: dict) -> dict:
             # has all API keys in os.environ.
             from tools.environments.local import _sanitize_subprocess_env
             sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             r = subprocess.run(
                 qc.get("command", ""),
                 shell=True,
@@ -13879,6 +14084,7 @@ def _(rid, params: dict) -> dict:
                 timeout=30,
                 stdin=subprocess.DEVNULL,
                 env=sanitized_env,
+                creationflags=windows_hide_flags(),
             )
             output = (
                 (r.stdout or "")
@@ -14402,6 +14608,19 @@ def _(rid, params: dict) -> dict:
                         filter(None, [summary["headline"], summary["token_line"], summary.get("note")])
                     ),
                 },
+            )
+        except CompressionLockHeld as e:
+            # Lock-skip is a clean no-op, not a failure: report it as
+            # normal command output (matching the slash-mirror and
+            # session.compress RPC), never as a "compress failed" error.
+            # _compress_session_history already discarded the deferred
+            # context-engine notification before raising.
+            from agent.manual_compression_feedback import (
+                describe_compression_lock_skip,
+            )
+            return _ok(
+                rid,
+                {"type": "exec", "output": describe_compression_lock_skip(e.holder)},
             )
         except Exception as exc:
             finalize_context_engine_compression_notification(
@@ -15457,7 +15676,17 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 else 0
             )
 
-            _compress_session_history(session, arg)
+            # The raw argument goes through unparsed: _compress_session_history
+            # (the choke point shared by all three manual-compress routes)
+            # parses the boundary-aware forms (here [N], up to here, --keep N)
+            # and does the partial head/tail split there (#35533).
+            try:
+                _compress_session_history(session, arg)
+            except CompressionLockHeld as e:
+                from agent.manual_compression_feedback import (
+                    describe_compression_lock_skip,
+                )
+                return describe_compression_lock_skip(e.holder)
             _sync_session_key_after_compress(sid, session)
 
             with session["history_lock"]:
@@ -16941,9 +17170,12 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         return _ok(
             rid,

@@ -2393,6 +2393,203 @@ class TestApprovalTimeoutIsNotConsent:
         )
 
 
+class TestApprovalIdResolution:
+    """Exact approval-ID resolution (#29373 review).
+
+    A stale button click must never resolve a different, newer pending
+    approval queued in the same session -- ``resolve_gateway_approval``'s
+    session-FIFO semantics make that possible when a session has more than
+    one pending approval. ``resolve_gateway_approval_by_id`` closes the gap.
+    """
+
+    SESSION_KEY = "test-approval-id-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE",
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _force_timeout(self, monkeypatch, seconds):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "timeout": seconds},
+        )
+
+    def test_notify_receives_approval_id(self, monkeypatch):
+        """approval_data handed to the notify callback carries a unique id."""
+        from tools import approval as mod
+        self._force_timeout(monkeypatch, seconds=1)
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert len(notified) == 1
+        assert notified[0].get("approval_id")
+        assert isinstance(notified[0]["approval_id"], str)
+
+    def test_resolve_by_id_resolves_exact_entry(self, monkeypatch):
+        from tools import approval as mod
+        self._force_timeout(monkeypatch, seconds=10)
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("rm -rf .git", "local")
+
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if notified:
+                break
+            time.sleep(0.02)
+        approval_id = notified[0]["approval_id"]
+
+        count = mod.resolve_gateway_approval_by_id(self.SESSION_KEY, approval_id, "once")
+        t.join(timeout=5)
+
+        assert count == 1
+        assert result_holder["r"]["approved"] is True
+
+    def test_stale_id_resolves_nothing_and_leaves_queue_intact(self, monkeypatch):
+        from tools import approval as mod
+        self._force_timeout(monkeypatch, seconds=10)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        result_holder = {}
+
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("rm -rf .git", "local")
+
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+
+        count = mod.resolve_gateway_approval_by_id(self.SESSION_KEY, "not-a-real-id", "once")
+
+        assert count == 0
+        assert mod._gateway_queues.get(self.SESSION_KEY), (
+            "unknown approval_id must not consume the pending entry"
+        )
+
+        # Resolve properly so the background thread can finish before teardown.
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+
+    def test_stale_button_does_not_resolve_newer_approval(self, monkeypatch):
+        """Regression: with two approvals pending in the same session, a
+        click carrying the OLDER approval_id must resolve only that entry
+        -- never the newer, still-pending one (the FIFO race #29373 flagged)."""
+        from tools import approval as mod
+        self._force_timeout(monkeypatch, seconds=10)
+
+        notify_lock = threading.Lock()
+        notified = []
+
+        def _notify(data):
+            with notify_lock:
+                notified.append(data)
+
+        mod.register_gateway_notify(self.SESSION_KEY, _notify)
+
+        results = {}
+
+        def _check(key, command):
+            results[key] = mod.check_all_command_guards(command, "local")
+
+        t1 = threading.Thread(target=_check, args=("first", "rm -rf .git"))
+        t1.start()
+        for _ in range(50):
+            if len(notified) >= 1:
+                break
+            time.sleep(0.02)
+        first_id = notified[0]["approval_id"]
+
+        # Queue a second, independent approval in the SAME session while
+        # the first is still pending.
+        t2 = threading.Thread(target=_check, args=("second", "sudo rm -rf /var/lib"))
+        t2.start()
+        for _ in range(50):
+            if len(notified) >= 2:
+                break
+            time.sleep(0.02)
+        second_id = notified[1]["approval_id"]
+
+        assert second_id != first_id
+        assert len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 2
+
+        # A stale click carrying the first approval_id must resolve ONLY
+        # the first entry.
+        assert mod.resolve_gateway_approval_by_id(self.SESSION_KEY, first_id, "once") == 1
+        t1.join(timeout=5)
+        assert results["first"]["approved"] is True
+
+        # The second approval must still be pending, untouched by the stale click.
+        assert len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 1
+
+        assert mod.resolve_gateway_approval_by_id(self.SESSION_KEY, second_id, "deny") == 1
+        t2.join(timeout=5)
+        assert results["second"]["approved"] is False
+
+    def test_fifo_resolve_unaffected_by_approval_ids(self, monkeypatch):
+        """Text /approve and /deny must keep resolving session-FIFO --
+        approval_id is additive, not a breaking change to that path."""
+        from tools import approval as mod
+        self._force_timeout(monkeypatch, seconds=10)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        result_holder = {}
+
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("rm -rf .git", "local")
+
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+
+        count = mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+        t.join(timeout=5)
+
+        assert count == 1
+        assert result_holder["r"]["approved"] is True
+
+
 class TestTirithImportErrorFailOpenPolicy:
     """Regression guard for #20733.
 

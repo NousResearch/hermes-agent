@@ -16826,14 +16826,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         sent_buttons = False
                         if getattr(type(adapter), "send_update_prompt", None) is not None:
                             try:
-                                await adapter.send_update_prompt(
+                                _update_prompt_result = await adapter.send_update_prompt(
                                     chat_id=chat_id,
                                     prompt=prompt_text,
                                     default=default,
                                     session_key=session_key,
                                     metadata=_non_conversational_metadata(metadata, platform=platform),
                                 )
-                                sent_buttons = True
+                                # A non-raising SendResult(success=False) (e.g. the
+                                # adapter's button listener isn't running) must NOT
+                                # suppress the text fallback below (#29373 review).
+                                if _update_prompt_result and getattr(
+                                    _update_prompt_result, "success", False
+                                ):
+                                    sent_buttons = True
+                                else:
+                                    logger.debug(
+                                        "Button-based update prompt returned failure, "
+                                        "falling back to text: %s",
+                                        getattr(_update_prompt_result, "error", None),
+                                    )
                             except Exception as btn_err:
                                 logger.debug("Button-based update prompt failed: %s", btn_err)
                         if not sent_buttons:
@@ -21755,6 +21767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 allow_permanent=approval_data.get("allow_permanent", True),
                                 allow_session=approval_data.get("allow_session", True),
                                 smart_denied=approval_data.get("smart_denied", False),
+                                approval_id=approval_data.get("approval_id"),
                             ),
                             _loop_for_step,
                             logger=logger,

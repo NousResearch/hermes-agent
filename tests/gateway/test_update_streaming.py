@@ -383,6 +383,60 @@ class TestWatchUpdateProgress:
         }
 
     @pytest.mark.asyncio
+    async def test_falls_back_to_text_when_button_prompt_send_fails(self, tmp_path):
+        """A non-raising SendResult(success=False) from send_update_prompt
+        (e.g. the adapter's interactive-button listener isn't running) must
+        NOT suppress the plain-text fallback prompt (#29373 review: the
+        watcher previously set sent_buttons=True unconditionally)."""
+        from gateway.platforms.base import SendResult
+
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("")
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+            "id": "failed-listener-prompt",
+        }))
+
+        class _ButtonListenerDownAdapter:
+            def __init__(self):
+                self.send = AsyncMock()
+
+            async def send_update_prompt(self, **kwargs):
+                return SendResult(success=False, error="callback listener not running")
+
+        mock_adapter = _ButtonListenerDownAdapter()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        async def finish_after_prompt():
+            await asyncio.sleep(0.3)
+            (hermes_home / ".update_response").write_text("y")
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            task = asyncio.create_task(finish_after_prompt())
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+            await task
+
+        all_sent = [str(c) for c in mock_adapter.send.call_args_list]
+        prompt_found = any("Restore local changes" in s for s in all_sent)
+        assert prompt_found, (
+            f"Text fallback was suppressed despite send_update_prompt "
+            f"failing. Sent: {all_sent}"
+        )
+
+    @pytest.mark.asyncio
     async def test_cleans_up_on_completion(self, tmp_path):
         """All marker files are cleaned up when update finishes."""
         runner = _make_runner()

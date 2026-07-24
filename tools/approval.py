@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2029,9 +2030,13 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("approval_id", "event", "data", "result", "reason")
 
     def __init__(self, data: dict):
+        # Unique per pending approval so button clicks can be bound to the
+        # exact entry they were rendered for, instead of resolving whatever
+        # happens to be oldest in the session queue (#29373 review).
+        self.approval_id: str = uuid.uuid4().hex
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -2049,9 +2054,12 @@ def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
     The callback signature is ``cb(approval_data: dict) -> None`` where
-    *approval_data* contains ``command``, ``description``, and
-    ``pattern_keys``.  The callback bridges sync→async (runs in the agent
-    thread, must schedule the actual send on the event loop).
+    *approval_data* contains ``command``, ``description``, ``pattern_keys``,
+    and ``approval_id`` (unique per pending entry — pass it through to
+    adapters that support exact-id resolution via
+    ``resolve_gateway_approval_by_id``). The callback bridges sync→async
+    (runs in the agent thread, must schedule the actual send on the event
+    loop).
     """
     with _lock:
         _gateway_notify_cbs[session_key] = cb
@@ -2104,6 +2112,37 @@ def resolve_gateway_approval(session_key: str, choice: str,
             entry.reason = reason
         entry.event.set()
     return len(targets)
+
+
+def resolve_gateway_approval_by_id(session_key: str, approval_id: str, choice: str,
+                                    reason: Optional[str] = None) -> int:
+    """Resolve exactly one pending approval by its ``approval_id``.
+
+    Unlike ``resolve_gateway_approval`` (session FIFO — always pops the
+    oldest entry), this binds a button click to the specific entry it was
+    rendered for. A stale or unknown ``approval_id`` resolves nothing and
+    returns 0 — it never falls back to FIFO, since that would recreate the
+    exact race this function exists to close (a stale button resolving a
+    newer, unrelated pending approval in the same session; #29373 review).
+
+    Returns 1 if the matching entry was found and resolved, 0 otherwise.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return 0
+        entry = next((e for e in queue if e.approval_id == approval_id), None)
+        if entry is None:
+            return 0
+        queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    entry.result = choice
+    if reason:
+        entry.reason = reason
+    entry.event.set()
+    return 1
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -3083,6 +3122,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
     entry = _ApprovalEntry(approval_data)
+    # Surface the generated id on the dict the notify callback receives —
+    # no signature change needed; adapters that want exact-id resolution
+    # just read approval_data["approval_id"]. entry.data IS approval_data
+    # (same reference), so this also lands on entry.data for free.
+    approval_data["approval_id"] = entry.approval_id
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 

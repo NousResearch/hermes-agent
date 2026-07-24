@@ -822,6 +822,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        approval_id: Optional[str] = None,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
 

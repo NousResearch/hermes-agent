@@ -678,6 +678,8 @@ class TestChannelAliases:
     def test_alias_persists_through_rebuild(self, tmp_path, monkeypatch):
         """build_channel_directory must bake aliases into the written file so
         they survive the periodic regeneration, not just live reads."""
+        from gateway.config import Platform
+
         cache_file = tmp_path / "channel_directory.json"
         monkeypatch.setattr("gateway.channel_directory._build_from_sessions",
                             lambda plat: [{"id": "120363@g.us", "name": "120363",
@@ -685,11 +687,52 @@ class TestChannelAliases:
                             if plat == "whatsapp" else [])
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
              self._setup_aliases(tmp_path, {"whatsapp": {"120363@g.us": "general"}}):
-            asyncio.run(build_channel_directory({}))
+            # WhatsApp must be connected so session discovery creates the
+            # platform key; aliases then rename within that key.
+            asyncio.run(build_channel_directory({Platform.WHATSAPP: object()}))
             on_disk = json.loads(cache_file.read_text())
         names = [e["name"] for e in on_disk["platforms"]["whatsapp"]
                  if e["id"] == "120363@g.us"]
         assert names == ["general"]
+
+    def test_aliases_do_not_resurrect_disconnected_platforms(self, tmp_path):
+        """Alias overlay must not invent platform keys for adapters that are
+        not connected (would defeat the connected-only session-discovery guard)."""
+        from gateway.config import Platform
+
+        cache_file = tmp_path / "channel_directory.json"
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch(
+                 "gateway.channel_directory._build_from_sessions",
+                 return_value=[{"id": "tg1", "name": "Alice", "type": "dm",
+                                "thread_id": None}],
+             ), \
+             self._setup_aliases(tmp_path, {
+                 "whatsapp": {"family@g.us": "family"},
+                 "signal": {"+15551234567": "Mom"},
+             }):
+            directory = asyncio.run(
+                build_channel_directory({Platform.TELEGRAM: object()})
+            )
+            plats = directory["platforms"]
+            assert "telegram" in plats
+            assert "whatsapp" not in plats
+            assert "signal" not in plats
+            assert resolve_channel_name("whatsapp", "family") is None
+            on_disk = json.loads(cache_file.read_text())
+            assert "whatsapp" not in on_disk["platforms"]
+            assert "signal" not in on_disk["platforms"]
+
+    def test_apply_aliases_skips_missing_platform_keys(self):
+        """Aliases for platforms absent from the directory must be no-ops."""
+        platforms = {"telegram": [{"id": "1", "name": "Alice", "type": "dm"}]}
+        with patch(
+            "gateway.channel_directory._load_channel_aliases",
+            return_value={"whatsapp": {"family@g.us": "family"}},
+        ):
+            _apply_channel_aliases(platforms)
+        assert "whatsapp" not in platforms
+        assert platforms["telegram"][0]["name"] == "Alice"
 
     def test_apply_aliases_handles_malformed_map(self):
         """Non-dict alias maps and non-string aliases must not raise."""
@@ -702,3 +745,5 @@ class TestChannelAliases:
                    }):
             _apply_channel_aliases(platforms)  # should not raise
         assert platforms["whatsapp"][0]["name"] == "1"
+        assert "signal" not in platforms
+        assert "telegram" not in platforms

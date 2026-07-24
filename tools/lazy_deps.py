@@ -864,16 +864,45 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature counts as "active" when a package *distinctive* to it is
+    installed — "distinctive" meaning the package name appears in this
+    feature's spec list and in no *other* feature's list, so its presence
+    is real evidence the user activated this backend.
+
+    Packages shared across features are deliberately ignored for this
+    decision. Several messaging adapters (``platform.discord``,
+    ``platform.slack``, ``platform.teams``, ``platform.matrix``) each pin
+    ``aiohttp`` to a common security floor, so ``aiohttp`` being installed
+    for Discord must NOT make Matrix look active — otherwise ``hermes
+    update`` tries to refresh Matrix and triggers a doomed
+    ``mautrix[encryption]`` build (compiling the native ``libolm`` C lib)
+    on machines that never enabled Matrix.
+
+    Features whose *every* package is shared (e.g. ``tts.mistral`` and
+    ``stt.mistral`` both declare only ``mistralai``) have no distinctive
+    signal, so they fall back to the presence-of-any check — the best
+    available evidence without a false-positive vector.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
+    # How many distinct features declare each package name? A package
+    # claimed by exactly one feature is "distinctive" to it.
+    pkg_feature_count: dict[str, int] = {}
+    for specs in LAZY_DEPS.values():
+        for name in {_pkg_name_from_spec(s) for s in specs}:
+            pkg_feature_count[name] = pkg_feature_count.get(name, 0) + 1
+
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        distinctive = [
+            s for s in specs
+            if pkg_feature_count.get(_pkg_name_from_spec(s), 0) == 1
+        ]
+        # Prefer distinctive-package evidence; fall back to any-present
+        # only when the feature has no package unique to it.
+        candidates = distinctive or list(specs)
+        if any(_is_present(s) for s in candidates):
             active.append(feature)
     return active
 

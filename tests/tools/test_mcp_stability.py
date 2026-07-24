@@ -236,7 +236,12 @@ class TestStdioPidTracking:
         server._elicitation = None
         server._registered_tool_names = []
 
-        config = {"command": "echo", "args": ["hello"]}
+        # "npx" (not e.g. "echo") so this stays green regardless of whether
+        # the (opt-in) tools.mcp_command_guard.validate_stdio_command allowlist
+        # is enabled in the environment running this test — otherwise it would
+        # reject the command before _run_stdio reaches the stdio_client spawn
+        # this test is exercising.
+        config = {"command": "npx", "args": ["hello"]}
 
         import asyncio
 
@@ -247,7 +252,7 @@ class TestStdioPidTracking:
             with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
                  patch("tools.mcp_tool._build_safe_env", return_value={}), \
                  patch("tools.mcp_tool._resolve_stdio_command",
-                       return_value=("echo", {})), \
+                       return_value=("npx", {})), \
                  patch("tools.mcp_tool._write_stderr_log_header"), \
                  patch("tools.mcp_tool._get_mcp_stderr_log",
                        return_value=None), \

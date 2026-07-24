@@ -211,9 +211,9 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
 
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):
-    """Empty stdout → SILENT_MARKER, which suppresses delivery downstream."""
+    """Empty stdout → AGENT_NOT_INVOKED_MARKER, which suppresses delivery downstream."""
     from cron.jobs import create_job
-    from cron.scheduler import run_job, SILENT_MARKER
+    from cron.scheduler import run_job, AGENT_NOT_INVOKED_MARKER
 
     script_path = hermes_env / "scripts" / "quiet.sh"
     script_path.write_text("#!/bin/bash\n# nothing to say\n")
@@ -224,13 +224,13 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert error is None
-    assert final_response == SILENT_MARKER
+    assert final_response == AGENT_NOT_INVOKED_MARKER
 
 
 def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
-    """wakeAgent=false gate in stdout triggers a silent run."""
+    """wakeAgent=false gate in stdout triggers a silent run (agent not invoked)."""
     from cron.jobs import create_job
-    from cron.scheduler import run_job, SILENT_MARKER
+    from cron.scheduler import run_job, AGENT_NOT_INVOKED_MARKER
 
     script_path = hermes_env / "scripts" / "gated.sh"
     script_path.write_text('#!/bin/bash\necho \'{"wakeAgent": false}\'\n')
@@ -240,7 +240,7 @@ def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
-    assert final_response == SILENT_MARKER
+    assert final_response == AGENT_NOT_INVOKED_MARKER
 
 
 def test_run_job_no_agent_script_failure_delivers_error(hermes_env):

@@ -923,3 +923,112 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_allows_same_base_url_different_name(monkeypatch, tmp_path):
+    """Two providers with the same base_url but different names should both be saved."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}))
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+
+    def _save(cfg):
+        saved.update(cfg)
+        cfg_path.write_text(yaml.dump(cfg))
+
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider(
+        "https://api.example.cn/v1", api_key="key-aaa", model="m1", name="group-a"
+    )
+    _save_custom_provider(
+        "https://api.example.cn/v1", api_key="key-bbb", model="m2", name="group-b"
+    )
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 2, f"expected 2 entries, got {len(entries)}: {entries}"
+    names = [e["name"] for e in entries]
+    assert "group-a" in names
+    assert "group-b" in names
+    for e in entries:
+        if e["name"] == "group-a":
+            assert e["api_key"] == "key-aaa"
+        elif e["name"] == "group-b":
+            assert e["api_key"] == "key-bbb"
+
+
+def test_save_custom_provider_updates_api_key_on_name_match(monkeypatch, tmp_path):
+    """When an entry with the same name exists, api_key should be updated."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    initial = {
+        "custom_providers": [
+            {"name": "my-api", "base_url": "https://api.example.cn/v1", "api_key": "old-key"}
+        ]
+    }
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump(initial))
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+
+    def _save(cfg):
+        saved.update(cfg)
+        cfg_path.write_text(yaml.dump(cfg))
+
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider(
+        "https://api.example.cn/v1", api_key="new-key", name="my-api"
+    )
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 1
+    assert entries[0]["api_key"] == "new-key"
+
+
+def test_save_custom_provider_updates_api_key_on_base_url_match(monkeypatch, tmp_path):
+    """When no name is given and base_url matches, api_key should still be updated."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    initial = {
+        "custom_providers": [
+            {
+                "name": "Auto",
+                "base_url": "https://api.example.cn/v1",
+                "api_key": "old-key",
+                "model": "old-model",
+            }
+        ]
+    }
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump(initial))
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+
+    def _save(cfg):
+        saved.update(cfg)
+        cfg_path.write_text(yaml.dump(cfg))
+
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    # No name provided — falls back to base_url dedup
+    _save_custom_provider("https://api.example.cn/v1", api_key="new-key", model="new-model")
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 1
+    assert entries[0]["api_key"] == "new-key"
+    assert entries[0]["model"] == "new-model"

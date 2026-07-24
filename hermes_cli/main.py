@@ -3979,8 +3979,10 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
+    Deduplicates by name (when provided) or base_url — if a matching
+    entry exists, updates its fields.  Using name as the primary key
+    allows multiple providers pointing at the same aggregator endpoint
+    with different API keys.
     Uses *name* when provided, otherwise auto-generates from the URL.
     """
     from hermes_cli.config import load_config, save_config
@@ -3990,33 +3992,48 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
-    for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
-            changed = False
-            if model and entry.get("model") != model:
-                entry["model"] = model
+    # Dedup by name (when provided) to allow multiple entries per base_url
+    existing = None
+    if name:
+        for entry in providers:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                existing = entry
+                break
+    else:
+        # Fall back to base_url dedup when no name given
+        for entry in providers:
+            if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
+                "/"
+            ) == base_url.rstrip("/"):
+                existing = entry
+                break
+
+    if existing is not None:
+        changed = False
+        if api_key and existing.get("api_key") != api_key:
+            existing["api_key"] = api_key
+            changed = True
+        if model and existing.get("model") != model:
+            existing["model"] = model
+            changed = True
+        if model and context_length:
+            models_cfg = existing.get("models", {})
+            if not isinstance(models_cfg, dict):
+                models_cfg = {}
+            models_cfg[model] = {"context_length": context_length}
+            existing["models"] = models_cfg
+            changed = True
+        if api_mode:
+            if existing.get("api_mode") != api_mode:
+                existing["api_mode"] = api_mode
                 changed = True
-            if model and context_length:
-                models_cfg = entry.get("models", {})
-                if not isinstance(models_cfg, dict):
-                    models_cfg = {}
-                models_cfg[model] = {"context_length": context_length}
-                entry["models"] = models_cfg
-                changed = True
-            if api_mode:
-                if entry.get("api_mode") != api_mode:
-                    entry["api_mode"] = api_mode
-                    changed = True
-            elif "api_mode" in entry:
-                entry.pop("api_mode", None)
-                changed = True
-            if changed:
-                cfg["custom_providers"] = providers
-                save_config(cfg)
-            return  # already saved, updated if needed
+        elif "api_mode" in existing:
+            existing.pop("api_mode", None)
+            changed = True
+        if changed:
+            cfg["custom_providers"] = providers
+            save_config(cfg)
+        return  # already saved, updated if needed
 
     # Use provided name or auto-generate from URL
     if not name:

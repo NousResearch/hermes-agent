@@ -828,6 +828,89 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
 
 
+def _raise_ready_blockers(conn: sqlite3.Connection, task_id: str) -> None:
+    blockers = _parents_blocking_ready(conn, task_id)
+    if not blockers:
+        return
+    names = ", ".join(
+        f"{p['title']!r} ({p['id']}, status={p['status']})"
+        for p in blockers
+    )
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Cannot move to 'ready': blocked by parent(s) "
+            f"not done — {names}"
+        ),
+    )
+
+
+def _preflight_update_task_patch(
+    conn: sqlite3.Connection,
+    task: kanban_db.Task,
+    payload: UpdateTaskBody,
+) -> None:
+    """Reject invalid PATCH combinations before mutating any task fields.
+
+    The dashboard lets one PATCH update several fields at once. Validate the
+    request up front so a later 4xx (for example an invalid status move) does
+    not leave earlier field writes committed.
+    """
+    if payload.title is not None and not payload.title.strip():
+        raise HTTPException(status_code=400, detail="title cannot be empty")
+
+    if (
+        payload.assignee is not None
+        and task.claim_lock is not None
+        and task.status == "running"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"cannot reassign {task.id}: currently running (claimed). "
+                "Wait for completion or reclaim the stale lock first."
+            ),
+        )
+
+    s = payload.status
+    if s is None:
+        return
+    if s == "done":
+        if task.status not in {"running", "ready", "blocked"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"status transition to {s!r} not valid from current state",
+            )
+    elif s == "blocked":
+        if task.status not in {"running", "ready"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"status transition to {s!r} not valid from current state",
+            )
+    elif s == "scheduled":
+        if task.status not in {"todo", "ready", "running", "blocked"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"status transition to {s!r} not valid from current state",
+            )
+    elif s == "ready":
+        if task.status not in {"blocked", "scheduled"}:
+            _raise_ready_blockers(conn, task.id)
+    elif s == "archived":
+        if task.status == "archived":
+            raise HTTPException(
+                status_code=409,
+                detail=f"status transition to {s!r} not valid from current state",
+            )
+    elif s == "running":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot set status to 'running' directly; use the dispatcher/claim path",
+        )
+    elif s not in {"todo", "triage"}:
+        raise HTTPException(status_code=400, detail=f"unknown status: {s}")
+
+
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
@@ -836,6 +919,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         task = kanban_db.get_task(conn, task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        _preflight_update_task_patch(conn, task, payload)
 
         # --- assignee ----------------------------------------------------
         if payload.assignee is not None:
@@ -887,19 +971,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # can render an actionable toast instead of a silent no-op.
                 # See #26744.
                 if s == "ready":
-                    blockers = _parents_blocking_ready(conn, task_id)
-                    if blockers:
-                        names = ", ".join(
-                            f"{p['title']!r} ({p['id']}, status={p['status']})"
-                            for p in blockers
-                        )
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                f"Cannot move to 'ready': blocked by parent(s) "
-                                f"not done — {names}"
-                            ),
-                        )
+                    _raise_ready_blockers(conn, task_id)
                 raise HTTPException(
                     status_code=409,
                     detail=f"status transition to {s!r} not valid from current state",
@@ -940,8 +1012,6 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             with kanban_db.write_txn(conn):
                 sets, vals = [], []
                 if payload.title is not None:
-                    if not payload.title.strip():
-                        raise HTTPException(status_code=400, detail="title cannot be empty")
                     sets.append("title = ?")
                     vals.append(payload.title.strip())
                 if payload.body is not None:

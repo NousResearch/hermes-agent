@@ -608,6 +608,27 @@ def test_patch_reassign(client):
     assert r.json()["task"]["assignee"] == "b"
 
 
+def test_patch_failed_status_move_does_not_commit_assignee(client):
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "c", "parents": [parent["id"]], "assignee": "a"},
+    ).json()["task"]
+    assert child["status"] == "todo"
+    assert child["assignee"] == "a"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={"assignee": "b", "status": "ready"},
+    )
+    assert r.status_code == 409
+    assert "Cannot move to 'ready'" in r.json()["detail"]
+
+    child_after = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
+    assert child_after["status"] == "todo"
+    assert child_after["assignee"] == "a"
+
+
 def test_patch_priority_and_edit(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

@@ -442,6 +442,60 @@ class TestHasContentAfterThinkBlock:
         assert agent._has_content_after_think_block("just normal content") is True
 
 
+class TestHasNaturalResponseEnding:
+    """Refs #14572 — an emoji sign-off must not read as an unfinished reply.
+
+    ``_should_treat_stop_as_truncated`` calls this on Ollama-hosted GLM
+    replies, so a false negative reclassifies a complete response as
+    truncated and burns the continuation budget.
+    """
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            "✨",  # ✨ Dingbats
+            "✅",  # ✅ Dingbats
+            "⭐",  # ⭐ Misc Symbols & Pictographs Suppl.
+            "☀",  # ☀ Misc Symbols
+            "\U0001f389",  # 🎉 Misc Symbols & Pictographs
+            "\U0001f99e",  # 🦞
+        ],
+        ids=["sparkles", "check", "star", "sun", "party", "lobster"],
+    )
+    def test_emoji_sign_off_is_natural(self, agent, ending):
+        assert agent._has_natural_response_ending(f"All done {ending}") is True
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            "❤️",  # ❤️ variation selector 16
+            "\U0001f44d\U0001f3fd",  # 👍🏽 skin-tone modifier
+            "\U0001f468‍\U0001f4bb",  # 👨‍💻 ZWJ sequence
+            "\U0001f1f0\U0001f1f7",  # 🇰🇷 regional indicators
+        ],
+        ids=["variation-selector", "skin-tone", "zwj", "regional-indicator"],
+    )
+    def test_composed_emoji_sign_off_is_natural(self, agent, ending):
+        """The final codepoint is a modifier, not the pictograph itself."""
+        assert agent._has_natural_response_ending(f"Thanks {ending}") is True
+
+    @pytest.mark.parametrize(
+        "text",
+        ["Finished.", "Done!", "Really?", "```\nx = 1\n```"],
+        ids=["period", "bang", "question", "code-fence"],
+    )
+    def test_existing_endings_still_natural(self, agent, text):
+        assert agent._has_natural_response_ending(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        ["and then we", "the value is 42", "", "   "],
+        ids=["mid-sentence", "trailing-digit", "empty", "whitespace"],
+    )
+    def test_unfinished_text_is_not_natural(self, agent, text):
+        assert agent._has_natural_response_ending(text) is False
+
+
 class TestStripThinkBlocks:
     def test_none_returns_empty(self, agent):
         assert agent._strip_think_blocks(None) == ""

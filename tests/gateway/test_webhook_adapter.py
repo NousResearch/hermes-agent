@@ -99,6 +99,15 @@ def _github_signature(body: bytes, secret: str) -> str:
     ).hexdigest()
 
 
+def _gitea_signature(body: bytes, secret: str) -> str:
+    """Compute X-Gitea-Signature (plain HMAC-SHA256 hex) for *body*.
+    
+    Gitea sends the raw hex digest without the 'sha256=' prefix
+    that GitHub uses. This is the same format as X-Webhook-Signature.
+    """
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 def _generic_signature(body: bytes, secret: str) -> str:
     """Compute X-Webhook-Signature (plain HMAC-SHA256 hex) for *body*."""
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -160,6 +169,66 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Gitlab-Token": "wrong"})
         assert adapter._validate_signature(req, b"{}", "correct") is False
 
+    def test_validate_gitea_signature_valid(self):
+        """Valid X-Gitea-Signature (raw hex) is accepted.
+        
+        Gitea sends HMAC-SHA256 as raw hex without 'sha256=' prefix.
+        Modern Gitea also sends X-Hub-Signature-256 (GitHub-compatible),
+        but this test covers the Gitea-specific header fallback.
+        """
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        sig = _gitea_signature(body, secret)
+        req = _mock_request(headers={"X-Gitea-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_gitea_signature_invalid(self):
+        """Wrong X-Gitea-Signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        req = _mock_request(headers={"X-Gitea-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_gitea_signature_wrong_body_rejected(self):
+        """X-Gitea-Signature computed for wrong body is rejected."""
+        adapter = _make_adapter()
+        secret = "webhook-secret-42"
+        # Compute sig for one body, send another
+        sig = _gitea_signature(b'{"action": "closed"}', secret)
+        req = _mock_request(headers={"X-Gitea-Signature": sig})
+        assert adapter._validate_signature(req, b'{"action": "opened"}', secret) is False
+
+    def test_validate_forgejo_signature_valid(self):
+        """Valid X-Forgejo-Signature (raw hex) is accepted.
+        
+        Forgejo is a Gitea fork and uses the same signature format:
+        HMAC-SHA256 as raw hex without 'sha256=' prefix.
+        """
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        sig = _gitea_signature(body, secret)  # Same format as Gitea
+        req = _mock_request(headers={"X-Forgejo-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_forgejo_signature_invalid(self):
+        """Wrong X-Forgejo-Signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        req = _mock_request(headers={"X-Forgejo-Signature": "deadbeef"})
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_forgejo_signature_wrong_body_rejected(self):
+        """X-Forgejo-Signature computed for wrong body is rejected."""
+        adapter = _make_adapter()
+        secret = "webhook-secret-42"
+        sig = _gitea_signature(b'{"action": "closed"}', secret)
+        req = _mock_request(headers={"X-Forgejo-Signature": sig})
+        assert adapter._validate_signature(req, b'{"action": "opened"}', secret) is False
+
     def test_validate_no_signature_with_secret_rejects(self):
         """Secret configured but no recognised signature header → reject."""
         adapter = _make_adapter()
@@ -177,6 +246,8 @@ class TestValidateSignature:
         for header in (
             "X-Hub-Signature-256",
             "X-Gitlab-Token",
+            "X-Gitea-Signature",
+            "X-Forgejo-Signature",
             "X-Webhook-Signature",
         ):
             req = _mock_request(headers={header: hostile})
@@ -653,6 +724,96 @@ class TestEventFilter:
                 json={"type": "message.received"},
             )
             assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_gitea_event(self):
+        """Gitea X-Gitea-Event header is recognized for event filtering."""
+        routes = {
+            "gitea": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issues"],
+                "prompt": "Issue: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gitea",
+                json={"action": "opened"},
+                headers={"X-Gitea-Event": "issues"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_rejects_gitea_non_matching(self):
+        """Gitea non-matching event type returns 200 with status=ignored."""
+        routes = {
+            "gitea": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issues"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gitea",
+                json={"action": "opened"},
+                headers={"X-Gitea-Event": "push"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_forgejo_event(self):
+        """Forgejo X-Forgejo-Event header is recognized for event filtering."""
+        routes = {
+            "forgejo": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/forgejo",
+                json={"action": "opened"},
+                headers={"X-Forgejo-Event": "pull_request"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_rejects_forgejo_non_matching(self):
+        """Forgejo non-matching event type returns 200 with status=ignored."""
+        routes = {
+            "forgejo": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["pull_request"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/forgejo",
+                json={"action": "opened"},
+                headers={"X-Forgejo-Event": "issues"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
 
 
 # ===================================================================

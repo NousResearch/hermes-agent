@@ -19,7 +19,7 @@ import hashlib
 import hmac
 import base64
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -45,6 +45,7 @@ validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
+interactive_setup = _line.interactive_setup
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +465,40 @@ class TestRegister:
         register(ctx)
         # LINE per-bubble limit is 5000; we register 4500 to leave headroom.
         assert ctx.kwargs["max_message_length"] <= 5000
+
+
+class TestInteractiveSetup:
+
+    def test_supplied_credentials_use_config_helpers(self, monkeypatch):
+        from hermes_cli import config
+        from hermes_cli import secret_prompt
+
+        get_env_value = MagicMock(return_value=None)
+        save_env_value = MagicMock()
+        masked_secret_prompt = MagicMock(side_effect=["access-token", "channel-secret"])
+        input_prompt = MagicMock(side_effect=["", ""])
+        monkeypatch.setattr(config, "get_env_value", get_env_value)
+        monkeypatch.setattr(config, "save_env_value", save_env_value)
+        monkeypatch.setattr(secret_prompt, "masked_secret_prompt", masked_secret_prompt)
+        monkeypatch.setattr("builtins.input", input_prompt)
+
+        interactive_setup()
+
+        assert get_env_value.call_args_list == [
+            call("LINE_CHANNEL_ACCESS_TOKEN"),
+            call("LINE_CHANNEL_SECRET"),
+            call("LINE_PUBLIC_URL"),
+            call("LINE_ALLOWED_USERS"),
+        ]
+        assert save_env_value.call_args_list == [
+            call("LINE_CHANNEL_ACCESS_TOKEN", "access-token"),
+            call("LINE_CHANNEL_SECRET", "channel-secret"),
+        ]
+        assert masked_secret_prompt.call_args_list == [
+            call("Channel access token: "),
+            call("Channel secret: "),
+        ]
+        assert input_prompt.call_count == 2
 
 
 class TestEnvEnablement:

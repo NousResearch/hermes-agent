@@ -114,6 +114,7 @@ export function usePetRoam({
     let pauseUntil = performance.now() + rand(400, 1200)
     let last = performance.now()
     let raf = 0
+    let timer: null | ReturnType<typeof setTimeout> = null
 
     let walkTargetX = cur.x
     let curLedge: Ledge | null = null
@@ -208,6 +209,64 @@ export function usePetRoam({
       signal('run', signDir(walkTargetX - cur.x))
     }
 
+    const cancelScheduled = () => {
+      if (raf) {
+        cancelAnimationFrame(raf)
+        raf = 0
+      }
+
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+
+    const scheduleFrame = () => {
+      if (document.hidden || raf) {
+        return
+      }
+
+      raf = requestAnimationFrame(now => {
+        raf = 0
+        step(now)
+      })
+    }
+
+    const schedulePause = (now: number) => {
+      if (document.hidden || timer !== null) {
+        return
+      }
+
+      timer = setTimeout(
+        () => {
+          timer = null
+          scheduleFrame()
+        },
+        Math.max(0, pauseUntil - now)
+      )
+    }
+
+    const scheduleNext = (now: number) => {
+      if (phase === 'pause' && !isInteracting()) {
+        schedulePause(now)
+      } else {
+        scheduleFrame()
+      }
+    }
+
+    const wakeForInteraction = () => {
+      if (phase !== 'pause' || !isInteracting()) {
+        return
+      }
+
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+
+      scheduleFrame()
+    }
+
     const step = (now: number) => {
       const dt = Math.min(MAX_DT_S, (now - last) / 1000)
       last = now
@@ -223,7 +282,7 @@ export function usePetRoam({
         // Short settle so the pet falls right after you drop it, not seconds later.
         pauseUntil = now + DROP_SETTLE_MS
         signal(null, 0)
-        raf = requestAnimationFrame(step)
+        scheduleFrame()
 
         return
       }
@@ -300,13 +359,30 @@ export function usePetRoam({
         }
       }
 
-      raf = requestAnimationFrame(step)
+      scheduleNext(now)
     }
 
-    raf = requestAnimationFrame(step)
+    const handleVisibilityChange = () => {
+      cancelScheduled()
+
+      if (!document.hidden) {
+        const now = performance.now()
+
+        last = now
+        scheduleNext(now)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pointerdown', wakeForInteraction)
+    window.addEventListener('pointermove', wakeForInteraction)
+    scheduleNext(performance.now())
 
     return () => {
-      cancelAnimationFrame(raf)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('pointerdown', wakeForInteraction)
+      window.removeEventListener('pointermove', wakeForInteraction)
+      cancelScheduled()
       signal(null, 0)
       // Hand the final position back to React so its `style` matches the DOM once
       // the loop stops re-asserting it.

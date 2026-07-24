@@ -84,7 +84,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     let prev: Rect | null = null
     let frame = 0
 
-    const tick = () => {
+    const measure = () => {
       const r = slot.getBoundingClientRect()
       // floor top/left + ceil right/bottom: overlay always covers the slot's
       // full pixel footprint, so half-pixel rects can't leak page bg through.
@@ -100,13 +100,56 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
           setReady(true)
         }
       }
-
-      frame = requestAnimationFrame(tick)
     }
 
-    tick()
+    const scheduleMeasure = () => {
+      if (document.hidden || frame) {
+        return
+      }
 
-    return () => cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        measure()
+      })
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (frame) {
+          cancelAnimationFrame(frame)
+          frame = 0
+        }
+
+        return
+      }
+
+      scheduleMeasure()
+    }
+
+    const observer = new ResizeObserver(scheduleMeasure)
+
+    measure()
+    observer.observe(slot)
+    window.addEventListener('pointermove', scheduleMeasure, true)
+    window.addEventListener('resize', scheduleMeasure)
+    window.addEventListener('scroll', scheduleMeasure, true)
+    document.addEventListener('animationend', scheduleMeasure, true)
+    document.addEventListener('transitionend', scheduleMeasure, true)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('pointermove', scheduleMeasure, true)
+      window.removeEventListener('resize', scheduleMeasure)
+      window.removeEventListener('scroll', scheduleMeasure, true)
+      document.removeEventListener('animationend', scheduleMeasure, true)
+      document.removeEventListener('transitionend', scheduleMeasure, true)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+
+      if (frame) {
+        cancelAnimationFrame(frame)
+      }
+    }
   }, [slot])
 
   const visible = Boolean(rect && rect.width > 0 && rect.height > 0)

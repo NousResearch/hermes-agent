@@ -413,8 +413,13 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
-                        metadata: dict[str, Any] = {}
-                        if sub.get("thread_id"):
+                        delivery_metadata = sub.get("delivery_metadata")
+                        metadata: dict[str, Any] = (
+                            dict(delivery_metadata)
+                            if isinstance(delivery_metadata, dict)
+                            else {}
+                        )
+                        if sub.get("thread_id") and not metadata.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         # Adapters with no push channel (the API server —
                         # ``supports_async_delivery = False``) can NEVER
@@ -631,27 +636,16 @@ class GatewayKanbanWatchersMixin:
                             try:
                                 from gateway.session import SessionSource
                                 from gateway.wake import deliver_wake
-                                # KNOWN LIMITATION (tracked follow-up): the
-                                # subscription row does not persist the
-                                # creator's chat_type, and it is not carried
-                                # on the session-context bridge, so we cannot
-                                # faithfully reconstruct the creator's real
-                                # session key here. build_session_key() keys
-                                # DMs (":dm:<chat_id>") on a wholly different
-                                # shape from group/thread, so any hardcoded
-                                # value mis-routes some creators. "group" is
-                                # the least-surprising default for the
-                                # dashboard/group flows this wake primarily
-                                # serves; DM-originated creators are handled
-                                # by the follow-up that stamps + persists
-                                # chat_type end-to-end. handle_message()
-                                # get_or_create_session's the target, so a
-                                # mismatch degrades to "wake lands in a fresh
-                                # group session" — never an exception.
+                                _delivery_meta = sub.get("delivery_metadata")
+                                _chat_type = "group"
+                                if isinstance(_delivery_meta, dict):
+                                    _chat_type = str(
+                                        _delivery_meta.get("chat_type") or _chat_type
+                                    )
                                 _source = SessionSource(
                                     platform=plat,
                                     chat_id=sub["chat_id"],
-                                    chat_type="group",
+                                    chat_type=_chat_type,
                                     thread_id=sub.get("thread_id") or None,
                                     user_id=sub.get("user_id"),
                                     profile=sub_profile or None,

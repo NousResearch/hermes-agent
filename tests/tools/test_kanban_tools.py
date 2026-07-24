@@ -2415,6 +2415,7 @@ def _sub_index(subs):
                 "chat_id": getattr(s, "chat_id", None),
                 "thread_id": getattr(s, "thread_id", None),
                 "user_id": getattr(s, "user_id", None),
+                "delivery_metadata": getattr(s, "delivery_metadata", None),
             })
     return out
 
@@ -2426,8 +2427,10 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
-    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "dm")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "20197")
     monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+    monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "msg-11")
 
     out = kt._handle_create({
         "title": "auto-sub gateway",
@@ -2443,8 +2446,15 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     s = subs[0]
     assert s["platform"] == "telegram"
     assert s["chat_id"] == "chat-42"
-    assert s["thread_id"] == "thread-7"
+    assert s["thread_id"] == "20197"
     assert s["user_id"] == "user-9"
+    assert s["delivery_metadata"] == {
+        "chat_type": "dm",
+        "direct_messages_topic_id": "20197",
+        "telegram_dm_topic_reply_fallback": True,
+        "telegram_reply_to_message_id": "msg-11",
+        "thread_id": "20197",
+    }
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):

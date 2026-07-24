@@ -481,7 +481,40 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
         return host_only in _LOOPBACK_HOST_VALUES
 
     # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    if host_only == bound_lc:
+        return True
+
+    # Also accept operator-defined extra hosts from config/env
+    return _host_in_extra_accepted(host_only)
+
+
+_EXTRA_ACCEPTED_HOSTS_CACHE: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
+
+
+def _host_in_extra_accepted(host_only: str) -> bool:
+    """Check if *host_only* is in the operator-configured extra accepted hosts.
+
+    Reads from ``dashboard.extra_accepted_hosts`` config list or
+    ``$HERMES_DASHBOARD_EXTRA_HOSTS`` (comma-separated). Result is cached
+    until the config/env string changes.
+    """
+    import os
+
+    # Read both sources
+    from hermes_cli.config import load_config
+
+    cfg = load_config()
+    cfg_hosts: list[str] = list(cfg.get("dashboard", {}).get("extra_accepted_hosts", []))
+    env_hosts: list[str] = [
+        h.strip() for h in os.environ.get("HERMES_DASHBOARD_EXTRA_HOSTS", "").split(",") if h.strip()
+    ]
+
+    # Dedupe via cache key
+    all_hosts = tuple(cfg_hosts) + tuple(env_hosts)
+    if host_only in all_hosts:
+        return True
+
+    return False
 
 
 @app.middleware("http")

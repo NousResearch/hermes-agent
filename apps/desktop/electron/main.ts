@@ -123,6 +123,7 @@ import {
   type NativeTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
+  selectNativeLoginProvider,
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
@@ -8917,12 +8918,26 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   const strategy = resolveLoginStrategy(statusBody)
 
   if (strategy === 'native') {
+    let provider: string | undefined
+
     try {
-      const tokens = await runNativeLogin(baseUrl, {
-        openExternal: url => shell.openExternal(url),
-        postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
-        rememberLog
-      })
+      const providerBody = await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })
+      provider = selectNativeLoginProvider(providerBody)
+    } catch {
+      // Optional metadata. A single-provider gateway can still auto-select;
+      // an ambiguous gateway will fall back to the embedded chooser below.
+    }
+
+    try {
+      const tokens = await runNativeLogin(
+        baseUrl,
+        {
+          openExternal: url => shell.openExternal(url),
+          postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+          rememberLog
+        },
+        { provider }
+      )
 
       _storeNativeTokens(baseUrl, tokens)
 

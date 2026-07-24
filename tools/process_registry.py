@@ -705,6 +705,15 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        # Guard against the `A && B &` subshell-wait trap (issue #68915).
+        # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
+        # the stdout pipe open forever when B is a long-running server.
+        # The rewriter wraps it to ``A && { B & }`` so no subshell fork.
+        # Lazy import avoids circular dependency (terminal_tool imports this).
+        from tools.terminal_tool import _rewrite_compound_background as _rewrite_bg
+
+        safe_command = _rewrite_bg(command)
+
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -725,7 +734,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, "-lic", f"set +m; {safe_command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -769,7 +778,7 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
+            [user_shell, "-lic", f"set +m; {safe_command}"],
             text=True,
             cwd=session.cwd,
             env=bg_env,

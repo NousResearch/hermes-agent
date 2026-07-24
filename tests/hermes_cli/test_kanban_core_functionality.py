@@ -4512,21 +4512,26 @@ def test_detect_crashed_workers_protocol_violation_streak_trips_at_limit(kanban_
         _drive_protocol_violation(conn, tid, 990900)
 
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked", (
-            f"violation streak at the bound must block, got {task.status}"
+        assert task.status == "completed_pending_review", (
+            "violation streak at the bound must move to a distinct "
+            f"pending-review state, got {task.status}"
         )
+        assert task.consecutive_failures == 0
         events = kb.list_events(conn, tid)
         kinds = [e.kind for e in events]
         assert kinds.count("protocol_violation") == limit
         assert "crashed" not in kinds
-        gave_up = [e for e in events if e.kind == "gave_up"]
-        assert len(gave_up) == 1, f"expected exactly one gave_up, got {kinds}"
-        payload = gave_up[0].payload or {}
+        assert "gave_up" not in kinds
+        missing_exit = [e for e in events if e.kind == "missing_exit_signal"]
+        assert len(missing_exit) == 1, (
+            f"expected one missing_exit_signal event, got {kinds}"
+        )
+        payload = missing_exit[0].payload or {}
         assert payload.get("protocol_violations") == limit
         assert payload.get("protocol_violation_limit") == limit
         # Side channel consumed by dispatch_once — read through the same
         # (current) module object the reaper ran in, see _drive_worker_exit.
-        assert tid in _kb.detect_crashed_workers._last_auto_blocked
+        assert tid in getattr(_kb.detect_crashed_workers, "_last_missing_exit_signal")
     finally:
         conn.close()
 
@@ -4567,13 +4572,17 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
                 "below-budget violations must not tick the unified counter"
             )
 
-        # Third consecutive violation: streak hits the bound — blocked.
+        # Third consecutive violation: streak hits the bound and moves the
+        # task to the distinct missing-exit-signal review state.
         _drive_protocol_violation(conn, tid, 991003)
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
-        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
-        assert len(gave_up) == 1
-        assert (gave_up[0].payload or {}).get("protocol_violations") == \
+        assert task.status == "completed_pending_review"
+        missing_exit = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "missing_exit_signal"
+        ]
+        assert len(missing_exit) == 1
+        assert (missing_exit[0].payload or {}).get("protocol_violations") == \
             _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
     finally:
         conn.close()
@@ -4606,9 +4615,10 @@ def test_protocol_violation_streak_resets_on_other_failure_kind(kanban_home):
         _drive_protocol_violation(conn, tid, 993004)
         assert kb.get_task(conn, tid).status == "ready"
 
-        # Third consecutive violation since the crash: blocked.
+        # Third consecutive violation since the crash: stop dispatching and
+        # route to the distinct missing-exit-signal review state.
         _drive_protocol_violation(conn, tid, 993005)
-        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.get_task(conn, tid).status == "completed_pending_review"
     finally:
         conn.close()
 
@@ -4629,12 +4639,16 @@ def test_protocol_violation_respects_max_retries_precedence(kanban_home):
         )
         _drive_protocol_violation(conn, strict, 992000)
         task = kb.get_task(conn, strict)
-        assert task.status == "blocked", (
-            f"max_retries=1 must block on the first violation, got {task.status}"
+        assert task.status == "completed_pending_review", (
+            "max_retries=1 must stop dispatching on the first violation, "
+            f"got {task.status}"
         )
-        gave_up = [e for e in kb.list_events(conn, strict) if e.kind == "gave_up"]
-        assert len(gave_up) == 1
-        payload = gave_up[0].payload or {}
+        missing_exit = [
+            e for e in kb.list_events(conn, strict)
+            if e.kind == "missing_exit_signal"
+        ]
+        assert len(missing_exit) == 1
+        payload = missing_exit[0].payload or {}
         assert payload.get("protocol_violations") == 1
         assert payload.get("protocol_violation_limit") == 1
 
@@ -4647,10 +4661,53 @@ def test_protocol_violation_respects_max_retries_precedence(kanban_home):
                 f"violation {i + 1}/5 should retry under max_retries=5"
             )
         _drive_protocol_violation(conn, lenient, 992104)
-        assert kb.get_task(conn, lenient).status == "blocked"
+        assert kb.get_task(conn, lenient).status == "completed_pending_review"
     finally:
         conn.close()
 
+
+
+def test_completed_pending_review_can_be_closed_or_blocked(kanban_home):
+    """Pending-review lifecycle state is terminal for dispatch but not final.
+
+    Operators/workers can still reconcile useful evidence by completing the
+    card or honestly blocking it after review.
+    """
+    conn = kb.connect()
+    try:
+        complete_id = kb.create_task(conn, title="review me", assignee="worker")
+        _drive_protocol_violation(conn, complete_id, 995000)
+        _drive_protocol_violation(conn, complete_id, 995001)
+        _drive_protocol_violation(conn, complete_id, 995002)
+        assert kb.get_task(conn, complete_id).status == "completed_pending_review"
+
+        assert kb.complete_task(conn, complete_id, summary="reviewed OK")
+        assert kb.get_task(conn, complete_id).status == "done"
+
+        block_id = kb.create_task(conn, title="review block", assignee="worker")
+        _drive_protocol_violation(conn, block_id, 995100)
+        _drive_protocol_violation(conn, block_id, 995101)
+        _drive_protocol_violation(conn, block_id, 995102)
+        assert kb.get_task(conn, block_id).status == "completed_pending_review"
+
+        assert kb.block_task(conn, block_id, reason="review-required: missing proof")
+        assert kb.get_task(conn, block_id).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_board_stats_reports_missing_exit_signal_rate(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="metric", assignee="worker")
+        _drive_protocol_violation(conn, tid, 996000)
+
+        stats = kb.board_stats(conn)
+        assert stats["missing_exit_signal_24h"] >= 1
+        assert stats["ended_runs_24h"] >= 1
+        assert stats["missing_exit_signal_rate_24h"] > 0
+    finally:
+        conn.close()
 
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the

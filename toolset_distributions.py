@@ -178,9 +178,12 @@ DISTRIBUTIONS = {
     
     # Browser-focused tasks distribution (for browser-use-tasks.jsonl)
     "browser_tasks": {
-        "description": "Browser-focused distribution (browser toolset includes web_search for finding URLs since Google blocks direct browser searches)",
+        "description": "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",
         "toolsets": {
-            "browser": 97,   # 97% - browser tools (includes web_search) almost always available
+            # One grouped roll: web_search stays coupled to browser at the
+            # original 97% co-occurrence (browser no longer bundles it since
+            # #64503; independent rolls would drop co-occurrence to ~94%).
+            "browser+search": 97,
             "vision": 12,    # 12% - vision analysis occasionally
             "terminal": 15   # 15% - terminal occasionally for local operations
         }
@@ -258,27 +261,34 @@ def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
     if not dist:
         raise ValueError(f"Unknown distribution: {distribution_name}")
     
-    # Sample each toolset independently based on its probability
+    # Sample each entry independently based on its probability.
+    # An entry may be a single toolset name or a "+"-grouped compound like
+    # "browser+search": one roll selects (or skips) every member together,
+    # preserving co-occurrence guarantees that independent rolls would break
+    # (two independent 97% rolls co-occur only ~94% of the time).
     selected_toolsets = []
-    
-    for toolset_name, probability in dist["toolsets"].items():
-        # Validate toolset exists
-        if not validate_toolset(toolset_name):
-            print(f"⚠️  Warning: Toolset '{toolset_name}' in distribution '{distribution_name}' is not valid")
+
+    for entry, probability in dist["toolsets"].items():
+        members = [name.strip() for name in entry.split("+")]
+        # Validate every member toolset exists
+        invalid = [name for name in members if not validate_toolset(name)]
+        if invalid:
+            print(f"⚠️  Warning: Toolset '{'+'.join(invalid)}' in distribution '{distribution_name}' is not valid")
             continue
-        
-        # Roll the dice - if random value is less than probability, include this toolset
+
+        # Roll the dice - if random value is less than probability, include this entry
         if random.random() * 100 < probability:
-            selected_toolsets.append(toolset_name)
-    
-    # If no toolsets were selected (can happen with low probabilities), 
-    # ensure at least one toolset is selected by picking the highest probability one
+            selected_toolsets.extend(members)
+
+    # If no toolsets were selected (can happen with low probabilities),
+    # ensure at least one entry is selected by picking the highest probability one
     if not selected_toolsets and dist["toolsets"]:
-        # Find toolset with highest probability
-        highest_prob_toolset = max(dist["toolsets"].items(), key=lambda x: x[1])[0]
-        if validate_toolset(highest_prob_toolset):
-            selected_toolsets.append(highest_prob_toolset)
-    
+        # Find entry with highest probability
+        highest_prob_entry = max(dist["toolsets"].items(), key=lambda x: x[1])[0]
+        members = [name.strip() for name in highest_prob_entry.split("+")]
+        if all(validate_toolset(name) for name in members):
+            selected_toolsets.extend(members)
+
     return selected_toolsets
 
 

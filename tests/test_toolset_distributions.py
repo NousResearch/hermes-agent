@@ -100,3 +100,55 @@ class TestDistributionStructure:
     def test_descriptions_non_empty(self):
         for name, dist in DISTRIBUTIONS.items():
             assert len(dist["description"]) > 5, f"{name} has too short description"
+
+
+class TestGroupedCompoundEntries:
+    """"+"-grouped entries roll once and select all members together.
+
+    browser_tasks uses "browser+search" so web_search availability stays
+    coupled to browser at the original 97% co-occurrence after #64503 removed
+    web_search from the browser toolset (independent 97% rolls would co-occur
+    only ~94% of the time).
+    """
+
+    def test_browser_tasks_uses_grouped_entry(self):
+        assert "browser+search" in DISTRIBUTIONS["browser_tasks"]["toolsets"]
+
+    def test_hit_roll_selects_all_members_together(self, monkeypatch):
+        import toolset_distributions as td
+
+        monkeypatch.setattr(td.random, "random", lambda: 0.0)  # every roll hits
+        result = sample_toolsets_from_distribution("browser_tasks")
+        assert "browser" in result
+        assert "search" in result
+        assert "browser+search" not in result  # members, not the raw key
+
+    def test_members_always_co_occur(self, monkeypatch):
+        import random as _random
+
+        _random.seed(64525)
+        for _ in range(500):
+            result = sample_toolsets_from_distribution("browser_tasks")
+            assert ("browser" in result) == ("search" in result), result
+
+    def test_fallback_expands_compound_members(self, monkeypatch):
+        import toolset_distributions as td
+
+        monkeypatch.setattr(td.random, "random", lambda: 1.0)  # every roll misses
+        # browser+search is browser_tasks' highest-probability entry (97%).
+        result = sample_toolsets_from_distribution("browser_tasks")
+        assert result == ["browser", "search"]
+
+    def test_invalid_member_skips_whole_entry(self, monkeypatch, capsys):
+        import toolset_distributions as td
+
+        monkeypatch.setitem(
+            td.DISTRIBUTIONS,
+            "_test_compound_invalid",
+            {"description": "t", "toolsets": {"browser+__not_a_toolset__": 100, "web": 100}},
+        )
+        monkeypatch.setattr(td.random, "random", lambda: 0.0)
+        result = sample_toolsets_from_distribution("_test_compound_invalid")
+        assert "browser" not in result  # invalid member disqualifies the group
+        assert "web" in result
+        assert "not valid" in capsys.readouterr().out

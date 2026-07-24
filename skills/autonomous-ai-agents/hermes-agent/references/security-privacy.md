@@ -45,11 +45,23 @@ Per-invocation bypass without changing config:
 
 Note: YOLO / `approvals.mode: off` does NOT turn off secret redaction. They are independent.
 
+### "Reset permissions" / "make Hermes ask again"
+
+The user usually means: wipe the accumulated "Always allow" state — NOT yolo
+mode, and NOT a per-edit diff prompt (which doesn't exist; file writes never
+go through the approval prompt, only shell commands do). Two stores hold it:
+
+1. Shell-command allowlist: `hermes config set command_allowlist '[]'`
+2. Shell-hook consent (only if present): `rm -f ~/.hermes/shell-hooks-allowlist.json`
+
+Then sanity-check `hermes config get approvals.mode` (should not be `off`)
+and confirm `--yolo` isn't baked into their launch alias or systemd unit.
+
 ### Shell hooks allowlist
 
 Some shell-hook integrations require explicit allowlisting before they fire. Managed via `~/.hermes/shell-hooks-allowlist.json` — prompted interactively the first time a hook wants to run.
 
 ### Disabling the web/browser/image-gen tools
 
-To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/reset`). See the Tools & Skills section above.
+To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/reset`). See `references/configuration.md` for the toolset list.
 

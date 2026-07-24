@@ -62,9 +62,31 @@ class TestIsWsl:
 # =============================================================================
 
 class TestWslSystemdOperational:
-    """Test the WSL systemd check."""
+    """Test the WSL systemd check.
+
+    ``/run/systemd/system`` is the canonical "booted with systemd"
+    marker per the systemd FAQ and short-circuits the runtime probe,
+    so tests that exercise the ``systemctl is-system-running``
+    fallback must stub out the marker check first — otherwise the
+    result depends on whether the test machine itself uses systemd.
+    """
+
+    def test_marker_present_short_circuits(self, monkeypatch):
+        """``/run/systemd/system`` present → True without calling systemctl."""
+        monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: True,
+        )
+
+        def _fail(*a, **kw):
+            raise AssertionError("systemctl must not be invoked when marker is present")
+
+        monkeypatch.setattr(gateway.subprocess, "run", _fail)
+        assert gateway._wsl_systemd_operational() is True
 
     def test_running(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
         monkeypatch.setattr(
             gateway.subprocess, "run",
             lambda *a, **kw: SimpleNamespace(
@@ -75,6 +97,9 @@ class TestWslSystemdOperational:
 
     def test_degraded(self, monkeypatch):
         monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
+        monkeypatch.setattr(
             gateway.subprocess, "run",
             lambda *a, **kw: SimpleNamespace(
                 returncode=1, stdout="degraded\n", stderr=""
@@ -83,6 +108,9 @@ class TestWslSystemdOperational:
         assert gateway._wsl_systemd_operational() is True
 
     def test_starting(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
         monkeypatch.setattr(
             gateway.subprocess, "run",
             lambda *a, **kw: SimpleNamespace(
@@ -93,6 +121,9 @@ class TestWslSystemdOperational:
 
     def test_offline_no_systemd(self, monkeypatch):
         monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
+        monkeypatch.setattr(
             gateway.subprocess, "run",
             lambda *a, **kw: SimpleNamespace(
                 returncode=1, stdout="offline\n", stderr=""
@@ -102,6 +133,9 @@ class TestWslSystemdOperational:
 
     def test_systemctl_not_found(self, monkeypatch):
         monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
+        monkeypatch.setattr(
             gateway.subprocess, "run",
             MagicMock(side_effect=FileNotFoundError),
         )
@@ -109,10 +143,32 @@ class TestWslSystemdOperational:
 
     def test_timeout(self, monkeypatch):
         monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
+        monkeypatch.setattr(
             gateway.subprocess, "run",
             MagicMock(side_effect=subprocess.TimeoutExpired("systemctl", 5)),
         )
         assert gateway._wsl_systemd_operational() is False
+
+    def test_marker_trumps_transient_systemctl_failure(self, monkeypatch):
+        """Marker present + systemctl returns "offline" → still True.
+
+        Regression for issue #18032: ``systemctl is-system-running``
+        can transiently report ``offline`` on WSL even when systemd
+        is operational; the marker directory is the authoritative
+        signal and must not be overridden by the runtime probe.
+        """
+        monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: True,
+        )
+        monkeypatch.setattr(
+            gateway.subprocess, "run",
+            lambda *a, **kw: SimpleNamespace(
+                returncode=1, stdout="offline\n", stderr=""
+            ),
+        )
+        assert gateway._wsl_systemd_operational() is True
 
 
 # =============================================================================

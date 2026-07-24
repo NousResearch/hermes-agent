@@ -545,7 +545,7 @@ _MCP_INJECTION_PATTERNS = [
      "identity override attempt ('you are now a...')"),
     (re.compile(r"your\s+new\s+(task|role|instructions?)\s+(is|are)", re.I),
      "task override attempt"),
-    (re.compile(r"system\s*:\s*", re.I),
+    (re.compile(r"\bsystem\s*:\s*", re.I),
      "system prompt injection attempt"),
     (re.compile(r"<\s*(system|human|assistant)\s*>", re.I),
      "role tag injection attempt"),

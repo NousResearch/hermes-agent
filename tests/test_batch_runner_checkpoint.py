@@ -1,6 +1,7 @@
 """Tests for batch_runner checkpoint behavior — incremental writes, resume, atomicity."""
 
 import json
+from collections import Counter
 from pathlib import Path
 from threading import Lock
 
@@ -248,3 +249,101 @@ class TestFinalCheckpointNoDuplicates:
             buggy.extend(br.get("completed_prompts", []))
         # Every index appears twice
         assert len(buggy) == 2 * len(set(buggy))
+
+
+def _dataset_entry(prompt_text):
+    """A minimal dataset row carrying a single prompt string."""
+    return {"prompt": prompt_text}
+
+
+def _completed_entry(prompt_text):
+    """A minimal saved batch trajectory entry carrying one human prompt."""
+    return {"conversations": [{"from": "human", "value": prompt_text}]}
+
+
+def _make_resume_runner(tmp_path, dataset):
+    """BatchRunner stub with just the attributes the resume helpers touch."""
+    r = BatchRunner.__new__(BatchRunner)
+    r.run_name = "dup_run"
+    r.output_dir = tmp_path
+    r.dataset = dataset
+    return r
+
+
+class TestResumeDuplicatePrompts:
+    """Regression: resume must preserve prompt multiplicity.
+
+    Content-based resume previously collected completed prompts into a ``set``
+    (`_scan_completed_prompts_by_content`) and dropped every dataset entry whose
+    text was a member (`_filter_dataset_by_completed`).  When a dataset
+    legitimately repeats the same prompt — common in RL/MoA sampling where one
+    task is run several times for distribution diversity — completing a single
+    copy silently discarded all remaining copies on resume, producing fewer
+    trajectories than requested with no warning and no way to recover on a
+    second resume.  The fix counts completed copies and skips at most that many
+    matching entries.
+    """
+
+    def test_scan_counts_completed_copies(self, tmp_path):
+        """The scan reports multiplicity, not mere membership."""
+        runner = _make_resume_runner(tmp_path, dataset=[])
+        batch_file = tmp_path / "batch_0.jsonl"
+        batch_file.write_text(
+            "\n".join(json.dumps(_completed_entry(t)) for t in ("P", "P", "Q")) + "\n",
+            encoding="utf-8",
+        )
+
+        completed = runner._scan_completed_prompts_by_content()
+
+        assert isinstance(completed, Counter)
+        assert completed["P"] == 2
+        assert completed["Q"] == 1
+
+    def test_only_completed_copies_are_skipped(self, tmp_path):
+        """Dataset has prompt P three times; one copy completed -> two remain."""
+        dataset = [_dataset_entry("P"), _dataset_entry("P"), _dataset_entry("P")]
+        runner = _make_resume_runner(tmp_path, dataset)
+
+        completed = Counter({"P": 1})
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        # Exactly one copy skipped; the other two are still scheduled.
+        assert len(skipped) == 1
+        assert [idx for idx, _ in filtered] == [1, 2]
+
+    def test_all_completed_copies_are_skipped(self, tmp_path):
+        """When every copy is already done, all of them are skipped."""
+        dataset = [_dataset_entry("P"), _dataset_entry("P"), _dataset_entry("P")]
+        runner = _make_resume_runner(tmp_path, dataset)
+
+        completed = Counter({"P": 3})
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        assert skipped == [0, 1, 2]
+        assert filtered == []
+
+    def test_distinct_prompts_still_filtered(self, tmp_path):
+        """The common case (unique prompts) keeps working as before."""
+        dataset = [_dataset_entry("A"), _dataset_entry("B"), _dataset_entry("C")]
+        runner = _make_resume_runner(tmp_path, dataset)
+
+        completed = Counter({"A": 1, "C": 1})
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        assert skipped == [0, 2]
+        assert [idx for idx, _ in filtered] == [1]
+
+    def test_end_to_end_scan_then_filter_preserves_duplicates(self, tmp_path):
+        """Full resume path: a dataset of three identical prompts with only one
+        completed copy on disk leaves two to process."""
+        dataset = [_dataset_entry("same"), _dataset_entry("same"), _dataset_entry("same")]
+        runner = _make_resume_runner(tmp_path, dataset)
+        (tmp_path / "batch_0.jsonl").write_text(
+            json.dumps(_completed_entry("same")) + "\n", encoding="utf-8"
+        )
+
+        completed = runner._scan_completed_prompts_by_content()
+        filtered, skipped = runner._filter_dataset_by_completed(completed)
+
+        assert len(skipped) == 1
+        assert len(filtered) == 2

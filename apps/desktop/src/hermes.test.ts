@@ -19,6 +19,7 @@ import {
   listSessions,
   listSidebarSessions,
   resetSidebarBatchCapability,
+  setApiRequestProfile,
   speakText,
   transcribeAudio
 } from './hermes'
@@ -304,6 +305,22 @@ describe('Hermes REST helpers', () => {
       await call()
       expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
     }
+  })
+
+  it('uses the active API profile for an implicit config read, while honoring an explicit profile', async () => {
+    setApiRequestProfile('writer')
+
+    await getHermesConfig()
+    await getHermesConfig('reviewer')
+
+    expect(api).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ path: '/api/config', profile: 'writer', timeoutMs: 60_000 })
+    )
+    expect(api).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ path: '/api/config', profile: 'reviewer', timeoutMs: 60_000 })
+    )
   })
 
   it('keeps the liveness poll on the short default so a dead backend fails fast', async () => {

@@ -80,6 +80,17 @@ describe('Kanban settings API helpers', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
   })
 
+  it('recognizes Electron-wrapped production 404 errors as unavailable', async () => {
+    api.mockRejectedValue(
+      new Error("Error invoking remote method 'hermes:api': Error: 404: {\"detail\":\"Plugin not found\"}")
+    )
+
+    render(<KanbanSettings />)
+
+    expect(await screen.findByText('Kanban is unavailable')).toBeTruthy()
+    expect(screen.queryByText('No Kanban boards')).toBeNull()
+  })
+
   it('clears the previous board when a newly selected board fails', async () => {
     api.mockImplementation(async request => {
       if (request.path === '/api/plugins/kanban/boards') {

@@ -400,6 +400,7 @@ export function useGatewayBoot({
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
+
     const offConnectionApplied = desktop.onConnectionApplied?.(payload => {
       const profile = payload?.profile ? normalizeProfileKey(payload.profile) : null
 

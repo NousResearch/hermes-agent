@@ -61,7 +61,7 @@ function taskMeta(task: unknown): string {
 function isUnavailableError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
-  return /^404(?:\s|:|$)/i.test(message) || /endpoint is likely missing/i.test(message)
+  return /(?:^|error:\s*)404(?:\s|:|$)/i.test(message) || /endpoint is likely missing/i.test(message)
 }
 
 export function KanbanSettings({ gatewayId }: KanbanSettingsProps = {}) {

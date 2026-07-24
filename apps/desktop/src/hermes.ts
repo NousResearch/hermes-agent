@@ -695,7 +695,7 @@ export function getLogs(params: {
 
 export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
-    ...profileScoped({ profile }),
+    ...(profile === undefined ? profileScoped() : profileScoped({ profile })),
     path: '/api/config',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })

@@ -2163,6 +2163,65 @@ class TestWebServerEndpoints:
         assert isinstance(data.get("errors"), list)
         assert data["recents"]["total"] >= 1
 
+    def test_profiles_sessions_sidebar_projects_gateway_origins_from_state_db(self):
+        """Every batched slice keeps its display-only origin from state.db."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for session_id, source in (
+                ("sidebar-origin-recent", "desktop"),
+                ("sidebar-origin-cron", "cron"),
+                ("sidebar-origin-messaging", "telegram"),
+            ):
+                db.create_session(session_id=session_id, source=source)
+                db.append_message(session_id=session_id, role="user", content="hi")
+                db.record_gateway_session_peer(
+                    session_id,
+                    source=source,
+                    chat_id="private-room-id",
+                    chat_type="dm",
+                    display_name="Release room",
+                    session_key="private-routing-key",
+                    origin_json=json.dumps(
+                        {
+                            "platform": source,
+                            "chat_id": "private-room-id",
+                            "chat_name": "Release room",
+                            "chat_type": "dm",
+                            "session_key": "private-routing-key",
+                        }
+                    ),
+                )
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/profiles/sessions/sidebar"
+            "?recents_profile=all&recents_exclude=cron,telegram"
+            "&messaging_exclude=cron,cli,codex,desktop,gateway,local,tui"
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        rows = {
+            row["id"]: row
+            for slice_ in ("recents", "cron", "messaging")
+            for row in payload[slice_]["sessions"]
+            if row["id"].startswith("sidebar-origin-")
+        }
+        assert set(rows) == {"sidebar-origin-recent", "sidebar-origin-cron", "sidebar-origin-messaging"}
+        expected_labels = {
+            "sidebar-origin-recent": "Desktop DM",
+            "sidebar-origin-cron": "Cron DM",
+            "sidebar-origin-messaging": "Telegram DM",
+        }
+        for session_id, row in rows.items():
+            assert row["origin"]["chat_type"] == "dm"
+            assert row["origin"]["display_label"] == expected_labels[session_id]
+            serialized = json.dumps(row["origin"])
+            assert "private-room-id" not in serialized
+            assert "private-routing-key" not in serialized
+
     def test_sessions_endpoint_reads_requested_profile(self):
         """The machine dashboard's global profile switcher must retarget
         the Sessions page, not just config/skills/model pages."""

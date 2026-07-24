@@ -5174,9 +5174,9 @@ def get_profiles_sessions_sidebar(
             continue
         try:
             if recents_scope == "all" or name == recents_scope:
-                recents_rows.extend(
-                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
-                )
+                rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
+                _enrich_sessions_with_origins(rows, db)
+                recents_rows.extend(_tag(rows, name))
                 rtotal = db.session_count(
                     exclude_sources=recents_exclude_list or None,
                     min_message_count=1,
@@ -5186,10 +5186,12 @@ def get_profiles_sessions_sidebar(
                 )
                 recents_total += rtotal
                 recents_profile_totals[name] = rtotal
-            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
-            messaging_rows.extend(
-                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
-            )
+            rows = _slice(db, source="cron", cap=cron_cap)
+            _enrich_sessions_with_origins(rows, db)
+            cron_rows.extend(_tag(rows, name))
+            rows = _slice(db, exclude=messaging_exclude_list, cap=messaging_cap)
+            _enrich_sessions_with_origins(rows, db)
+            messaging_rows.extend(_tag(rows, name))
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
         finally:

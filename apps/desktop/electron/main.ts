@@ -9532,8 +9532,9 @@ async function remoteSessionList(profile, searchParams) {
 // Resolve one /api/profiles/sessions slice with remote profiles spliced in —
 // the same branch logic as the GET /api/profiles/sessions intercept, but always
 // returns data (never `undefined`) so a batched caller can compose slices. A
-// specific local profile reads from the local primary; a remote-override profile
-// reads from its remote; 'all' merges every remote into the primary aggregate.
+// specific local profile reads through that profile's resolved backend; a
+// remote-override profile reads from its remote; 'all' merges every remote into
+// the primary aggregate.
 async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
   const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
@@ -9542,12 +9543,11 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles) {
       return remoteSessionList(requested, searchParams)
     }
 
-    const primary = await ensureBackend(null)
-
-    return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-      method: 'GET',
-      timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-    }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))
+    return requestJsonForProfile(requested, `/api/profiles/sessions?${searchParams}`, 'GET').catch(() => ({
+      sessions: [],
+      total: 0,
+      profile_totals: {}
+    }))
   }
 
   return mergeRemoteProfileSessions(searchParams, remoteProfiles)
@@ -9600,6 +9600,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // backend calls ensure_hermes_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
   const routeProfile = resolveRouteProfile(tornDownProfile, profile)
+  const effectiveProfile = routeProfile || primaryProfileKey()
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
@@ -9609,15 +9610,15 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   })
 
   const selection = selectBackendSelection({
-    explicitLocal: profileHasLocalOverride(routeProfile),
-    explicitRemote: profileHasRemoteOverride(routeProfile),
+    explicitLocal: profileHasLocalOverride(effectiveProfile),
+    explicitRemote: profileHasRemoteOverride(effectiveProfile),
     forceLocal,
     globalRemote: globalRemoteActive(),
     primaryProfile: primaryProfileKey(),
-    profile: routeProfile || primaryProfileKey()
+    profile: effectiveProfile
   })
 
-  const connection = await ensureBackend(routeProfile, { selection })
+  const connection = await ensureBackend(effectiveProfile, { selection })
   const url = `${connection.baseUrl}${requestPath}`
 
   // OAuth gateways authenticate REST via EITHER a native bearer token

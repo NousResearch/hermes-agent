@@ -118,6 +118,67 @@ describe('profile REST request routing', () => {
     expect(result.url).toBe('http://127.0.0.1:4789/api/sessions')
   })
 
+  it('uses the requested explicit-local profile for sidebar fan-out and shared auth handling', async () => {
+    const dependencies = requestHarness({
+      'pool:local': { authMode: 'token', baseUrl: 'http://127.0.0.1:4789', token: 'pool-token' },
+      'primary:remote-global': { authMode: 'oauth', baseUrl: 'https://cloud.example', token: null }
+    })
+
+    const result = await requestJsonForProfileRoute<RecordedRequest>(
+      {
+        explicitLocal: true,
+        globalRemote: true,
+        method: 'GET',
+        path: '/api/profiles/sessions?profile=writer',
+        primaryProfile: 'default',
+        profile: 'writer',
+        timeoutMs: 15_000
+      },
+      dependencies
+    )
+
+    expect(dependencies.ensureBackend).toHaveBeenCalledWith('writer', {
+      selection: { route: 'local', target: 'pool' }
+    })
+    expect(dependencies.requestToken).toHaveBeenCalledWith(
+      'http://127.0.0.1:4789/api/profiles/sessions?profile=writer',
+      'pool-token',
+      expect.objectContaining({ method: 'GET' })
+    )
+    expect(dependencies.requestOauth).not.toHaveBeenCalled()
+    expect(result.url).toBe('http://127.0.0.1:4789/api/profiles/sessions?profile=writer')
+  })
+
+  it('keeps an unprofiled request on an explicit-local primary instead of the global remote', async () => {
+    const dependencies = requestHarness({
+      'pool:local': { authMode: 'token', baseUrl: 'http://127.0.0.1:4789', token: 'pool-token' },
+      'primary:remote-global': { authMode: 'oauth', baseUrl: 'https://cloud.example', token: null }
+    })
+
+    const result = await requestJsonForProfileRoute<RecordedRequest>(
+      {
+        explicitLocal: true,
+        globalRemote: true,
+        method: 'GET',
+        path: '/api/config',
+        primaryProfile: 'writer',
+        timeoutMs: 15_000
+      },
+      dependencies
+    )
+
+    expect(dependencies.ensureBackend).toHaveBeenCalledWith(undefined, {
+      selection: { route: 'local', target: 'pool' }
+    })
+    expect(dependencies.requestToken).toHaveBeenCalledWith(
+      'http://127.0.0.1:4789/api/config',
+      'pool-token',
+      expect.objectContaining({ method: 'GET' })
+    )
+    expect(dependencies.requestOauth).not.toHaveBeenCalled()
+    expect(result.url).toBe('http://127.0.0.1:4789/api/config')
+  })
+
   it("treats gatewayId='local' as authoritative over a conflicting remote primary", async () => {
     const dependencies = requestHarness({
       'pool:local': { authMode: 'token', baseUrl: 'http://127.0.0.1:4333', token: 'local-token' },

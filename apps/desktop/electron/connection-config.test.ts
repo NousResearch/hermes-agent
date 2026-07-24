@@ -236,7 +236,8 @@ test.each([
     { mode: 'remote', remote: { authMode: 'token', token: { value: 'global-token' }, url: 'https://token.example' } }
   ],
   ['oauth', { mode: 'remote', remote: { authMode: 'oauth', url: 'https://oauth.example' } }],
-  ['cloud', { mode: 'cloud', remote: { authMode: 'oauth', org: 'nous', url: 'https://cloud.example' } }]
+  ['cloud', { mode: 'cloud', remote: { authMode: 'oauth', org: 'nous', url: 'https://cloud.example' } }],
+  ['ssh', { mode: 'ssh', host: 'hermes.internal', keyPath: '/keys/hermes', user: 'alice' }]
 ])('profile inherit preserves the global %s connection without rebuilding profile credentials', (_kind, global) => {
   const existing = {
     ...global,

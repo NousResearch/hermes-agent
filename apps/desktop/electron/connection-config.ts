@@ -402,8 +402,8 @@ function updateProfileConnectionEntries(
  */
 function inheritProfileConnectionConfig(existing: any, profile) {
   return {
-    mode: modeIsRemoteLike(existing?.mode) ? existing.mode : 'local',
-    remote: existing?.remote || {},
+    ...existing,
+    mode: existing?.mode || 'local',
     profiles: updateProfileConnectionEntries(existing?.profiles, profile, 'local', undefined, true)
   }
 }

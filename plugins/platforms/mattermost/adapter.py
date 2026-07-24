@@ -122,6 +122,11 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+        # Track threads where the bot has been @mentioned — once mentioned,
+        # respond to ALL subsequent messages in that thread automatically.
+        self._mentioned_threads: set = set()
+        self._MENTIONED_THREADS_MAX = 5000
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -864,12 +869,46 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            # --- Slack-parity gate ladder ---
+            # Priority order (first pass wins):
+            # 1. Free channel — always process.
+            # 2. require_mention disabled — always process.
+            # 3. strict_mention AND no mention — drop immediately.
+            # 4. No mention — check auto-follow signals; drop if none.
+            if is_free_channel:
+                pass  # free channel — always process
+            elif not require_mention:
+                pass  # mention requirement disabled globally
+            elif self._mm_strict_mention() and not has_mention:
                 logger.debug(
-                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                    "Mattermost: strict_mention=true, skipping message without @mention (channel=%s)",
                     channel_id,
                 )
                 return
+            elif not has_mention:
+                # Compute the thread_id the same way the real flow does below
+                # (root_id for replies; post_id for top-level posts in thread mode).
+                _root_id = post.get("root_id") or None
+                _is_thread_reply = bool(_root_id)
+                _effective_thread_id = _root_id or (
+                    post_id if self._reply_mode == "thread" and post_id else None
+                )
+                in_mentioned_thread = (
+                    _effective_thread_id is not None
+                    and _effective_thread_id in self._mentioned_threads
+                )
+                has_session = _is_thread_reply and self._has_active_session_for_thread(
+                    channel_id=channel_id,
+                    thread_id=_effective_thread_id,
+                    channel_type_raw=channel_type_raw,
+                    sender_id=post.get("user_id", ""),
+                )
+                if not in_mentioned_thread and not has_session:
+                    logger.debug(
+                        "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                        channel_id,
+                    )
+                    return
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
@@ -877,6 +916,25 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
+                # Register this thread so all future messages auto-trigger the bot.
+                # Skipped in strict mode: strict_mention=true bots must be
+                # re-mentioned every turn, so remembering the thread would defeat the
+                # feature (and re-enable agent-to-agent ack loops).
+                if not self._mm_strict_mention():
+                    # Compute thread_id for the mention registration (same derivation
+                    # as below — root_id for replies, post_id for top-level in thread mode).
+                    _reg_root_id = post.get("root_id") or None
+                    _reg_thread_id = _reg_root_id or (
+                        post_id if self._reply_mode == "thread" and post_id else None
+                    )
+                    if _reg_thread_id:
+                        self._mentioned_threads.add(_reg_thread_id)
+                        if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
+                            to_remove = list(self._mentioned_threads)[
+                                : self._MENTIONED_THREADS_MAX // 2
+                            ]
+                            for t in to_remove:
+                                self._mentioned_threads.discard(t)
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")
@@ -976,6 +1034,105 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
+
+    # ------------------------------------------------------------------
+    # Thread-follow helpers (Slack-parity)
+    # ------------------------------------------------------------------
+
+    def _mm_strict_mention(self) -> bool:
+        """When true, channel threads require an explicit @-mention on every
+        message. Disables all auto-triggers (mentioned-thread memory,
+        session-presence). Defaults to False.
+        """
+        configured = self.config.extra.get("strict_mention") if self.config.extra else None
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("MATTERMOST_STRICT_MENTION", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    def _has_active_session_for_thread(
+        self,
+        channel_id: str,
+        thread_id: Optional[str],
+        channel_type_raw: str,
+        sender_id: Optional[str] = None,
+    ) -> bool:
+        """Check if there's an active session for a Mattermost thread.
+
+        Mirrors Slack's _has_active_session_for_thread but derives chat_type
+        from _CHANNEL_TYPE_MAP so the key is byte-identical to the one the
+        real message flow produces in build_source().  Using a hardcoded
+        chat_type (e.g. "group") would silently no-op for public "O" channels
+        because the real key contains "channel" — never "group".
+
+        ``sender_id`` must be threaded through from the inbound post so the
+        recomputed key matches session creation when
+        ``thread_sessions_per_user=True`` (which appends the participant id
+        to the key). Passing ``user_id=None`` here would always produce the
+        shared-thread key and silently miss the per-user session that was
+        actually created, so the caller falls through to the "no session"
+        path even though one exists.
+        """
+        if not thread_id:
+            return False
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            # Derive chat_type exactly as the real flow does.
+            chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
+
+            source = SessionSource(
+                platform=Platform.MATTERMOST,
+                chat_id=channel_id,
+                chat_type=chat_type,
+                user_id=str(sender_id) if sender_id else None,
+                thread_id=thread_id,
+            )
+
+            store_cfg = getattr(session_store, "config", None)
+            gspu = (
+                getattr(store_cfg, "group_sessions_per_user", True)
+                if store_cfg
+                else True
+            )
+            tspu = (
+                getattr(store_cfg, "thread_sessions_per_user", False)
+                if store_cfg
+                else False
+            )
+
+            # Resolve the profile namespace exactly as SessionStore does, so
+            # a secondary-profile session (created under "agent:<profile>")
+            # is found instead of silently searching the default "agent:main"
+            # namespace.
+            profile: Optional[str] = None
+            resolve_profile = getattr(session_store, "_resolve_profile_for_key", None)
+            if callable(resolve_profile):
+                resolved = resolve_profile(source)
+                if isinstance(resolved, str):
+                    profile = resolved
+
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+                profile=profile,
+            )
+
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            return False
 
 
 
@@ -1217,6 +1374,8 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    if "strict_mention" in mattermost_cfg and not os.getenv("MATTERMOST_STRICT_MENTION"):
+        os.environ["MATTERMOST_STRICT_MENTION"] = str(mattermost_cfg["strict_mention"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

@@ -1073,6 +1073,120 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_retains_lease_when_end_session_fails(self, tmp_path):
+        """The real finally path keeps the lease when DB closure fails."""
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+        fake_db.end_session.side_effect = RuntimeError("DB locked")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("cron.scheduler._register_cron_session_lease", return_value={}) as register_lease, \
+             patch("cron.scheduler._remove_cron_session_lease") as remove_lease, \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "ok"
+            }
+            success, _, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == "ok"
+        assert error is None
+        session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        register_lease.assert_called_once_with(session_id, "test-job")
+        fake_db.end_session.assert_called_once_with(session_id, "cron_complete")
+        remove_lease.assert_not_called()
+
+    def test_run_job_persists_exactly_one_final_assistant_message(self, tmp_path):
+        """Cron + shared finalizer persist one durable assistant reply."""
+        from agent.turn_finalizer import finalize_turn
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "model": "test/model",
+        }
+        final_text = "The cron report output."
+        db_path = tmp_path / "state.db"
+        session_db = SessionDB(db_path=db_path)
+        session_ids = []
+
+        def finalize_cron_turn(agent, prompt):
+            session_ids.append(agent.session_id)
+            return finalize_turn(
+                agent,
+                final_response=final_text,
+                api_call_count=1,
+                interrupted=False,
+                failed=False,
+                messages=[{"role": "user", "content": prompt}],
+                conversation_history=[],
+                effective_task_id=agent.session_id,
+                turn_id="cron-turn",
+                user_message=prompt,
+                original_user_message=prompt,
+                _should_review_memory=False,
+                _turn_exit_reason="text_response(finish_reason=stop)",
+            )
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler._open_cron_session_db", return_value=session_db), \
+             patch("cron.scheduler._register_cron_session_lease", return_value={}), \
+             patch("cron.scheduler._remove_cron_session_lease"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[]), \
+             patch("run_agent.OpenAI"), \
+             patch("run_agent.get_tool_definitions", return_value=[]), \
+             patch("run_agent.check_toolset_requirements", return_value={}), \
+             patch.object(AIAgent, "run_conversation", new=finalize_cron_turn), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ):
+            success, _, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == final_text
+        assert error is None
+        assert len(session_ids) == 1
+
+        persisted_db = SessionDB(db_path=db_path)
+        try:
+            messages = persisted_db.get_messages_as_conversation(session_ids[0])
+        finally:
+            persisted_db.close()
+
+        final_assistant_messages = [
+            message
+            for message in messages
+            if message.get("role") == "assistant"
+            and message.get("content") == final_text
+        ]
+        assert len(final_assistant_messages) == 1, messages
+
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
         For cron, that abnormal-empty explainer must be treated as empty so it

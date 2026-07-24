@@ -13,21 +13,21 @@ class TestReadFiltersDefault:
     def test_read_filters_user_id_only_by_default(self, monkeypatch):
         """Without filter_by_agent_id, _read_filters() returns only user_id."""
         provider = Mem0MemoryProvider()
-        monkeypatch.setenv("MEM0_USER_ID", "soji-client")
-        monkeypatch.setenv("MEM0_AGENT_ID", "soji-hisyo")
+        monkeypatch.setenv("MEM0_USER_ID", "mameagent-client")
+        monkeypatch.setenv("MEM0_AGENT_ID", "mameagent-hisyo")
         provider.initialize("test-session")
 
         filters = provider._read_filters()
 
-        assert filters == {"user_id": "soji-client"}
+        assert filters == {"user_id": "mameagent-client"}
         assert "agent_id" not in filters
 
     def test_read_filters_user_id_only_when_false(self, monkeypatch, tmp_path):
         """filter_by_agent_id: false → user_id only."""
         mem0_json = tmp_path / "mem0.json"
         mem0_json.write_text(json.dumps({
-            "user_id": "soji-client",
-            "agent_id": "soji-hisyo",
+            "user_id": "mameagent-client",
+            "agent_id": "mameagent-hisyo",
             "filter_by_agent_id": False,
         }))
 
@@ -40,7 +40,7 @@ class TestReadFiltersDefault:
         provider.initialize("test-session")
 
         filters = provider._read_filters()
-        assert filters == {"user_id": "soji-client"}
+        assert filters == {"user_id": "mameagent-client"}
         assert "agent_id" not in filters
 
 
@@ -50,21 +50,21 @@ class TestReadFiltersWithAgentId:
     def test_read_filters_includes_agent_id_when_true(self, monkeypatch):
         """Setting the normalized attribute adds agent_id to filters."""
         provider = Mem0MemoryProvider()
-        monkeypatch.setenv("MEM0_USER_ID", "soji-client")
-        monkeypatch.setenv("MEM0_AGENT_ID", "soji-hisyo")
+        monkeypatch.setenv("MEM0_USER_ID", "mameagent-client")
+        monkeypatch.setenv("MEM0_AGENT_ID", "mameagent-hisyo")
         provider.initialize("test-session")
         provider._filter_by_agent_id = True
 
         filters = provider._read_filters()
 
-        assert filters == {"user_id": "soji-client", "agent_id": "soji-hisyo"}
+        assert filters == {"user_id": "mameagent-client", "agent_id": "mameagent-hisyo"}
 
     def test_agent_id_from_mem0_json(self, monkeypatch, tmp_path):
         """mem0.json with filter_by_agent_id: true includes agent_id in filters."""
         mem0_json = tmp_path / "mem0.json"
         mem0_json.write_text(json.dumps({
-            "user_id": "soji-client",
-            "agent_id": "soji-eigyo",
+            "user_id": "mameagent-client",
+            "agent_id": "mameagent-eigyo",
             "filter_by_agent_id": True,
         }))
 
@@ -77,7 +77,7 @@ class TestReadFiltersWithAgentId:
         provider.initialize("test-session")
 
         filters = provider._read_filters()
-        assert filters == {"user_id": "soji-client", "agent_id": "soji-eigyo"}
+        assert filters == {"user_id": "mameagent-client", "agent_id": "mameagent-eigyo"}
 
 
 class TestConfigLoading:

@@ -183,8 +183,10 @@ class TestGenerate:
             result = provider.generate(prompt="A cat playing piano")
 
         assert result["success"] is True
-        assert result["image"].startswith("/"), (
-            f"URL response must be cached to an absolute path, got {result['image']!r}"
+        assert Path(result["image"]) == Path(
+            "/tmp/xai_grok-imagine-image_20260524_000000_deadbeef.jpg"
+        ), (
+            f"URL response must preserve the cached path, got {result['image']!r}"
         )
         assert "imgen.x.ai" not in result["image"], (
             "ephemeral xAI URL must not leak into result.image — caller will 404"

@@ -310,7 +310,9 @@ class TestGenerate:
             result = provider.generate("a cat")
 
         assert result["success"] is True
-        assert result["image"].startswith("/")
+        assert Path(result["image"]) == Path(
+            "/tmp/openai_gpt-image-2_20260524_000000_deadbeef.png"
+        )
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 

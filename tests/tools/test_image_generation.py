@@ -422,7 +422,19 @@ class TestExtractHttpStatus:
 class TestManagedGatewayErrorTranslation:
     """4xx from the Nous managed gateway should be translated to a user-actionable message."""
 
-    def test_4xx_translates_to_value_error_with_remediation(self, image_tool, monkeypatch):
+    @pytest.fixture
+    def managed_fal_home(self, tmp_path, monkeypatch):
+        """Give fal_client a Windows home without changing runner semantics."""
+        from pathlib import Path
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def test_4xx_translates_to_value_error_with_remediation(
+        self, image_tool, monkeypatch, managed_fal_home
+    ):
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
         from unittest.mock import MagicMock
 
@@ -450,7 +462,9 @@ class TestManagedGatewayErrorTranslation:
         # Original exception chained for debugging
         assert exc_info.value.__cause__ is bad_request
 
-    def test_5xx_is_not_translated(self, image_tool, monkeypatch):
+    def test_5xx_is_not_translated(
+        self, image_tool, monkeypatch, managed_fal_home
+    ):
         """500s are real outages, not model-availability issues — don't rewrite them."""
         from unittest.mock import MagicMock
 
@@ -484,7 +498,9 @@ class TestManagedGatewayErrorTranslation:
         with pytest.raises(_MockHttpxError):
             image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
 
-    def test_non_http_exception_from_managed_bubbles_up(self, image_tool, monkeypatch):
+    def test_non_http_exception_from_managed_bubbles_up(
+        self, image_tool, monkeypatch, managed_fal_home
+    ):
         """Connection errors, timeouts, etc. from managed mode aren't 4xx —
         they should bubble up unchanged so callers can retry or diagnose."""
         from unittest.mock import MagicMock

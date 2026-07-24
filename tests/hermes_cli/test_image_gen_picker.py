@@ -6,6 +6,7 @@ Covers `_plugin_image_gen_providers`, `_visible_providers`, and
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -50,7 +51,8 @@ class _FakeProvider(ImageGenProvider):
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     image_gen_registry._reset_for_tests()
     yield
     image_gen_registry._reset_for_tests()
@@ -277,3 +279,219 @@ class TestConfigWriting:
 
         assert config["image_gen"]["provider"] == "fal"
         assert config["image_gen"]["use_gateway"] is False
+
+
+class TestAzureSetupMetadata:
+    def test_azure_image_key_is_secret_tool_metadata_only(self):
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        metadata = OPTIONAL_ENV_VARS["AZURE_OPENAI_IMAGE_KEY"]
+        assert metadata["password"] is True
+        assert metadata["category"] == "tool"
+        assert "image_generate" in metadata["tools"]
+        assert "AZURE_OPENAI_ENDPOINT" not in OPTIONAL_ENV_VARS
+        assert "AZURE_IMAGE_DEPLOYMENT_NAME" not in OPTIONAL_ENV_VARS
+
+    def test_image_provider_rows_preserve_non_secret_config_fields(self):
+        from hermes_cli import tools_config
+
+        fields = [
+            {
+                "key": "image_gen.azure_openai.endpoint",
+                "prompt": "Azure endpoint",
+                "required": True,
+            },
+        ]
+        image_gen_registry.register_provider(
+            _FakeProvider(
+                "config-fields-provider",
+                schema={
+                    "name": "Azure OpenAI",
+                    "env_vars": [{"key": "AZURE_OPENAI_IMAGE_KEY"}],
+                    "config_fields": fields,
+                },
+            )
+        )
+
+        row = next(
+            row
+            for row in tools_config._plugin_image_gen_providers()
+            if row["image_gen_plugin_name"] == "config-fields-provider"
+        )
+
+        assert row["config_fields"] == fields
+        assert row["env_vars"] == [{"key": "AZURE_OPENAI_IMAGE_KEY"}]
+
+
+class TestNonSecretProviderConfigFields:
+    def test_initial_setup_discovers_azure_and_writes_nested_fields_to_active_profile(
+        self, monkeypatch, tmp_path
+    ):
+        from hermes_cli import plugins as plugins_module
+        from hermes_cli import tools_config
+        from hermes_cli.config import read_raw_config
+
+        profile_home = tmp_path / ".hermes" / "profiles" / "azure"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        # Exercise real bundled-manifest discovery rather than manually
+        # registering the provider. Bundled backend manifests must auto-load
+        # without a plugins.enabled opt-in before the picker is built.
+        manager = plugins_module.PluginManager()
+        monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
+        rows = tools_config._plugin_image_gen_providers()
+
+        loaded = manager._plugins["image_gen/azure-openai"]
+        assert loaded.manifest.source == "bundled"
+        assert loaded.manifest.kind == "backend"
+        assert loaded.manifest.requires_env == []
+        assert loaded.enabled is True, f"error: {loaded.error}"
+
+        provider_row = next(
+            row
+            for row in rows
+            if row.get("image_gen_plugin_name") == "azure-openai"
+        )
+        assert provider_row["name"] == "Azure OpenAI"
+
+        prompts = []
+        values = iter([
+            "https://example-resource.services.ai.azure.com/openai/v1",
+            "test-image-deployment",
+        ])
+
+        def prompt(question, default=None, password=False):
+            prompts.append((question, default, password))
+            if password:
+                return ""
+            return next(values)
+
+        monkeypatch.setattr(tools_config, "_prompt", prompt)
+        monkeypatch.setattr(tools_config, "get_env_value", lambda key: None)
+        monkeypatch.setattr(
+            tools_config,
+            "save_env_value",
+            lambda *args, **kwargs: pytest.fail("config fields must not use credential storage"),
+        )
+
+        config = {}
+        tools_config._configure_provider(provider_row, config)
+        tools_config.save_config(config)
+
+        saved = read_raw_config()
+        azure = saved["image_gen"]["azure_openai"]
+        assert azure == {
+            "endpoint": "https://example-resource.services.ai.azure.com/openai/v1",
+            "deployment_name": "test-image-deployment",
+        }
+        assert saved["image_gen"]["provider"] == "azure-openai"
+        assert (profile_home / "config.yaml").exists()
+        assert len(prompts) == 3
+        assert prompts[0][2] is True
+        assert all(password is False for _, _, password in prompts[1:])
+
+    def test_reconfigure_updates_visible_fields_and_keeps_blank_existing_value(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        image_gen_registry.register_provider(_FakeProvider("azure-openai"))
+        answers = iter([
+            "https://new-resource.openai.azure.com",
+            "",
+            "2025-04-01-preview",
+        ])
+        prompts = []
+
+        def prompt(question, default=None, password=False):
+            prompts.append((question, default, password))
+            return next(answers)
+
+        monkeypatch.setattr(tools_config, "_prompt", prompt)
+
+        config = {
+            "image_gen": {
+                "provider": "azure-openai",
+                "azure_openai": {
+                    "endpoint": "https://old-resource.openai.azure.com",
+                    "deployment_name": "existing-deployment",
+                },
+            },
+        }
+        provider_row = {
+            "name": "Azure OpenAI",
+            "env_vars": [],
+            "config_fields": [
+                {"key": "image_gen.azure_openai.endpoint", "required": True},
+                {"key": "image_gen.azure_openai.deployment_name", "required": True},
+                {"key": "image_gen.azure_openai.api_version", "required": False},
+            ],
+            "image_gen_plugin_name": "azure-openai",
+        }
+
+        tools_config._reconfigure_provider(provider_row, config)
+
+        azure = config["image_gen"]["azure_openai"]
+        assert azure["endpoint"] == "https://new-resource.openai.azure.com"
+        assert azure["deployment_name"] == "existing-deployment"
+        assert azure["api_version"] == "2025-04-01-preview"
+        assert all(password is False for _, _, password in prompts)
+
+
+def test_provider_readiness_is_endpoint_auth_aware(monkeypatch):
+    from agent import azure_identity_adapter
+    from hermes_cli import plugins as plugins_module
+    from hermes_cli import tools_config
+
+    manager = plugins_module.PluginManager()
+    monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
+    provider = next(
+        row
+        for row in tools_config._plugin_image_gen_providers()
+        if row.get("image_gen_plugin_name") == "azure-openai"
+    )
+    credentials = {"AZURE_OPENAI_IMAGE_KEY": None}
+    monkeypatch.setattr(
+        tools_config, "get_env_value", lambda key: credentials.get(key)
+    )
+
+    foundry_config = {
+        "image_gen": {
+            "azure_openai": {
+                "endpoint": "https://example.services.ai.azure.com/openai/v1",
+                "deployment_name": "image-deployment",
+            },
+        },
+    }
+    direct_config = {
+        "image_gen": {
+            "azure_openai": {
+                "endpoint": "https://example.openai.azure.com",
+                "deployment_name": "image-deployment",
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        azure_identity_adapter, "has_azure_identity_installed", lambda: False
+    )
+    assert (
+        tools_config.provider_readiness_status(provider, foundry_config)
+        == "needs_auth"
+    )
+
+    monkeypatch.setattr(
+        azure_identity_adapter, "has_azure_identity_installed", lambda: True
+    )
+    assert tools_config.provider_readiness_status(provider, foundry_config) == "ready"
+    assert (
+        tools_config.provider_readiness_status(provider, direct_config)
+        == "needs_keys"
+    )
+
+    credentials["AZURE_OPENAI_IMAGE_KEY"] = "secret"
+    monkeypatch.setattr(
+        azure_identity_adapter, "has_azure_identity_installed", lambda: False
+    )
+    assert tools_config.provider_readiness_status(provider, foundry_config) == "ready"
+    assert tools_config.provider_readiness_status(provider, direct_config) == "ready"
+    assert tools_config.provider_readiness_status(provider, {}) == "needs_setup"

@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
+    _set_nested,
     cfg_get,
     load_config, save_config, get_env_value, save_env_value,
 )
@@ -2322,12 +2323,144 @@ def _plugin_image_gen_providers() -> list[dict]:
             "badge": schema.get("badge", ""),
             "tag": schema.get("tag", ""),
             "env_vars": schema.get("env_vars", []),
+            "config_fields": schema.get("config_fields", []),
             "image_gen_plugin_name": provider.name,
         }
+        if callable(schema.get("readiness_check")):
+            row["readiness_check"] = schema["readiness_check"]
         if schema.get("post_setup"):
             row["post_setup"] = schema["post_setup"]
         rows.append(row)
     return rows
+
+
+def _normalize_provider_config_field(
+    field: dict,
+    value: object,
+) -> tuple[str, Optional[str]]:
+    """Apply a provider-owned normalizer to one non-secret setup value.
+
+    A ``config_fields`` entry may expose ``normalize(value) -> str``. The
+    callback owns provider-specific validation and canonicalization; raising
+    ``ValueError`` returns its concise correction to the shared setup UI.
+    """
+    normalized = value.strip() if isinstance(value, str) else ""
+    if not normalized:
+        return "", None
+
+    callback = field.get("normalize")
+    if not callable(callback):
+        return normalized, None
+
+    try:
+        result = callback(normalized)
+    except ValueError as exc:
+        correction = str(exc).strip()
+        return "", correction or "Enter a valid value for this provider."
+    except Exception:  # noqa: BLE001 - plugin callbacks must not break setup
+        logger.exception("Provider config field normalization failed")
+        return "", "This value could not be validated. Please try again."
+
+    if not isinstance(result, str) or not result.strip():
+        return "", "Enter a valid value for this provider."
+    return result.strip(), None
+
+
+def _required_provider_config_fields_present(provider: dict, config: dict) -> bool:
+    """Return whether all required non-secret fields are present and valid."""
+    fields = provider.get("config_fields", [])
+    if not isinstance(fields, list):
+        return True
+    for field in fields:
+        if not isinstance(field, dict) or not field.get("required"):
+            continue
+        key = field.get("key")
+        if not isinstance(key, str) or not key.strip():
+            continue
+        value = cfg_get(config, *key.strip().split("."), default=None)
+        normalized, correction = _normalize_provider_config_field(field, value)
+        if not normalized or correction:
+            return False
+    return True
+
+
+def _configure_provider_config_fields(
+    provider: dict,
+    config: dict,
+    *,
+    reconfigure: bool = False,
+) -> bool:
+    """Prompt for provider-declared non-secret ``config.yaml`` fields.
+
+    Image backends can expose dotted ``config_fields`` alongside secret
+    ``env_vars`` in their setup schema. A field may provide a provider-owned
+    ``normalize`` callback for validation and canonicalization. Invalid input
+    is never written: the shared UI shows the callback's correction and
+    re-prompts. Values never pass through credential storage or password UX.
+
+    Returns ``True`` when every required field has a valid non-blank value.
+    """
+    fields = provider.get("config_fields", [])
+    if not isinstance(fields, list):
+        return True
+
+    all_configured = True
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        key = field.get("key")
+        if not isinstance(key, str) or not key.strip():
+            continue
+        key = key.strip()
+
+        existing = cfg_get(config, *key.split("."), default=None)
+        existing_text, existing_error = _normalize_provider_config_field(
+            field, existing
+        )
+        required = bool(field.get("required"))
+
+        if existing_text and not existing_error and not reconfigure:
+            if existing_text != existing:
+                _set_nested(config, key, existing_text)
+            _print_success(f"  {key}: already configured")
+            continue
+
+        default = (
+            existing_text
+            if not existing_error
+            else ""
+        ) or str(field.get("default") or "").strip()
+        prompt = str(field.get("prompt") or key)
+        if reconfigure:
+            prompt = f"{prompt} (Enter to keep current)"
+
+        while True:
+            # These values are explicitly non-secret. Ignore password-shaped
+            # metadata so provider config never enters credential storage/UX.
+            value = _prompt(f"    {prompt}", default or None, password=False)
+            entered = value.strip() if isinstance(value, str) else ""
+            if not entered:
+                if required and not existing_text:
+                    _print_warning(f"    Skipped required setting: {key}")
+                    all_configured = False
+                else:
+                    _print_info(
+                        "    Kept current" if existing_text else "    Skipped"
+                    )
+                break
+
+            normalized, correction = _normalize_provider_config_field(
+                field, entered
+            )
+            if correction:
+                _print_warning(f"    {correction}")
+                continue
+
+            _set_nested(config, key, normalized)
+            _print_success("    Saved")
+            break
+
+    return all_configured
 
 
 def _plugin_video_gen_providers() -> list[dict]:
@@ -2769,8 +2902,9 @@ def provider_readiness_status(
     - ``"needs_auth"``  — needs a sign-in: Nous Portal login/entitlement for
       managed Tool Gateway rows, or xAI Grok OAuth / XAI_API_KEY for
       ``post_setup: "xai_grok"`` rows.
-    - ``"needs_setup"`` — keyless row whose ``post_setup`` install hook has
-      verifiably not run yet (see ``_POST_SETUP_READY``).
+    - ``"needs_setup"`` — a required non-secret config field is empty, or a
+      keyless row's ``post_setup`` install hook has verifiably not run yet
+      (see ``_POST_SETUP_READY``).
 
     Keyless ≠ usable: this is the server-side truth the GUI "Ready" pill
     renders from (the old client-side heuristic showed Ready for every
@@ -2782,10 +2916,33 @@ def provider_readiness_status(
     (selecting a row runs its hook, so the active row has been set up).
     """
     env_vars = provider.get("env_vars", [])
-    if env_vars:
-        if all(get_env_value(e["key"]) for e in env_vars):
-            return "ready"
+    required_env_vars = [
+        entry
+        for entry in env_vars
+        if isinstance(entry, dict) and entry.get("required", True)
+    ]
+    if required_env_vars and not all(
+        get_env_value(entry["key"]) for entry in required_env_vars
+    ):
         return "needs_keys"
+
+    # Required config.yaml settings are setup state, not credentials. Check
+    # them only after credential presence so the UI can give the right action.
+    if not _required_provider_config_fields_present(provider, config):
+        return "needs_setup"
+
+    # Plugin setup metadata may provide an endpoint-aware readiness predicate
+    # when a credential is optional only for some configurations. Keeping that
+    # decision at the provider edge avoids making a key globally mandatory.
+    readiness_check = provider.get("readiness_check")
+    if callable(readiness_check):
+        try:
+            status = readiness_check(config, get_env_value)
+        except Exception:
+            return "needs_setup"
+        if status in {"ready", "needs_keys", "needs_auth", "needs_setup"}:
+            return status
+        return "needs_setup"
 
     managed_feature = provider.get("managed_nous_feature")
     if provider.get("requires_nous_auth") or managed_feature:
@@ -3556,8 +3713,9 @@ def _configure_provider(
     *,
     force_fresh: bool = True,
 ):
-    """Configure a single provider - prompt for API keys and set config."""
+    """Configure a single provider - prompt for secrets and non-secret settings."""
     env_vars = provider.get("env_vars", [])
+    config_fields = provider.get("config_fields", [])
     managed_feature = provider.get("managed_nous_feature")
 
     # Nous-managed Tool Gateway backends are always listed (see
@@ -3621,7 +3779,7 @@ def _configure_provider(
     # there is a single source of truth for these writes.
     _write_provider_config(provider, config, managed_feature=managed_feature)
 
-    if not env_vars:
+    if not env_vars and not config_fields:
         if provider.get("post_setup"):
             _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
@@ -3702,7 +3860,14 @@ def _configure_provider(
                 _print_success("    Saved")
             else:
                 _print_warning("    Skipped")
-                all_configured = False
+                if var.get("required", True):
+                    all_configured = False
+
+    if config_fields:
+        all_configured = (
+            _configure_provider_config_fields(provider, config)
+            and all_configured
+        )
 
     # Run post-setup hooks if needed
     if provider.get("post_setup") and all_configured:
@@ -4040,8 +4205,9 @@ def _reconfigure_provider(
     *,
     force_fresh: bool = True,
 ):
-    """Reconfigure a provider - update API keys."""
+    """Reconfigure a provider's secrets and non-secret settings."""
     env_vars = provider.get("env_vars", [])
+    config_fields = provider.get("config_fields", [])
     managed_feature = provider.get("managed_nous_feature")
 
     # Same inline Nous Portal login + entitlement gate as _configure_provider:
@@ -4116,7 +4282,7 @@ def _reconfigure_provider(
                     section["use_gateway"] = False
                 break
 
-    if not env_vars:
+    if not env_vars and not config_fields:
         if provider.get("post_setup"):
             _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
@@ -4156,6 +4322,13 @@ def _reconfigure_provider(
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
+
+    if config_fields:
+        _configure_provider_config_fields(
+            provider,
+            config,
+            reconfigure=True,
+        )
 
     if provider.get("post_setup"):
         _run_post_setup(provider["post_setup"])

@@ -268,7 +268,7 @@ class TestGenerate:
             result = _openrouter().generate(prompt="a pet")
 
         assert result["success"] is True
-        assert result["image"] == "/tmp/openrouter_gen.png"
+        assert Path(result["image"]) == Path("/tmp/openrouter_gen.png")
         assert result["provider"] == "openrouter"
         mock_save.assert_called_once()
 
@@ -282,7 +282,7 @@ class TestGenerate:
             result = _openrouter().generate(prompt="a pet")
 
         assert result["success"] is True
-        assert result["image"] == "/tmp/openrouter_gen_url.png"
+        assert Path(result["image"]) == Path("/tmp/openrouter_gen_url.png")
         mock_save_url.assert_called_once()
 
     def test_empty_response(self):
@@ -420,7 +420,7 @@ class TestGenerate:
 
         assert result["success"] is True
         assert result["model"] == _FALLBACK_MODEL
-        assert result["image"] == "/tmp/openrouter_gen_fallback.png"
+        assert Path(result["image"]) == Path("/tmp/openrouter_gen_fallback.png")
         assert mock_post.call_count == 2
         first_model = mock_post.call_args_list[0].kwargs["json"]["model"]
         second_model = mock_post.call_args_list[1].kwargs["json"]["model"]

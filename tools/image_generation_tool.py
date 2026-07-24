@@ -803,16 +803,42 @@ def _force_artifact_sync(env: Any) -> None:
         logger.warning("Could not force-sync generated image artifact: %s", exc)
 
 
+def _normalize_image_tool_result(value: object) -> str:
+    """Return an image tool result as raw text or a valid JSON string."""
+    if isinstance(value, str):
+        return value
+
+    from collections.abc import Mapping
+
+    if isinstance(value, Mapping):
+        try:
+            return json.dumps(dict(value), ensure_ascii=False)
+        except Exception:
+            pass
+
+    result_type = type(value).__name__
+    return json.dumps({
+        "error": f"Image tool returned unsupported result type: {result_type}",
+        "error_type": "tool_result_contract",
+        "tool": "image_generate",
+        "result_type": result_type,
+    }, ensure_ascii=False)
+
+
 def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> str:
     """Annotate successful local image results with backend-visible paths.
 
+    ``raw`` must already have passed through ``_normalize_image_tool_result``.
     ``image`` remains the host/gateway-deliverable path.  When the active
     terminal backend has a different filesystem, ``agent_visible_image`` gives
     the path the agent can use with terminal/file tools.
     """
+    if not isinstance(raw, str):
+        raise TypeError("image_generate post-processing requires a normalized string")
+
     try:
-        payload = json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return raw
 
     if not isinstance(payload, dict) or not payload.get("success"):
@@ -1084,33 +1110,34 @@ def _build_no_backend_setup_message() -> str:
 
 
 def check_image_generation_requirements() -> bool:
-    """True if FAL or the explicitly configured image backend is available."""
+    """True when the selected image backend can handle a tool call.
+
+    An explicitly selected plugin remains exposed even when ``is_available()``
+    is false so its own actionable configuration error reaches the user.  It
+    must never borrow FAL availability and silently route to that paid backend.
+    """
+    configured = _read_configured_image_provider()
+    if configured and configured != "fal":
+        try:
+            from agent.image_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            return get_provider(configured) is not None
+        except Exception:
+            return False
+
     try:
         if check_fal_api_key():
             # Trigger the lazy fal_client import here as the SDK presence
             # check. Raises ImportError if the optional ``fal-client``
             # package isn't installed; the caller's except ImportError
-            # below catches that and continues to plugin probing.
+            # below treats the FAL path as unavailable.
             _load_fal_client()
             return True
     except ImportError:
         pass
-
-    configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return False
-
-    # Probe only the explicitly selected plugin. Merely possessing a cloud
-    # provider key must not opt a user into a paid image-generation backend.
-    try:
-        from agent.image_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_provider(configured)
-        return bool(provider and provider.is_available())
-    except Exception:
-        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1296,8 +1323,16 @@ def _dispatch_to_plugin_provider(
         _ensure_plugins_discovered()
         provider = get_provider(configured)
     except Exception as exc:
-        logger.debug("image_gen plugin dispatch skipped: %s", exc)
-        return None
+        logger.debug("image_gen plugin dispatch failed closed: %s", exc)
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                f"Configured image provider '{configured}' could not be loaded; "
+                "no fallback provider was attempted."
+            ),
+            "error_type": "provider_unavailable",
+        })
 
     if provider is None:
         try:
@@ -1516,7 +1551,8 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
     )
     if dispatched is not None:
-        return _postprocess_image_generate_result(dispatched, task_id=task_id)
+        normalized = _normalize_image_tool_result(dispatched)
+        return _postprocess_image_generate_result(normalized, task_id=task_id)
 
     # Managed-mode Krea routing: when no explicit plugin provider is configured
     # but the selected model is a native ``krea-2-*`` id, a portal user routes to
@@ -1529,7 +1565,8 @@ def _handle_image_generate(args, **kw):
         reference_image_urls=reference_image_urls,
     )
     if krea_routed is not None:
-        return _postprocess_image_generate_result(krea_routed, task_id=task_id)
+        normalized = _normalize_image_tool_result(krea_routed)
+        return _postprocess_image_generate_result(normalized, task_id=task_id)
 
     raw = image_generate_tool(
         prompt=prompt,
@@ -1537,7 +1574,8 @@ def _handle_image_generate(args, **kw):
         image_url=image_url,
         reference_image_urls=reference_image_urls,
     )
-    return _postprocess_image_generate_result(raw, task_id=task_id)
+    normalized = _normalize_image_tool_result(raw)
+    return _postprocess_image_generate_result(normalized, task_id=task_id)
 
 
 # ---------------------------------------------------------------------------

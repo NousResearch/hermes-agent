@@ -4164,6 +4164,14 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "AZURE_OPENAI_IMAGE_KEY": {
+        "description": "Azure OpenAI API key for image generation",
+        "prompt": "Azure OpenAI image API key",
+        "url": "https://ai.azure.com/",
+        "tools": ["image_generate"],
+        "password": True,
+        "category": "tool",
+    },
     "FAL_KEY": {
         "description": "FAL API key for image and video generation",
         "prompt": "FAL API key",

@@ -115,15 +115,17 @@ def get_active_provider() -> Optional[ImageGenProvider]:
 
     # 1. Explicit config wins — return regardless of is_available() so the
     #    user gets a precise downstream error message rather than a silent
-    #    backend switch.
+    #    backend switch. A missing registration also fails closed: selecting
+    #    one provider must never authorize a different paid provider.
     if configured:
         provider = snapshot.get(configured)
         if provider is not None:
             return provider
         logger.debug(
-            "image_gen.provider='%s' configured but not registered; falling back",
+            "image_gen.provider='%s' configured but not registered; failing closed",
             configured,
         )
+        return None
 
     # 2. Fallback: single registered provider — but only if it's actually
     #    available (no credentials = don't surface it as "active").

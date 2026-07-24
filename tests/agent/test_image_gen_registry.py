@@ -93,18 +93,19 @@ class TestGetActiveProvider:
         active = image_gen_registry.get_active_provider()
         assert active is not None and active.name == "openai"
 
-    def test_missing_configured_provider_falls_back(self, tmp_path, monkeypatch):
+    def test_missing_configured_provider_does_not_select_another_paid_backend(
+        self, tmp_path, monkeypatch
+    ):
         import yaml
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
-            yaml.safe_dump({"image_gen": {"provider": "replicate"}})
+            yaml.safe_dump({"image_gen": {"provider": "azure-openai"}})
         )
-        # Only FAL is registered — configured provider doesn't exist
         image_gen_registry.register_provider(_FakeProvider("fal"))
-        active = image_gen_registry.get_active_provider()
-        # Falls back to FAL preference (legacy default) rather than None
-        assert active is not None and active.name == "fal"
+        image_gen_registry.register_provider(_FakeProvider("openai"))
+
+        assert image_gen_registry.get_active_provider() is None
 
     def test_none_when_empty(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

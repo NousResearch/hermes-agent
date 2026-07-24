@@ -5,10 +5,13 @@ Diagnoses issues with Hermes Agent setup.
 """
 
 import os
+import re
 import sys
 import subprocess
 import shutil
-from pathlib import Path
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -78,6 +81,130 @@ def _safe_which(cmd: str) -> str | None:
         return shutil.which(cmd)
     except Exception:
         return None
+
+
+_VOLATILE_LINUX_FS_TYPES = frozenset({"tmpfs", "ramfs"})
+
+
+@dataclass(frozen=True)
+class _LinuxMountInfoEntry:
+    mount_id: int
+    parent_id: int
+    mount_point: PurePosixPath
+    fs_type: str
+
+
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode octal escapes used by /proc/self/mountinfo."""
+    return re.sub(
+        r"\\([0-7]{3})",
+        lambda match: chr(int(match.group(1), 8)),
+        value,
+    )
+
+
+def _detect_linux_volatile_state_dir(
+    state_dir: Path,
+    *,
+    platform: str | None = None,
+    mount_info: str | None = None,
+    resolve_state_dir: Callable[[Path], str] | None = None,
+) -> tuple[str, str] | None:
+    """Return the matching volatile mount and filesystem type, if any."""
+    if (platform or sys.platform) != "linux":
+        return None
+
+    try:
+        resolved_state_dir = PurePosixPath(
+            resolve_state_dir(state_dir)
+            if resolve_state_dir is not None
+            else str(state_dir.resolve(strict=False))
+        )
+    except (OSError, RuntimeError):
+        resolved_state_dir = PurePosixPath(str(state_dir.absolute()))
+
+    if mount_info is None:
+        try:
+            mount_info = Path("/proc/self/mountinfo").read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            return None
+
+    entries: list[_LinuxMountInfoEntry] = []
+    for line in mount_info.splitlines():
+        before_separator, separator, after_separator = line.partition(" - ")
+        if not separator:
+            continue
+        mount_fields = before_separator.split()
+        fs_fields = after_separator.split()
+        if len(mount_fields) < 5 or not fs_fields:
+            continue
+
+        try:
+            mount_id = int(mount_fields[0])
+            parent_id = int(mount_fields[1])
+        except ValueError:
+            continue
+        entries.append(
+            _LinuxMountInfoEntry(
+                mount_id=mount_id,
+                parent_id=parent_id,
+                mount_point=PurePosixPath(
+                    _decode_mountinfo_path(mount_fields[4])
+                ),
+                fs_type=fs_fields[0],
+            )
+        )
+
+    entries_by_id = {entry.mount_id: entry for entry in entries}
+    hidden_mount_ids = {
+        parent.mount_id
+        for entry in entries
+        if entry.mount_id != entry.parent_id
+        and (parent := entries_by_id.get(entry.parent_id)) is not None
+        and parent.mount_point == entry.mount_point
+    }
+
+    def is_visible(entry: _LinuxMountInfoEntry) -> bool:
+        seen: set[int] = set()
+        child: _LinuxMountInfoEntry | None = None
+        current: _LinuxMountInfoEntry | None = entry
+        while current is not None and current.mount_id not in seen:
+            if current.mount_id in hidden_mount_ids:
+                child_is_its_overmount = (
+                    child is not None
+                    and child.parent_id == current.mount_id
+                    and child.mount_point == current.mount_point
+                )
+                if not child_is_its_overmount:
+                    return False
+            seen.add(current.mount_id)
+            if current.parent_id == current.mount_id:
+                break
+            child = current
+            current = entries_by_id.get(current.parent_id)
+        return True
+
+    best_match: _LinuxMountInfoEntry | None = None
+    for entry in entries:
+        if not is_visible(entry):
+            continue
+        try:
+            resolved_state_dir.relative_to(entry.mount_point)
+        except ValueError:
+            continue
+
+        if (
+            best_match is None
+            or len(entry.mount_point.parts) >= len(best_match.mount_point.parts)
+        ):
+            best_match = entry
+
+    if best_match and best_match.fs_type in _VOLATILE_LINUX_FS_TYPES:
+        return str(best_match.mount_point), best_match.fs_type
+    return None
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -1388,6 +1515,18 @@ def run_doctor(args):
     
     # Check SQLite session store
     state_db_path = hermes_home / "state.db"
+    volatile_state_mount = _detect_linux_volatile_state_dir(hermes_home)
+    if volatile_state_mount is not None:
+        mount_point, fs_type = volatile_state_mount
+        check_warn(
+            f"{_DHH} is on volatile {fs_type} storage",
+            f"(mount: {mount_point})",
+        )
+        manual_issues.append(
+            f"Move HERMES_HOME off {fs_type} ({mount_point}); state.db, "
+            "configuration, credentials, memories, and sessions will be lost on reboot"
+        )
+
     if state_db_path.exists():
         try:
             import sqlite3

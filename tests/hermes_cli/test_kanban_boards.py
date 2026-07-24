@@ -127,16 +127,31 @@ class TestPathResolution:
         )
 
     def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+        """``HERMES_KANBAN_DB`` pins the file when no board= arg is given."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+
+    def test_explicit_board_overrides_env_var_db(self, fresh_home, tmp_path, monkeypatch):
+        """Explicit ``board=`` arg wins over ``HERMES_KANBAN_DB``."""
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        # Explicit board should resolve normally, ignoring the env override.
+        expected = fresh_home / "kanban" / "boards" / "myboard" / "kanban.db"
+        assert kb.kanban_db_path(board="myboard") == expected
 
     def test_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
         forced = tmp_path / "ws"
         monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
-        assert kb.workspaces_root(board="any") == forced
+        # No explicit board → env override applies.
+        assert kb.workspaces_root() == forced
+
+    def test_explicit_board_overrides_env_var_workspaces(self, fresh_home, tmp_path, monkeypatch):
+        """Explicit ``board=`` arg wins over ``HERMES_KANBAN_WORKSPACES_ROOT``."""
+        forced = tmp_path / "ws"
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
+        expected = fresh_home / "kanban" / "boards" / "other" / "workspaces"
+        assert kb.workspaces_root(board="other") == expected
 
 
 # ---------------------------------------------------------------------------

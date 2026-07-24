@@ -10,6 +10,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult
 from gateway.session import SessionSource, build_session_key
+from gateway.write_approval_interactions import WriteApprovalReply
 
 
 class DummyTelegramAdapter(BasePlatformAdapter):
@@ -155,6 +156,37 @@ class TestBasePlatformTopicSessions:
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),
         ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_forwards_reply_delivery_metadata(self):
+        adapter = DummyTelegramAdapter()
+
+        async def handler(_event):
+            return WriteApprovalReply(
+                "Pending memory writes (1)",
+                {
+                    "subsystems": ["memory"],
+                    "items": {"memory": ["abc12345"]},
+                },
+            )
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent[0]["metadata"] == {
+            "thread_id": "17585",
+            "notify": True,
+            "write_approval": {
+                "subsystems": ["memory"],
+                "items": {"memory": ["abc12345"]},
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_process_message_background_marks_total_send_failure_unsuccessful(self):

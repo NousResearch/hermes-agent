@@ -28,6 +28,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     format_duration_compact,
     has_known_pricing,
+    sticky_cost_status,
 )
 
 
@@ -580,7 +581,7 @@ class InsightsEngine:
                 status = cost_status or "unknown"
             d["cost"] += estimate
             d["actual_cost"] += float(actual_cost or 0.0)
-            d["cost_status"] = status
+            d["cost_status"] = sticky_cost_status(d.get("cost_status"), status)
             if has_known_pricing(model, provider or None, base_url):
                 d["has_pricing"] = True
             else:

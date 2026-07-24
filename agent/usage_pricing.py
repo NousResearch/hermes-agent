@@ -26,6 +26,32 @@ CostSource = Literal[
     "none",
 ]
 
+# Priority order for sticky cost_status: once a session reaches a higher
+# accuracy tier, it should not silently downgrade on a single provider
+# hiccup.  "actual" > "included" > "estimated" > "unknown".
+_COST_STATUS_PRIORITY: dict[str, int] = {
+    "actual": 4,
+    "included": 3,
+    "estimated": 2,
+    "unknown": 1,
+}
+
+
+def sticky_cost_status(current: Optional[str], incoming: Optional[str]) -> Optional[str]:
+    """Return the higher-priority cost status between *current* and *incoming*.
+
+    If *incoming* is ``None`` the current value is kept.  If *current* is
+    ``None`` the incoming value is used.  Otherwise the one with the higher
+    priority wins.  Equal priority keeps the incoming value (latest wins).
+    """
+    if incoming is None:
+        return current
+    if current is None:
+        return incoming
+    cur_prio = _COST_STATUS_PRIORITY.get(current, 0)
+    inc_prio = _COST_STATUS_PRIORITY.get(incoming, 0)
+    return incoming if inc_prio >= cur_prio else current
+
 
 @dataclass(frozen=True)
 class CanonicalUsage:

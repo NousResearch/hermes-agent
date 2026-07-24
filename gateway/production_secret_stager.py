@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -54,8 +55,10 @@ STAGED_EDGE_PRIVATE_KEY_PATH = (
 )
 
 STAGING_SCHEMA = "muncho-production-secret-staging.v2"
+PUBLIC_BOOTSTRAP_SCHEMA = "muncho-production-secret-foundation-public.v1"
 MAX_SECRET_BYTES = 8_192
 MAX_ARTIFACT_BYTES = 8_192
+BOOTSTRAP_INPUT_FIELDS = frozenset({"api_bearer", "approval_passkey"})
 
 
 class ProductionSecretStagingError(RuntimeError):
@@ -158,6 +161,25 @@ def _validate_directory(path: Path, *, uid: int, gid: int) -> None:
         raise ProductionSecretStagingError("staging_directory_invalid")
 
 
+def _ensure_private_directory(path: Path, *, uid: int, gid: int) -> bool:
+    """Create one fixed private directory or validate its exact identity."""
+
+    created = False
+    if not os.path.lexists(path):
+        try:
+            os.mkdir(path, 0o700)
+            os.chown(path, uid, gid)
+            os.chmod(path, 0o700)
+            _fsync_parent(path)
+            created = True
+        except OSError as exc:
+            raise ProductionSecretStagingError(
+                "staging_directory_unavailable"
+            ) from exc
+    _validate_directory(path, uid=uid, gid=gid)
+    return created
+
+
 def _fsync_parent(path: Path) -> None:
     descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -214,6 +236,221 @@ def _create_or_validate(
     ):
         raise ProductionSecretStagingError("staging_artifact_conflict")
     return created
+
+
+def _secret_bytes(value: Any) -> bytes:
+    if not isinstance(value, str):
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+    raw = value.encode("utf-8", errors="strict")
+    if (
+        value != value.strip()
+        or not 32 <= len(raw) <= MAX_SECRET_BYTES
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+    return raw + b"\n"
+
+
+def _create_or_validate_secret_source(
+    path: Path,
+    value: str | None,
+    *,
+    uid: int,
+    gid: int,
+) -> bool:
+    if value is None:
+        _read_root_secret(path, uid=uid, gid=gid)
+        return False
+    payload = _secret_bytes(value)
+    if os.path.lexists(path):
+        observed = _read_root_secret(path, uid=uid, gid=gid)
+        if observed != value:
+            raise ProductionSecretStagingError(
+                "staging_secret_source_conflict"
+            )
+        return False
+    return _create_or_validate(path, payload, uid=uid, gid=gid)
+
+
+def _public_foundation(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": PUBLIC_BOOTSTRAP_SCHEMA,
+        "writer_capability_public_key_id": receipt["writer_public_key_id"],
+        "discord_edge_receipt_public_key_id": receipt["edge_public_key_id"],
+        "operational_edge_key_foundation_sha256": receipt[
+            "operational_edge_key_foundation_sha256"
+        ],
+        "operational_edge_receipt_public_key_ids": dict(
+            receipt["operational_edge_receipt_public_key_ids"]
+        ),
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+
+
+def bootstrap_production_secret_foundation(
+    *,
+    secret_input: Mapping[str, Any] | None = None,
+    evidence_root: Path = EVIDENCE_ROOT,
+    bearer_source: Path = LEGACY_API_BEARER_PATH,
+    require_root: bool = True,
+) -> dict[str, Any]:
+    """Close the pre-unit-input bootstrap cycle without exposing secrets.
+
+    The first invocation accepts the two owner-controlled source secrets only
+    through the caller's already-open input boundary.  Their fixed files and
+    every key are create-only.  A replay may omit the input and revalidates the
+    existing fixed sources and foundation.
+    """
+
+    effective_uid = os.geteuid()
+    effective_gid = os.getegid()
+    if require_root and (
+        effective_uid != 0
+        or not sys.platform.startswith("linux")
+        or evidence_root != EVIDENCE_ROOT
+        or bearer_source != LEGACY_API_BEARER_PATH
+    ):
+        raise ProductionSecretStagingError("staging_bootstrap_boundary_invalid")
+    uid = 0 if require_root else effective_uid
+    gid = 0 if require_root else effective_gid
+    supplied = {} if secret_input is None else dict(secret_input)
+    if set(supplied) - BOOTSTRAP_INPUT_FIELDS:
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+    if any(not isinstance(value, str) for value in supplied.values()):
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+
+    staged_root = evidence_root / "staged"
+    host_root = staged_root / "host"
+    key_root = staged_root / "keys"
+    approval_source = staged_root / "api-approval-passkey"
+    if require_root:
+        # Both fixed parents are trusted root-owned system paths.  They may
+        # carry ordinary 0755 policy, but must never be group/other writable.
+        for parent in (evidence_root.parent, bearer_source.parent.parent):
+            if (
+                parent == bearer_source.parent.parent
+                and not os.path.lexists(parent)
+            ):
+                try:
+                    os.mkdir(parent, 0o755)
+                    os.chown(parent, 0, 0)
+                    os.chmod(parent, 0o755)
+                    _fsync_parent(parent)
+                except OSError as exc:
+                    raise ProductionSecretStagingError(
+                        "staging_bootstrap_parent_invalid"
+                    ) from exc
+            observed = os.lstat(parent)
+            if (
+                stat.S_ISLNK(observed.st_mode)
+                or not stat.S_ISDIR(observed.st_mode)
+                or observed.st_uid != 0
+                or observed.st_gid != 0
+                or stat.S_IMODE(observed.st_mode) & 0o022
+            ):
+                raise ProductionSecretStagingError(
+                    "staging_bootstrap_parent_invalid"
+                )
+    else:
+        evidence_root.parent.mkdir(parents=True, exist_ok=True)
+        bearer_source.parent.parent.mkdir(parents=True, exist_ok=True)
+
+    for directory in (
+        evidence_root,
+        staged_root,
+        host_root,
+        key_root,
+        bearer_source.parent,
+    ):
+        _ensure_private_directory(directory, uid=uid, gid=gid)
+    _create_or_validate_secret_source(
+        bearer_source,
+        supplied.get("api_bearer"),
+        uid=uid,
+        gid=gid,
+    )
+    _create_or_validate_secret_source(
+        approval_source,
+        supplied.get("approval_passkey"),
+        uid=uid,
+        gid=gid,
+    )
+    first = stage_production_secret_foundation(
+        bearer_source=bearer_source,
+        approval_source=approval_source,
+        bearer_verifier_path=host_root / "api-server-bearer-sha256.json",
+        approval_verifier_path=host_root / "api-approval-passkey-scrypt.json",
+        writer_private_path=key_root / "writer-capability-private.pem",
+        edge_private_path=key_root / "discord-edge-receipt-private.pem",
+        require_root=require_root,
+    )
+    # The operational key receipt records per-file ``created`` observations.
+    # Unit inputs must bind the stable replay identity used later by the host
+    # stager, not the one-time first-creation observation.
+    replay = stage_production_secret_foundation(
+        bearer_source=bearer_source,
+        approval_source=approval_source,
+        bearer_verifier_path=host_root / "api-server-bearer-sha256.json",
+        approval_verifier_path=host_root / "api-approval-passkey-scrypt.json",
+        writer_private_path=key_root / "writer-capability-private.pem",
+        edge_private_path=key_root / "discord-edge-receipt-private.pem",
+        require_root=require_root,
+    )
+    if (
+        first["writer_public_key_id"] != replay["writer_public_key_id"]
+        or first["edge_public_key_id"] != replay["edge_public_key_id"]
+        or first["operational_edge_receipt_public_key_ids"]
+        != replay["operational_edge_receipt_public_key_ids"]
+    ):
+        raise ProductionSecretStagingError(
+            "staging_bootstrap_replay_identity_changed"
+        )
+    return _public_foundation(replay)
+
+
+def _read_bootstrap_input(descriptor: int) -> Mapping[str, Any]:
+    if type(descriptor) is not int or descriptor < 0:
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+    raw = bytearray()
+    try:
+        while len(raw) <= 2 * MAX_SECRET_BYTES:
+            chunk = os.read(
+                descriptor,
+                min(4096, 2 * MAX_SECRET_BYTES + 1 - len(raw)),
+            )
+            if not chunk:
+                break
+            raw.extend(chunk)
+    except OSError as exc:
+        raise ProductionSecretStagingError(
+            "staging_secret_input_unavailable"
+        ) from exc
+    if not raw:
+        return {}
+    if len(raw) > 2 * MAX_SECRET_BYTES:
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+    try:
+        value = json.loads(
+            bytes(raw).decode("utf-8", errors="strict"),
+            object_pairs_hook=lambda pairs: _unique_pairs(pairs),
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProductionSecretStagingError(
+            "staging_secret_input_invalid"
+        ) from exc
+    if not isinstance(value, Mapping) or set(value) != BOOTSTRAP_INPUT_FIELDS:
+        raise ProductionSecretStagingError("staging_secret_input_invalid")
+    return value
+
+
+def _unique_pairs(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("duplicate bootstrap input field")
+        result[name] = value
+    return result
 
 
 def _private_pem(key: Ed25519PrivateKey) -> bytes:
@@ -416,8 +653,41 @@ def stage_production_secret_foundation(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
-    receipt = stage_production_secret_foundation()
+    subparsers = parser.add_subparsers(dest="command")
+    bootstrap = subparsers.add_parser(
+        "bootstrap-public",
+        help="create/revalidate the fixed foundation and print public IDs only",
+    )
+    bootstrap.add_argument(
+        "--secret-input-fd",
+        type=int,
+        help=(
+            "already-open descriptor containing exactly api_bearer and "
+            "approval_passkey JSON; omit for create-only replay"
+        ),
+    )
+    arguments = parser.parse_args(argv)
+    try:
+        if arguments.command == "bootstrap-public":
+            supplied = (
+                None
+                if arguments.secret_input_fd is None
+                else _read_bootstrap_input(arguments.secret_input_fd)
+            )
+            receipt = bootstrap_production_secret_foundation(
+                secret_input=supplied
+            )
+        elif arguments.command is None:
+            # Preserve the original internal stager invocation.
+            receipt = stage_production_secret_foundation()
+        else:  # pragma: no cover - argparse owns this branch
+            raise ProductionSecretStagingError("staging_command_invalid")
+    except (OSError, ProductionSecretStagingError, TypeError, ValueError):
+        print(
+            '{"error_code":"production_secret_staging_failed","ok":false}',
+            file=sys.stderr,
+        )
+        return 2
     print(_canonical_bytes(receipt).decode("ascii"))
     return 0
 
@@ -428,6 +698,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ProductionSecretStagingError",
+    "bootstrap_production_secret_foundation",
     "main",
     "stage_production_secret_foundation",
 ]

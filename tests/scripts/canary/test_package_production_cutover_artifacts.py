@@ -1969,6 +1969,65 @@ def test_database_state_distinguishes_reconciled_migrated_and_terminal(tmp_path,
     assert runtime._database_state(plan) == "target"
 
 
+def test_database_apply_bootstraps_exact_roles_before_legacy_reconcile(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    runtime = _load_artifact(
+        Path(manifest["artifacts"]["production-database-apply"]["path"]),
+        "production_database_role_bootstrap_artifact",
+    )
+    plan = _cutover_plan("f" * 64)
+    states = iter(("legacy", "reconciled", "migrated", "target"))
+    executed: list[str] = []
+
+    monkeypatch.setattr(runtime, "_database_state", lambda _plan: next(states))
+    monkeypatch.setattr(
+        runtime,
+        "_database_projection",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(runtime, "_probe_hba", lambda _plan: "a" * 64)
+    monkeypatch.setattr(
+        runtime,
+        "_run_psql",
+        lambda _plan, sql, **_kwargs: executed.append(sql) or b"",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_legacy_truth_decision_sql",
+        lambda _plan: "legacy-truth-sql",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_membership_sql",
+        lambda _plan: "membership-sql",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_database_receipt",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    assert runtime._database_apply(plan) == {"ok": True}
+    assert executed[0] == runtime.PRODUCTION_ROLE_BOOTSTRAP_SQL
+    assert "CREATE ROLE canonical_brain_migration_owner" in executed[0]
+    assert "CREATE ROLE canonical_brain_writer" in executed[0]
+    assert "CREATE ROLE muncho_production_writer_login" in executed[0]
+    assert "REVOKE ALL PRIVILEGES ON DATABASE ai_platform_brain FROM PUBLIC" in executed[0]
+    assert "GRANT CONNECT ON DATABASE ai_platform_brain TO canonical_brain_writer" in executed[0]
+    assert "REVOKE ALL ON SCHEMA public FROM PUBLIC" in executed[0]
+    assert "GRANT USAGE ON SCHEMA public TO canonical_brain_migration_owner" in executed[0]
+    assert "PASSWORD" not in executed[0]
+    assert runtime.LEGACY_RECONCILE_SQL in executed[1]
+    assert runtime.WRITER_MIGRATION_SQL in executed[2]
+    assert executed[3:] == ["legacy-truth-sql", "membership-sql"]
+
+
 def test_legacy_truth_modes_are_exact_and_selected_continuity_is_mechanical(
     tmp_path,
 ):

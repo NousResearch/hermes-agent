@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,98 @@ def test_stage_rejects_symlinked_source_and_artifact(
         match="provenance_invalid",
     ):
         stager.stage_production_secret_foundation(**paths, require_root=False)
+
+
+def test_public_bootstrap_closes_pre_unit_input_cycle_and_replays(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "var" / "lib" / "cutover"
+    bearer = tmp_path / "etc" / "muncho" / "keys" / "api-server-control.key"
+    supplied = {"api_bearer": BEARER, "approval_passkey": PASSKEY}
+
+    first = stager.bootstrap_production_secret_foundation(
+        secret_input=supplied,
+        evidence_root=evidence,
+        bearer_source=bearer,
+        require_root=False,
+    )
+    second = stager.bootstrap_production_secret_foundation(
+        evidence_root=evidence,
+        bearer_source=bearer,
+        require_root=False,
+    )
+
+    assert first == second
+    assert set(first) == {
+        "schema",
+        "writer_capability_public_key_id",
+        "discord_edge_receipt_public_key_id",
+        "operational_edge_key_foundation_sha256",
+        "operational_edge_receipt_public_key_ids",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+    }
+    assert first["schema"] == "muncho-production-secret-foundation-public.v1"
+    assert first["writer_capability_public_key_id"] != first[
+        "discord_edge_receipt_public_key_id"
+    ]
+    assert len(first["operational_edge_receipt_public_key_ids"]) == len(
+        CREDENTIALS_BY_DOMAIN
+    )
+    assert len(
+        set(first["operational_edge_receipt_public_key_ids"].values())
+    ) == len(CREDENTIALS_BY_DOMAIN)
+    rendered = json.dumps(first, sort_keys=True)
+    assert BEARER not in rendered
+    assert PASSKEY not in rendered
+    for directory in (
+        evidence,
+        evidence / "staged",
+        evidence / "staged" / "host",
+        evidence / "staged" / "keys",
+        bearer.parent,
+    ):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE(bearer.stat().st_mode) == 0o400
+    assert stat.S_IMODE(
+        (evidence / "staged" / "api-approval-passkey").stat().st_mode
+    ) == 0o400
+
+
+def test_public_bootstrap_requires_first_run_sources_and_rejects_drift(
+    tmp_path: Path,
+) -> None:
+    evidence = tmp_path / "var" / "lib" / "cutover"
+    bearer = tmp_path / "etc" / "muncho" / "keys" / "api-server-control.key"
+    with pytest.raises(
+        stager.ProductionSecretStagingError,
+        match="staging_secret_unavailable",
+    ):
+        stager.bootstrap_production_secret_foundation(
+            evidence_root=evidence,
+            bearer_source=bearer,
+            require_root=False,
+        )
+
+    stager.bootstrap_production_secret_foundation(
+        secret_input={"api_bearer": BEARER, "approval_passkey": PASSKEY},
+        evidence_root=evidence,
+        bearer_source=bearer,
+        require_root=False,
+    )
+    with pytest.raises(
+        stager.ProductionSecretStagingError,
+        match="staging_secret_source_conflict",
+    ):
+        stager.bootstrap_production_secret_foundation(
+            secret_input={
+                "api_bearer": BEARER,
+                "approval_passkey": "different-passkey-0123456789abcdef012345",
+            },
+            evidence_root=evidence,
+            bearer_source=bearer,
+            require_root=False,
+        )
 
     paths = _paths(tmp_path / "artifact")
     target = paths["bearer_verifier_path"]

@@ -11869,20 +11869,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Plugin-registered slash commands
         if command:
+            plugin_handler = None
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
+            except Exception as e:
+                logger.debug("Plugin command lookup failed (non-fatal): %s", e)
+            if plugin_handler:
+                # Once we know the command resolves to a registered plugin
+                # handler, a failure here must short-circuit with a sanitized
+                # error instead of falling through — letting it fall through
+                # would either mis-report a real plugin command as unknown
+                # (the guard below only understands built-ins) or, once that
+                # guard is plugin-aware, leak the failed command on into
+                # normal agent handling as free text.
+                try:
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
+                except Exception as e:
+                    logger.warning(
+                        "Plugin command /%s handler raised: %s", command, e
+                    )
+                    from agent.redact import redact_sensitive_text
+                    return (
+                        f"⚠️ Plugin command `/{command}` failed: "
+                        f"{redact_sensitive_text(str(e))}"
+                    )
 
         # Skill slash commands: /skill-name loads the skill and sends to agent.
         # resolve_skill_command_key() handles the Telegram underscore/hyphen
@@ -12012,10 +12030,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the user instead of silently forwarding it to the LLM
                     # as free text (which leads to silent-failure behavior
                     # like the model inventing a delegate_task call).
-                    # Normalize to hyphenated form before checking known
-                    # built-ins (command may be an alias target set by the
-                    # quick-command block above, so _cmd_def can be stale).
-                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                    # Normalize to hyphenated form before checking, and use
+                    # is_gateway_known_command() so lazily-registered plugin
+                    # commands are recognized too — direct GATEWAY_KNOWN_COMMANDS
+                    # membership only covers built-ins (frozen at import time)
+                    # and would mis-report a real plugin command as unknown if
+                    # control reaches here (e.g. plugin handler raised and the
+                    # except above swallowed the error).
+                    if not is_gateway_known_command(command.replace("_", "-")):
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
                             "replying with unknown-command notice",

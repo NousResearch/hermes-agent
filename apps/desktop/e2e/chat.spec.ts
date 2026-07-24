@@ -27,6 +27,21 @@ test.afterAll(async () => {
 })
 
 test.describe('chat interaction with mock backend', () => {
+  test('returns focus to the composer after the command palette closes', async () => {
+    const page = fixture!.page
+    const composer = page.locator('[contenteditable="true"]').first()
+
+    await composer.waitFor({ state: 'visible', timeout: 10_000 })
+    await composer.click()
+    await expect(composer).toBeFocused()
+
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K')
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await expect(composer).toBeFocused()
+  })
+
   test('send a message and receive a response', async () => {
     const page = fixture!.page
 

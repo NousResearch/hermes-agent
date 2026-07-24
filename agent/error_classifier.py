@@ -592,6 +592,10 @@ def classify_api_error(
         status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
+    if not error_code:
+        direct_code = getattr(error, "code", None)
+        if direct_code is not None:
+            error_code = str(direct_code).strip()
 
     # Build a comprehensive error message string for pattern matching.
     # str(error) alone may not include the body message (e.g. OpenAI SDK's

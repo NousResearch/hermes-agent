@@ -5048,6 +5048,15 @@ def resolve_provider_client(
             if _main_base and _main_key:
                 custom_base = _main_base
                 custom_key = _main_key
+                # The transport mode travels with the endpoint: the live
+                # runtime's api_mode must reach _wrap_if_needed alongside its
+                # base_url/api_key, or a codex_responses/anthropic_messages
+                # main endpoint gets a plain chat.completions client that the
+                # backend 400s (e.g. "Unknown parameter: 'reasoning.enabled'"
+                # from a Codex Responses proxy during context compression).
+                # An explicit caller/task api_mode override still wins.
+                if not api_mode:
+                    api_mode = str(main_runtime.get("api_mode") or "").strip() or None
         if custom_base and custom_key:
             final_model = _normalize_resolved_model(
                 model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
@@ -6015,12 +6024,19 @@ def _client_cache_key(
     model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
+    # Providers whose resolution reads the live main runtime must carry its
+    # identity in the cache key: "auto" (implicit inherit) and the "main"
+    # alias, which resolves entirely through set_runtime_main() state. Without
+    # this, a `provider: main` client built under one endpoint/api_mode/key
+    # survives a mid-session runtime switch and is reused against a runtime
+    # it was never built for.
+    _runtime_coupled = (provider or "").strip().lower() in ("auto", "main")
     runtime_key = tuple(
         _runtime_cache_discriminator(field, runtime.get(field, ""))
         for field in _MAIN_RUNTIME_FIELDS
-    ) if provider == "auto" else ()
+    ) if _runtime_coupled else ()
     # `auto` can now resolve through task-specific or main fallback policy,
-    # so the task participates in the cache key. Non-auto providers keep the
+    # so the task participates in the cache key. Other providers keep the
     # old cache shape because the explicit provider/model tuple is sufficient.
     task_key = (task or "") if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)

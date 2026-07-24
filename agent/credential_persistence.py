@@ -23,6 +23,25 @@ _PERSISTABLE_PROVIDER_SOURCES = frozenset({
     ("nous", "device_code"),
     ("openai-codex", "device_code"),
     ("xai-oauth", "device_code"),
+    # Config-backed custom providers: API keys resolved from config.yaml at
+    # startup.  Stripping these on persist forces re-resolution from .env on
+    # every gateway restart, but credential_pool reads from auth.json at
+    # runtime — so stripped tokens cause 401s for pool-routed providers.
+    ("custom:nvidia", "config:nvidia"),
+    ("custom:openrouter", "config:openrouter"),
+    ("custom:alibaba-dashscope", "config:alibaba-dashscope"),
+    ("custom:cline", "config:cline"),
+    ("custom:github-models", "config:github-models"),
+    ("custom:blackboxai", "config:blackboxai"),
+    ("custom:notita", "config:notita"),
+    ("custom:zyloo", "config:zyloo"),
+    ("custom:zenmuxai", "config:zenmuxai"),
+    ("custom:zenmux-kimi", "config:zenmux-kimi"),
+    ("custom:tokenrouter", "config:tokenrouter"),
+    ("custom:windows-qnn-npu", "config:windows-qnn-npu"),
+    ("custom:xiaomi-year", "config:xiaomi-year"),
+    ("custom:xiaomi-credit", "config:xiaomi-credit"),
+    ("custom:nous-research", "config:nous-research"),
 })
 
 _SAFE_SECRETISH_METADATA_KEYS = frozenset({

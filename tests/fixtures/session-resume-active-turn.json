@@ -1,0 +1,28 @@
+{
+  "info": {
+    "cwd": "/workspace",
+    "lazy": false,
+    "model": "test/model",
+    "skills": {},
+    "tools": {}
+  },
+  "inflight": {
+    "assistant": "partial answer",
+    "streaming": true,
+    "user": "current prompt"
+  },
+  "message_count": 1,
+  "messages": [
+    {
+      "role": "user",
+      "text": "earlier prompt"
+    }
+  ],
+  "resumed": "stored-running",
+  "running": true,
+  "session_id": "rt-running",
+  "session_key": "stored-running",
+  "started_at": 1700000000.0,
+  "status": "working",
+  "turn_started_at": 1700000123.5
+}

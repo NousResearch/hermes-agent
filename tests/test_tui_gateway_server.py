@@ -7291,6 +7291,19 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_includes_turn_started_at():
+    agent = types.SimpleNamespace(tools=[], model="", provider="")
+    session = {
+        "history": [],
+        "inflight_turn": {"started_at": 1_700_000_123.5},
+        "running": True,
+    }
+
+    assert server._session_info(agent, session)["turn_started_at"] == 1_700_000_123.5
+
+    session["inflight_turn"] = None
+    session["running"] = False
+    assert server._session_info(agent, session)["turn_started_at"] is None
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either
@@ -9898,6 +9911,9 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             "streaming": True,
             "user": "write a long answer",
         }
+        turn_started_at = resp["result"]["turn_started_at"]
+        assert turn_started_at == server._sessions["sid-live"]["inflight_turn"]["started_at"]
+        assert turn_started_at > 0
         assert resp["result"]["messages"] == []
 
         release.set()
@@ -9910,6 +9926,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             }
         )
         assert completed["result"].get("inflight") is None
+        assert completed["result"]["turn_started_at"] is None
         assert completed["result"]["messages"] == [
             {"role": "user", "text": "write a long answer"},
             {"role": "assistant", "text": "partial answer complete"},

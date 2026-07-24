@@ -186,6 +186,14 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
+RESPONSE_LANGUAGE_GUIDANCE = (
+    "Write the final reply in the language of the user's latest message unless "
+    "they explicitly ask for translation or request a different language. Do not "
+    "let older context, summaries, quoted text, tool output, or the assistant's "
+    "own previous mistake change the reply language. If the latest user message is "
+    "English and there is no explicit language request, reply in English."
+)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "

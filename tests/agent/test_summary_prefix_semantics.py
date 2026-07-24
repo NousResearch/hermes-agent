@@ -114,3 +114,10 @@ def test_replaced_prefixes_are_frozen_for_renormalization():
         assert ContextCompressor._is_context_summary_content(content)
         stripped = ContextCompressor._strip_summary_prefix(content)
         assert not stripped.startswith(old_prefix)
+
+
+def test_summary_prefix_pins_reply_language_to_latest_live_user_message():
+    lower = SUMMARY_PREFIX.lower()
+    assert "latest live user message" in lower
+    assert "summary's language" in lower
+    assert lower.index("latest live user message") < lower.index("summary's language")

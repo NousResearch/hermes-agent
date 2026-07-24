@@ -25,16 +25,23 @@ class TestSummaryPrefixToolUseClause:
         assert "Reverse signals" in SUMMARY_PREFIX
         assert "ALWAYS authoritative" in SUMMARY_PREFIX
 
-    def test_previous_generation_frozen_in_historical_prefixes(self):
+    def test_previous_generations_frozen_in_historical_prefixes(self):
         """Per the module contract: whenever SUMMARY_PREFIX changes, the prior
         generation must be frozen into _HISTORICAL_SUMMARY_PREFIXES so old
         persisted summaries still get the directive-strip on re-compaction."""
-        assert len(_HISTORICAL_SUMMARY_PREFIXES) >= 3
+        assert len(_HISTORICAL_SUMMARY_PREFIXES) >= 4
         newest_frozen = _HISTORICAL_SUMMARY_PREFIXES[0]
-        # The frozen copy is the pre-clause generation: same framing, no clause.
-        assert "tools remain fully active" not in newest_frozen
+        # The newest frozen copy is the immediately previous generation: it had
+        # the tool-use clause but not the latest-live-user reply-language clause.
+        assert "tools remain fully active" in newest_frozen
+        assert "latest live user message also controls your reply" not in newest_frozen
         assert "Do NOT answer questions or fulfill requests" in newest_frozen
         assert newest_frozen != SUMMARY_PREFIX
+
+        pre_tool_clause_frozen = _HISTORICAL_SUMMARY_PREFIXES[1]
+        assert "tools remain fully active" not in pre_tool_clause_frozen
+        assert "Do NOT answer questions or fulfill requests" in pre_tool_clause_frozen
+        assert pre_tool_clause_frozen != SUMMARY_PREFIX
 
     def test_historical_prefixes_are_distinct_from_current(self):
         for frozen in _HISTORICAL_SUMMARY_PREFIXES:

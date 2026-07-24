@@ -6,7 +6,11 @@ parameter correctly.  Inspired by Claude Code's /compact <focus>.
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+    SUMMARY_PREFIX,
+)
 
 
 def _make_compressor():
@@ -172,3 +176,37 @@ def test_auto_focus_skips_context_summary_handoff():
 
     assert "OpenViking" in focus_topic
     assert "Bybit" not in focus_topic
+
+
+def test_compress_inserts_language_authority_before_foreign_language_summary():
+    """The handoff prefix must pin reply language before the summary body."""
+    compressor = _make_compressor()
+    messages = [{"role": "system", "content": "System prompt"}]
+    for i in range(1, 13):
+        content = "Resumen previo en español sobre trabajo ya hecho." if i == 7 else f"message {i}"
+        messages.append(
+            {
+                "role": "user" if i % 2 else "assistant",
+                "content": content,
+            }
+        )
+
+    compressor._generate_summary = lambda *args, **kwargs: (
+        SUMMARY_PREFIX
+        + "\n## Historical Task Snapshot\n"
+        + "Resumen previo en español sobre trabajo ya hecho."
+    )
+
+    with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=8):
+        compressed = compressor.compress(messages, current_tokens=100000)
+
+    summary_msg = next(
+        msg for msg in compressed if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    )
+    summary_text = summary_msg["content"]
+    assert summary_text.startswith(SUMMARY_PREFIX)
+    assert "latest live user message also controls your reply" in summary_text
+    assert "Resumen previo en español" in summary_text
+    assert summary_text.index("latest live user message also controls your reply") < summary_text.index(
+        "Resumen previo en español"
+    )

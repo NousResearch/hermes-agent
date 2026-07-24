@@ -164,6 +164,17 @@ uv run "$SCRIPT" restart-run-all --path <notebook.ipynb> --save-outputs --compac
 
 8. **偶发的 websocket 超时** —— 某些操作（尤其是内核重启后）首次尝试可能超时。在上报问题前先重试一次。
 
+9. **如果 websocket 在此主机上持续超时**，强制使用 zmq 传输：
+   `uv run "$SCRIPT" execute --transport zmq ...`。症状：每次 execute 都返回
+   "Websocket execution may already have reached the kernel, so auto fallback was
+   skipped"。内核实际上运行正常（REST 显示 execution_state=idle 且
+   execution_count 递增）—— 只是 websocket 回复通道损坏。zmq 传输直接使用
+   jupyter_client，可绕过此问题。
+
+10. **为纯 REST 使用启动新服务器时**，添加
+    `--ServerApp.disable_check_xsrf=True` —— 否则 POST /api/sessions 会返回
+    `"'_xsrf' argument missing from POST"`，导致内核会话创建失败。
+
 ## 超时默认值
 
 脚本每次执行的默认超时为 30 秒。对于长时间运行的操作，传入 `--timeout 120`。初始设置或大量计算时，建议使用较宽松的超时值（60 秒以上）。

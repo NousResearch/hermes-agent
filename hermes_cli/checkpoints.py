@@ -25,7 +25,7 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 def _fmt_bytes(n: int) -> str:
@@ -109,21 +109,63 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    from tools.checkpoint_manager import prune_checkpoints
+    from tools.checkpoint_manager import prune_checkpoints, store_status
 
     retention_days = args.retention_days
     max_size_mb = args.max_size_mb
+    delete_orphans = not args.keep_orphans
+
+    # When set, restricts orphan deletion to exactly the identities shown in
+    # the confirmation preview below (v2 project hashes / pre-v2 shadow repo
+    # paths). `None` means "no restriction" — used for --force, where there
+    # is no preview to bind to.
+    orphan_allowlist: Optional[set] = None
+
+    if delete_orphans and not args.force:
+        info = store_status()
+        orphans = [
+            p for p in info.get("projects", [])
+            if not p.get("exists")
+        ]
+        pre_v2_orphans = [
+            p for p in info.get("pre_v2_projects", [])
+            if not p.get("exists")
+        ]
+        if orphans or pre_v2_orphans:
+            print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
+                  "orphan checkpoint project(s) whose workdir is not currently reachable:")
+            print()
+            for p in orphans:
+                wd = p.get("workdir") or "(unknown)"
+                print(f"  {wd}  ({p.get('commits', 0)} commit(s))")
+            for p in pre_v2_orphans:
+                wd = p.get("workdir") or "(unknown)"
+                print(f"  {wd}  (pre-v2 shadow repo)")
+            print()
+            print("A workdir can be unreachable because the project was deleted,")
+            print("or because an external volume / network share / VPN is down.")
+            print("Pass --keep-orphans to prune stale entries only.")
+            if not _confirm("Delete these orphan projects?"):
+                print("Aborted.")
+                return 1
+            # Bind the deletion to exactly what was just displayed and
+            # confirmed — a project that becomes orphaned only *after* this
+            # preview (e.g. its workdir disappears while waiting on input())
+            # must not be swept up under this same confirmation.
+            orphan_allowlist = {p["hash"] for p in orphans}
+            orphan_allowlist.update(p["path"] for p in pre_v2_orphans)
 
     print("Pruning checkpoint store…")
     print(f"  retention_days:    {retention_days}")
-    print(f"  delete_orphans:    {not args.keep_orphans}")
+    print(f"  delete_orphans:    {delete_orphans}")
     print(f"  max_total_size_mb: {max_size_mb}")
     print()
 
     result = prune_checkpoints(
         retention_days=retention_days,
-        delete_orphans=not args.keep_orphans,
+        delete_orphans=delete_orphans,
         max_total_size_mb=max_size_mb,
+        orphan_allowlist=orphan_allowlist,
     )
     print(f"Scanned:         {result['scanned']}")
     print(f"Deleted orphan:  {result['deleted_orphan']}")
@@ -225,6 +267,8 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
                               "per project until total size <= this (default 500)")
     p_prune.add_argument("--keep-orphans", action="store_true",
                          help="Skip deleting projects whose workdir no longer exists")
+    p_prune.add_argument("-f", "--force", action="store_true",
+                         help="Skip the orphan-deletion confirmation prompt")
     p_prune.set_defaults(func=cmd_prune)
 
     p_clear = subs.add_parser(

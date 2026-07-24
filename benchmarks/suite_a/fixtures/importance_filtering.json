@@ -1,0 +1,1142 @@
+[
+  {
+    "id": "if_e01",
+    "important_facts": [
+      {
+        "content": "Production database password must never be logged",
+        "importance": 1.0
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Dave had coffee this morning",
+        "importance": 0.1
+      },
+      {
+        "content": "The weather was nice yesterday",
+        "importance": 0.1
+      }
+    ],
+    "query": "What's the critical rule about database credentials?",
+    "gold_answer": "Never log the production database password",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e02",
+    "important_facts": [
+      {
+        "content": "The SSL certificate expires on 2024-06-15 and must be renewed",
+        "importance": 0.95
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Lunch was ordered from the Thai place",
+        "importance": 0.1
+      },
+      {
+        "content": "The office printer is out of cyan ink",
+        "importance": 0.15
+      }
+    ],
+    "query": "When does the SSL certificate expire?",
+    "gold_answer": "2024-06-15",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e03",
+    "important_facts": [
+      {
+        "content": "Never run DROP TABLE in production without a backup verification",
+        "importance": 1.0
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The vending machine was restocked Tuesday",
+        "importance": 0.05
+      },
+      {
+        "content": "Someone left their umbrella in the conference room",
+        "importance": 0.05
+      }
+    ],
+    "query": "What must be verified before dropping a production table?",
+    "gold_answer": "Backup verification",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e04",
+    "important_facts": [
+      {
+        "content": "The API key for the payment gateway is stored in AWS Secrets Manager under /prod/stripe/api-key",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The team went bowling last Friday",
+        "importance": 0.1
+      },
+      {
+        "content": "New snacks were added to the kitchen",
+        "importance": 0.05
+      }
+    ],
+    "query": "Where is the Stripe API key stored?",
+    "gold_answer": "AWS Secrets Manager at /prod/stripe/api-key",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e05",
+    "important_facts": [
+      {
+        "content": "Incident postmortems must be filed within 48 hours of resolution",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The plant in the lobby needs watering",
+        "importance": 0.05
+      },
+      {
+        "content": "Parking lot will be repaved next month",
+        "importance": 0.1
+      }
+    ],
+    "query": "What's the deadline for filing incident postmortems?",
+    "gold_answer": "48 hours after resolution",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e06",
+    "important_facts": [
+      {
+        "content": "The disaster recovery RTO is 4 hours and RPO is 1 hour",
+        "importance": 0.95
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The coffee machine brand is Nespresso",
+        "importance": 0.05
+      },
+      {
+        "content": "Team lunch is usually on Thursdays",
+        "importance": 0.1
+      }
+    ],
+    "query": "What are our disaster recovery objectives?",
+    "gold_answer": "RTO: 4 hours, RPO: 1 hour",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e07",
+    "important_facts": [
+      {
+        "content": "All PII must be encrypted with AES-256 before storage",
+        "importance": 1.0
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The office dog is named Pixel",
+        "importance": 0.1
+      },
+      {
+        "content": "Someone suggested a ping pong table",
+        "importance": 0.05
+      }
+    ],
+    "query": "What encryption is required for PII?",
+    "gold_answer": "AES-256",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e08",
+    "important_facts": [
+      {
+        "content": "Kubernetes pod memory limit is 2Gi to prevent OOM kills",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The elevator was slow today",
+        "importance": 0.05
+      },
+      {
+        "content": "New monitors arrived for the design team",
+        "importance": 0.15
+      }
+    ],
+    "query": "What's the K8s pod memory limit?",
+    "gold_answer": "2Gi",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e09",
+    "important_facts": [
+      {
+        "content": "The runbook for database failover is at wiki/runbooks/db-failover",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Birthday cake in the break room at 3 PM",
+        "importance": 0.1
+      },
+      {
+        "content": "The AC is set to 72\u00b0F",
+        "importance": 0.05
+      }
+    ],
+    "query": "Where's the database failover runbook?",
+    "gold_answer": "wiki/runbooks/db-failover",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e10",
+    "important_facts": [
+      {
+        "content": "Max concurrent database connections per service is 50",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The whiteboard markers are running low",
+        "importance": 0.05
+      },
+      {
+        "content": "Someone asked about the holiday schedule",
+        "importance": 0.1
+      }
+    ],
+    "query": "How many DB connections can each service open?",
+    "gold_answer": "50",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e11",
+    "important_facts": [
+      {
+        "content": "Production deploys require approval from both the tech lead and QA lead",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The team voted for Italian for dinner",
+        "importance": 0.05
+      },
+      {
+        "content": "New hoodies arrived with the company logo",
+        "importance": 0.1
+      }
+    ],
+    "query": "Who needs to approve production deployments?",
+    "gold_answer": "Tech lead and QA lead",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_e12",
+    "important_facts": [
+      {
+        "content": "The CDN invalidation API endpoint is POST /cdn/purge with the zone ID header",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The recycling bins were moved to the hallway",
+        "importance": 0.05
+      },
+      {
+        "content": "Friday is casual dress day",
+        "importance": 0.05
+      }
+    ],
+    "query": "How do you purge the CDN cache?",
+    "gold_answer": "POST /cdn/purge with zone ID header",
+    "difficulty": "easy"
+  },
+  {
+    "id": "if_m01",
+    "important_facts": [
+      {
+        "content": "The circuit breaker threshold for the payment service is 25% error rate over 60 seconds",
+        "importance": 0.85
+      },
+      {
+        "content": "When the circuit opens, transactions queue in Redis for up to 5 minutes",
+        "importance": 0.8
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The payment service was deployed on a Tuesday",
+        "importance": 0.2
+      },
+      {
+        "content": "Dave tested the payment flow yesterday",
+        "importance": 0.25
+      },
+      {
+        "content": "The payment service logs are verbose in debug mode",
+        "importance": 0.3
+      }
+    ],
+    "query": "What happens when the payment service errors spike?",
+    "gold_answer": "Circuit breaker opens at 25% errors over 60s, transactions queue in Redis for up to 5 minutes",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m02",
+    "important_facts": [
+      {
+        "content": "Database vacuum runs automatically but VACUUM FULL requires manual execution during maintenance windows",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The database dashboard was updated last week",
+        "importance": 0.2
+      },
+      {
+        "content": "Someone ran EXPLAIN ANALYZE on a slow query yesterday",
+        "importance": 0.25
+      },
+      {
+        "content": "The DBA mentioned table bloat in the daily standup",
+        "importance": 0.3
+      }
+    ],
+    "query": "When can VACUUM FULL be run?",
+    "gold_answer": "Only during maintenance windows (requires manual execution)",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m03",
+    "important_facts": [
+      {
+        "content": "Cross-region replication lag must stay under 500ms per the SLA",
+        "importance": 0.9
+      },
+      {
+        "content": "If replication lag exceeds 500ms, the failover automation is paused",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Replication was set up six months ago",
+        "importance": 0.2
+      },
+      {
+        "content": "The network team ran latency tests last quarter",
+        "importance": 0.2
+      },
+      {
+        "content": "AWS added a new region in Melbourne",
+        "importance": 0.15
+      }
+    ],
+    "query": "What's the replication lag SLA and what happens if it's breached?",
+    "gold_answer": "500ms max; failover automation pauses if exceeded",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m04",
+    "important_facts": [
+      {
+        "content": "The data retention policy requires anonymizing user data after account deletion within 30 days",
+        "importance": 0.95
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Account deletion was requested by 12 users last month",
+        "importance": 0.2
+      },
+      {
+        "content": "The deletion job logs are in CloudWatch",
+        "importance": 0.25
+      },
+      {
+        "content": "Legal reviewed the policy in January",
+        "importance": 0.3
+      },
+      {
+        "content": "GDPR training is scheduled for next quarter",
+        "importance": 0.2
+      }
+    ],
+    "query": "How quickly must user data be anonymized after account deletion?",
+    "gold_answer": "Within 30 days",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m05",
+    "important_facts": [
+      {
+        "content": "The canary deployment must hold for 15 minutes with <0.5% error rate before full rollout",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Last canary deployment was smooth",
+        "importance": 0.2
+      },
+      {
+        "content": "The deploy script was refactored recently",
+        "importance": 0.25
+      },
+      {
+        "content": "Carol suggested adding more canary metrics",
+        "importance": 0.2
+      }
+    ],
+    "query": "What are the canary promotion criteria?",
+    "gold_answer": "15 minutes with less than 0.5% error rate",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m06",
+    "important_facts": [
+      {
+        "content": "Terraform state locking uses DynamoDB table named terraform-locks",
+        "importance": 0.85
+      },
+      {
+        "content": "If state lock is stuck, use force-unlock with the lock ID from the error message",
+        "importance": 0.8
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Terraform was upgraded to 1.6 last sprint",
+        "importance": 0.25
+      },
+      {
+        "content": "The infrastructure repo has 200 resources",
+        "importance": 0.2
+      },
+      {
+        "content": "Bob ran terraform plan this morning",
+        "importance": 0.15
+      }
+    ],
+    "query": "How do you resolve a stuck Terraform state lock?",
+    "gold_answer": "force-unlock using the lock ID from the error message (locks are in DynamoDB table terraform-locks)",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m07",
+    "important_facts": [
+      {
+        "content": "The GraphQL query complexity limit is 1000 points, and nested resolvers cost 10 points each",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "GraphQL playground is available at /graphql",
+        "importance": 0.2
+      },
+      {
+        "content": "The schema has 47 types",
+        "importance": 0.25
+      },
+      {
+        "content": "Apollo Studio is used for schema tracking",
+        "importance": 0.2
+      },
+      {
+        "content": "Carol added a new mutation last week",
+        "importance": 0.15
+      }
+    ],
+    "query": "How many nested resolvers can a single GraphQL query have?",
+    "gold_answer": "100 nested resolvers (1000 point limit / 10 points each)",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m08",
+    "important_facts": [
+      {
+        "content": "Hot-fix branches must be merged to both main and the current release branch",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "We had 3 hotfixes last month",
+        "importance": 0.2
+      },
+      {
+        "content": "The release branch naming convention is release/YYYY.MM",
+        "importance": 0.3
+      },
+      {
+        "content": "Git hooks run linting on pre-push",
+        "importance": 0.2
+      }
+    ],
+    "query": "Where must hot-fix branches be merged?",
+    "gold_answer": "Both main and the current release branch",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m09",
+    "important_facts": [
+      {
+        "content": "S3 bucket policy denies all non-TLS requests via aws:SecureTransport condition",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The S3 bucket was created in 2022",
+        "importance": 0.1
+      },
+      {
+        "content": "Bucket versioning is enabled",
+        "importance": 0.3
+      },
+      {
+        "content": "CloudTrail logs S3 access",
+        "importance": 0.25
+      }
+    ],
+    "query": "How is non-encrypted S3 access prevented?",
+    "gold_answer": "Bucket policy denies non-TLS requests via aws:SecureTransport condition",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m10",
+    "important_facts": [
+      {
+        "content": "The WebSocket heartbeat interval is 30 seconds; clients disconnected after 3 missed heartbeats",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "WebSocket was added in version 2.3",
+        "importance": 0.2
+      },
+      {
+        "content": "The WebSocket server uses uWebSockets",
+        "importance": 0.25
+      },
+      {
+        "content": "Connection metrics are on the real-time dashboard",
+        "importance": 0.2
+      }
+    ],
+    "query": "How long before an idle WebSocket client is disconnected?",
+    "gold_answer": "90 seconds (3 missed heartbeats * 30 second interval)",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m11",
+    "important_facts": [
+      {
+        "content": "Blue team security scans run weekly and results must be triaged within 72 hours",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The last scan found 2 low-severity issues",
+        "importance": 0.25
+      },
+      {
+        "content": "SonarQube is used for SAST",
+        "importance": 0.3
+      },
+      {
+        "content": "Security training was last month",
+        "importance": 0.15
+      }
+    ],
+    "query": "How quickly must security scan findings be triaged?",
+    "gold_answer": "Within 72 hours",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m12",
+    "important_facts": [
+      {
+        "content": "API pagination max page size is 100 items; default is 25",
+        "importance": 0.8
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The API handles 10K requests per minute",
+        "importance": 0.25
+      },
+      {
+        "content": "Cursor-based pagination was considered but deferred",
+        "importance": 0.2
+      },
+      {
+        "content": "Mobile clients typically request 10 items per page",
+        "importance": 0.2
+      }
+    ],
+    "query": "What's the maximum page size for API responses?",
+    "gold_answer": "100 items (default 25)",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m13",
+    "important_facts": [
+      {
+        "content": "Container images must be scanned by Trivy before promotion to production registry",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "We build about 50 images per day",
+        "importance": 0.2
+      },
+      {
+        "content": "The base image is debian:bookworm-slim",
+        "importance": 0.25
+      },
+      {
+        "content": "Image layers are cached in the build pipeline",
+        "importance": 0.2
+      }
+    ],
+    "query": "What security check is required before an image reaches production?",
+    "gold_answer": "Trivy vulnerability scan",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m14",
+    "important_facts": [
+      {
+        "content": "The message queue dead letter threshold is 3 retries with exponential backoff starting at 1 second",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "RabbitMQ is the message broker",
+        "importance": 0.3
+      },
+      {
+        "content": "Queue monitoring is in Grafana",
+        "importance": 0.2
+      },
+      {
+        "content": "The DLQ had 15 messages last week",
+        "importance": 0.2
+      }
+    ],
+    "query": "How many retries before a message goes to the dead letter queue?",
+    "gold_answer": "3 retries with exponential backoff from 1 second",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m15",
+    "important_facts": [
+      {
+        "content": "Load balancer health check path is /healthz and must return 200 within 3 seconds",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The load balancer is an ALB",
+        "importance": 0.25
+      },
+      {
+        "content": "Health check logs are noisy in development",
+        "importance": 0.15
+      },
+      {
+        "content": "The previous health check path was /health",
+        "importance": 0.2
+      }
+    ],
+    "query": "What endpoint does the load balancer check and what's the timeout?",
+    "gold_answer": "/healthz with a 3-second timeout returning 200",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_m16",
+    "important_facts": [
+      {
+        "content": "Feature branches must be rebased on main before merge; merge commits are not allowed",
+        "importance": 0.8
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Git LFS is used for large binary assets",
+        "importance": 0.25
+      },
+      {
+        "content": "The repo has 1200 commits",
+        "importance": 0.15
+      },
+      {
+        "content": "Pre-commit hooks run black and isort",
+        "importance": 0.3
+      }
+    ],
+    "query": "What's the merge strategy for feature branches?",
+    "gold_answer": "Rebase on main; merge commits not allowed",
+    "difficulty": "medium"
+  },
+  {
+    "id": "if_h01",
+    "important_facts": [
+      {
+        "content": "The failover procedure requires draining connections for 60 seconds before switching the primary",
+        "importance": 0.85
+      },
+      {
+        "content": "After failover, the old primary must be manually re-added as a replica",
+        "importance": 0.8
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Failover was tested last quarter with good results",
+        "importance": 0.3
+      },
+      {
+        "content": "The replica lag was 50ms during the last test",
+        "importance": 0.25
+      },
+      {
+        "content": "Dave documented the failover process in Confluence",
+        "importance": 0.3
+      },
+      {
+        "content": "The database team did a failover drill on March 1st",
+        "importance": 0.2
+      },
+      {
+        "content": "Monitoring alerts fire during planned failovers",
+        "importance": 0.25
+      }
+    ],
+    "query": "What are the critical steps in the database failover procedure?",
+    "gold_answer": "Drain connections for 60 seconds, switch primary, then manually re-add old primary as replica",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h02",
+    "important_facts": [
+      {
+        "content": "The token signing key is RSA 4096-bit stored in HSM, rotated quarterly",
+        "importance": 0.95
+      },
+      {
+        "content": "During key rotation, both old and new keys are valid for 24 hours",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "JWT library is jose4j",
+        "importance": 0.25
+      },
+      {
+        "content": "Token validation takes about 2ms",
+        "importance": 0.2
+      },
+      {
+        "content": "The auth service handles 5000 validations per second",
+        "importance": 0.2
+      },
+      {
+        "content": "OIDC discovery endpoint is at /.well-known/openid-configuration",
+        "importance": 0.3
+      },
+      {
+        "content": "The auth team has 3 engineers",
+        "importance": 0.1
+      }
+    ],
+    "query": "How is the JWT signing key managed and what happens during rotation?",
+    "gold_answer": "RSA 4096-bit in HSM, rotated quarterly, both keys valid for 24h overlap",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h03",
+    "important_facts": [
+      {
+        "content": "The WAF blocks requests with SQL injection patterns and rate-limits IPs exceeding 1000 req/min globally",
+        "importance": 0.9
+      },
+      {
+        "content": "WAF bypass for internal health checks uses a shared secret in the X-Internal-Auth header",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The WAF is AWS WAF v2",
+        "importance": 0.3
+      },
+      {
+        "content": "WAF rules were last updated in February",
+        "importance": 0.2
+      },
+      {
+        "content": "False positive rate is about 0.01%",
+        "importance": 0.25
+      },
+      {
+        "content": "The security team reviews WAF logs weekly",
+        "importance": 0.2
+      },
+      {
+        "content": "Geo-blocking is enabled for sanctioned countries",
+        "importance": 0.3
+      }
+    ],
+    "query": "How do internal services bypass the WAF and what are the main WAF rules?",
+    "gold_answer": "X-Internal-Auth header with shared secret; WAF blocks SQL injection and rate-limits at 1000 req/min per IP",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h04",
+    "important_facts": [
+      {
+        "content": "Zero-downtime migrations require: 1) backward-compatible schema change, 2) deploy new code, 3) backfill data, 4) deploy cleanup code",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "The last migration added an index on created_at",
+        "importance": 0.25
+      },
+      {
+        "content": "Migrations are tested against a production clone",
+        "importance": 0.3
+      },
+      {
+        "content": "The migration tool is Alembic",
+        "importance": 0.25
+      },
+      {
+        "content": "Average migration time is 30 seconds",
+        "importance": 0.2
+      },
+      {
+        "content": "There are 150 migration files in the repo",
+        "importance": 0.15
+      }
+    ],
+    "query": "What are the steps for a zero-downtime database migration?",
+    "gold_answer": "1) Backward-compatible schema change, 2) deploy new code, 3) backfill data, 4) deploy cleanup",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h05",
+    "important_facts": [
+      {
+        "content": "Multi-region failover order: us-east-1 (primary) \u2192 us-west-2 (warm standby) \u2192 eu-west-1 (cold standby)",
+        "importance": 0.9
+      },
+      {
+        "content": "Cold standby activation requires manual DNS update and takes 15-30 minutes",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "AWS us-east-1 has the most services",
+        "importance": 0.2
+      },
+      {
+        "content": "Cross-region data transfer costs about $2000/month",
+        "importance": 0.25
+      },
+      {
+        "content": "The DR test passed last month",
+        "importance": 0.2
+      },
+      {
+        "content": "Regional health is monitored by Route 53 health checks",
+        "importance": 0.3
+      },
+      {
+        "content": "The infrastructure team discussed adding ap-southeast-1",
+        "importance": 0.15
+      }
+    ],
+    "query": "If both US regions go down, how do we recover and how long does it take?",
+    "gold_answer": "Activate eu-west-1 cold standby via manual DNS update, takes 15-30 minutes",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h06",
+    "important_facts": [
+      {
+        "content": "The data classification levels are: Public, Internal, Confidential, Restricted",
+        "importance": 0.85
+      },
+      {
+        "content": "Restricted data requires encryption in transit and at rest plus access logging with 7-year retention",
+        "importance": 0.95
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Most data is classified as Internal",
+        "importance": 0.2
+      },
+      {
+        "content": "Data classification training is annual",
+        "importance": 0.2
+      },
+      {
+        "content": "The classification policy was updated last year",
+        "importance": 0.25
+      },
+      {
+        "content": "HR data is classified as Restricted",
+        "importance": 0.3
+      },
+      {
+        "content": "Public data includes marketing materials",
+        "importance": 0.15
+      }
+    ],
+    "query": "What special handling does Restricted data require?",
+    "gold_answer": "Encryption in transit and at rest, plus access logging with 7-year retention",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h07",
+    "important_facts": [
+      {
+        "content": "The chaos engineering schedule: Mondays pod-kill tests, Wednesdays network partition tests, Fridays full AZ failure simulation",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Chaos Monkey was the original tool",
+        "importance": 0.2
+      },
+      {
+        "content": "Last Friday's test caused a 30-second blip",
+        "importance": 0.25
+      },
+      {
+        "content": "The SRE team runs chaos experiments",
+        "importance": 0.2
+      },
+      {
+        "content": "Chaos testing was paused during the holiday deploy freeze",
+        "importance": 0.3
+      },
+      {
+        "content": "LitmusChaos is the current tool",
+        "importance": 0.25
+      },
+      {
+        "content": "Results are reviewed in the weekly SRE meeting",
+        "importance": 0.2
+      }
+    ],
+    "query": "What chaos tests run on which days?",
+    "gold_answer": "Monday: pod-kill, Wednesday: network partition, Friday: full AZ failure",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h08",
+    "important_facts": [
+      {
+        "content": "The cost allocation tags required on all AWS resources: team, environment, service, cost-center",
+        "importance": 0.85
+      },
+      {
+        "content": "Untagged resources are flagged and auto-terminated after 7 days",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Monthly AWS bill is about $45K",
+        "importance": 0.25
+      },
+      {
+        "content": "Cost optimization review happens quarterly",
+        "importance": 0.2
+      },
+      {
+        "content": "Reserved instances save 30% on EC2",
+        "importance": 0.3
+      },
+      {
+        "content": "The finance team gets cost reports on the 1st of each month",
+        "importance": 0.2
+      }
+    ],
+    "query": "What happens to AWS resources without proper tags?",
+    "gold_answer": "Flagged and auto-terminated after 7 days; required tags are team, environment, service, cost-center",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h09",
+    "important_facts": [
+      {
+        "content": "API backward compatibility guarantee: deprecated endpoints maintained for 6 months with Sunset header",
+        "importance": 0.9
+      },
+      {
+        "content": "Breaking changes require RFC approval and 3-month migration support",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "We have 45 API endpoints",
+        "importance": 0.15
+      },
+      {
+        "content": "API docs are on readme.com",
+        "importance": 0.2
+      },
+      {
+        "content": "The last deprecation was the v1 search endpoint",
+        "importance": 0.25
+      },
+      {
+        "content": "OpenAPI spec is auto-generated",
+        "importance": 0.2
+      },
+      {
+        "content": "API versioning uses URL path",
+        "importance": 0.25
+      }
+    ],
+    "query": "What's our API deprecation policy?",
+    "gold_answer": "Deprecated endpoints kept for 6 months with Sunset header; breaking changes need RFC approval and 3-month migration support",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h10",
+    "important_facts": [
+      {
+        "content": "The log level hierarchy for production: ERROR and WARN always logged, INFO sampled at 10%, DEBUG disabled",
+        "importance": 0.85
+      },
+      {
+        "content": "To enable DEBUG in production, set the X-Debug-Token header with a valid ops token",
+        "importance": 0.8
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Logs are structured JSON",
+        "importance": 0.3
+      },
+      {
+        "content": "Log volume is about 50 GB per day",
+        "importance": 0.2
+      },
+      {
+        "content": "Loki is the log aggregation system",
+        "importance": 0.25
+      },
+      {
+        "content": "Log retention is 30 days",
+        "importance": 0.25
+      },
+      {
+        "content": "Request IDs are included in all log lines",
+        "importance": 0.2
+      }
+    ],
+    "query": "How do you get DEBUG logs in production?",
+    "gold_answer": "Set X-Debug-Token header with a valid ops token (DEBUG is normally disabled, INFO sampled at 10%)",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h11",
+    "important_facts": [
+      {
+        "content": "Database schema changes in production must go through the change advisory board (CAB) and require a rollback script",
+        "importance": 0.9
+      },
+      {
+        "content": "Emergency schema changes can bypass CAB with VP Engineering approval and post-incident review",
+        "importance": 0.85
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "CAB meets on Tuesdays at 2 PM",
+        "importance": 0.3
+      },
+      {
+        "content": "Schema changes are tracked in a changelog table",
+        "importance": 0.25
+      },
+      {
+        "content": "The last schema change added a UUID column",
+        "importance": 0.2
+      },
+      {
+        "content": "DBA review is recommended but not mandatory for index-only changes",
+        "importance": 0.3
+      }
+    ],
+    "query": "How can an emergency schema change bypass normal approval?",
+    "gold_answer": "VP Engineering approval plus mandatory post-incident review",
+    "difficulty": "hard"
+  },
+  {
+    "id": "if_h12",
+    "important_facts": [
+      {
+        "content": "The service mesh mTLS certificate chain: root CA (offline, 10-year) \u2192 intermediate CA (Vault, 1-year) \u2192 service cert (auto-rotated every 24 hours)",
+        "importance": 0.9
+      }
+    ],
+    "noise_facts": [
+      {
+        "content": "Istio handles the service mesh",
+        "importance": 0.25
+      },
+      {
+        "content": "mTLS was enabled last quarter",
+        "importance": 0.2
+      },
+      {
+        "content": "Certificate errors caused a 5-minute outage in February",
+        "importance": 0.3
+      },
+      {
+        "content": "The security team audited the cert chain last month",
+        "importance": 0.2
+      },
+      {
+        "content": "SPIFFE IDs are used for service identity",
+        "importance": 0.25
+      }
+    ],
+    "query": "Describe the mTLS certificate hierarchy and rotation schedule",
+    "gold_answer": "Root CA offline with 10-year validity, intermediate CA in Vault with 1-year validity, service certs auto-rotate every 24 hours",
+    "difficulty": "hard"
+  }
+]

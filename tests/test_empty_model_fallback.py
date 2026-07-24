@@ -2,6 +2,9 @@
 
 from unittest.mock import patch
 
+from gateway.config import Platform
+from gateway.session import SessionSource
+
 
 class TestGetDefaultModelForProvider:
     """Unit tests for hermes_cli.models.get_default_model_for_provider."""
@@ -157,6 +160,16 @@ class TestDetectStaticProviderCostSafeDefault:
             assert result[1] == _PROVIDER_MODELS[provider][0]
 
 
+def _make_telegram_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+
 class TestGatewayEmptyModelFallback:
     """Test that _resolve_session_agent_runtime fills in empty model from provider catalog."""
 
@@ -193,7 +206,7 @@ class TestGatewayEmptyModelFallback:
         with patch("gateway.run._resolve_gateway_model", return_value="gpt-5.4"), \
              patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
                  "provider": "openai-codex",
-                 "api_key": "test-key",
+                 "api_key": "***",
                  "base_url": "https://chatgpt.com/backend-api/codex",
                  "api_mode": "codex_responses",
              }):
@@ -211,7 +224,7 @@ class TestGatewayEmptyModelFallback:
         with patch("gateway.run._resolve_gateway_model", return_value=""), \
              patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
                  "provider": "",
-                 "api_key": "test-key",
+                 "api_key": "***",
                  "base_url": "https://example.com",
                  "api_mode": "chat_completions",
              }):
@@ -220,9 +233,101 @@ class TestGatewayEmptyModelFallback:
         # Can't fill in a default without knowing the provider
         assert model == ""
 
+    def test_platform_provider_override_requests_matching_runtime_provider(self):
+        """Platform config should resolve credentials for its own provider, not the global one."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        cfg = {
+            "model": {"default": "gpt-5.4", "provider": "openai-codex"},
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "model": "claude-sonnet-4",
+                        "provider": "anthropic",
+                    }
+                }
+            },
+        }
+
+        seen = {}
+
+        def _runtime_for_platform(*, requested_provider=None, explicit_api_key=None, explicit_base_url=None, requested=None):
+            seen["requested"] = requested_provider if requested_provider is not None else requested
+            seen["explicit_api_key"] = explicit_api_key
+            seen["explicit_base_url"] = explicit_base_url
+            return {
+                "provider": "anthropic",
+                "api_key": "ant-key",
+                "base_url": "https://api.anthropic.com",
+                "api_mode": "anthropic_messages",
+            }
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=_runtime_for_platform):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                source=_make_telegram_source(),
+                user_config=cfg,
+            )
+
+        assert seen == {
+            "requested": "anthropic",
+            "explicit_api_key": None,
+            "explicit_base_url": None,
+        }
+        assert model == "claude-sonnet-4"
+        assert kwargs["provider"] == "anthropic"
+        assert kwargs["api_key"] == "ant-key"
+        assert kwargs["base_url"] == "https://api.anthropic.com"
+        assert kwargs["api_mode"] == "anthropic_messages"
+
+    def test_platform_explicit_runtime_fields_override_resolved_credentials(self):
+        """Platform config should be able to pin endpoint credentials/runtime per platform."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        cfg = {
+            "model": {"default": "gpt-5.4", "provider": "openai-codex"},
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "provider": "custom",
+                        "model": "local-model",
+                        "api_key": "telegram-key",
+                        "base_url": "https://llm.internal/v1",
+                        "api_mode": "chat_completions",
+                    }
+                }
+            },
+        }
+
+        def _runtime_for_platform(*, requested_provider=None, explicit_api_key=None, explicit_base_url=None, requested=None):
+            provider = requested_provider if requested_provider is not None else requested
+            return {
+                "provider": provider,
+                "api_key": explicit_api_key,
+                "base_url": explicit_base_url,
+                "api_mode": "should-be-overridden",
+            }
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=_runtime_for_platform):
+            model, kwargs = runner._resolve_session_agent_runtime(
+                source=_make_telegram_source(),
+                user_config=cfg,
+            )
+
+        assert model == "local-model"
+        assert kwargs["provider"] == "custom"
+        assert kwargs["api_key"] == "telegram-key"
+        assert kwargs["base_url"] == "https://llm.internal/v1"
+        assert kwargs["api_mode"] == "chat_completions"
+
 
 class TestResolveGatewayModel:
-    """Test _resolve_gateway_model reads model from config correctly."""
+
 
     def test_returns_default_key(self):
         from gateway.run import _resolve_gateway_model
@@ -243,3 +348,18 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+    def test_platform_model_override_wins_over_global_default(self):
+        from gateway.run import _resolve_gateway_model
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "platforms": {
+                "telegram": {
+                    "extra": {"model": "claude-sonnet-4"}
+                }
+            },
+        }
+
+        assert _resolve_gateway_model(cfg, platform=Platform.TELEGRAM) == "claude-sonnet-4"
+        assert _resolve_gateway_model(cfg, platform=Platform.SLACK) == "gpt-5.4"

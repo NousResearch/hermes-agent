@@ -239,6 +239,39 @@ After adding a new provider via `hermes model`, start a new chat session — `/m
 | Switch to different configured provider | `/model provider:model` (inside session) |
 :::
 
+#### Different default models per platform
+
+You can set a different default model/provider for each gateway platform by placing overrides under `platforms.<platform>.extra` in `~/.hermes/config.yaml`.
+
+```yaml
+model:
+  default: gpt-5.4
+  provider: openai-codex
+
+platforms:
+  telegram:
+    extra:
+      model: claude-sonnet-4
+      provider: anthropic
+
+  slack:
+    extra:
+      model: gpt-5.4
+      provider: openai-codex
+```
+
+Supported per-platform override keys:
+- `model`
+- `provider`
+- `api_key`
+- `base_url`
+- `api_mode`
+
+Precedence is:
+1. Session `/model` override
+2. Platform override in `platforms.<platform>.extra`
+3. Global `model.default` / `model.provider`
+
 #### API key not working
 
 **Cause:** Key is missing, expired, incorrectly set, or for the wrong provider.

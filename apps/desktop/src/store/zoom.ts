@@ -17,6 +17,14 @@ export function setZoomPercent(percent: number): void {
 }
 
 if (typeof window !== 'undefined' && window.hermesDesktop?.zoom) {
-  void window.hermesDesktop.zoom.get().then(({ percent }) => $zoomPercent.set(percent))
-  window.hermesDesktop.zoom.onChanged(({ percent }) => $zoomPercent.set(percent))
+  const zoom = window.hermesDesktop.zoom
+  let receivedChange = false
+
+  zoom.onChanged(({ percent }) => {
+    receivedChange = true
+    $zoomPercent.set(percent)
+  })
+  void zoom.get().then(({ percent }) => {
+    if (!receivedChange) $zoomPercent.set(percent)
+  })
 }

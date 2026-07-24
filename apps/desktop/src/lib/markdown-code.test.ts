@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyProseCodeBlock } from './markdown-code'
+import { isLikelyProseCodeBlock, isLikelyProseFence } from './markdown-code'
+
+describe('isLikelyProseFence', () => {
+  it('keeps explicit text fences out of prose downgrade so the language tag cannot leak', () => {
+    expect(
+      isLikelyProseFence(
+        'text',
+        [
+          'apps/desktop/src/components/assistant-ui/thread.tsx',
+          'apps/desktop/src/lib/markdown-code.ts',
+          'apps/desktop/src/styles.css'
+        ].join('\n')
+      )
+    ).toBe(false)
+  })
+
+  it('still detects prose fences with list-marker info strings', () => {
+    expect(isLikelyProseFence('- Notes', ['first point', 'second point'].join('\n'))).toBe(true)
+  })
+})
 
 describe('isLikelyProseCodeBlock', () => {
   it('detects prose that Streamdown mislabels as an unknown language', () => {

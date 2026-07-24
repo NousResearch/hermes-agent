@@ -4337,6 +4337,7 @@ class AIAgent:
                 proxy=_proxy,
                 mounts=_mounts or None,
                 verify=verify,
+                trust_env=False,
             )
         except Exception:
             return None

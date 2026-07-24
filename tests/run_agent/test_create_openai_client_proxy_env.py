@@ -232,3 +232,31 @@ def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monk
         "NO_PROXY host must not route through HTTPProxy; pools were %r" % (pool_types,)
     )
     http_client.close()
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_ignores_ipv6_no_proxy_entries(mock_openai, monkeypatch):
+    """httpx 0.28 URLPattern rejects bare IPv6/CIDR NO_PROXY entries.
+
+    Hermes resolves env proxy policy before constructing httpx.Client, so the
+    explicit keepalive client must not let httpx re-read NO_PROXY via
+    trust_env=True.
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1,fe80::/10,64:ff9b::/96")
+
+    agent = _make_agent()
+    kwargs = {
+        "api_key": "***",
+        "base_url": "https://api.openai.com/v1",
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    http_client = _extract_http_client(mock_openai.call_args.kwargs)
+    assert isinstance(http_client, httpx.Client)
+    assert http_client.trust_env is False
+    http_client.close()

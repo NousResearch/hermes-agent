@@ -7,11 +7,13 @@ proved gone. Terminal states are immutable.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
 import threading
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,17 +22,48 @@ from hermes_time import now as _hermes_now
 from cron.redaction import redact_credential_text
 
 EXECUTIONS_FILE = get_hermes_home().resolve() / "cron" / "executions.db"
+_IMPORT_EXECUTIONS_FILE = EXECUTIONS_FILE
+_execution_store_override: ContextVar[Optional[Path]] = ContextVar(
+    "execution_store_override",
+    default=None,
+)
 MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+def _current_executions_file() -> Path:
+    """Return the durable execution ledger for the active profile context."""
+    override = _execution_store_override.get()
+    if override is not None:
+        return override
+    if EXECUTIONS_FILE != _IMPORT_EXECUTIONS_FILE:
+        return EXECUTIONS_FILE
+    home = get_hermes_home().resolve()
+    if home == _IMPORT_EXECUTIONS_FILE.parent.parent:
+        return EXECUTIONS_FILE
+    return home / "cron" / "executions.db"
+
+
+@contextlib.contextmanager
+def use_execution_store(home: str | Path):
+    """Route the durable execution ledger to one profile without global mutation."""
+    token = _execution_store_override.set(
+        Path(home).expanduser().resolve() / "cron" / "executions.db"
+    )
+    try:
+        yield
+    finally:
+        _execution_store_override.reset(token)
+
+
 def _connect() -> sqlite3.Connection:
     from hermes_state import apply_wal_with_fallback
 
-    EXECUTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+    executions_file = _current_executions_file()
+    executions_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(executions_file, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
     apply_wal_with_fallback(conn, db_label="cron/executions.db")

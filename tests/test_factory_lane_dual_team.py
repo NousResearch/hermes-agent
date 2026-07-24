@@ -311,14 +311,19 @@ def test_team_status_is_runtime_derived_and_ignores_direct_execution_as_recurren
         check=True,
     )
 
-    monkeypatch.setattr(module, "_load_cron_jobs_by_id", lambda: {
-        "job-her": {"id": "job-her", "next_run_at": "2026-07-23T15:00:00+02:00"},
-        "job-sca": {"id": "job-sca", "next_run_at": "2026-07-23T15:05:00+02:00"},
-    })
-    monkeypatch.setattr(module, "_load_latest_cron_executions", lambda _job_ids: {
-        "job-her": {"id": "manual", "job_id": "job-her", "source": "direct", "status": "completed", "claimed_at": "2026-07-23T14:10:00Z"},
-        "job-sca": {"id": "builtin", "job_id": "job-sca", "source": "builtin", "status": "completed", "claimed_at": "2026-07-23T14:10:00Z"},
-    })
+    def load_profile_status(_profile, job_id):
+        jobs = {
+            "job-her": {"id": "job-her", "next_run_at": "2026-07-23T15:00:00+02:00"},
+            "job-sca": {"id": "job-sca", "next_run_at": "2026-07-23T15:05:00+02:00"},
+        }
+        latest = {
+            "job-her": {"id": "manual", "job_id": "job-her", "source": "direct", "status": "completed", "claimed_at": "2026-07-23T14:10:00Z"},
+            "job-sca": {"id": "builtin", "job_id": "job-sca", "source": "builtin", "status": "completed", "claimed_at": "2026-07-23T14:10:00Z"},
+        }
+        builtin = {job_id: latest[job_id]} if latest[job_id]["source"] == "builtin" else {}
+        return jobs, {job_id: latest[job_id]}, builtin
+
+    monkeypatch.setattr(module, "_load_profile_cron_status", load_profile_status)
 
     status = module.build_team_status(
         module._safe_registry_root(str(registry)),
@@ -335,6 +340,47 @@ def test_team_status_is_runtime_derived_and_ignores_direct_execution_as_recurren
     assert status["teams"]["HER"]["heartbeat"] is not None
     assert status["teams"]["HER"]["gate"]["freshness"]["verdict"] == "current"
     assert "conversation" not in status["teams"]["HER"]
+
+
+def test_team_status_reads_jobs_and_executions_from_each_configured_profile(tmp_path, monkeypatch):
+    """HER/SCA status must not read both cron stores from the caller's profile."""
+    from cron import executions, jobs
+    from cron.executions import use_execution_store
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    module = load_factory_lane()
+    registry = tmp_path / "registry"
+    config = write_team_config(tmp_path / "teams.json")
+    default_home = tmp_path / "hermes"
+    sca_home = default_home / "profiles" / "hermes-immo"
+    default_home.mkdir(parents=True)
+    sca_home.mkdir(parents=True)
+
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    for home, job_id in ((default_home, "job-her"), (sca_home, "job-sca")):
+        token = set_hermes_home_override(home)
+        try:
+            with jobs.use_cron_store(home), use_execution_store(home):
+                job = jobs.create_job("status probe", "every 1h", deliver="local")
+                job["id"] = job_id
+                jobs.save_jobs([job])
+                execution = executions.create_execution(job_id, source="builtin")
+                executions.finish_execution(execution["id"], success=True)
+        finally:
+            reset_hermes_home_override(token)
+
+    status = module.build_team_status(
+        module._safe_registry_root(str(registry)),
+        module.load_team_config(str(config)),
+    )
+
+    assert status["teams"]["HER"]["next_run_at"] is not None
+    assert status["teams"]["HER"]["last_builtin_execution"]["job_id"] == "job-her"
+    assert status["teams"]["SCA"]["next_run_at"] is not None
+    assert status["teams"]["SCA"]["last_builtin_execution"]["job_id"] == "job-sca"
 
 
 def test_team_status_projects_latest_execution_without_raw_error(monkeypatch, tmp_path):

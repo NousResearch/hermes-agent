@@ -1347,6 +1347,33 @@ def _load_latest_builtin_cron_executions(job_ids):
         return {}
 
 
+def _load_profile_cron_status(profile, job_id):
+    """Read one configured profile's cron evidence without crossing stores."""
+    try:
+        from cron.executions import use_execution_store
+        from cron.jobs import use_cron_store
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = get_profile_dir(profile)
+        if not home.is_dir():
+            return {}, {}, {}
+        token = set_hermes_home_override(home)
+        try:
+            with use_cron_store(home), use_execution_store(home):
+                jobs = _load_cron_jobs_by_id()
+                latest = _load_latest_cron_executions([job_id])
+                builtin = _load_latest_builtin_cron_executions([job_id])
+        finally:
+            reset_hermes_home_override(token)
+        for record_job_id, record in latest.items():
+            if record.get("source") == "builtin":
+                builtin.setdefault(record_job_id, record)
+        return jobs, latest, builtin
+    except Exception:
+        return {}, {}, {}
+
+
 def _execution_after_gateway_start(record, gateway_started_at):
     gateway_started = _parse_handoff_timestamp(gateway_started_at)
     if not record or gateway_started is None:
@@ -1379,20 +1406,16 @@ def _project_execution_status(record):
 
 def build_team_status(root, config):
     _safe_subdir(root, "locks")
-    jobs = _load_cron_jobs_by_id()
-    ids = [spec["job_id"] for spec in config["teams"].values()]
-    latest, builtin = _load_latest_cron_executions(ids), _load_latest_builtin_cron_executions(ids)
-    for job_id, record in latest.items():
-        if record.get("source") == "builtin":
-            builtin.setdefault(job_id, record)
     teams = {}
     for team, spec in config["teams"].items():
         claim = _find_team_claim(root, team)
         owner = claim[1] if claim else None
-        job_id, job = spec["job_id"], jobs.get(spec["job_id"])
+        profile, job_id = spec["profiles"][0], spec["job_id"]
+        jobs, latest, builtin = _load_profile_cron_status(profile, job_id)
+        job = jobs.get(job_id)
         teams[team] = {
             "team": team,
-            "profile": owner.get("profile") if owner else spec["profiles"][0],
+            "profile": owner.get("profile") if owner else profile,
             "lane": claim[0] if claim else None,
             "worktree": owner.get("worktree") if owner else None,
             "runtime_status_source": "registry" if owner else "unclaimed",

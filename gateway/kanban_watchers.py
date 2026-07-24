@@ -1769,7 +1769,23 @@ class GatewayKanbanWatchersMixin:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
+        halt_file = os.environ.get("HERMES_HALT_FILE", "").strip()
+        halt_active = False
         while self._running:
+            if halt_file and Path(halt_file).exists():
+                if not halt_active:
+                    logger.warning(
+                        "kanban dispatcher paused: HALT file exists (%s)", halt_file
+                    )
+                halt_active = True
+                await asyncio.sleep(min(1.0, interval))
+                continue
+            if halt_active:
+                logger.info(
+                    "kanban dispatcher resumed: HALT file removed (%s)", halt_file
+                )
+                halt_active = False
+
             try:
                 # Reap zombie children before per-board work so a board DB
                 # failure cannot block cleanup of unrelated workers.

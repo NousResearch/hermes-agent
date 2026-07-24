@@ -20,8 +20,10 @@ selected via the `cron.provider` config key (empty = built-in).
 from __future__ import annotations
 
 import inspect
+import os
 import threading
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail
@@ -578,19 +580,35 @@ class InProcessCronScheduler(CronScheduler):
         # fixed, reclamation ran) the next tick succeeds and the backoff
         # resets, so the scheduler self-heals without a gateway restart.
         consecutive_failures = 0
+        # profile-b carried patch (D40, 2026-07-24): HERMES_HALT_FILE pauses the
+        # ticker without stopping the gateway.
+        halt_file = os.environ.get("HERMES_HALT_FILE", "").strip()
+        halt_active = False
         while not stop_event.is_set():
             ok = False
             try:
-                if can_dispatch is not None and not can_dispatch():
-                    logger.debug("Cron dispatch paused while gateway drains existing work")
+                if halt_file and Path(halt_file).exists():
+                    if not halt_active:
+                        logger.warning(
+                            "Cron scheduler paused: HALT file exists (%s)", halt_file
+                        )
+                    halt_active = True
                 else:
-                    cron_tick(
-                        verbose=False,
-                        adapters=adapters,
-                        loop=loop,
-                        sync=False,
-                        can_dispatch=can_dispatch,
-                    )
+                    if halt_active:
+                        logger.info(
+                            "Cron scheduler resumed: HALT file removed (%s)", halt_file
+                        )
+                        halt_active = False
+                    if can_dispatch is not None and not can_dispatch():
+                        logger.debug("Cron dispatch paused while gateway drains existing work")
+                    else:
+                        cron_tick(
+                            verbose=False,
+                            adapters=adapters,
+                            loop=loop,
+                            sync=False,
+                            can_dispatch=can_dispatch,
+                        )
                 ok = True
             except BaseException as e:
                 # Catch BaseException (not just Exception) so a SystemExit from
@@ -674,13 +692,28 @@ class InProcessCronScheduler(CronScheduler):
                 reset_hermes_home_override(home_token)
 
         consecutive_failures = 0
+        # profile-b carried patch (D40): HALT file gates the multiplex path too —
+        # a gate that only covers the legacy loop is a silent no-op here.
+        halt_file = os.environ.get("HERMES_HALT_FILE", "").strip()
+        halt_active = False
         while not stop_event.is_set():
             ok = False
             _tick_error = None
             try:
-                if can_dispatch is not None and not can_dispatch():
+                if halt_file and Path(halt_file).exists():
+                    if not halt_active:
+                        logger.warning(
+                            "Cron scheduler paused: HALT file exists (%s)", halt_file
+                        )
+                    halt_active = True
+                elif can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
+                    if halt_active:
+                        logger.info(
+                            "Cron scheduler resumed: HALT file removed (%s)", halt_file
+                        )
+                        halt_active = False
                     for entry in profile_homes:
                         home = entry[1] if isinstance(entry, tuple) else entry
                         home_token = set_hermes_home_override(str(home))

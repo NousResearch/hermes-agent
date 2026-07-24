@@ -1,0 +1,24 @@
+name: ws-server-platform
+label: WebSocket Server
+kind: platform
+version: 1.0.0
+description: >
+  WebSocket server gateway adapter for Hermes Agent.
+  Listens for incoming WebSocket connections from local or intranet
+  frontend clients (e.g. hermes-webui), providing full agent
+  capabilities including terminal and code execution.
+author: XuanLingZi
+requires_env:
+  - name: WS_SERVER_API_KEY
+    description: "API key for WebSocket authentication"
+    prompt: "WS Server API Key"
+    password: true
+optional_env:
+  - name: WS_SERVER_HOST
+    description: "Bind address (default: 127.0.0.1)"
+    prompt: "WS Server bind address"
+    default: "127.0.0.1"
+  - name: WS_SERVER_PORT
+    description: "Listen port (default: 8765)"
+    prompt: "WS Server port"
+    default: "8765"

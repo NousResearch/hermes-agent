@@ -46,3 +46,7 @@ optional_env:
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TEAMS_FETCH_REPLY_CONTEXT
+    description: "Fetch uncached replied-to channel messages from Graph (requires ChannelMessage.Read.Group or ChannelMessage.Read.All)"
+    prompt: "Fetch uncached reply context? (true/false)"
+    password: false

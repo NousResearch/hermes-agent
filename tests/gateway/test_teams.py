@@ -763,6 +763,123 @@ class TestTeamsMessageHandling:
         assert event.reply_to_text == "New-thread cron context"
 
     @pytest.mark.anyio
+    async def test_cached_cron_context_skips_graph_fallback(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            fetch_reply_context=True,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_parent_message_text = AsyncMock(return_value="Graph body")
+        monkeypatch.setattr(
+            TeamsAdapter,
+            "_cron_reply_context",
+            staticmethod(lambda _conversation_id, _thread_id: {
+                "thread_id": "cron-root-message-1",
+                "content": "Cached cron body",
+            }),
+        )
+
+        activity = self._make_activity(
+            conversation_type="channel",
+            activity_id="reply-message-1",
+        )
+        activity.reply_to_id = "cron-root-message-1"
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.reply_to_text == "Cached cron body"
+        adapter._fetch_parent_message_text.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_channel_reply_fetches_uncached_parent_from_graph(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            fetch_reply_context=True,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        graph_client = SimpleNamespace(get_json=AsyncMock(return_value={
+            "id": "root-message-1",
+            "body": {
+                "contentType": "html",
+                "content": (
+                    "<p><strong>TaskOps Morning Pack — 2/2 — Decisions Needed</strong></p>"
+                    "<ul><li><strong>Approve</strong> item one.</li></ul>"
+                    "<script>discard me</script>"
+                ),
+            },
+        }))
+        adapter._reply_context_graph_client = graph_client
+        monkeypatch.setattr(
+            TeamsAdapter,
+            "_cron_reply_context",
+            staticmethod(lambda _conversation_id, _thread_id: None),
+        )
+
+        activity = self._make_activity(
+            conversation_id="19:channel@thread.tacv2;messageid=root-message-1",
+            conversation_type="channel",
+            activity_id="reply-message-1",
+        )
+        activity.reply_to_id = "root-message-1"
+        activity.channel_data = {
+            "team": {"id": "team-1"},
+            "channel": {"id": "19:channel@thread.tacv2"},
+        }
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.reply_to_text == (
+            "TaskOps Morning Pack — 2/2 — Decisions Needed\n- Approve item one."
+        )
+        graph_client.get_json.assert_awaited_once_with(
+            "/teams/team-1/channels/19%3Achannel%40thread.tacv2/messages/root-message-1"
+        )
+
+    @pytest.mark.anyio
+    async def test_channel_reply_continues_when_graph_fallback_fails(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id",
+            client_secret="secret",
+            tenant_id="tenant",
+            fetch_reply_context=True,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        adapter._reply_context_graph_client = SimpleNamespace(
+            get_json=AsyncMock(side_effect=RuntimeError("Graph unavailable")),
+        )
+        monkeypatch.setattr(
+            TeamsAdapter,
+            "_cron_reply_context",
+            staticmethod(lambda _conversation_id, _thread_id: None),
+        )
+
+        activity = self._make_activity(
+            conversation_id="19:channel@thread.tacv2",
+            conversation_type="channel",
+            activity_id="reply-message-1",
+        )
+        activity.reply_to_id = "root-message-1"
+        activity.channel_data = {
+            "team": {"id": "team-1"},
+            "channel": {"id": "19:channel@thread.tacv2"},
+        }
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.reply_to_message_id == "root-message-1"
+        assert event.reply_to_text is None
+
+    @pytest.mark.anyio
     async def test_user_id_uses_aad_object_id(self):
         adapter = TeamsAdapter(_make_config(
             client_id="bot-id", client_secret="secret", tenant_id="tenant",

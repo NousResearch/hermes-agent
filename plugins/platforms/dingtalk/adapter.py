@@ -483,6 +483,21 @@ class DingTalkAdapter(BasePlatformAdapter):
         candidates.discard("")
         return bool(candidates & self._allowed_users)
 
+    def _is_source_authorized_by_gateway(self, source) -> bool:
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if not callable(auth_fn):
+            return True
+        try:
+            return bool(auth_fn(source))
+        except Exception:
+            logger.debug(
+                "[%s] Gateway auth check failed before DingTalk side effects",
+                self.name,
+                exc_info=True,
+            )
+            return False
+
     def _message_mentions_bot(self, message: "ChatbotMessage") -> bool:
         """True if the bot was @-mentioned in a group message.
 
@@ -632,11 +647,21 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
             return
 
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=getattr(message, "conversation_title", None),
+            chat_type=chat_type,
+            user_id=sender_id,
+            user_name=sender_nick,
+            user_id_alt=sender_staff_id if sender_staff_id else None,
+        )
+        source_authorized = self._is_source_authorized_by_gateway(source)
+
         # Stash the incoming message keyed by chat_id so concurrent
         # conversations don't clobber each other's context.  Also reset
         # the per-chat "Done emoji fired" marker so a new inbound message
         # gets its own Thinking→Done cycle.
-        if chat_id:
+        if source_authorized and chat_id:
             self._message_contexts[chat_id] = message
             self._done_emoji_fired.discard(chat_id)
 
@@ -645,7 +670,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         session_webhook_expired_time = (
             getattr(message, "session_webhook_expired_time", 0) or 0
         )
-        if session_webhook and chat_id and _DINGTALK_WEBHOOK_RE.match(session_webhook):
+        if (
+            source_authorized
+            and session_webhook
+            and chat_id
+            and _DINGTALK_WEBHOOK_RE.match(session_webhook)
+        ):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
                 try:
                     self._session_webhooks.pop(next(iter(self._session_webhooks)))
@@ -657,7 +687,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
         # Resolve media download codes to URLs so vision tools can use them
-        await self._resolve_media_codes(message)
+        if source_authorized:
+            await self._resolve_media_codes(message)
 
         # Extract text content
         text = self._extract_text(message)
@@ -668,15 +699,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             logger.debug("[%s] Empty message, skipping", self.name)
             return
-
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=getattr(message, "conversation_title", None),
-            chat_type=chat_type,
-            user_id=sender_id,
-            user_name=sender_nick,
-            user_id_alt=sender_staff_id if sender_staff_id else None,
-        )
 
         # Parse timestamp
         create_at = getattr(message, "create_at", None)

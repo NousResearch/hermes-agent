@@ -207,10 +207,8 @@ class TestDeepSeekAnthropicPreservesThinking:
         assert _is_deepseek_anthropic_endpoint("https://api.deepseek.com/anthropic") is True
         assert _is_deepseek_anthropic_endpoint("https://api.deepseek.com/anthropic/v1") is True
 
-    def test_non_deepseek_third_party_still_strips_all_thinking(self) -> None:
-        """MiniMax and other third-party Anthropic endpoints must keep the
-        generic strip-all behaviour (they reject unsigned blocks outright).
-        """
+    def test_azure_third_party_still_strips_all_thinking(self) -> None:
+        """Azure must not inherit the DeepSeek/MiniMax unsigned replay policy."""
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
@@ -229,7 +227,8 @@ class TestDeepSeekAnthropicPreservesThinking:
             {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
         ]
         _system, converted = convert_messages_to_anthropic(
-            messages, base_url="https://api.minimax.io/anthropic"
+            messages,
+            base_url="https://example.services.ai.azure.com/anthropic",
         )
         assistant_msg = next(m for m in converted if m["role"] == "assistant")
         thinking_blocks = [
@@ -237,6 +236,6 @@ class TestDeepSeekAnthropicPreservesThinking:
             if isinstance(b, dict) and b.get("type") == "thinking"
         ]
         assert thinking_blocks == [], (
-            "Non-DeepSeek third-party endpoints must keep the generic "
-            "strip-all-thinking behaviour — unsigned blocks get rejected."
+            "Azure must keep the generic strip-all-thinking behavior instead "
+            "of being classified as MiniMax merely because both use Bearer auth."
         )

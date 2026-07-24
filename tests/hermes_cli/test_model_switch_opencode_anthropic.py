@@ -251,6 +251,47 @@ class TestAgentSwitchModelDefenseInDepth:
             "to build_anthropic_client"
         )
 
+    @pytest.mark.parametrize("model", ["qwen3.7-plus", "opencode-go/qwen3.7-max"])
+    def test_agent_switch_model_infers_messages_api_for_go_qwen(self, model):
+        """Direct runtime callers must infer OpenCode's model-specific transport."""
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.model = "glm-5"
+        agent.provider = "opencode-go"
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent.api_key = "sk-opencode-fake"
+        agent.api_mode = "chat_completions"
+        agent._client_kwargs = {}
+
+        captured = {}
+
+        class _Sentinel(Exception):
+            pass
+
+        def _raise_after_capture(api_key, base_url, **kwargs):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            raise _Sentinel("transport verified")
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            side_effect=_raise_after_capture,
+        ), patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=""), patch(
+            "agent.anthropic_adapter._is_oauth_token", return_value=False
+        ):
+            with pytest.raises(_Sentinel, match="transport verified"):
+                agent.switch_model(
+                    new_model=model,
+                    new_provider="opencode-go",
+                    api_key="sk-opencode-fake",
+                    base_url="https://opencode.ai/zen/go/v1",
+                )
+
+        assert captured == {
+            "api_key": "sk-opencode-fake",
+            "base_url": "https://opencode.ai/zen/go",
+        }
 
 
 class TestStaleConfigDefaultDoesNotWedgeResolver:

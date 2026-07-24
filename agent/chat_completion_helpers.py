@@ -1151,6 +1151,19 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             "promptId": str(uuid.uuid4()),
         }
 
+    # Vertex AI's OpenAI-compatible endpoint requires a publisher-qualified
+    # Gemini model ID (google/gemini-*). Keep this request-scoped and tightly
+    # gated to the native Vertex OAuth runtime so custom/third-party
+    # OpenAI-compatible URLs that happen to proxy Gemini are not rewritten.
+    _request_model = agent.model
+    if (agent.provider or "").strip().lower() == "vertex":
+        try:
+            from agent.vertex_adapter import normalize_vertex_model_for_request
+
+            _request_model = normalize_vertex_model_for_request(_request_model, agent.base_url)
+        except Exception:
+            _request_model = agent.model
+
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
     # found, delegate fully; otherwise fall through to the legacy flag path.
@@ -1171,7 +1184,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
         return _ct.build_kwargs(
-            model=agent.model,
+            model=_request_model,
             messages=api_messages,
             tools=tools_for_api,
             base_url=agent.base_url,
@@ -1203,7 +1216,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
     return _ct.build_kwargs(
-        model=agent.model,
+        model=_request_model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
         base_url=agent.base_url,
@@ -1214,7 +1227,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
-        model_lower=(agent.model or "").lower(),
+        model_lower=(_request_model or "").lower(),
         is_openrouter=_is_or,
         is_nous=_is_nous,
         is_qwen_portal=_is_qwen,

@@ -79,6 +79,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
+    "openai",
     "openai-codex",
 })
 
@@ -409,12 +410,24 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return _dots_to_hyphens(name)
         return name
 
-    # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
+    # --- Anthropic: strip matching provider prefix; only Claude marketing IDs
+    #     use dots as version separators (claude-sonnet-4.6 -> ...-4-6).
+    #     Non-Claude model IDs on Anthropic-compatible routes (MiMo, GLM, Qwen)
+    #     use semantic dots and must pass through unchanged.
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
+        if not bare.lower().startswith("claude-"):
+            return bare
         return _dots_to_hyphens(bare)
+
+    # --- Vertex AI OpenAI-compatible endpoint: Gemini/Gemma models require a
+    #     publisher-qualified ID on Google's official endpoint. At this stage
+    #     the endpoint URL is not available, so only repair matching provider
+    #     aliases and defer publisher qualification to vertex_adapter.
+    if provider == "vertex":
+        return _strip_matching_provider_prefix(name, provider)
 
     # --- Copilot / Copilot ACP: delegate to the Copilot-specific
     #     normalizer.  It knows about the alias table (vendor-prefix

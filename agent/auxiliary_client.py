@@ -5437,6 +5437,12 @@ def resolve_provider_client(
         default_model = "google/gemini-3-flash-preview"
         final_model = _normalize_resolved_model(model or default_model, provider)
         try:
+            from agent.vertex_adapter import normalize_vertex_model_for_request
+
+            final_model = normalize_vertex_model_for_request(final_model, base_url)
+        except Exception:
+            pass
+        try:
             from openai import OpenAI
             client = OpenAI(api_key=token, base_url=base_url)
         except Exception as exc:

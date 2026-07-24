@@ -51,6 +51,48 @@ class TestAnthropicDotToHyphen:
         result = normalize_model_for_provider("anthropic/claude-sonnet-4.6", "anthropic")
         assert result == "claude-sonnet-4-6"
 
+    @pytest.mark.parametrize("model", [
+        "mimo-v2.5-pro",
+        "glm-5.1",
+        "qwen3.5-plus",
+    ])
+    def test_anthropic_does_not_hyphenate_non_claude_models(self, model):
+        """Only Claude marketing IDs use dots-as-version separators on Anthropic.
+
+        Some Anthropic-compatible or routed endpoints can expose non-Claude
+        names.  Those IDs are already authoritative and must not have semantic
+        dots rewritten to hyphens.
+        """
+        assert normalize_model_for_provider(model, "anthropic") == model
+
+
+class TestNativeOpenAIModelNormalization:
+    """Native OpenAI does not accept aggregator-style openai/<model> slugs."""
+
+    def test_native_openai_strips_matching_openai_prefix(self):
+        assert normalize_model_for_provider("openai/gpt-4o-mini", "openai") == "gpt-4o-mini"
+
+    def test_native_openai_preserves_other_publisher_slugs(self):
+        assert (
+            normalize_model_for_provider("anthropic/claude-sonnet-4.6", "openai")
+            == "anthropic/claude-sonnet-4.6"
+        )
+
+
+class TestVertexModelNormalization:
+    """Vertex OpenAI-compatible endpoint requires publisher/model for Gemini."""
+
+    @pytest.mark.parametrize("model,expected", [
+        ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
+        ("Gemini-3.5-Flash", "Gemini-3.5-Flash"),
+        ("google/gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+        ("vertex/gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
+        ("google-vertex/gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
+        ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4"),
+    ])
+    def test_vertex_strips_only_matching_provider_aliases(self, model, expected):
+        assert normalize_model_for_provider(model, "vertex") == expected
+
 
 # ── OpenCode Zen regression ────────────────────────────────────────────
 

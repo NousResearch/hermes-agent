@@ -415,6 +415,7 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -424,7 +425,14 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    # Signal's adapter builds source.chat_id as f"group:{id}"
+                    # while SIGNAL_GROUP_ALLOWED_USERS stores the bare group
+                    # IDs (signal.py's own filter compares unprefixed). Strip
+                    # the prefix so the same env value works in both checks.
+                    chat_id_norm = source.chat_id
+                    if chat_id_norm.startswith("group:"):
+                        chat_id_norm = chat_id_norm[len("group:"):]
+                    if "*" in allowed_group_ids or chat_id_norm in allowed_group_ids:
                         return True
 
             # Fallback: also check adapter-level config (config.yaml)

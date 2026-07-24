@@ -184,19 +184,37 @@ class DeliveryTarget:
         if target_lower == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
-        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs
+        # Check for platform:chat_id or platform:chat_id:thread_id format.
+        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs.
         if ":" in target_stripped:
-            parts = target_stripped.split(":", 2)
-            platform_str = parts[0].lower()  # Platform names are case-insensitive
-            chat_id = parts[1] if len(parts) > 1 else None
-            thread_id = parts[2] if len(parts) > 2 else None
+            platform_part, remainder = target_stripped.split(":", 1)
+            platform_str = platform_part.lower()  # Platform names are case-insensitive
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
+
+            # Signal group chat IDs are themselves prefixed with ``group:`` and the
+            # payload is standard base64, so the first colon AFTER that payload is an
+            # optional thread/topic delimiter rather than part of the chat id.
+            if platform == Platform.SIGNAL and remainder.startswith("group:"):
+                signal_group_payload = remainder[len("group:"):]
+                encoded_group_id, sep, thread_id = signal_group_payload.partition(":")
+                return cls(
+                    platform=platform,
+                    chat_id=f"group:{encoded_group_id}" if encoded_group_id else None,
+                    thread_id=thread_id or None,
+                    is_explicit=True,
+                )
+
+            chat_id, sep, thread_id = remainder.partition(":")
+            return cls(
+                platform=platform,
+                chat_id=chat_id or None,
+                thread_id=thread_id or None,
+                is_explicit=True,
+            )
         
         # Just a platform name (use home channel)
         try:

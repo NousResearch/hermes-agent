@@ -23,6 +23,7 @@ SKILL_DIR = (
 )
 SKILL_MD = SKILL_DIR / "SKILL.md"
 CAPTURE = SKILL_DIR / "scripts" / "har_capture.py"
+CAPTURE_CDP = SKILL_DIR / "scripts" / "har_capture_cdp.py"
 DERIVE = SKILL_DIR / "scripts" / "har_to_client.py"
 
 
@@ -45,6 +46,7 @@ def _load_module(path: Path, name: str):
 def test_skill_files_exist():
     assert SKILL_MD.is_file()
     assert CAPTURE.is_file()
+    assert CAPTURE_CDP.is_file()
     assert DERIVE.is_file()
 
 
@@ -157,3 +159,22 @@ def test_capture_actions_parse_ok():
     compile(src, str(CAPTURE), "exec")
     assert "def run_action(" in src
     assert 'record_har_content="embed"' in src
+
+
+def test_cdp_capture_is_valid_and_attaches_not_launches():
+    # Covers the CDP pathway (cloud backends / /browser connect). Syntax-check
+    # without importing playwright, and assert it attaches (connect_over_cdp)
+    # and does NOT close a browser it doesn't own.
+    src = CAPTURE_CDP.read_text(encoding="utf-8")
+    compile(src, str(CAPTURE_CDP), "exec")
+    assert "connect_over_cdp(" in src
+    assert 'page.on("request"' in src and 'page.on("response"' in src
+    # must not tear down a browser it merely attached to
+    assert "browser.close()" not in src
+
+
+def test_skill_documents_all_browser_pathways(skill_text: str):
+    # The skill must route every Hermes browser backend to the right capturer.
+    for token in ("Browserbase", "Browser-Use", "Firecrawl", "browser connect",
+                  "har_capture_cdp.py", "connect_over_cdp"):
+        assert token in skill_text, f"pathway coverage missing: {token}"

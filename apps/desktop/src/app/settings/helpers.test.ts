@@ -87,6 +87,9 @@ describe('settings helpers', () => {
       expect(schemaKeyToFieldCopyKey('updates.non_interactive_local_changes')).toBe(
         'updates.nonInteractiveLocalChanges'
       )
+      expect(schemaKeyToFieldCopyKey('updates.committed_local_changes')).toBe(
+        'updates.committedLocalChanges'
+      )
     })
 
     it('looks up camelCase field copy by schema key with legacy fallback', () => {

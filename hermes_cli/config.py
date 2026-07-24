@@ -3343,6 +3343,12 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # What `hermes update` does when the update branch contains committed
+        # local patches and has diverged from origin. "refuse" is the safe
+        # default. "rebase" first creates a durable backup ref, then rebases a
+        # linear patch stack while dropping upstream-equivalent/empty commits;
+        # genuine conflicts abort and restore the original HEAD.
+        "committed_local_changes": "refuse",
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

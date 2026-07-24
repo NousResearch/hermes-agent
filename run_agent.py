@@ -4377,6 +4377,29 @@ class AIAgent:
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        # Re-resolve credentials for OAuth providers BEFORE rebuilding.
+        #
+        # Why: ``self._client_kwargs["api_key"]`` is populated once at startup
+        # from whatever the resolver returned at that moment. For OAuth
+        # providers (minimax-oauth, xai-oauth, etc.) the live bearer lives in
+        # a credential pool / singleton resolver — NOT in ``_client_kwargs``.
+        # If the bearer is rotated, refreshed, or the resolver returns a
+        # different value than what's cached, a rebuild with the stale
+        # kwargs hits:
+        #
+        #     openai.OpenAIError: The api_key client option must be set
+        #     either by passing api_key to the client or by setting the
+        #     OPENAI_API_KEY environment variable
+        #
+        # The stale-stream detector kills stuck HTTP connections and
+        # triggers this rebuild — see the agent.log signature:
+        #     Stream stale for 300s ... Killing connection
+        #     Failed to rebuild shared OpenAI client (stale_stream_pool_cleanup) ...
+        #         The api_key client option must be set
+        # followed by the user-visible "Interrupted during API call" for the
+        # remainder of the session. A successful re-resolve + rebuild keeps
+        # the next turn alive.
+        self._refresh_kwargs_for_oauth_provider()
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
@@ -4392,6 +4415,45 @@ class AIAgent:
             self.client = new_client
         self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
         return True
+
+    def _refresh_kwargs_for_oauth_provider(self) -> None:
+        """Re-populate ``self._client_kwargs`` with a fresh bearer when the
+        active provider is OAuth-based. Best-effort: any resolver failure
+        is logged at debug and the existing kwargs are left intact (better
+        a stale-but-valid token than no client at all).
+        """
+        # provider -> dotted resolver import path. Each resolver is a
+        # callable that takes no args and returns
+        # ``{"api_key": str, "base_url": str}`` (or raises).
+        oauth_resolvers = {
+            "minimax-oauth": "hermes_cli.auth.resolve_minimax_oauth_runtime_credentials",
+            "xai-oauth": "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        }
+
+        import_path = oauth_resolvers.get(self.provider)
+        if import_path is None:
+            return
+        module_path, attr = import_path.rsplit(".", 1)
+        try:
+            import importlib
+            resolver = getattr(importlib.import_module(module_path), attr)
+            creds = resolver()
+        except Exception as exc:
+            logger.debug(
+                "%s credential re-resolve during client rebuild failed: %s",
+                self.provider, exc,
+            )
+            return
+
+        api_key = (creds or {}).get("api_key")
+        base_url = (creds or {}).get("base_url")
+        if isinstance(api_key, str) and api_key.strip():
+            self._client_kwargs["api_key"] = api_key.strip()
+            if isinstance(base_url, str) and base_url.strip():
+                self._client_kwargs["base_url"] = base_url.strip().rstrip("/")
+        # If the resolver returns nothing usable, leave the existing
+        # kwargs alone — a stale token that worked at startup is still
+        # better than a rebuild that crashes the cleanup thread.
 
     def _ensure_primary_openai_client(self, *, reason: str) -> Any:
         with self._openai_client_lock():

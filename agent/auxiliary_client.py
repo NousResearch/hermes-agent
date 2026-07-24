@@ -2697,6 +2697,39 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_minimax_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an OpenAI client for a MiniMax (MiniMax) OAuth-authenticated session.
+
+    MiniMax's inference endpoint speaks the OpenAI Chat Completions API at
+    ``/v1/chat/completions`` (after the ``/anthropic`` → ``/v1`` rewrite in
+    ``_to_openai_base_url``), so we hand back a vanilla ``OpenAI`` client —
+    no CodexAuxiliaryClient wrapping is required.
+
+    Returns ``(None, None)`` when the user has not authenticated with
+    MiniMax OAuth, or when the resolver returns an empty bearer.
+    """
+    try:
+        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+    except ImportError as exc:
+        logger.debug("Auxiliary MiniMax OAuth resolver import failed: %s", exc)
+        return None, None
+    try:
+        creds = resolve_minimax_oauth_runtime_credentials()
+    except Exception as exc:
+        logger.debug("Auxiliary MiniMax OAuth credential resolution failed: %s", exc)
+        return None, None
+    api_key = str((creds or {}).get("api_key") or "").strip()
+    base_url = str((creds or {}).get("base_url") or "").strip()
+    if not api_key or not base_url:
+        return None, None
+    # The /anthropic path in ``inference_base_url`` needs to be rewritten
+    # to /v1 for the OpenAI SDK; this is the same rewrite the main runtime
+    # applies (see tests/agent/test_minimax_auxiliary_url.py).
+    base_url = _to_openai_base_url(base_url)
+    logger.debug("Auxiliary client: MiniMax OAuth (model=%s, base_url=%s)", model, base_url)
+    return OpenAI(api_key=api_key, base_url=base_url), model
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
@@ -5018,6 +5051,27 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── MiniMax (MiniMax) OAuth (PKCE → OpenAI Chat Completions) ──────
+    # Without this branch, a minimax-oauth main provider falls through to
+    # the ``unhandled auth_type oauth_minimax`` warning below and returns
+    # ``(None, None)`` — silently re-routing every auxiliary task
+    # (compression, vision, session_search, curator) to whatever fallback
+    # the user has configured.  MiniMax-OAuth users would then see
+    # surprise OpenRouter / Nous bills and the agent.log would fill with
+    # ``resolve_provider_client: unhandled auth_type oauth_minimax for
+    # minimax-oauth`` warnings + ``marking openrouter unhealthy`` cycles.
+    if provider == "minimax-oauth":
+        client, default = _build_minimax_oauth_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: minimax-oauth requested but no "
+                "MiniMax OAuth token found (run: hermes model -> minimax-oauth)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         custom_base = ""
@@ -5493,7 +5547,7 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
+    elif pconfig.auth_type in {"oauth_device_code", "oauth_external", "oauth_minimax"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
             return resolve_provider_client("nous", model, async_mode)
@@ -5501,6 +5555,8 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "minimax-oauth":
+            return resolve_provider_client("minimax-oauth", model, async_mode)
         # Other OAuth providers not directly supported
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)

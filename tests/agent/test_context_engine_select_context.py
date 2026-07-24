@@ -89,6 +89,48 @@ def test_none_return_leaves_request_unchanged():
     assert out is REQUEST
 
 
+def test_base_noop_select_context_is_short_circuited_not_called():
+    """Non-implementing engines skip the hook entirely (no call, no copies).
+
+    The built-in ContextCompressor — and any engine that merely inherits the
+    ABC default — must keep the default request path byte-identical AND pay
+    nothing per request. ``hasattr`` alone cannot distinguish "inherits the
+    no-op default" from "implements the hook" because the ABC defines
+    ``select_context`` on every engine; the host therefore identity-checks the
+    bound method against ``ContextEngine.select_context`` and short-circuits
+    WITHOUT calling it or building the shallow reference copies. This pins
+    that: even a base implementation patched to raise is never invoked.
+    """
+    from unittest.mock import patch as _patch
+
+    def _explode(self, request_messages, **kwargs):
+        raise AssertionError("base select_context must not be invoked")
+
+    engine = _MinimalEngine()  # inherits the ABC default
+    agent = _agent_with(engine)
+    logger = MagicMock()
+    with _patch.object(ContextEngine, "select_context", _explode):
+        out = _apply_context_engine_selection(
+            agent, REQUEST, HISTORY, HISTORY[-1], logger=logger
+        )
+    assert out is REQUEST
+    assert not logger.warning.called
+
+
+def test_builtin_compressor_inherits_base_select_context():
+    """The built-in ContextCompressor must NOT implement the new verbs.
+
+    Guards the default-path byte-identity contract: if someone overrides
+    ``select_context`` / ``on_turn_complete`` on ContextCompressor, the host
+    short-circuits no longer skip it and the default request pipeline gains a
+    per-request call — update this pin only together with that decision.
+    """
+    from agent.context_compressor import ContextCompressor
+
+    assert "select_context" not in ContextCompressor.__dict__
+    assert "on_turn_complete" not in ContextCompressor.__dict__
+
+
 def test_missing_hook_leaves_request_unchanged():
     """An engine without select_context (older/stub base) is a no-op."""
     engine = object()  # no select_context attribute

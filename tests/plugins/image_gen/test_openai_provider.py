@@ -80,6 +80,18 @@ class TestAvailability:
         monkeypatch.setenv("OPENAI_API_KEY", "test")
         assert openai_plugin.OpenAIImageGenProvider().is_available() is True
 
+    def test_key_env_falls_back_to_openai_api_key(self, monkeypatch, tmp_path):
+        import yaml
+
+        monkeypatch.setenv("OPENAI_API_KEY", "fallback-key")
+        monkeypatch.delenv("CUSTOM_IMAGE_KEY", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"key_env": "CUSTOM_IMAGE_KEY"}}})
+        )
+
+        assert openai_plugin._resolve_api_key() == "fallback-key"
+        assert openai_plugin.OpenAIImageGenProvider().is_available() is True
+
 
 # ── Model resolution ────────────────────────────────────────────────────────
 
@@ -224,6 +236,51 @@ class TestGenerate:
         assert call_kwargs["size"] == "1536x1024"
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
+
+    def test_key_env_is_passed_to_openai_client_for_generate(self, provider, monkeypatch, tmp_path):
+        import yaml
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("CUSTOM_IMAGE_KEY", "custom-image-key")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"key_env": "CUSTOM_IMAGE_KEY"}}})
+        )
+
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs["api_key"] == "custom-image-key"
+        assert fake_client.images.generate.called
+
+    def test_key_env_is_passed_to_openai_client_for_edit(self, provider, monkeypatch, tmp_path):
+        import yaml
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("CUSTOM_IMAGE_KEY", "custom-image-key")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"key_env": "CUSTOM_IMAGE_KEY"}}})
+        )
+
+        image_path = tmp_path / "source.png"
+        image_path.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat", image_url=str(image_path))
+
+        assert result["success"] is True
+        assert fake_openai.OpenAI.call_args.kwargs["api_key"] == "custom-image-key"
+        assert fake_client.images.edit.called
 
     @pytest.mark.parametrize("tier,expected_quality", [
         ("gpt-image-2-low", "low"),

@@ -90,9 +90,6 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
-HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
-HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
-HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
 
 
 SUMMARY_PREFIX = (
@@ -107,9 +104,7 @@ SUMMARY_PREFIX = (
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -219,8 +214,45 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # stale directive it carried (e.g. "resume exactly from Active Task") survives
 # embedded in the body and keeps hijacking replies. Keep newest-first; entries
 # are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+# NEVER mutate or reorder an existing entry — each one is the exact wire text a
+# shipped build persisted, so editing it silently un-normalizes every summary
+# written by that build generation; prepend only. tests/agent/
+# test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Jul 2026 (#65848 class): identical to the current prefix except it
+    # Pre-#69619: identical to the current prefix except the stale-item
+    # discard clause named all four historical headings (the three
+    # section headers removed by #69619 were still in the template).
+    # Summaries persisted by builds immediately before #69619 carry this
+    # exact text and must remain detectable/strippable on resume.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' / '## Historical In-Progress State' / "
+    "'## Historical Pending User Asks' / "
+    "'## Historical Remaining Work' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it
     # lacked the explicit "tools remain fully active" clause — the strong
     # REFERENCE ONLY framing bled into general tool-use suppression
     # (observed: 7 consecutive narration-only turns immediately after a
@@ -236,9 +268,9 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'## Historical Task Snapshot' / '## Historical In-Progress State' / "
+    "'## Historical Pending User Asks' / "
+    "'## Historical Remaining Work' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -2968,12 +3000,6 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 ## Active State
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
-{HISTORICAL_IN_PROGRESS_HEADING}
-Unknown from deterministic fallback — the latest user ask is recorded once under
-"{HISTORICAL_TASK_HEADING}" above as historical context only. Do NOT treat it as an
-unfulfilled instruction to re-answer; verify current state and continue from the
-protected recent messages after this summary.
-
 ## Blocked
 {_bullets(blockers, limit=5)}
 
@@ -2983,16 +3009,8 @@ None recoverable from deterministic fallback.
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
-{HISTORICAL_PENDING_ASKS_HEADING}
-None recoverable from deterministic fallback. (The latest user ask is preserved once
-under "{HISTORICAL_TASK_HEADING}" as historical context — it is NOT necessarily
-outstanding.)
-
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
-
-{HISTORICAL_REMAINING_WORK_HEADING}
-Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
 
 ## Last Dropped Turns
 {_bullets(last_dropped_turns, limit=8)}
@@ -3304,9 +3322,6 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
-{HISTORICAL_IN_PROGRESS_HEADING}
-[Work currently underway — what was being done when compaction fired]
-
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
 
@@ -3316,14 +3331,8 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Resolved Questions
 {_resolved_questions_instructions}
 
-{HISTORICAL_PENDING_ASKS_HEADING}
-{_pending_asks_instructions}
-
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
-
-{HISTORICAL_REMAINING_WORK_HEADING}
-[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]

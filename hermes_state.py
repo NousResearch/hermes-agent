@@ -222,6 +222,13 @@ SCHEMA_VERSION = 23
 #       tool-row-excluded trigram)
 FTS_STORAGE_VERSION = 1
 
+
+def _fts_object_missing(exc: BaseException) -> bool:
+    """True when an FTS probe failure means the table/module is ABSENT
+    (disable search) rather than transiently unavailable (keep it on)."""
+    msg = str(exc).lower()
+    return "no such table" in msg or "no such module" in msg
+
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
 # sanitizer/runtime behavior predictable under adversarial input.
@@ -1067,6 +1074,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    claude_sdk_session_id TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -1647,6 +1655,37 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                # Probe FTS availability with SELECTs (read-only-safe).
+                # Without this, search_messages() sees _fts_enabled=False and
+                # silently returns [] on every read-only handle — a false
+                # empty, not a degrade. Only a MISSING fts object disables
+                # search: a transient error (e.g. "database is locked"
+                # during a checkpoint) must not latch a silent false-empty
+                # for the handle's lifetime — leave enabled and let the
+                # query surface the error visibly.
+                try:
+                    self._conn.execute("SELECT 1 FROM messages_fts LIMIT 1")
+                    self._fts_enabled = True
+                except sqlite3.Error as exc:
+                    self._fts_enabled = not _fts_object_missing(exc)
+                # Same transient-vs-absent rule for the trigram probe. Absence
+                # here has one extra spelling: a build with FTS5 but without
+                # the trigram tokenizer raises "no such tokenizer: trigram"
+                # (see _is_trigram_unavailable_error), which _fts_object_missing
+                # does not cover. A wrongly-kept True costs nothing at query
+                # time — search_messages catches the per-query error and falls
+                # through to LIKE — while a wrongly-latched False pins the LIKE
+                # fallback (ORs tokens, drops NOT/rank) for the handle's life.
+                try:
+                    self._conn.execute(
+                        "SELECT 1 FROM messages_fts_trigram LIMIT 1"
+                    )
+                    self._trigram_available = True
+                except sqlite3.Error as exc:
+                    self._trigram_available = not (
+                        _fts_object_missing(exc)
+                        or self._is_trigram_unavailable_error(exc)
+                    )
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4342,6 +4381,19 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
                 (model_config_json, model, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_claude_sdk_session_id(
+        self, session_id: str, sdk_session_id: Optional[str]
+    ) -> None:
+        """Persist (or clear, with None) the claude-agent-sdk session id used
+        to resume the SDK conversation across gateway restarts and
+        agent-cache eviction (#25267 continuity)."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET claude_sdk_session_id = ? WHERE id = ?",
+                (sdk_session_id, session_id),
             )
         self._execute_write(_do)
 
@@ -7549,9 +7601,12 @@ class SessionDB:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
                         matches = [dict(row) for row in tri_cursor.fetchall()]
                         _trigram_succeeded = True
-                except sqlite3.OperationalError:
+                except sqlite3.OperationalError as exc:
                     # Trigram query failed at runtime — fall through to LIKE.
-                    pass
+                    # A missing tokenizer is permanent: log it once instead of
+                    # silently retrying on every CJK query.
+                    if self._is_trigram_unavailable_error(exc):
+                        self._warn_trigram_unavailable(exc)
                 except sqlite3.DatabaseError as exc:
                     # Same corruption class the main FTS5 MATCH branch
                     # self-heals above: a corrupt trigram shadow table raises

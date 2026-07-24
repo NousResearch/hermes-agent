@@ -772,8 +772,16 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
             except Exception:
                 base_time = now
-        cron = croniter(expr, base_time)
-        next_run = cron.get_next(datetime)
+        # Normalize to naive wall-clock time to prevent DST boundary shifts.
+        # croniter preserves UTC offset across DST transitions, causing
+        # wall-clock hour shifts (#66436). By stripping tzinfo, running
+        # croniter on naive local time, then re-localizing, we get the
+        # correct wall-clock result regardless of DST state.
+        tz = base_time.tzinfo
+        naive_base = base_time.replace(tzinfo=None)
+        cron = croniter(expr, naive_base)
+        naive_next = cron.get_next(datetime)
+        next_run = naive_next.replace(tzinfo=tz)
         return next_run.isoformat()
 
     return None

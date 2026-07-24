@@ -16031,6 +16031,15 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """
     import os as _os
 
+    # Gate on ContextVar so a nested subprocess that inherited
+    # HERMES_KANBAN_* env vars never enters the goal loop (#70809).
+    try:
+        from agent.delegation_context import is_kanban_worker_owner as _goal_owner
+        if not _goal_owner():
+            return
+    except Exception:
+        pass
+
     task_id = (_os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     if not task_id:
         return
@@ -16368,7 +16377,15 @@ def main(
         # first so the final debug trace isn't lost; SIGALRM deadman guards
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
-        if os.environ.get("HERMES_KANBAN_TASK"):
+        # Use the verified ContextVar instead of raw env so a nested
+        # subprocess that inherited HERMES_KANBAN_* env vars never
+        # triggers os._exit(0) on signal (#70809).
+        try:
+            from agent.delegation_context import is_kanban_worker_owner as _sig_owner
+            _is_kanban = _sig_owner()
+        except Exception:
+            _is_kanban = bool(os.environ.get("HERMES_KANBAN_TASK"))
+        if _is_kanban:
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
@@ -16614,7 +16631,16 @@ def main(
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                        # Use the verified ContextVar instead of raw env so
+                        # a nested subprocess with inherited HERMES_KANBAN_*
+                        # env vars doesn't get the rate-limit exit code on
+                        # someone else's task (#70809).
+                        try:
+                            from agent.delegation_context import is_kanban_worker_owner as _exit_owner
+                            _exit_wk = _exit_owner()
+                        except Exception:
+                            _exit_wk = bool(os.environ.get("HERMES_KANBAN_TASK"))
+                        if _exit_wk and result.get(
                                 "failure_reason"
                             ) in ("rate_limit", "billing"):
                                 try:

@@ -269,3 +269,114 @@ def test_text_routes_to_watch_transport_without_contextvar(server, monkeypatch):
     ]
     assert ("message.start", "live-1", None) in routed
     assert ("message.delta", "live-1", {"text": "streamed reply"}) in routed
+
+
+# ── watch-only finalization (#70258) ───────────────────────────────────
+
+
+def test_lazy_watch_child_finalized_on_complete(server, emits, monkeypatch):
+    """A lazy (watch-only) child session with no agent must be finalized
+    when its delegate completes — prevents orphan _sessions entries
+    accumulating after every async delegation."""
+    import threading
+
+    closed_sessions: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, **kw: closed_sessions.append(sid) or True,
+    )
+
+    # Set up a lazy watch session with no agent (never user-interacted).
+    server._sessions["live-1"] = {
+        "session_key": "child-1",
+        "agent": None,
+        "lazy": True,
+        "history_lock": threading.Lock(),
+    }
+
+    _relay(server, "subagent.start", preview="working", child_session_id="child-1")
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+    assert "child-1" in server._active_child_runs
+
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="done")
+
+    # The watch-only session should have been closed.
+    assert "live-1" in closed_sessions, (
+        f"lazy watch session should be finalized on complete, got closed={closed_sessions}"
+    )
+    # Child run is popped from the liveness registry.
+    assert "child-1" not in server._active_child_runs
+
+
+def test_interacted_child_session_not_finalized(server, emits, monkeypatch):
+    """A lazy child session that was user-interacted (agent built) must NOT
+    be finalized on subagent.complete — the user explicitly engaged with it."""
+    import threading
+
+    closed_sessions: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, **kw: closed_sessions.append(sid) or True,
+    )
+
+    # Set up a lazy session that was upgraded: agent is not None.
+    server._sessions["live-1"] = {
+        "session_key": "child-1",
+        "agent": object(),  # user interacted -> agent was built
+        "lazy": True,
+        "history_lock": threading.Lock(),
+    }
+
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="done")
+
+    # The session with an agent must NOT be closed.
+    assert "live-1" not in closed_sessions, (
+        "interacted session should NOT be finalized on complete"
+    )
+
+
+def test_non_lazy_child_session_not_finalized(server, emits, monkeypatch):
+    """A non-lazy session (cold resume that never built its agent) must
+    NOT be finalized on subagent.complete — it is not a watch window."""
+    import threading
+
+    closed_sessions: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, **kw: closed_sessions.append(sid) or True,
+    )
+
+    # Set up a non-lazy session (e.g. a freshly resumed session awaiting
+    # deferred agent build, not a watch window).
+    server._sessions["live-1"] = {
+        "session_key": "child-1",
+        "agent": None,
+        "lazy": False,
+        "history_lock": threading.Lock(),
+    }
+
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="done")
+
+    # The non-lazy session must NOT be closed.
+    assert "live-1" not in closed_sessions, (
+        "non-lazy session should NOT be finalized on complete"
+    )
+
+
+def test_no_live_session_no_finalization(server, emits, monkeypatch):
+    """Finalization is a no-op when no live session exists
+    for the child key — the guard at the top of _mirror_subagent_to_child
+    already handles this case."""
+    closed_sessions: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, **kw: closed_sessions.append(sid) or True,
+    )
+
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="done")
+
+    assert closed_sessions == [], "no session to close"

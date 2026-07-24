@@ -4620,6 +4620,14 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
             _child_mirrors.pop(child_key, None)
+            # Finalize a watch-only child session that was never user-focused.
+            # If the live session is still lazy (no agent built), the user never
+            # engaged with the watch window — close it to prevent orphan live
+            # runtimes accumulating after every async delegation (#70258).
+            if live is not None:
+                _child_session = live[1]
+                if _child_session.get("lazy") and _child_session.get("agent") is None:
+                    _close_session_by_id(live[0], end_reason="delegate_complete")
 
 
 def _agent_cbs(sid: str) -> dict:

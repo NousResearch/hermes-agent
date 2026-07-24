@@ -28,7 +28,7 @@ changes.
 - [x] Create an isolated project-local development environment.
 - [x] Install the minimum development dependencies without changing global
       Python state.
-- [ ] Run focused unit tests for configuration, sessions, model providers, tool
+- [x] Run focused unit tests for configuration, sessions, model providers, tool
       dispatch, memory, skills, and security boundaries.
 - [ ] Fix reproducible failures in coherent, separately committed slices.
 - [ ] Run the full Python test suite and record results.
@@ -36,6 +36,8 @@ changes.
 ## Milestone 2 — CLI and local model path
 
 - [ ] Verify CLI help, diagnostics, setup, and non-interactive entry points.
+  - [x] `hermes --help` and `hermes doctor --help` load with isolated state.
+  - [ ] Run non-mutating diagnostics and setup-path tests.
 - [ ] Verify configuration can target the existing local Ollama service without
       changing the installed Hermes configuration.
 - [ ] Add a repository-local smoke-test configuration or fixture.
@@ -95,3 +97,11 @@ changes.
 - 2026-07-24: Created repository-local `.venv` with repository-local uv 0.11.32
   and installed editable `.[dev]` dependencies. Confirmed pytest 9.0.2 can
   import the checkout. No global Python packages or configuration changed.
+- 2026-07-24: Focused Python core matrix passed 660 tests covering session
+  persistence and alternation repair, toolsets, provider wiring/fallback,
+  memory, skills, and worktree security. The Anthropic fallback test required
+  its repository-pinned optional dependency (`anthropic==0.87.0`) in `.venv`;
+  after installation, all 23 fallback tests passed. The session-state file
+  passed 413 tests in 102.55 seconds.
+- 2026-07-24: `hermes --help` and `hermes doctor --help` loaded successfully
+  with `HERMES_HOME` isolated under `.tmp/hermes-home`.

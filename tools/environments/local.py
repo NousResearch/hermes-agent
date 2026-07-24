@@ -1407,6 +1407,30 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
         # path.  Escape single quotes defensively anyway.
         safe = path.replace("'", "'\\''")
         prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+
+    # Re-pin the running install's bin dir AFTER the rc files have run.
+    #
+    # A sourced rc may prepend a *different* Hermes install's bin dir —
+    # multi-HERMES_HOME machines commonly carry a stale
+    # ``export PATH="$HOME/.hermes/hermes-agent/venv/bin:$PATH"`` in
+    # ~/.bashrc from an older per-instance install. That rewrite happens
+    # inside the login shell, i.e. *after* the process-env pin applied by
+    # ``_prepend_hermes_bin_dir`` in ``_make_run_env``, so the environment
+    # snapshot captures the interloper first and every subsequent terminal
+    # call resolves bare ``hermes`` to the wrong install (wrong version,
+    # wrong venv). Prepend-if-missing semantics wouldn't help here either:
+    # our dir is usually already on PATH, just at a lower position — so we
+    # prepend unconditionally and rely on first-occurrence-wins.
+    #
+    # POSIX-only: on Windows the bin dir is a native path that would need
+    # MSYS translation before it could be embedded in a bash export, and
+    # the auto-source path is disabled there anyway.
+    if not _IS_WINDOWS:
+        bin_dir = _resolve_hermes_bin_dir()
+        if bin_dir:
+            safe_bin = bin_dir.replace("'", "'\\''")
+            prelude_parts.append(f"export PATH='{safe_bin}':\"$PATH\"")
+
     prelude = "\n".join(prelude_parts) + "\n"
     return prelude + cmd_string
 

@@ -22,7 +22,9 @@ def _clear_auth_env(monkeypatch) -> None:
         "SMS_ALLOWED_USERS",
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
-        "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+        "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS",
+        "FEISHU_GROUP_ALLOWED_USERS", "FEISHU_GROUP_ALLOWED_CHATS",
+        "WECOM_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
@@ -317,6 +319,34 @@ def test_qq_group_allowlist_does_not_authorize_other_groups(monkeypatch):
     )
 
     assert runner._is_user_authorized(source) is False
+
+
+def test_feishu_group_user_wildcard_authorizes_group_only(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("FEISHU_GROUP_ALLOWED_USERS", "*")
+
+    runner, _adapter = _make_runner(
+        Platform.FEISHU,
+        GatewayConfig(platforms={Platform.FEISHU: PlatformConfig(enabled=True)}),
+    )
+
+    group_source = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="ou_group_member",
+        chat_id="oc_group",
+        user_name="tester",
+        chat_type="group",
+    )
+    dm_source = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="ou_group_member",
+        chat_id="oc_dm",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(group_source) is True
+    assert runner._is_user_authorized(dm_source) is False
 
 
 def test_telegram_group_user_allowlist_authorizes_forum_sender_without_dm_allowlist(monkeypatch):

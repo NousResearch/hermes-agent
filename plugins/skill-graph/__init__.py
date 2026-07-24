@@ -2115,6 +2115,8 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
                     })
                 total = len(results)
                 hint = "All skills listed by name. Call skill_load(name) to load full content."
+                logger.info("skill-graph: search list_all=True → %d results (total: %d)", total, total)
+                logger.debug("skill-graph: search list_all=True → skills: %s", [r["name"] for r in results])
                 return json.dumps({
                     "success": True,
                     "query": "",
@@ -2156,6 +2158,9 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
             )
         else:
             hint = "Call skill_load(name) to load full content of a discovered skill."
+        logger.info("skill-graph: search query=%r limit=%d scenes=%s → %d results (total: %d)",
+                    query, limit, scenes or [], len(results), total)
+        logger.debug("skill-graph: search query=%r → skills: %s", query, result_names)
         return json.dumps({
             "success": True,
             "query": query,

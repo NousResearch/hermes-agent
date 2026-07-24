@@ -106,7 +106,47 @@ class TestReasoningCommand:
         assert "**Effort:** `none (disabled)`" in result
         assert "**Display:** on ✓" in result
         assert runner._reasoning_config == {"enabled": False}
-        assert runner._show_reasoning is True
+
+    @pytest.mark.asyncio
+    async def test_reasoning_command_per_platform_status(self, tmp_path, monkeypatch):
+        """The /reasoning status display reflects per-platform config."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "display:\n"
+            "  show_reasoning: false\n"
+            "  platforms:\n"
+            "    wecom:\n"
+            "      show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event(text="/reasoning", platform=Platform.WECOM)
+        result = await runner._handle_reasoning_command(event)
+
+        assert "**Display:** on ✓" in result
+
+    @pytest.mark.asyncio
+    async def test_reasoning_command_mattermost_global_show_reasoning_requires_platform_override(
+        self, tmp_path, monkeypatch
+    ):
+        """Mattermost matches response rendering: global show_reasoning is not enough."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "display:\n"
+            "  show_reasoning: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event(text="/reasoning", platform=Platform.MATTERMOST)
+        result = await runner._handle_reasoning_command(event)
+
+        assert "**Display:** off" in result
 
     @pytest.mark.asyncio
     async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):

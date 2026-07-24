@@ -331,3 +331,81 @@ async def test_idle_expiry_clears_last_resolved_model(mock_invoke_hook):
         "session-expiry finalization must only clear the expired session's "
         "own key, not unrelated sessions' cached entries"
     )
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_idle_expiry_sets_ended_at_in_db(mock_invoke_hook, tmp_path):
+    """Regression test for #54189 (unbounded state.db growth).
+
+    When ``_session_expiry_watcher`` permanently finalizes an expired
+    session, it must mark the state.db row ended (set ``ended_at``) so the
+    session stops counting as live and becomes prunable. This must happen
+    even in the common case where the cached AIAgent was already soft-evicted
+    by the idle sweep / cache-cap enforcer — those paths call
+    ``release_clients()`` (which PRESERVES the open session for resume) and
+    never call ``end_session``, so the expiry watcher is the only place left
+    to finalize the DB row. Before the fix the row's ``ended_at`` stayed
+    NULL forever and state.db grew without bound.
+    """
+    from datetime import datetime, timedelta
+
+    from gateway.run import GatewayRunner
+    from hermes_state import SessionDB
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.create_session("sess-expired", source="telegram")
+    assert session_db.get_session("sess-expired")["ended_at"] is None
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._running_agents = {}
+    runner._agent_cache = {}  # empty: the cached agent is already gone (the leak case)
+    runner._agent_cache_lock = None
+    runner._last_session_store_prune_ts = 0.0
+
+    session_key = "agent:main:telegram:dm:42"
+    expired_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-expired",
+        created_at=datetime.now() - timedelta(hours=2),
+        updated_at=datetime.now() - timedelta(hours=2),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    expired_entry.expiry_finalized = False
+
+    runner.session_store = MagicMock()
+    runner.session_store._db = session_db
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {session_key: expired_entry}
+    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._lock = MagicMock()
+    runner.session_store._lock.__enter__ = MagicMock(return_value=None)
+    runner.session_store._lock.__exit__ = MagicMock(return_value=None)
+    runner.session_store._save = MagicMock()
+
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._sweep_idle_cached_agents = MagicMock(return_value=0)
+
+    _orig_sleep = __import__("asyncio").sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    def _hook_and_stop(*a, **kw):
+        runner._running = False
+        return None
+
+    mock_invoke_hook.side_effect = _hook_and_stop
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await runner._session_expiry_watcher(interval=0)
+
+    row = session_db.get_session("sess-expired")
+    assert row["ended_at"] is not None, (
+        "expired session was never marked ended in state.db; ended_at is "
+        "still NULL (regression of #54189 — unbounded state.db growth)"
+    )
+    assert row["end_reason"] == "session_expired"

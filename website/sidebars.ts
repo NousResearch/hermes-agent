@@ -193,15 +193,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'data-science',
-                  key: 'skills-bundled-data-science',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'dogfood',
                   key: 'skills-bundled-dogfood',
                   collapsed: true,
@@ -410,6 +401,15 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-meme-generation',
                     'user-guide/skills/optional/creative/creative-pixel-art',
                     'user-guide/skills/optional/creative/creative-unreal-mcp',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'data-science',
+                  key: 'skills-optional-data-science',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/data-science/data-science-jupyter-notebook',
                   ],
                 },
                 {

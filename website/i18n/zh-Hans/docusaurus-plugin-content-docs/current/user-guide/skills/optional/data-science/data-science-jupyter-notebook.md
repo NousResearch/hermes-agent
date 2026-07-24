@@ -1,12 +1,12 @@
 ---
-title: "Jupyter Live Kernel — 通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb）"
-sidebar_label: "Jupyter Live Kernel"
+title: "Jupyter Notebook — 通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb）"
+sidebar_label: "Jupyter Notebook"
 description: "通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb）"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Jupyter Live Kernel
+# Jupyter Notebook
 
 通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb）。
 
@@ -14,8 +14,8 @@ description: "通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb
 
 | | |
 |---|---|
-| 来源 | 内置（默认安装） |
-| 路径 | `skills/data-science/jupyter-live-kernel` |
+| 来源 | 可选 — 通过 `hermes skills install official/data-science/jupyter-notebook` 安装 |
+| 路径 | `optional-skills/data-science/jupyter-notebook` |
 | 版本 | `1.0.0` |
 | 作者 | Hermes Agent |
 | 许可证 | MIT |
@@ -28,7 +28,7 @@ description: "通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb
 以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
-# Jupyter Live Kernel（hamelnb）
+# Jupyter Notebook（hamelnb 实时内核）
 
 通过实时 Jupyter 内核为你提供一个**有状态的 Python REPL**（交互式解释器）。变量在多次执行之间持久保留。当你需要逐步构建状态、探索 API、检查 DataFrame 或迭代复杂代码时，请使用此工具而非 `execute_code`。
 

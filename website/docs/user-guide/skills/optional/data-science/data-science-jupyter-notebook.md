@@ -1,12 +1,12 @@
 ---
-title: "Jupyter Live Kernel — Iterative Python via live Jupyter kernel (hamelnb)"
-sidebar_label: "Jupyter Live Kernel"
+title: "Jupyter Notebook — Iterative Python via live Jupyter kernel (hamelnb)"
+sidebar_label: "Jupyter Notebook"
 description: "Iterative Python via live Jupyter kernel (hamelnb)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Jupyter Live Kernel
+# Jupyter Notebook
 
 Iterative Python via live Jupyter kernel (hamelnb).
 
@@ -14,8 +14,8 @@ Iterative Python via live Jupyter kernel (hamelnb).
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/data-science/jupyter-live-kernel` |
+| Source | Optional — install with `hermes skills install official/data-science/jupyter-notebook` |
+| Path | `optional-skills/data-science/jupyter-notebook` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -28,7 +28,7 @@ Iterative Python via live Jupyter kernel (hamelnb).
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# Jupyter Live Kernel (hamelnb)
+# Jupyter Notebook (hamelnb live kernel)
 
 Gives you a **stateful Python REPL** via a live Jupyter kernel. Variables persist
 across executions. Use this instead of `execute_code` when you need to build up

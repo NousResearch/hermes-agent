@@ -68,6 +68,24 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
 })
 
+test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly', () => {
+  const defaulted = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    currentEnv: { PATH: '/usr/bin' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+  assert.equal(defaulted.PYTHONUTF8, '1')
+
+  const optedOut = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    currentEnv: { PATH: '/usr/bin', PYTHONUTF8: '0' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+  assert.equal(optedOut.PYTHONUTF8, '0')
+})
+
 test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root', () => {
   assert.equal(
     normalizeHermesHomeRoot('/Users/test/.hermes/profiles/oracle', { pathModule: path.posix }),

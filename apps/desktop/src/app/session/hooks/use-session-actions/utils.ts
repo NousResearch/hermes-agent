@@ -391,6 +391,75 @@ export function appendLiveSessionProjection(
   return projected.length ? [...messages, ...projected] : messages
 }
 
+/**
+ * Score a transcript for display richness. Runtime activate/resume payloads can
+ * be a compressed model-context projection (or empty + inflight tails) that is
+ * much thinner than the persisted SessionDB transcript. When switching back to
+ * a long session we must not let that thinner projection replace a richer
+ * paint — users see full history flash, then only submitted prompts remain.
+ */
+export function transcriptDisplayScore(messages: ChatMessage[]): number {
+  let score = 0
+
+  for (const message of messages) {
+    if (message.hidden) {
+      continue
+    }
+
+    const text = chatMessageText(message).trim()
+    const hasNonText = message.parts.some(part => part.type !== 'text' && part.type !== 'reasoning')
+
+    if (!text && !hasNonText) {
+      continue
+    }
+
+    // Prefer assistant substance over bare user prompts when deciding which
+    // projection is the display authority.
+    score += message.role === 'assistant' ? 4 : message.role === 'user' ? 1 : 2
+
+    if (text) {
+      score += Math.min(8, Math.ceil(text.length / 240))
+    }
+
+    if (hasNonText) {
+      score += 2
+    }
+  }
+
+  return score
+}
+
+/** Prefer the richer transcript for UI paint; ties keep `preferred`. */
+export function preferDisplayTranscript(preferred: ChatMessage[], alternate: ChatMessage[]): ChatMessage[] {
+  if (!alternate.length) {
+    return preferred
+  }
+
+  if (!preferred.length) {
+    return alternate
+  }
+
+  return transcriptDisplayScore(alternate) > transcriptDisplayScore(preferred) ? alternate : preferred
+}
+
+/**
+ * Build the chat view for a resume/activate payload.
+ *
+ * - Idle: a richer cached/persisted body wins over a compressed runtime body.
+ * - Live tails (inflight/queued) always append onto that body.
+ * - Never start from an empty runtime body just because inflight is set — that
+ *   wipes the full history down to "only the submitted prompt".
+ */
+export function mergeResumeDisplayMessages(
+  runtimeMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] {
+  const base = preferDisplayTranscript(runtimeMessages, previousMessages)
+
+  return liveProjection ? appendLiveSessionProjection(base, liveProjection) : base
+}
+
 export interface BranchMessage {
   content: string
   role: ChatMessage['role']

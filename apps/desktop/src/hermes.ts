@@ -574,7 +574,11 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
+    // Long/tool-heavy transcripts (MB-scale JSON) can exceed the default 15s
+    // fetch budget under load; a timeout here falls through to a thinner
+    // runtime projection and looks like "history vanished on switch-back".
+    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 }
 

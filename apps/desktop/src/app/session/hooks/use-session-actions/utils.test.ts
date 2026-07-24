@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { chatMessageText } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -13,11 +14,14 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   isSessionGoneError,
+  mergeResumeDisplayMessages,
+  preferDisplayTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
-  toBranchMessages
+  toBranchMessages,
+  transcriptDisplayScore
 } from './utils'
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
@@ -497,5 +501,50 @@ describe('appendLiveSessionProjection', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 
     expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
+  })
+})
+
+describe('preferDisplayTranscript / mergeResumeDisplayMessages', () => {
+  it('keeps a rich cached transcript over an empty runtime + inflight projection', () => {
+    const cached = [
+      msg('u1', 'user', 'first question'),
+      msg('a1', 'assistant', 'detailed answer with tools and context from earlier turns'),
+      msg('u2', 'user', 'follow up'),
+      msg('a2', 'assistant', 'second detailed answer')
+    ]
+    const runtimeOnlyPrompt = [msg('u-live', 'user', 'only the latest prompt')]
+
+    expect(transcriptDisplayScore(cached)).toBeGreaterThan(transcriptDisplayScore(runtimeOnlyPrompt))
+    expect(preferDisplayTranscript(runtimeOnlyPrompt, cached)).toEqual(cached)
+
+    const merged = mergeResumeDisplayMessages([], cached, {
+      session_id: 'rt-1',
+      inflight: { user: 'only the latest prompt', assistant: '', streaming: true }
+    })
+
+    expect(merged.map(m => chatMessageText(m))).toEqual([
+      'first question',
+      'detailed answer with tools and context from earlier turns',
+      'follow up',
+      'second detailed answer',
+      'only the latest prompt',
+      ''
+    ])
+    expect(merged.some(m => m.role === 'assistant' && chatMessageText(m).includes('detailed answer'))).toBe(true)
+  })
+
+  it('prefers a richer persisted body over a compressed equal-ish runtime projection', () => {
+    const persisted = [
+      msg('u1', 'user', 'q1'),
+      msg('a1', 'assistant', 'long answer one '.repeat(20)),
+      msg('u2', 'user', 'q2'),
+      msg('a2', 'assistant', 'long answer two '.repeat(20))
+    ]
+    const compressedRuntime = [
+      msg('u-sum', 'user', '[PRIOR CONTEXT] summary of earlier work'),
+      msg('u2', 'user', 'q2')
+    ]
+
+    expect(preferDisplayTranscript(compressedRuntime, persisted)).toEqual(persisted)
   })
 })

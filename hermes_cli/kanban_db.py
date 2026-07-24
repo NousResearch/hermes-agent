@@ -130,7 +130,8 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # to ``blocked`` — breaking the infinite unblock↔re-block loop and forcing a
 # human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
-# not dispatcher spawn/crash/timeout failures.
+# not dispatcher spawn/crash/timeout failures. Runtime config can override this
+# default via ``kanban.block_recurrence_limit``.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -159,6 +160,36 @@ def _assert_not_delegated_child_mutation() -> None:
         raise PermissionError(
             "delegate_task child contexts cannot mutate Kanban tasks or boards"
         )
+
+
+def _coerce_block_recurrence_limit(value: Any, default: int = BLOCK_RECURRENCE_LIMIT) -> int:
+    """Return a positive block-loop threshold, falling back on bad config."""
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return default
+    return limit if limit >= 1 else default
+
+
+def _configured_block_recurrence_limit() -> int:
+    """Read ``kanban.block_recurrence_limit`` from config.yaml when present."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        return _coerce_block_recurrence_limit(
+            kanban_cfg.get("block_recurrence_limit"),
+            BLOCK_RECURRENCE_LIMIT,
+        )
+    except Exception:
+        return BLOCK_RECURRENCE_LIMIT
+
+
+def _resolve_block_recurrence_limit(value: Optional[int]) -> int:
+    if value is not None:
+        return _coerce_block_recurrence_limit(value, BLOCK_RECURRENCE_LIMIT)
+    return _configured_block_recurrence_limit()
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -5385,6 +5416,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    block_recurrence_limit: Optional[int] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -5402,9 +5434,10 @@ def block_task(
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
       is re-blocked for the SAME kind after having been unblocked, the
       unblock-loop counter (``block_recurrences``) increments. When it reaches
-      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
-      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
-      forcing a human-in-the-loop triage decision.
+      the configured block-recurrence limit (``kanban.block_recurrence_limit``,
+      defaulting to :data:`BLOCK_RECURRENCE_LIMIT`), the task is routed to
+      ``triage`` instead of ``blocked`` — breaking the cron-unblock ↔
+      worker-re-block loop and forcing a human-in-the-loop triage decision.
 
     * ``transient`` — treated like a generic block for routing, but a worker
       can use it to signal "this might clear on its own"; it still participates
@@ -5419,6 +5452,7 @@ def block_task(
         )
     routed_to = "blocked"
     recurrences = 0
+    recurrence_limit = _resolve_block_recurrence_limit(block_recurrence_limit)
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
@@ -5489,7 +5523,7 @@ def block_task(
         same_cause = prev_kind == kind
         recurrences = prev_recurrences + 1 if same_cause else 1
 
-        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+        if recurrences >= recurrence_limit:
             # Loop detected — stop letting the unblocker spin this task. Route
             # to triage for a human-in-the-loop decision instead of blocked.
             cur = conn.execute(
@@ -5524,7 +5558,7 @@ def block_task(
                     "reason": reason,
                     "kind": kind,
                     "recurrences": recurrences,
-                    "limit": BLOCK_RECURRENCE_LIMIT,
+                    "limit": recurrence_limit,
                 },
                 run_id=run_id,
             )

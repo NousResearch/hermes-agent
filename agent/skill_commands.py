@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_commands_dir: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -134,6 +135,20 @@ def _resolve_skill_commands_platform() -> Optional[str]:
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")
     return resolved_platform or None
+
+
+def _resolve_skill_commands_dir() -> str:
+    """Return the skills directory the next scan would read from.
+
+    Used to detect when the active profile has shifted (a multiplexed
+    gateway request scoped to a different profile via
+    ``set_hermes_home_override``) so :func:`get_skill_commands` can drop a
+    stale cache populated for another profile's skills directory — the
+    profile analogue of the platform check above (#14536).
+    """
+    from tools.skills_tool import _skills_dir
+
+    return str(_skills_dir())
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -323,20 +338,25 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
+    global _skill_commands, _skill_commands_platform, _skill_commands_dir
     _skill_commands_platform = _resolve_skill_commands_platform()
+    _skill_commands_dir = _resolve_skill_commands_dir()
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
+        from tools.skills_tool import _skills_dir, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
+        # Scan local dir first, then external dirs. Resolve via _skills_dir()
+        # (not the SKILLS_DIR constant) so a profile-scoped HERMES_HOME
+        # override — set for the duration of a multiplexed gateway request —
+        # is honored instead of always falling back to the process default.
+        skills_dir = _skills_dir()
         dirs_to_scan = []
-        if SKILLS_DIR.exists():
-            dirs_to_scan.append(SKILLS_DIR)
+        if skills_dir.exists():
+            dirs_to_scan.append(skills_dir)
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
@@ -418,11 +438,16 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     Rescans when the active platform scope changes (e.g. a gateway
     process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536).
+    sees its own ``skills.platform_disabled`` view (#14536), and likewise
+    when the active profile's skills directory changes (e.g. a multiplexed
+    gateway process serving webhook requests for several profiles) so a
+    request scoped to one profile doesn't inherit another profile's
+    skill set.
     """
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
+        or _skill_commands_dir != _resolve_skill_commands_dir()
     ):
         scan_skill_commands()
     return _skill_commands

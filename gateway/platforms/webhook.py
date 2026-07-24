@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from contextlib import nullcontext
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -523,6 +524,31 @@ class WebhookAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         return profile
 
+    @staticmethod
+    def _profile_scope(profile: Optional[str]):
+        """Enter the multiplex profile runtime scope, or a no-op when unset.
+
+        Mirrors ``ApiServerAdapter._profile_scope`` — see that docstring for
+        why an unset profile still enters the default profile's scope when
+        multiplexing is active (fail-closed ``get_secret``, #61276).
+        """
+        if not profile:
+            try:
+                from agent.secret_scope import is_multiplex_active
+
+                if is_multiplex_active():
+                    from gateway.run import _profile_runtime_scope
+                    from hermes_constants import get_hermes_home
+
+                    return _profile_runtime_scope(get_hermes_home())
+            except Exception:
+                pass
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.profiles import get_profile_dir
+
+        return _profile_runtime_scope(get_profile_dir(profile))
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -661,171 +687,177 @@ class WebhookAdapter(BasePlatformAdapter):
                 }
             )
 
-        if route_config.get("script"):
-            # run_route_script shells out (subprocess.run, up to its timeout);
-            # run it in a worker thread so it can't block the gateway event loop.
-            keep, transformed_payload = await asyncio.to_thread(
-                self._route_processor.run_route_script,
-                route_config.get("script"),
-                payload,
+        # Scope the remaining, profile-dependent work (route script,
+        # prompt templating, skill injection, deliver-only dispatch) to the
+        # resolved profile so skill/config lookups below resolve against
+        # that profile's HERMES_HOME instead of the process default (mirrors
+        # api_server.py's profile_prefix_middleware).
+        with self._profile_scope(profile):
+            if route_config.get("script"):
+                # run_route_script shells out (subprocess.run, up to its timeout);
+                # run it in a worker thread so it can't block the gateway event loop.
+                keep, transformed_payload = await asyncio.to_thread(
+                    self._route_processor.run_route_script,
+                    route_config.get("script"),
+                    payload,
+                )
+                if not keep:
+                    logger.info(
+                        "[webhook] script ignored event=%s route=%s",
+                        event_type,
+                        route_name,
+                    )
+                    return web.json_response(
+                        {
+                            "status": "ignored",
+                            "reason": "script",
+                            "route": route_name,
+                        }
+                    )
+                payload = transformed_payload or payload
+
+            # Format prompt from template
+            prompt_template = route_config.get("prompt", "")
+            prompt = self._render_prompt(
+                prompt_template, payload, event_type, route_name
             )
-            if not keep:
+
+            # Inject skill content if configured.
+            # We call build_skill_invocation_message() directly rather than
+            # using /skill-name slash commands — the gateway's command parser
+            # would intercept those and break the flow.
+            skills = route_config.get("skills", [])
+            if skills:
+                try:
+                    from agent.skill_commands import (
+                        build_skill_invocation_message,
+                        get_skill_commands,
+                    )
+
+                    skill_cmds = get_skill_commands()
+                    for skill_name in skills:
+                        cmd_key = f"/{skill_name}"
+                        if cmd_key in skill_cmds:
+                            skill_content = build_skill_invocation_message(
+                                cmd_key, user_instruction=prompt
+                            )
+                            if skill_content:
+                                prompt = skill_content
+                                break  # Load the first matching skill
+                        else:
+                            logger.warning(
+                                "[webhook] Skill '%s' not found", skill_name
+                            )
+                except Exception as e:
+                    logger.warning("[webhook] Skill loading failed: %s", e)
+
+            # Build a unique delivery ID
+            delivery_id = request.headers.get(
+                "X-GitHub-Delivery",
+                request.headers.get(
+                    "svix-id",
+                    request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                ),
+            )
+
+            # ── Idempotency ─────────────────────────────────────────
+            # Skip duplicate deliveries (webhook retries).
+            now = time.time()
+            if not self._record_delivery_id(delivery_id, now):
                 logger.info(
-                    "[webhook] script ignored event=%s route=%s",
-                    event_type,
-                    route_name,
+                    "[webhook] Skipping duplicate delivery %s", delivery_id
                 )
                 return web.json_response(
-                    {
-                        "status": "ignored",
-                        "reason": "script",
-                        "route": route_name,
-                    }
-                )
-            payload = transformed_payload or payload
-
-        # Format prompt from template
-        prompt_template = route_config.get("prompt", "")
-        prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
-        )
-
-        # Inject skill content if configured.
-        # We call build_skill_invocation_message() directly rather than
-        # using /skill-name slash commands — the gateway's command parser
-        # would intercept those and break the flow.
-        skills = route_config.get("skills", [])
-        if skills:
-            try:
-                from agent.skill_commands import (
-                    build_skill_invocation_message,
-                    get_skill_commands,
+                    {"status": "duplicate", "delivery_id": delivery_id},
+                    status=200,
                 )
 
-                skill_cmds = get_skill_commands()
-                for skill_name in skills:
-                    cmd_key = f"/{skill_name}"
-                    if cmd_key in skill_cmds:
-                        skill_content = build_skill_invocation_message(
-                            cmd_key, user_instruction=prompt
-                        )
-                        if skill_content:
-                            prompt = skill_content
-                            break  # Load the first matching skill
-                    else:
-                        logger.warning(
-                            "[webhook] Skill '%s' not found", skill_name
-                        )
-            except Exception as e:
-                logger.warning("[webhook] Skill loading failed: %s", e)
-
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
-
-        # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
-        now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
-            logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
-            )
-            return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
-                status=200,
-            )
-
-        # ── Direct delivery mode (deliver_only) ─────────────────
-        # Skip the agent entirely — the rendered prompt IS the message we
-        # deliver.  Use case: external services (Supabase, monitoring,
-        # cron jobs, other agents) that need to push a plain notification
-        # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
-        # rate limiting, idempotency, and template rendering as agent mode.
-        if route_config.get("deliver_only"):
-            delivery = {
-                "deliver": route_config.get("deliver", "log"),
-                "deliver_extra": self._render_delivery_extra(
-                    route_config.get("deliver_extra", {}), payload
-                ),
-                "payload": payload,
-            }
-            logger.info(
-                "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
-                event_type,
-                route_name,
-                delivery["deliver"],
-                len(prompt),
-                delivery_id,
-            )
-            try:
-                result = await self._direct_deliver(prompt, delivery)
-            except Exception:
-                logger.exception(
-                    "[webhook] direct-deliver failed route=%s delivery=%s",
+            # ── Direct delivery mode (deliver_only) ─────────────────
+            # Skip the agent entirely — the rendered prompt IS the message we
+            # deliver.  Use case: external services (Supabase, monitoring,
+            # cron jobs, other agents) that need to push a plain notification
+            # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
+            # rate limiting, idempotency, and template rendering as agent mode.
+            if route_config.get("deliver_only"):
+                delivery = {
+                    "deliver": route_config.get("deliver", "log"),
+                    "deliver_extra": self._render_delivery_extra(
+                        route_config.get("deliver_extra", {}), payload
+                    ),
+                    "payload": payload,
+                }
+                logger.info(
+                    "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
+                    event_type,
                     route_name,
+                    delivery["deliver"],
+                    len(prompt),
                     delivery_id,
+                )
+                try:
+                    result = await self._direct_deliver(prompt, delivery)
+                except Exception:
+                    logger.exception(
+                        "[webhook] direct-deliver failed route=%s delivery=%s",
+                        route_name,
+                        delivery_id,
+                    )
+                    return web.json_response(
+                        {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
+                        status=502,
+                    )
+
+                if result.success:
+                    return web.json_response(
+                        {
+                            "status": "delivered",
+                            "route": route_name,
+                            "target": delivery["deliver"],
+                            "delivery_id": delivery_id,
+                        },
+                        status=200,
+                    )
+                # Delivery attempted but target rejected it — surface as 502
+                # with a generic error (don't leak adapter-level detail).
+                logger.warning(
+                    "[webhook] direct-deliver target rejected route=%s target=%s error=%s",
+                    route_name,
+                    delivery["deliver"],
+                    result.error,
                 )
                 return web.json_response(
                     {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                     status=502,
                 )
 
-            if result.success:
-                return web.json_response(
-                    {
-                        "status": "delivered",
-                        "route": route_name,
-                        "target": delivery["deliver"],
-                        "delivery_id": delivery_id,
-                    },
-                    status=200,
-                )
-            # Delivery attempted but target rejected it — surface as 502
-            # with a generic error (don't leak adapter-level detail).
-            logger.warning(
-                "[webhook] direct-deliver target rejected route=%s target=%s error=%s",
-                route_name,
-                delivery["deliver"],
-                result.error,
+            # Use delivery_id in session key so concurrent webhooks on the
+            # same route get independent agent runs (not queued/interrupted).
+            session_chat_id = f"webhook:{route_name}:{delivery_id}"
+
+            # Store delivery info for send().  Read by every send() invocation
+            # for this chat_id (interim status messages and the final response),
+            # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
+            deliver_config = {
+                "deliver": route_config.get("deliver", "log"),
+                "deliver_extra": self._render_delivery_extra(
+                    route_config.get("deliver_extra", {}), payload
+                ),
+            }
+            self._delivery_info[session_chat_id] = deliver_config
+            self._delivery_info_created[session_chat_id] = now
+            self._delivery_info_order.append((now, session_chat_id))
+            self._prune_delivery_info(now)
+
+            # Build source and event
+            source = self.build_source(
+                chat_id=session_chat_id,
+                chat_name=f"webhook/{route_name}",
+                chat_type="webhook",
+                user_id=f"webhook:{route_name}",
+                user_name=route_name,
             )
-            return web.json_response(
-                {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
-                status=502,
-            )
-
-        # Use delivery_id in session key so concurrent webhooks on the
-        # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
-
-        # Store delivery info for send().  Read by every send() invocation
-        # for this chat_id (interim status messages and the final response),
-        # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
-        deliver_config = {
-            "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(
-                route_config.get("deliver_extra", {}), payload
-            ),
-        }
-        self._delivery_info[session_chat_id] = deliver_config
-        self._delivery_info_created[session_chat_id] = now
-        self._delivery_info_order.append((now, session_chat_id))
-        self._prune_delivery_info(now)
-
-        # Build source and event
-        source = self.build_source(
-            chat_id=session_chat_id,
-            chat_name=f"webhook/{route_name}",
-            chat_type="webhook",
-            user_id=f"webhook:{route_name}",
-            user_name=route_name,
-        )
-        if profile and isinstance(profile, str):
-            source.profile = profile
+            if profile and isinstance(profile, str):
+                source.profile = profile
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,

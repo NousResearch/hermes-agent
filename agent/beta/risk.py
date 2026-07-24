@@ -195,7 +195,11 @@ class ApprovalGate:
         if receipt is None or receipt.operation_fingerprint != operation.fingerprint:
             self._record("blocked", operation)
             return False
-        if receipt.expires_at <= self._clock():
+        now = self._clock()
+        if receipt.issued_at > now:
+            self._record("not_yet_valid", operation)
+            return False
+        if receipt.expires_at <= now:
             self._record("expired", operation)
             return False
         self._record("authorized", operation)

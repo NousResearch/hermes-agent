@@ -1,7 +1,7 @@
 import json
 
 from agent.beta.delegation import SpecialistResult, create_delegation_tasks, execute_delegations, task_operation
-from agent.beta.risk import ApprovalGate, Operation, RiskLevel, classify_risk
+from agent.beta.risk import ApprovalGate, ApprovalReceipt, Operation, RiskLevel, classify_risk
 from agent.beta.router import route_request
 
 
@@ -71,6 +71,26 @@ def test_denied_and_expired_approvals_fail_closed():
     assert expiring.events[-1].event == "expired"
 
 
+def test_future_dated_approval_fails_closed():
+    operation = Operation(
+        target="db-1",
+        action="restart postgres",
+        impact="brief outage",
+        rollback="start previous service",
+        risk=RiskLevel.HIGH,
+    )
+    gate = ApprovalGate(clock=lambda: 100.0)
+    receipt = ApprovalReceipt(
+        operation_fingerprint=operation.fingerprint,
+        issued_at=101.0,
+        expires_at=200.0,
+        nonce="future-receipt",
+    )
+
+    assert gate.authorized(operation, receipt) is False
+    assert gate.events[-1].event == "not_yet_valid"
+
+
 def test_approval_does_not_cross_target_or_changed_action():
     gate = ApprovalGate(requester=lambda _operation: {"approved": True})
     original = Operation(
@@ -83,4 +103,3 @@ def test_approval_does_not_cross_target_or_changed_action():
     receipt = gate.request(original)
     assert gate.authorized(original.model_copy(update={"target": "db-2"}), receipt) is False
     assert gate.authorized(original.model_copy(update={"action": "drop database"}), receipt) is False
-

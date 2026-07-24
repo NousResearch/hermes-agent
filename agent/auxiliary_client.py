@@ -6808,6 +6808,7 @@ def _build_call_kwargs(
     reasoning_config: Optional[dict] = None,
     base_url: Optional[str] = None,
     task: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -6935,6 +6936,7 @@ def _build_call_kwargs(
                 model=model,
                 base_url=effective_base,
                 reasoning_config=reasoning_config,
+                session_id=session_id,
             ) or {}
             profile_reasoning_extra, profile_top_level = (
                 profile.build_api_kwargs_extras(
@@ -6942,6 +6944,7 @@ def _build_call_kwargs(
                     supports_reasoning=reasoning_config is not None,
                     model=model,
                     base_url=effective_base,
+                    session_id=session_id,
                 )
             )
             profile_reasoning_extra = profile_reasoning_extra or {}
@@ -7123,6 +7126,7 @@ def call_llm(
     api_mode: str = None,
     stream: bool = False,
     stream_options: dict = None,
+    session_id: Optional[str] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -7260,7 +7264,8 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_base_info or resolved_base_url, task=task)
+        base_url=_base_info or resolved_base_url, task=task,
+        session_id=session_id)
     if extra_headers:
         kwargs["extra_headers"] = dict(extra_headers)
 
@@ -7794,6 +7799,7 @@ async def async_call_llm(
     timeout: float = None,
     extra_body: dict = None,
     reasoning_config: Optional[dict] = None,
+    session_id: Optional[str] = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -7880,7 +7886,8 @@ async def async_call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
-        base_url=_client_base or resolved_base_url, task=task)
+        base_url=_client_base or resolved_base_url, task=task,
+        session_id=session_id)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):

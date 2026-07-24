@@ -51,6 +51,7 @@ import {
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
+  isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -129,6 +130,11 @@ import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import {
+  isRetryableRemoteConnectionError,
+  remoteHttpStatusError,
+  resolveReadyRemoteConnectionWithRetry
+} from './remote-connection-retry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
@@ -3839,7 +3845,7 @@ function fetchJson(url, token, options: any = {}) {
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            reject(remoteHttpStatusError(res.statusCode, text || res.statusMessage))
 
             return
           }
@@ -3933,7 +3939,7 @@ function fetchPublicJson(url, options: any = {}) {
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            reject(remoteHttpStatusError(res.statusCode, text || res.statusMessage))
 
             return
           }
@@ -4619,6 +4625,20 @@ async function waitForHermes(baseUrl, token, signal?) {
 
       return
     } catch (error) {
+      // Authentication cannot recover by polling. Surface it immediately so
+      // the caller can open the sign-in flow rather than waiting out the full
+      // readiness window and then a retry budget.
+      if (isGatewayAuthRejection(error)) {
+        throw error
+      }
+
+      // Only transport/server failures belong to the polling window. Preserve
+      // permanent HTTP/protocol/configuration failures so the outer retry
+      // boundary cannot misclassify them as a timeout.
+      if (!isRetryableRemoteConnectionError(error)) {
+        throw error
+      }
+
       lastError = error
       await new Promise((resolve, reject) => {
         const timer = setTimeout(resolve, 500)
@@ -4636,7 +4656,11 @@ async function waitForHermes(baseUrl, token, signal?) {
     }
   }
 
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+  const error: any = new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+
+  error.cause = lastError
+  error.kind = 'timeout'
+  throw error
 }
 
 function getWindowButtonPosition() {
@@ -6893,7 +6917,9 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       }
     }
 
-    const err = new Error(error.message) as any
+    const err = new Error(error.message, { cause: error }) as any
+
+    err.kind = error.kind || 'unknown'
     err.sshError = error.kind || 'unknown'
     err.isSshBootstrap = true
     throw err
@@ -7770,13 +7796,37 @@ async function startHermes() {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
+    // A controlled VPS restart can outlive one 8-second OAuth-ticket request.
+    // Keep the boot pending through a bounded transport-only retry window,
+    // minting a fresh single-use ticket on every attempt. Authentication
+    // failures bypass this helper and surface sign-in immediately.
+    const profile = primaryProfileKey()
+    const remoteConfigured = globalRemoteActive() || profileHasRemoteOverride(profile)
+
+    const remote = remoteConfigured
+      ? await resolveReadyRemoteConnectionWithRetry(
+          () => resolveRemoteBackend(profile),
+          connection => waitForHermes(connection.baseUrl, connection.token),
+          {
+            onRetry: (_error, attempt, delayMs) => {
+              rememberLog(
+                `Remote Hermes backend unavailable; retrying connection after ${delayMs}ms (attempt ${attempt}).`
+              )
+            }
+          }
+        )
+      : await resolveRemoteBackend(profile)
+
     // Re-read once resolved so the classification tracks the value actually used.
     attemptedRemote = primaryBackendIsRemote()
-    const remote = await resolveRemoteBackend(primaryProfileKey())
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+
+      if (!remoteConfigured) {
+        await waitForHermes(remote.baseUrl, remote.token)
+      }
+
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',

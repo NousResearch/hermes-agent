@@ -4,6 +4,7 @@ import type * as React from 'react'
 import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
@@ -78,7 +79,10 @@ export function SidebarSessionRow({
   const r = t.sidebar.row
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
-  const age = formatAge(session.last_active || session.started_at, r)
+  const timestamp = session.last_active || session.started_at
+  const age = formatAge(timestamp, r)
+  const timestampDate = new Date(timestamp * 1000)
+  const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread)
   const handleLabel = `Reorder ${title}`
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
@@ -103,9 +107,16 @@ export function SidebarSessionRow({
         actions={
           <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
             {!isWorking && (
-              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-                {age}
-              </span>
+              <Tip label={absoluteAge} side="top">
+                <time
+                  aria-label={`${age}, ${absoluteAge}`}
+                  className="absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+                  dateTime={timestampDate.toISOString()}
+                  tabIndex={0}
+                >
+                  {age}
+                </time>
+              </Tip>
             )}
             <SessionActionsMenu
               onArchive={onArchive}

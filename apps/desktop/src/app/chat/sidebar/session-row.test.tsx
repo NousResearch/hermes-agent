@@ -4,6 +4,7 @@ import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -28,6 +29,12 @@ vi.mock('@/i18n', () => ({
           sessionRunning: 'Running',
           waitingForAnswer: 'Waiting for answer'
         }
+      },
+      assistant: {
+        thread: {
+          today: (time: string) => `Today at ${time}`,
+          yesterday: (time: string) => `Yesterday at ${time}`
+        }
       }
     }
   })
@@ -47,7 +54,11 @@ vi.mock('@/lib/session-source', () => ({
   handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
   sessionSourceLabel: (source: string) => source
 }))
-vi.mock('@/lib/time', () => ({ coarseElapsed: () => ({ unit: 'minute' as const, value: 5 }) }))
+vi.mock('@/lib/time', async importOriginal => {
+  const actual = await importOriginal<typeof Time>()
+
+  return { ...actual, coarseElapsed: () => ({ unit: 'minute' as const, value: 5 }) }
+})
 
 // These mocks use importOriginal rather than replacing the module wholesale:
 // session-row.tsx (and its transitive imports, e.g. session-color.ts) reads
@@ -144,6 +155,31 @@ describe('SidebarSessionRow', () => {
     expect(screen.getByTestId('session-actions-menu').getAttribute('data-tooltip')).toBe(
       'Actions for Hermes doctor health check results'
     )
+  })
+
+  it('exposes the exact session time through a focusable Tip trigger', () => {
+    const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        session={makeSession({ started_at: startedAt, title: 'Timestamped session' })}
+      />
+    )
+
+    const age = screen.getByText('5m')
+    expect(age.tagName).toBe('TIME')
+    expect(age.getAttribute('datetime')).toBe(new Date(startedAt * 1000).toISOString())
+    expect(age.getAttribute('aria-label')).toMatch(/^5m, Today at /)
+    expect(age.getAttribute('tabindex')).toBe('0')
+    expect(age.getAttribute('title')).toBeNull()
+    expect(tipTrigger(age)).toBeTruthy()
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

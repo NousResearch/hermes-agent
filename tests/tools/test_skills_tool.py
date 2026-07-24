@@ -384,6 +384,21 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_view_skill_with_date_metadata(self, tmp_path):
+        # Unquoted YAML dates under metadata: parse as datetime.date, which
+        # json.dumps cannot serialize — skill_view must still succeed and
+        # return the date as an ISO string.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "dated-skill",
+                frontmatter_extra="metadata:\n  released: 2025-12-01\n",
+            )
+            raw = skill_view("dated-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["metadata"]["released"] == "2025-12-01"
+
     def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
         # The on-disk directory ("alias-dir") differs from the skill's
         # frontmatter name ("real-skill-name"). skills_list() exposes the

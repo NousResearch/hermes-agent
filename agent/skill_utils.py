@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import datetime
 import logging
 import os
 import re
@@ -120,6 +121,24 @@ def yaml_load(content: str):
 # ── Frontmatter parsing ──────────────────────────────────────────────────
 
 
+def _stringify_temporal(obj: Any) -> Any:
+    """Coerce YAML-parsed date/time values to ISO strings, recursively.
+
+    PyYAML's SafeLoader turns unquoted ``date:``/``updated:`` frontmatter values
+    into ``datetime.date``/``datetime.datetime`` objects, which are not JSON
+    serializable. Every ``json.dumps`` of skill metadata downstream then raises
+    ``TypeError: Object of type date is not JSON serializable``. Coerce them so
+    frontmatter stays JSON-safe. (``datetime`` subclasses ``date``.)
+    """
+    if isinstance(obj, dict):
+        return {k: _stringify_temporal(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_stringify_temporal(v) for v in obj]
+    if isinstance(obj, (datetime.date, datetime.time)):
+        return obj.isoformat()
+    return obj
+
+
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """Parse YAML frontmatter from a markdown string.
 
@@ -157,7 +176,7 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     try:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
-            frontmatter = parsed
+            frontmatter = _stringify_temporal(parsed)
     except Exception:
         # Fallback: simple key:value parsing for malformed YAML
         for line in yaml_content.strip().split("\n"):

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -73,8 +74,9 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const w = t.webhooks
   // Re-load when the active profile changes so REST routes to the right backend.
   const profileScope = useStore($profileScope)
+  const queryClient = useQueryClient()
+  const queryKey = useMemo(() => ['webhooks', profileScope] as const, [profileScope])
 
-  const [data, setData] = useState<WebhooksResponse | null>(null)
   const [query, setQuery] = useState('')
   const [enabling, setEnabling] = useState(false)
   const [restartNeeded, setRestartNeeded] = useState(false)
@@ -98,29 +100,43 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const [pendingDelete, setPendingDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
 
+  const {
+    data,
+    error,
+    isPending: loading,
+    refetch
+  } = useQuery({
+    queryKey,
+    queryFn: getWebhooks
+  })
+
+  // React Query v5 dropped useQuery onError; surface a load failure toast once
+  // per error object instead.
+  useEffect(() => {
+    if (error) {
+      notifyError(error, w.loadFailed)
+    }
+  }, [error, w.loadFailed])
+
   const enabled = data?.enabled ?? false
   const subscriptions = useMemo(() => data?.subscriptions ?? [], [data])
 
-  const loadWebhooks = useCallback(
+  // Pull fresh backend truth into the cache. `silent` swallows the error toast
+  // for post-mutation reconciles (the mutation already reported success/failure).
+  const reload = useCallback(
     async (silent = false) => {
       try {
-        setData(await getWebhooks())
+        await queryClient.invalidateQueries({ queryKey })
       } catch (err) {
         if (!silent) {
           notifyError(err, w.loadFailed)
         }
       }
     },
-    [w.loadFailed]
+    [queryClient, queryKey, w.loadFailed]
   )
 
-  useRefreshHotkey(() => void loadWebhooks())
-
-  useEffect(() => {
-    void loadWebhooks()
-    // profileScope drives a re-home; a fresh load rebinds to the active backend.
-     
-  }, [loadWebhooks, profileScope])
+  useRefreshHotkey(() => void refetch())
 
   const restartGatewayNow = useCallback(async () => {
     setRestarting(true)
@@ -130,7 +146,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       setRestartNeeded(false)
       setRestartError(null)
       // Give the receiver a moment to bind before re-reading state.
-      window.setTimeout(() => void loadWebhooks(true), 4000)
+      window.setTimeout(() => void reload(true), 4000)
     } catch (err) {
       setRestartNeeded(true)
       setRestartError(String(err))
@@ -138,7 +154,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     } finally {
       setRestarting(false)
     }
-  }, [loadWebhooks, w])
+  }, [reload, w])
 
   const handleEnable = useCallback(async () => {
     setEnabling(true)
@@ -147,11 +163,11 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
 
     try {
       const result = await enableWebhooks()
-      await loadWebhooks(true)
+      await reload(true)
 
       if (result.restart_started) {
         notify({ kind: 'success', message: w.enabledRestarting })
-        window.setTimeout(() => void loadWebhooks(true), 4000)
+        window.setTimeout(() => void reload(true), 4000)
       } else {
         const detail = result.restart_error ? `: ${result.restart_error}` : '.'
         setRestartNeeded(true)
@@ -163,7 +179,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
     } finally {
       setEnabling(false)
     }
-  }, [loadWebhooks, w])
+  }, [reload, w])
 
   const resetForm = useCallback(() => {
     setName('')
@@ -217,19 +233,19 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       notify({ kind: 'success', message: w.created })
       setCreated({ secret: res.secret, url: res.url })
       resetForm()
-      void loadWebhooks(true)
+      void reload(true)
     } catch (err) {
       notifyError(err, w.createFailed(''))
     } finally {
       setCreating(false)
     }
-  }, [deliver, deliverOnly, description, events, loadWebhooks, name, prompt, resetForm, skills, w])
+  }, [deliver, deliverOnly, description, events, name, prompt, reload, resetForm, skills, w])
 
   const handleToggle = useCallback(
     async (subName: string, nextEnabled: boolean) => {
       setTogglingName(subName)
-      // Optimistic paint; an authoritative reload gets the last word.
-      setData(current =>
+      // Optimistic cache paint; the invalidate below lets backend truth win.
+      queryClient.setQueryData<WebhooksResponse>(queryKey, current =>
         current
           ? {
               ...current,
@@ -243,15 +259,15 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       try {
         await setWebhookEnabled(subName, nextEnabled)
         notify({ kind: 'success', message: nextEnabled ? w.enabled(subName) : w.disabled(subName) })
-        void loadWebhooks(true)
+        void reload(true)
       } catch (err) {
-        await loadWebhooks(true)
+        await reload(true)
         notifyError(err, w.toggleFailed(subName))
       } finally {
         setTogglingName(null)
       }
     },
-    [loadWebhooks, w]
+    [queryClient, queryKey, reload, w]
   )
 
   const handleDelete = useCallback(async () => {
@@ -265,13 +281,13 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
       await deleteWebhook(pendingDelete)
       notify({ kind: 'success', message: `${pendingDelete}` })
       setPendingDelete(null)
-      void loadWebhooks(true)
+      void reload(true)
     } catch (err) {
       notifyError(err, w.deleteFailed(pendingDelete))
     } finally {
       setDeleting(false)
     }
-  }, [loadWebhooks, pendingDelete, w])
+  }, [pendingDelete, reload, w])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -331,7 +347,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
 
   return (
     <Panel onClose={onClose}>
-      {!data ? (
+      {loading ? (
         <PageLoader label={w.loading} />
       ) : subscriptions.length === 0 ? (
         <>

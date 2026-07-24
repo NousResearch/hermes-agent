@@ -508,6 +508,21 @@ class TestMultipleWorktrees:
             assert not Path(info["path"]).exists()
 
 
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
 class TestWorktreeDirectorySymlink:
     """Test .worktreeinclude with directories (symlinked)."""
 

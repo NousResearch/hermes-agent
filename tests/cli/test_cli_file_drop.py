@@ -1,10 +1,26 @@
 """Tests for _detect_file_drop — file path detection that prevents
 dragged/pasted absolute paths from being mistaken for slash commands."""
 
+import os
 
 import pytest
 
 from cli import _detect_file_drop
+
+
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    import tempfile
+    from pathlib import Path
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +222,26 @@ class TestEscapedSpaces:
         assert result["path"] == tmp_image_with_spaces
         assert result["is_image"] is True
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows drive-letter URI contract")
+    def test_windows_drive_letter_file_uri_drops_url_leading_slash(self, tmp_path):
+        image = tmp_path / "drive-uri.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        uri = image.as_uri()
+        assert uri.startswith("file:///") and ":/" in uri
+
+        result = _detect_file_drop(uri)
+
+        assert result is not None
+        assert result["path"] == image
+
     def test_tilde_prefixed_path(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         img = home / "storage" / "shared" / "Pictures" / "cat.png"
         img.parent.mkdir(parents=True, exist_ok=True)
         img.write_bytes(b"\x89PNG\r\n\x1a\n")
         monkeypatch.setenv("HOME", str(home))
+        # ntpath.expanduser ignores HOME (Python 3.8+) — it wants USERPROFILE.
+        monkeypatch.setenv("USERPROFILE", str(home))
 
         result = _detect_file_drop("~/storage/shared/Pictures/cat.png what is this?")
 
@@ -241,6 +271,7 @@ class TestEdgeCases:
         assert result is not None
         assert result["is_image"] is False
 
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_symlink_to_file(self, tmp_image, tmp_path):
         link = tmp_path / "link.png"
         link.symlink_to(tmp_image)

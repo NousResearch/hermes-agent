@@ -9,6 +9,16 @@ import model_tools
 import tools.mcp_tool
 
 
+def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(capsys):
+    with patch(
+        "prompt_toolkit.print_formatted_text",
+        side_effect=RuntimeError("no console screen buffer"),
+    ):
+        banner.cprint("fallback text")
+
+    assert capsys.readouterr().out == "fallback text\n"
+
+
 def test_display_toolset_name_strips_legacy_suffix():
     assert banner._display_toolset_name("homeassistant_tools") == "homeassistant"
     assert banner._display_toolset_name("honcho_tools") == "honcho"

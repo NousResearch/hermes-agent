@@ -58,7 +58,16 @@ class TestResumeQuietStderr:
         assert "Session not found" in captured.err
         assert "hermes sessions list" in captured.err
 
-    def test_session_not_found_goes_to_stdout_in_full_mode(self, capsys):
+    def test_session_not_found_goes_to_stdout_in_full_mode(self, capsys, monkeypatch):
+        # The full-mode path prints through prompt_toolkit, which caches its
+        # output object on the AppSession at first use. If an earlier test
+        # already created it bound to the real console (Win32Output writes
+        # via console API, invisible to capsys), this test sees empty stdout.
+        # Reset the cache so output creation happens under capsys.
+        from prompt_toolkit.application.current import get_app_session
+
+        monkeypatch.setattr(get_app_session(), "_output", None)
+
         db = MagicMock()
         db.get_session.return_value = None
         cli = _make_cli(quiet=False, db=db)

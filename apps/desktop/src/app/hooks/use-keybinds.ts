@@ -16,7 +16,8 @@ import {
   setFileBrowserOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
-  toggleSidebarOpen
+  toggleSidebarOpen,
+  toggleTimelineVisible
 } from '@/store/layout'
 import {
   $newChatProfile,
@@ -160,6 +161,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
+    'view.toggleTimeline': toggleTimelineVisible,
     // ⌘J toggles the right sidebar — but a layout with no right side (e.g.
     // terminal-on-bottom) would leave it a dead key, so it falls back to the
     // terminal there. The single "secondary panel" toggle.

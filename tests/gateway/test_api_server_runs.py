@@ -948,3 +948,38 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+class TestRunsProviderAuthFailure:
+    @pytest.mark.asyncio
+    async def test_status_reports_provider_auth_failure_distinctly(self, adapter):
+        """/v1/runs builds its own agent via _create_agent() and does not
+        route through _run_agent(), so the controlled "Provider
+        authentication failed" message added there does not cover this
+        endpoint. _handle_runs()'s own _ProviderAuthResolutionError branch
+        must give the same distinguished message instead of the generic
+        except-Exception "run failed" text."""
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _ProviderAuthResolutionError(
+                    "No credentials found for provider 'nous'"
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "failed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "failed"
+                assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
+                assert status["last_event"] == "run.failed"

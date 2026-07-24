@@ -314,6 +314,15 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
         return True
     if normalized_provider == "custom":
         return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+
+    # ProviderProfile aliases are registered as additional keys pointing to
+    # the same ProviderConfig. Compare canonical registry IDs so an explicit
+    # mode persisted under an alias is still recognized as belonging to the
+    # runtime provider family.
+    provider_config = PROVIDER_REGISTRY.get(normalized_provider)
+    configured_config = PROVIDER_REGISTRY.get(normalized_configured)
+    if provider_config is not None and configured_config is not None:
+        return provider_config.id == configured_config.id
     return normalized_configured == normalized_provider
 
 
@@ -367,6 +376,34 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
         if normalized in _VALID_API_MODES:
             return normalized
     return None
+
+
+def _default_api_mode_for_provider(provider: str, base_url: str) -> str:
+    """Resolve api_mode when neither special-case branches nor persisted
+    config decided.
+
+    Precedence (persisted config was already consulted by the caller, so
+    existing config and URL precedence is unchanged):
+
+      1. URL auto-detection — /anthropic suffix, api.openai.com,
+         Kimi /coding, etc. (``_detect_api_mode_for_url``).
+      2. The api_mode declared by the provider's registered
+         ``ProviderProfile``, bridged into ``ProviderConfig.api_mode``.
+         Covers plugin providers whose endpoints are not
+         URL-self-describing — e.g. Volcengine Ark's ``/api/coding``
+         speaks Anthropic Messages but carries no ``/anthropic`` marker,
+         so URL detection alone silently degrades it to
+         ``chat_completions`` and every request 404s (#53054).
+      3. ``"chat_completions"`` (unchanged default).
+    """
+    detected = _detect_api_mode_for_url(base_url)
+    if detected:
+        return detected
+    pconfig = PROVIDER_REGISTRY.get((provider or "").strip().lower())
+    declared = _parse_api_mode(getattr(pconfig, "api_mode", None)) if pconfig else None
+    if declared:
+        return declared
+    return "chat_completions"
 
 
 def _nous_inference_base_url_override() -> str:
@@ -516,12 +553,11 @@ def _resolve_runtime_from_pool_entry(
         elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
             api_mode = configured_mode
         else:
-            # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
-            # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
+            # URL auto-detection (/anthropic suffix, Kimi /coding,
+            # api.openai.com / api.x.ai → codex_responses), then the
+            # profile-declared api_mode for non-self-describing plugin
+            # endpoints (#53054).
+            api_mode = _default_api_mode_for_provider(provider, base_url)
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
@@ -1599,14 +1635,16 @@ def _resolve_explicit_runtime(
             api_mode = "codex_responses"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
+            if configured_mode and _provider_supports_explicit_api_mode(
+                provider, model_cfg.get("provider")
+            ):
                 api_mode = configured_mode
             else:
-                # Auto-detect from URL (Anthropic /anthropic suffix,
-                # api.openai.com → Responses, Kimi /coding, etc.).
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                # URL auto-detection (Anthropic /anthropic suffix,
+                # api.openai.com → Responses, Kimi /coding, etc.), then
+                # the profile-declared api_mode for non-self-describing
+                # plugin endpoints (#53054).
+                api_mode = _default_api_mode_for_provider(provider, base_url)
 
         return {
             "provider": provider,
@@ -2195,12 +2233,11 @@ def resolve_runtime_provider(
             elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
                 api_mode = configured_mode
             else:
-                # Auto-detect Anthropic-compatible endpoints by URL convention
-                # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                # URL auto-detection (e.g. https://api.minimax.io/anthropic,
+                # api.openai.com / api.x.ai → codex_responses), then the
+                # profile-declared api_mode for non-self-describing plugin
+                # endpoints (#53054).
+                api_mode = _default_api_mode_for_provider(provider, base_url)
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         if provider in {"opencode-zen", "opencode-go"}:
             from hermes_cli.models import normalize_opencode_base_url

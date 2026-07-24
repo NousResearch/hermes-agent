@@ -28,13 +28,31 @@ def _capabilities(value: str) -> dict:
 
 
 def cmd_nodes_enroll(args) -> None:
-    node = _registry().enroll(
+    issuance = _registry().enroll(
         enrollment_key=args.enrollment_key,
         node_id=args.node_id,
         role=args.role,
         owner=args.owner,
         actor=args.actor,
         capabilities=args.capabilities,
+    )
+    _print({"node": asdict(issuance.node), "credential": issuance.credential})
+
+
+def cmd_nodes_rotate_credential(args) -> None:
+    issuance = _registry().rotate_credential(
+        args.node_id,
+        actor=args.actor,
+        expected_credential_revision=args.expected_credential_revision,
+    )
+    _print({"node": asdict(issuance.node), "credential": issuance.credential})
+
+
+def cmd_nodes_revoke_credential(args) -> None:
+    node = _registry().revoke_credential(
+        args.node_id,
+        actor=args.actor,
+        expected_credential_revision=args.expected_credential_revision,
     )
     _print(asdict(node))
 
@@ -112,6 +130,20 @@ def build_harness_parser(subparsers) -> None:
     transition.add_argument("--expected-revision", required=True, type=int)
     transition.add_argument("--reason", required=True)
     transition.set_defaults(func=cmd_nodes_transition)
+
+    rotate = nodes_sub.add_parser(
+        "rotate-credential", help="Rotate and return a node credential once"
+    )
+    rotate.add_argument("node_id")
+    rotate.add_argument("--actor", required=True)
+    rotate.add_argument("--expected-credential-revision", required=True, type=int)
+    rotate.set_defaults(func=cmd_nodes_rotate_credential)
+
+    revoke = nodes_sub.add_parser("revoke-credential", help="Revoke a node credential")
+    revoke.add_argument("node_id")
+    revoke.add_argument("--actor", required=True)
+    revoke.add_argument("--expected-credential-revision", required=True, type=int)
+    revoke.set_defaults(func=cmd_nodes_revoke_credential)
 
     history = nodes_sub.add_parser("history", help="Show node audit history")
     history.add_argument("node_id")

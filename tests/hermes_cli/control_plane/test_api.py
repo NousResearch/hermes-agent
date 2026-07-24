@@ -50,7 +50,9 @@ async def test_api_and_cli_share_the_authoritative_registry(
 
     enrolled = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
     assert enrolled.status_code == 200
-    assert enrolled.json()["state"] == "enrolled"
+    issuance = enrolled.json()
+    assert issuance["node"]["state"] == "enrolled"
+    assert issuance["credential"]
 
     args = _parser().parse_args([
         "harness",
@@ -60,7 +62,7 @@ async def test_api_and_cli_share_the_authoritative_registry(
         "enrolled",
     ])
     args.func(args)
-    assert json.loads(capsys.readouterr().out) == [enrolled.json()]
+    assert json.loads(capsys.readouterr().out) == [issuance["node"]]
 
     args = _parser().parse_args([
         "harness",
@@ -117,7 +119,8 @@ async def test_api_contracts_and_lifecycle_error_mappings(
     first = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
     retry = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
     assert retry.status_code == 200
-    assert retry.json() == first.json()
+    assert retry.json()["node"] == first.json()["node"]
+    assert retry.json()["credential"] is None
 
     conflict = await client.post(
         "/api/control-plane/v1/nodes",
@@ -180,3 +183,63 @@ async def test_api_contracts_and_lifecycle_error_mappings(
         missing = await client.get(path)
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "node_not_found"
+
+
+@pytest.mark.asyncio
+async def test_api_authentication_rotation_revocation_and_non_disclosure(
+    tmp_path, monkeypatch, client
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    enrolled = await client.post("/api/control-plane/v1/nodes", json=_enrollment())
+    issuance = enrolled.json()
+    raw = issuance["credential"]
+
+    authenticated = await client.post(
+        "/api/control-plane/v1/nodes/node-1/authenticate",
+        json={"credential": raw},
+    )
+    assert authenticated.status_code == 200
+    assert authenticated.json() == {"authenticated": True}
+
+    rejected = await client.post(
+        "/api/control-plane/v1/nodes/node-1/authenticate",
+        json={"credential": f"{raw}x"},
+    )
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["code"] == "invalid_node_credential"
+
+    rotated = await client.post(
+        "/api/control-plane/v1/nodes/node-1/credential/rotate",
+        json={"actor": "operator:bob", "expected_credential_revision": 1},
+    )
+    assert rotated.status_code == 200
+    replacement = rotated.json()["credential"]
+    assert replacement and replacement != raw
+
+    stale = await client.post(
+        "/api/control-plane/v1/nodes/node-1/credential/revoke",
+        json={"actor": "operator:bob", "expected_credential_revision": 1},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "credential_revision_conflict"
+
+    revoked = await client.post(
+        "/api/control-plane/v1/nodes/node-1/credential/revoke",
+        json={"actor": "operator:bob", "expected_credential_revision": 2},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["credential_status"] == "revoked"
+
+    rejected = await client.post(
+        "/api/control-plane/v1/nodes/node-1/authenticate",
+        json={"credential": replacement},
+    )
+    assert rejected.status_code == 401
+
+    shown = await client.get("/api/control-plane/v1/nodes/node-1")
+    history = await client.get("/api/control-plane/v1/nodes/node-1/history")
+    audit = await client.get("/api/control-plane/v1/audit")
+    public_output = json.dumps([shown.json(), history.json(), audit.json()])
+    assert raw not in public_output
+    assert replacement not in public_output
+    assert audit.json() == {"valid": True}

@@ -2,6 +2,8 @@
 
 from .nodes import (
     ConcurrencyConflict,
+    CredentialConflict,
+    CredentialIssuance,
     IdempotencyConflict,
     InvalidTransition,
     Node,
@@ -11,6 +13,8 @@ from .nodes import (
 
 __all__ = [
     "ConcurrencyConflict",
+    "CredentialConflict",
+    "CredentialIssuance",
     "IdempotencyConflict",
     "InvalidTransition",
     "Node",

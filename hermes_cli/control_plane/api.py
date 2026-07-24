@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 
 from .nodes import (
     ConcurrencyConflict,
+    CredentialConflict,
+    CredentialIssuance,
     IdempotencyConflict,
     InvalidTransition,
     NodeRegistry,
@@ -36,6 +38,15 @@ class NodeTransition(BaseModel):
     reason: str
 
 
+class NodeAuthentication(BaseModel):
+    credential: str
+
+
+class CredentialMutation(BaseModel):
+    actor: str
+    expected_credential_revision: int
+
+
 class NodeView(BaseModel):
     id: str
     enrollment_key: str
@@ -46,6 +57,22 @@ class NodeView(BaseModel):
     revision: int
     created_at: int
     updated_at: int
+    credential_revision: int
+    credential_status: Literal["active", "revoked"]
+    credential_issued_at: int
+    credential_rotated_at: int | None
+    credential_revoked_at: int | None
+
+
+class CredentialIssuanceView(BaseModel):
+    node: NodeView
+    credential: str | None = Field(
+        description="Raw credential, present only at initial issuance or rotation"
+    )
+
+
+class AuthenticationResult(BaseModel):
+    authenticated: Literal[True]
 
 
 class NodeList(BaseModel):
@@ -85,6 +112,7 @@ class ErrorResponse(BaseModel):
 
 ERROR_RESPONSES = {
     400: {"model": ErrorResponse, "description": "Invalid request"},
+    401: {"model": ErrorResponse, "description": "Node authentication failed"},
     404: {"model": ErrorResponse, "description": "Managed node not found"},
     409: {"model": ErrorResponse, "description": "Lifecycle or revision conflict"},
 }
@@ -101,13 +129,74 @@ def _error(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
-@router.post("/nodes", response_model=NodeView, responses=ERROR_RESPONSES)
+def _issuance(value: CredentialIssuance) -> dict[str, Any]:
+    return {"node": asdict(value.node), "credential": value.credential}
+
+
+@router.post("/nodes", response_model=CredentialIssuanceView, responses=ERROR_RESPONSES)
 async def enroll_node(body: NodeEnrollment):
     """Enroll a node, or return its existing identity on an identical retry."""
     try:
         node = _registry().enroll(**body.model_dump())
     except IdempotencyConflict as exc:
         return _error(409, "enrollment_conflict", str(exc))
+    except ValueError as exc:
+        return _error(400, "invalid_request", str(exc))
+    return _issuance(node)
+
+
+@router.post(
+    "/nodes/{node_id}/authenticate",
+    response_model=AuthenticationResult,
+    responses=ERROR_RESPONSES,
+)
+async def authenticate_node(node_id: str, body: NodeAuthentication):
+    try:
+        authenticated = _registry().authenticate(node_id, body.credential)
+    except ValueError:
+        authenticated = False
+    if not authenticated:
+        return _error(401, "invalid_node_credential", "node authentication failed")
+    return {"authenticated": True}
+
+
+@router.post(
+    "/nodes/{node_id}/credential/rotate",
+    response_model=CredentialIssuanceView,
+    responses=ERROR_RESPONSES,
+)
+async def rotate_node_credential(node_id: str, body: CredentialMutation):
+    try:
+        issuance = _registry().rotate_credential(
+            node_id,
+            actor=body.actor,
+            expected_credential_revision=body.expected_credential_revision,
+        )
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    except CredentialConflict as exc:
+        return _error(409, "credential_revision_conflict", str(exc))
+    except ValueError as exc:
+        return _error(400, "invalid_request", str(exc))
+    return _issuance(issuance)
+
+
+@router.post(
+    "/nodes/{node_id}/credential/revoke",
+    response_model=NodeView,
+    responses=ERROR_RESPONSES,
+)
+async def revoke_node_credential(node_id: str, body: CredentialMutation):
+    try:
+        node = _registry().revoke_credential(
+            node_id,
+            actor=body.actor,
+            expected_credential_revision=body.expected_credential_revision,
+        )
+    except KeyError:
+        return _error(404, "node_not_found", f"managed node not found: {node_id}")
+    except CredentialConflict as exc:
+        return _error(409, "credential_revision_conflict", str(exc))
     except ValueError as exc:
         return _error(400, "invalid_request", str(exc))
     return asdict(node)

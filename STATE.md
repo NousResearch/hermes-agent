@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 04:07 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:14 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -127,6 +127,14 @@ the snapshot is stale; reconcile any discovered drift back into this file.
   audit JSON contracts plus stable lifecycle error/status mappings.
 - Verified bidirectional API/CLI visibility against one isolated temporary
   `HERMES_HOME` and `control-plane.db`.
+- Added authenticated managed-node enrollment with 256-bit opaque credentials,
+  one-time raw delivery, SHA-256 verifier-only persistence, constant-time
+  authentication, explicit audited revocation and rotation, independent
+  credential revisions, and stable API error mappings.
+- Kept credential status and timestamps visible across the shared API/CLI
+  inventory while excluding raw credentials and verifiers from node views,
+  list/show/history/audit output, and audit event details. Legacy nodes migrate
+  to revoked credentials and require an explicit audited rotation.
 
 ### Packaging, security, and operations
 
@@ -154,18 +162,15 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 ## Active priorities
 
-1. Add authenticated enrollment and revocable node credentials without storing
-   plaintext secrets in control-plane state.
-2. Add observed health/capability reports and desired-policy reconciliation.
-3. Review the local commit series and decide whether to push it or open a pull
+1. Add observed health/capability reports and desired-policy reconciliation.
+2. Review the local commit series and decide whether to push it or open a pull
    request against the desired remote branch.
-4. Select and configure an inference backend only when deployment work requires
+3. Select and configure an inference backend only when deployment work requires
    one, then run its backend contract smoke tests.
 
 ## Next recommended task
 
-Add authenticated managed-node enrollment and revocable node credentials
-without storing plaintext secrets in control-plane state.
+Add observed health/capability reports and desired-policy reconciliation.
 
 ## References
 

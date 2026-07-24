@@ -9,7 +9,9 @@ optimistic concurrency, and a hash-chained audit history.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 import time
 import uuid
@@ -49,6 +51,15 @@ CREATE TABLE IF NOT EXISTS managed_node_events (
 
 CREATE INDEX IF NOT EXISTS idx_managed_node_events_node_sequence
     ON managed_node_events(node_id, sequence);
+
+CREATE TABLE IF NOT EXISTS managed_node_credentials (
+    node_id        TEXT PRIMARY KEY REFERENCES managed_nodes(id),
+    verifier       TEXT NOT NULL,
+    revision       INTEGER NOT NULL,
+    issued_at      INTEGER NOT NULL,
+    rotated_at     INTEGER,
+    revoked_at     INTEGER
+);
 """
 
 INITIAL_STATE = "enrolled"
@@ -80,6 +91,10 @@ class InvalidTransition(ValueError):
     """The requested lifecycle transition is not allowed."""
 
 
+class CredentialConflict(RuntimeError):
+    """The caller acted on a stale credential revision."""
+
+
 @dataclass(frozen=True)
 class Node:
     id: str
@@ -91,6 +106,19 @@ class Node:
     revision: int
     created_at: int
     updated_at: int
+    credential_revision: int
+    credential_status: str
+    credential_issued_at: int
+    credential_rotated_at: int | None
+    credential_revoked_at: int | None
+
+
+@dataclass(frozen=True)
+class CredentialIssuance:
+    """One-time credential delivery paired with its non-secret node view."""
+
+    node: Node
+    credential: str | None
 
 
 @dataclass(frozen=True)
@@ -131,9 +159,13 @@ class NodeRegistry:
         db_path: Path | None = None,
         *,
         clock: Callable[[], float] = time.time,
+        credential_factory: Callable[[], str] | None = None,
     ) -> None:
         self.db_path = db_path or control_plane_db_path()
         self._clock = clock
+        self._credential_factory = credential_factory or (
+            lambda: f"hermes_node_{secrets.token_urlsafe(32)}"
+        )
 
     def connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,10 +177,64 @@ class NodeRegistry:
 
             apply_wal_with_fallback(conn, db_label="control-plane.db")
             conn.executescript(SCHEMA_SQL)
+            self._migrate_uncredentialed_nodes(conn)
         except Exception:
             conn.close()
             raise
         return conn
+
+    def _migrate_uncredentialed_nodes(self, conn: sqlite3.Connection) -> None:
+        """Safely disable legacy nodes until an operator rotates a credential."""
+        missing = conn.execute(
+            """
+            SELECT 1
+            FROM managed_nodes
+            LEFT JOIN managed_node_credentials
+              ON managed_node_credentials.node_id = managed_nodes.id
+            WHERE managed_node_credentials.node_id IS NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if missing is None:
+            return
+        now = int(self._clock())
+        with write_txn(conn):
+            rows = conn.execute(
+                """
+                SELECT managed_nodes.*
+                FROM managed_nodes
+                LEFT JOIN managed_node_credentials
+                  ON managed_node_credentials.node_id = managed_nodes.id
+                WHERE managed_node_credentials.node_id IS NULL
+                ORDER BY managed_nodes.created_at, managed_nodes.id
+                """
+            ).fetchall()
+            for row in rows:
+                discarded_credential = self._new_credential()
+                conn.execute(
+                    """
+                    INSERT INTO managed_node_credentials (
+                        node_id, verifier, revision, issued_at, rotated_at, revoked_at
+                    ) VALUES (?, ?, 1, ?, NULL, ?)
+                    """,
+                    (
+                        row["id"],
+                        self._credential_verifier(discarded_credential),
+                        now,
+                        now,
+                    ),
+                )
+                self._append_event(
+                    conn,
+                    node_id=row["id"],
+                    event_type="node.credential_migrated_revoked",
+                    actor="system:migration",
+                    from_state=row["state"],
+                    to_state=row["state"],
+                    revision=row["revision"],
+                    occurred_at=now,
+                    details={"credential_revision": 1},
+                )
 
     def enroll(
         self,
@@ -159,8 +245,8 @@ class NodeRegistry:
         actor: str,
         capabilities: Mapping[str, Any] | None = None,
         node_id: str | None = None,
-    ) -> Node:
-        """Enroll once, returning the same node for an identical retry."""
+    ) -> CredentialIssuance:
+        """Enroll once and return the new raw credential exactly once."""
         key = _required_text(enrollment_key, "enrollment_key")
         role = _required_text(role, "role")
         owner = _required_text(owner, "owner")
@@ -189,8 +275,12 @@ class NodeRegistry:
                     raise IdempotencyConflict(
                         f"enrollment key {key!r} already identifies a different node"
                     )
-                return self._node(existing)
+                return CredentialIssuance(
+                    node=self._node_with_credential(conn, existing),
+                    credential=None,
+                )
 
+            credential = self._new_credential()
             conn.execute(
                 """
                 INSERT INTO managed_nodes (
@@ -209,6 +299,14 @@ class NodeRegistry:
                     now,
                 ),
             )
+            conn.execute(
+                """
+                INSERT INTO managed_node_credentials (
+                    node_id, verifier, revision, issued_at, rotated_at, revoked_at
+                ) VALUES (?, ?, 1, ?, NULL, NULL)
+                """,
+                (node_id, self._credential_verifier(credential), now),
+            )
             self._append_event(
                 conn,
                 node_id=node_id,
@@ -222,12 +320,65 @@ class NodeRegistry:
                     "capabilities": json.loads(capabilities_json),
                     "owner": owner,
                     "role": role,
+                    "credential_revision": 1,
                 },
             )
             row = conn.execute(
                 "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
             ).fetchone()
-            return self._node(row)
+            return CredentialIssuance(
+                node=self._node_with_credential(conn, row),
+                credential=credential,
+            )
+
+    def authenticate(self, node_id: str, credential: str) -> bool:
+        """Verify an active node credential without exposing its verifier."""
+        node_id = _required_text(node_id, "node_id")
+        candidate = _required_text(credential, "credential")
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT verifier, revoked_at
+                FROM managed_node_credentials WHERE node_id = ?
+                """,
+                (node_id,),
+            ).fetchone()
+        if row is None or row["revoked_at"] is not None:
+            return False
+        return hmac.compare_digest(
+            row["verifier"],
+            self._credential_verifier(candidate),
+        )
+
+    def rotate_credential(
+        self,
+        node_id: str,
+        *,
+        actor: str,
+        expected_credential_revision: int,
+    ) -> CredentialIssuance:
+        """Invalidate the prior credential and issue a replacement once."""
+        return self._change_credential(
+            node_id,
+            actor=actor,
+            expected_credential_revision=expected_credential_revision,
+            revoke=False,
+        )
+
+    def revoke_credential(
+        self,
+        node_id: str,
+        *,
+        actor: str,
+        expected_credential_revision: int,
+    ) -> Node:
+        """Explicitly revoke a node credential."""
+        return self._change_credential(
+            node_id,
+            actor=actor,
+            expected_credential_revision=expected_credential_revision,
+            revoke=True,
+        ).node
 
     def transition(
         self,
@@ -285,14 +436,14 @@ class NodeRegistry:
             updated = conn.execute(
                 "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
             ).fetchone()
-            return self._node(updated)
+            return self._node_with_credential(conn, updated)
 
     def get(self, node_id: str) -> Node | None:
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
             ).fetchone()
-            return self._node(row) if row is not None else None
+            return self._node_with_credential(conn, row) if row is not None else None
 
     def list(self, *, state: str | None = None) -> list[Node]:
         if state is not None and state not in LIFECYCLE_STATES:
@@ -304,7 +455,10 @@ class NodeRegistry:
             params = (state,)
         query += " ORDER BY created_at, id"
         with self.connect() as conn:
-            return [self._node(row) for row in conn.execute(query, params)]
+            return [
+                self._node_with_credential(conn, row)
+                for row in conn.execute(query, params)
+            ]
 
     def history(self, node_id: str) -> list[NodeEvent]:
         with self.connect() as conn:
@@ -343,7 +497,7 @@ class NodeRegistry:
         return True
 
     @staticmethod
-    def _node(row: sqlite3.Row) -> Node:
+    def _node(row: sqlite3.Row, credential: sqlite3.Row) -> Node:
         return Node(
             id=row["id"],
             enrollment_key=row["enrollment_key"],
@@ -354,7 +508,109 @@ class NodeRegistry:
             revision=row["revision"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            credential_revision=credential["revision"],
+            credential_status=(
+                "revoked" if credential["revoked_at"] is not None else "active"
+            ),
+            credential_issued_at=credential["issued_at"],
+            credential_rotated_at=credential["rotated_at"],
+            credential_revoked_at=credential["revoked_at"],
         )
+
+    def _node_with_credential(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Node:
+        credential = conn.execute(
+            """
+            SELECT revision, issued_at, rotated_at, revoked_at
+            FROM managed_node_credentials WHERE node_id = ?
+            """,
+            (row["id"],),
+        ).fetchone()
+        if credential is None:
+            raise RuntimeError(f"managed node {row['id']} has no credential")
+        return self._node(row, credential)
+
+    def _change_credential(
+        self,
+        node_id: str,
+        *,
+        actor: str,
+        expected_credential_revision: int,
+        revoke: bool,
+    ) -> CredentialIssuance:
+        node_id = _required_text(node_id, "node_id")
+        actor = _required_text(actor, "actor")
+        now = int(self._clock())
+        raw_credential = None if revoke else self._new_credential()
+        with self.connect() as conn, write_txn(conn):
+            node_row = conn.execute(
+                "SELECT * FROM managed_nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if node_row is None:
+                raise KeyError(node_id)
+            credential_row = conn.execute(
+                "SELECT * FROM managed_node_credentials WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            if credential_row["revision"] != expected_credential_revision:
+                raise CredentialConflict(
+                    f"node {node_id} credential is at revision "
+                    f"{credential_row['revision']}, not "
+                    f"{expected_credential_revision}"
+                )
+            if revoke and credential_row["revoked_at"] is not None:
+                raise CredentialConflict(
+                    f"node {node_id} credential is already revoked"
+                )
+
+            revision = expected_credential_revision + 1
+            if revoke:
+                conn.execute(
+                    """
+                    UPDATE managed_node_credentials
+                    SET revision = ?, revoked_at = ?
+                    WHERE node_id = ? AND revision = ?
+                    """,
+                    (revision, now, node_id, expected_credential_revision),
+                )
+                event_type = "node.credential_revoked"
+            else:
+                conn.execute(
+                    """
+                    UPDATE managed_node_credentials
+                    SET verifier = ?, revision = ?, rotated_at = ?, revoked_at = NULL
+                    WHERE node_id = ? AND revision = ?
+                    """,
+                    (
+                        self._credential_verifier(raw_credential),
+                        revision,
+                        now,
+                        node_id,
+                        expected_credential_revision,
+                    ),
+                )
+                event_type = "node.credential_rotated"
+            self._append_event(
+                conn,
+                node_id=node_id,
+                event_type=event_type,
+                actor=actor,
+                from_state=node_row["state"],
+                to_state=node_row["state"],
+                revision=node_row["revision"],
+                occurred_at=now,
+                details={"credential_revision": revision},
+            )
+            return CredentialIssuance(
+                node=self._node_with_credential(conn, node_row),
+                credential=raw_credential,
+            )
+
+    def _new_credential(self) -> str:
+        credential = _required_text(self._credential_factory(), "credential")
+        return credential
+
+    @staticmethod
+    def _credential_verifier(credential: str) -> str:
+        return hashlib.sha256(credential.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _event(row: sqlite3.Row) -> NodeEvent:

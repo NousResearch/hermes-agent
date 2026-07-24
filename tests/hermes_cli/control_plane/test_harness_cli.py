@@ -81,7 +81,9 @@ def test_cli_enroll_list_transition_history_and_audit(tmp_path, monkeypatch, cap
         args.func(args)
         results.append(json.loads(capsys.readouterr().out))
 
-    assert results[0]["id"] == "node-1"
+    assert results[0]["node"]["id"] == "node-1"
+    raw = results[0]["credential"]
+    assert raw
     assert results[1][0]["state"] == "enrolled"
     assert results[2]["state"] == "active"
     assert [event["event_type"] for event in results[3]] == [
@@ -89,3 +91,49 @@ def test_cli_enroll_list_transition_history_and_audit(tmp_path, monkeypatch, cap
         "node.active",
     ]
     assert results[4] == {"valid": True}
+    public_output = json.dumps(results[1:])
+    assert raw not in public_output
+
+
+def test_cli_rotation_and_revocation_share_registry(tmp_path, monkeypatch, capsys):
+    registry = NodeRegistry(tmp_path / "control-plane.db", clock=lambda: 1_000)
+    monkeypatch.setattr(harness, "_registry", lambda: registry)
+    top = parser()
+    enrolled = registry.enroll(
+        enrollment_key="request-1",
+        node_id="node-1",
+        role="worker",
+        owner="ops",
+        actor="operator:alice",
+    )
+
+    args = top.parse_args([
+        "harness",
+        "nodes",
+        "rotate-credential",
+        "node-1",
+        "--actor",
+        "operator:bob",
+        "--expected-credential-revision",
+        "1",
+    ])
+    args.func(args)
+    rotated = json.loads(capsys.readouterr().out)
+    assert rotated["credential"]
+    assert not registry.authenticate("node-1", enrolled.credential)
+    assert registry.authenticate("node-1", rotated["credential"])
+
+    args = top.parse_args([
+        "harness",
+        "nodes",
+        "revoke-credential",
+        "node-1",
+        "--actor",
+        "operator:bob",
+        "--expected-credential-revision",
+        "2",
+    ])
+    args.func(args)
+    revoked = json.loads(capsys.readouterr().out)
+    assert revoked["credential_status"] == "revoked"
+    assert "credential" not in revoked

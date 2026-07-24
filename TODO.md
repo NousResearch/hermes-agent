@@ -90,7 +90,7 @@ changes.
 - [x] Add append-only hash-chained node audit history and verification.
 - [x] Add an operator CLI over the shared node registry.
 - [x] Expose the same contracts through a versioned control-plane API.
-- [ ] Add authenticated enrollment and revocable node credentials.
+- [x] Add authenticated enrollment and revocable node credentials.
 - [ ] Add observed-state reporting and desired-policy reconciliation.
 
 ## Evidence log
@@ -191,3 +191,14 @@ changes.
   the CLI/registry and CLI mutations through the API. The focused suite passes
   13 tests; Ruff, Ruff format, `git diff --check`, and a live web-app route
   registration smoke check pass.
+- 2026-07-24: Added one-time 256-bit opaque managed-node credential issuance,
+  verifier-only SHA-256 persistence, constant-time authentication, audited
+  rotation and revocation with independent optimistic revisions, and safe
+  revoked migration for legacy nodes. The shared CLI and versioned API expose
+  only non-secret credential status/timestamps outside issuance and rotation;
+  authentication failures map to stable 401 responses and credential revision
+  conflicts to stable 409 responses. Real-path isolated tests cover success,
+  rejection, persistence, rotation, revocation, non-disclosure, API/CLI
+  consistency, legacy migration, and audit integrity. The focused suite passes
+  18 tests; Ruff, Ruff format, `git diff --check`, isolated CLI help, and live
+  web-app OpenAPI route registration checks pass.

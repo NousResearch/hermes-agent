@@ -13,6 +13,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -25,7 +26,7 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { MODE_OPTIONS } from './constants'
 import { PetSettings } from './pet-settings'
-import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 
 function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) {
   // Preview in the *current* mode: the dark palette in Dark, and the light
@@ -248,6 +249,7 @@ export function AppearanceSettings() {
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
+  const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
@@ -469,6 +471,13 @@ export function AppearanceSettings() {
             }
             description={a.backdropDesc}
             title={a.backdropTitle}
+          />
+
+          <ToggleRow
+            checked={composerPopoutGesturesEnabled}
+            description={a.composerPopoutDesc}
+            label={a.composerPopoutTitle}
+            onChange={setComposerPopoutGesturesEnabled}
           />
 
           <ListRow

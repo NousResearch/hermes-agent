@@ -46,7 +46,16 @@ function gestureTargetOk(target: EventTarget | null) {
     return false
   }
 
-  return !target.closest('button, a, input, textarea, select, [role="menuitem"], [data-radix-popper-content-wrapper]')
+  return !target.closest(
+    'button, a, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [data-slot="composer-rich-input"], [role="menuitem"], [data-radix-popper-content-wrapper]'
+  )
+}
+
+/** Docked composer only peels from its exposed grab ring. Pointer events from
+ *  the editor and composer surface bubble through the root too, but they belong
+ *  to text selection and controls, never to the pop-out gesture. */
+function isDockDragPlatform(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest('[data-slot="composer-drag-region"]'))
 }
 
 /** Floating composer's 5px outer frame — grab here to drag without long-press. */
@@ -198,6 +207,10 @@ export function useComposerPopoutGestures({
         }
         setDragging(true)
 
+        return
+      }
+
+      if (!poppedOut && !isDockDragPlatform(event.target)) {
         return
       }
 

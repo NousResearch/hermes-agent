@@ -1102,3 +1102,87 @@ def test_desktop_launch_options_survives_config_error():
         flags, gpu = cli_main._desktop_launch_options()
     assert flags == []
     assert gpu == "auto"
+
+
+def _write_minimal_pe(path: Path, arch: str) -> None:
+    """Write a header-only PE whose COFF Machine matches *arch*."""
+    machines = {"x64": 0x8664, "arm64": 0xAA64, "ia32": 0x014C}
+    machine = machines[arch]
+    pe_offset = 0x40
+    buf = bytearray(pe_offset + 6)
+    buf[0:2] = b"MZ"
+    buf[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    buf[pe_offset : pe_offset + 4] = b"PE\0\0"
+    buf[pe_offset + 4 : pe_offset + 6] = machine.to_bytes(2, "little")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(buf))
+
+
+def test_read_pe_machine_arch_round_trip(tmp_path):
+    for arch in ("x64", "arm64", "ia32"):
+        exe = tmp_path / f"{arch}.exe"
+        _write_minimal_pe(exe, arch)
+        assert cli_main._read_pe_machine_arch(exe) == arch
+
+
+def test_desktop_packaged_executable_prefers_host_arch_on_windows(tmp_path, monkeypatch):
+    """x64 host must not relaunch a newer arm64 Hermes.exe (#69179)."""
+    root = _make_desktop_tree(tmp_path)
+    desktop = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    monkeypatch.setattr(cli_main, "_windows_host_cpu_arch", lambda: "x64")
+
+    arm = desktop / "release" / "win-arm64-unpacked" / "Hermes.exe"
+    x64 = desktop / "release" / "win-unpacked" / "Hermes.exe"
+    _write_minimal_pe(arm, "arm64")
+    _write_minimal_pe(x64, "x64")
+    # Make the wrong-arch tree look "newer" so a pure mtime picker would pick it.
+    import os
+    import time
+
+    newer = time.time() + 60
+    os.utime(arm, (newer, newer))
+
+    assert cli_main._desktop_packaged_executable(desktop) == x64
+
+
+def test_desktop_packaged_executable_rejects_only_wrong_arch_pe(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    monkeypatch.setattr(cli_main, "_windows_host_cpu_arch", lambda: "x64")
+
+    arm = desktop / "release" / "win-unpacked" / "Hermes.exe"
+    _write_minimal_pe(arm, "arm64")
+
+    assert cli_main._desktop_packaged_executable(desktop) is None
+    assert cli_main._desktop_any_unpacked_exe(desktop) is True
+    assert cli_main._desktop_build_needed(desktop, root, source_mode=False) is True
+
+
+def test_desktop_windows_exe_arch_ok_allows_unreadable_stub(tmp_path, monkeypatch):
+    """Empty/non-PE stubs stay accepted so unit fixtures keep working."""
+    exe = tmp_path / "Hermes.exe"
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_windows_host_cpu_arch", lambda: "x64")
+    assert cli_main._desktop_windows_exe_arch_ok(exe, "x64") is True
+
+
+def test_windows_host_cpu_arch_prefers_processor_env(monkeypatch):
+    """Process/env arch wins — Prism x64-on-ARM must resolve as x64 (#69179)."""
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    monkeypatch.setattr(
+        "platform.machine",
+        lambda: "ARM64",
+        raising=False,
+    )
+    # Import inside helper uses `import platform as _platform`, so patch the
+    # module attribute the helper will read after import.
+    import platform as platform_mod
+
+    monkeypatch.setattr(platform_mod, "machine", lambda: "ARM64")
+    assert cli_main._windows_host_cpu_arch() == "x64"
+
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
+    assert cli_main._windows_host_cpu_arch() == "arm64"

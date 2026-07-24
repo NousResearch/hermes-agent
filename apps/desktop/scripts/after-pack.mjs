@@ -13,14 +13,23 @@
  * a stamp failure must never fail an otherwise-good build (worst case is the
  * stock icon, not a broken app), so we log and resolve rather than throw.
  *
+ * Also verifies the packed Hermes.exe PE Machine matches the pack target
+ * (#69179). A wrong-arch electronDist can otherwise produce a launchable-
+ * looking win-unpacked tree that Windows rejects with 「此应用无法在你的电脑上运行」.
+ *
  * electron-builder passes a context with:
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
  *   - appOutDir:            the unpacked app directory for this target
+ *   - arch:                 Arch enum (0=ia32, 1=x64, 2=armv7l, 3=arm64, ...)
  *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
  */
 
+import fs from 'node:fs'
 import path from 'node:path'
 
+import { Arch } from 'electron-builder'
+
+import { normalizeCpuArch, peArchMatches, readPeArch } from './pe-arch.mjs'
 import { stampExeIdentity } from './set-exe-identity.mjs'
 
 export default async function afterPack(context) {
@@ -31,6 +40,28 @@ export default async function afterPack(context) {
   const productName = context.packager?.appInfo?.productFilename || 'Hermes'
   const exe = path.join(context.appOutDir, `${productName}.exe`)
   const desktopRoot = path.resolve(import.meta.dirname, '..')
+
+  const archName =
+    context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
+  const want = normalizeCpuArch(archName)
+  // Only gate when the packed exe is actually on disk. A missing path is
+  // electron-builder's problem (or a wrong productFilename); do not mis-report
+  // it as a PE arch mismatch.
+  if (want && fs.existsSync(exe) && !peArchMatches(exe, want)) {
+    const got = readPeArch(exe)
+    // Remove the bad exe so stamp/existence checks cannot treat it as ready
+    // and so the next rebuild cannot no-op on a poisoned tree.
+    try {
+      fs.rmSync(exe, { force: true })
+    } catch {
+      /* best-effort */
+    }
+    throw new Error(
+      `[after-pack] ${exe} PE arch is ${got ?? 'unreadable'} but target is ` +
+        `${want}. Refusing to ship a Windows desktop binary that would fail ` +
+        `with "This app can't run on your PC" (#69179).`
+    )
+  }
 
   try {
     await stampExeIdentity(exe, desktopRoot)

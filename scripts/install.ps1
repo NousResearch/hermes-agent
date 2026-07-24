@@ -3036,12 +3036,22 @@ function Install-Desktop {
     }
     Pop-Location
 
-    # 3. Sanity-check the produced binary. Probe both arches so this works
-    # on x64 and arm64 build machines.
-    $exeCandidates = @(
-        "$desktopDir\release\win-unpacked\Hermes.exe",
-        "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
-    )
+    # 3. Sanity-check the produced binary. Prefer the host OS arch first so a
+    # stale wrong-arch sibling (win-unpacked vs win-arm64-unpacked) cannot win
+    # just by existing -- Windows would then show "This app can't run on your PC"
+    # (#69179).
+    $hostArch = Get-WindowsArch
+    if ($hostArch -eq 'arm64') {
+        $exeCandidates = @(
+            "$desktopDir\release\win-arm64-unpacked\Hermes.exe",
+            "$desktopDir\release\win-unpacked\Hermes.exe"
+        )
+    } else {
+        $exeCandidates = @(
+            "$desktopDir\release\win-unpacked\Hermes.exe",
+            "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
+        )
+    }
     $found = $false
     $desktopExe = $null
     foreach ($cand in $exeCandidates) {

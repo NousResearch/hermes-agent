@@ -45,6 +45,18 @@ except ImportError:  # pragma: no cover - non-POSIX
 pytestmark = pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
 
 
+@pytest.fixture(autouse=True)
+def isolated_cron_store(tmp_path, monkeypatch):
+    """Never let these lock/claim regressions touch a user's live cron store."""
+    hermes_home = tmp_path / ".hermes"
+    cron_dir = hermes_home / "cron"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", cron_dir / "output")
+
+
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):
     """Hold an exclusive flock on *path* from a separate fd until released.
 

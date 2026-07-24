@@ -260,7 +260,10 @@ def _json_request(
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = resp.read().decode("utf-8")
-            return json.loads(payload) if payload else {}
+            try:
+                return json.loads(payload) if payload else {}
+            except json.JSONDecodeError as exc:
+                raise TelephonyError(f"Invalid JSON response from {url}: {exc.msg}") from exc
     except urllib.error.HTTPError as exc:
         body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
         try:

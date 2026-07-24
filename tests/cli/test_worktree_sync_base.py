@@ -122,3 +122,37 @@ class TestSetupWorktreeSyncBase:
         info = cli._setup_worktree(str(clone))
         assert info is not None
         assert _head(info["path"]) == remote_head
+
+
+class TestTuiLaunchHonorsWorktreeSync:
+    """The TUI launch path must honor worktree_sync, like the CLI chat path.
+
+    Regression: ``hermes_cli.main._launch_tui`` called ``_setup_worktree()``
+    with no ``sync_base`` argument, so a user who set ``worktree_sync: false``
+    (to branch from local HEAD — offline / pinned base) had that toggle
+    silently ignored when launching a TUI worktree, even though the CLI chat
+    path already resolved it via ``CLI_CONFIG.get("worktree_sync", True)``.
+    """
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_launch_tui_forwards_worktree_sync(self, flag, monkeypatch):
+        import cli
+        from hermes_cli import main
+
+        captured = {}
+
+        def _fake_setup_worktree(*args, **kwargs):
+            captured["sync_base"] = kwargs.get("sync_base")
+            # Return None so _launch_tui hits its early ``sys.exit(1)`` right
+            # after worktree setup, before it tries to spawn the real TUI.
+            return None
+
+        monkeypatch.setattr(cli, "load_cli_config", lambda: {"worktree_sync": flag})
+        monkeypatch.setattr(cli, "_setup_worktree", _fake_setup_worktree)
+        monkeypatch.setattr(cli, "_git_repo_root", lambda: None)
+        monkeypatch.setattr(cli, "_prune_stale_worktrees", lambda *a, **k: None)
+
+        with pytest.raises(SystemExit):
+            main._launch_tui(worktree=True)
+
+        assert captured["sync_base"] is flag

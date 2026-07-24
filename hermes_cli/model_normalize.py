@@ -210,6 +210,41 @@ def _dots_to_hyphens(model_name: str) -> str:
     return model_name.replace(".", "-")
 
 
+def _restore_claude_dots(model_name: str) -> str:
+    """Repair Anthropic-native Claude IDs for aggregator providers.
+
+    Anthropic's native API uses hyphenated version segments such as
+    ``claude-sonnet-4-6``. Aggregators like Nous expect the dot-style slug
+    instead: ``anthropic/claude-sonnet-4.6``. When a user copies a native
+    Anthropic ID into a Nous/OpenRouter-configured profile, preserve the
+    existing vendor prefix (if any) and reinsert the first short digit-pair
+    dot.
+    """
+    prefix = ""
+    bare = model_name
+    if "/" in model_name:
+        prefix, bare = model_name.split("/", 1)
+        prefix = f"{prefix}/"
+
+    if "." in bare or not bare.lower().startswith("claude-"):
+        return model_name
+
+    parts = bare.split("-")
+    for idx in range(1, len(parts) - 1):
+        left = parts[idx]
+        right = parts[idx + 1]
+        if not (left.isdigit() and right.isdigit()):
+            continue
+        if len(left) > 2 or len(right) > 2:
+            continue
+        repaired = "-".join(parts[:idx]) + f"-{left}.{right}"
+        if idx + 2 < len(parts):
+            repaired += "-" + "-".join(parts[idx + 2 :])
+        return f"{prefix}{repaired}"
+
+    return model_name
+
+
 def _normalize_provider_alias(provider_name: str) -> str:
     """Resolve provider aliases to Hermes' canonical ids."""
     raw = (provider_name or "").strip().lower()
@@ -391,6 +426,8 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
+        if provider == "nous":
+            name = _restore_claude_dots(name)
         return _prepend_vendor(name)
 
     # --- OpenCode Zen / OpenCode Go: flat-namespace resellers.
@@ -470,4 +507,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-

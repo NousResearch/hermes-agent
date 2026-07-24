@@ -159,6 +159,15 @@ class TestAggregatorProviders:
         result = normalize_model_for_provider("gpt-5.4", "nous")
         assert result == "openai/gpt-5.4"
 
+    @pytest.mark.parametrize("model,expected", [
+        ("claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"),
+        ("anthropic/claude-opus-4-6", "anthropic/claude-opus-4.6"),
+        ("claude-3-7-sonnet", "anthropic/claude-3.7-sonnet"),
+    ])
+    def test_nous_repairs_hyphenated_claude_versions(self, model, expected):
+        result = normalize_model_for_provider(model, "nous")
+        assert result == expected
+
     def test_vendor_already_present(self):
         result = normalize_model_for_provider("anthropic/claude-sonnet-4.6", "openrouter")
         assert result == "anthropic/claude-sonnet-4.6"

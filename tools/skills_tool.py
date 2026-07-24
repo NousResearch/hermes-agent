@@ -162,6 +162,17 @@ def _skills_dir() -> Path:
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
+
+def _skill_relative_file_path(skill_dir: Path, file_path: Path) -> str:
+    """Return a skill-internal relative path for tool output.
+
+    ``skill_view`` examples and follow-up ``file_path`` calls use POSIX-style
+    separators. ``Path.__str__`` emits backslashes on Windows, which makes
+    linked file hints platform-dependent.
+    """
+    return file_path.relative_to(skill_dir).as_posix()
+
+
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.
 _PLATFORM_MAP = {
@@ -1330,7 +1341,7 @@ def skill_view(
                 # Scan for all readable files
                 for f in skill_dir.rglob("*"):
                     if f.is_file() and f.name != "SKILL.md":
-                        rel = str(f.relative_to(skill_dir))
+                        rel = _skill_relative_file_path(skill_dir, f)
                         if rel.startswith("references/"):
                             available_files["references"].append(rel)
                         elif rel.startswith("templates/"):
@@ -1414,7 +1425,8 @@ def skill_view(
             references_dir = skill_dir / "references"
             if references_dir.exists():
                 reference_files = [
-                    str(f.relative_to(skill_dir)) for f in references_dir.glob("*.md")
+                    _skill_relative_file_path(skill_dir, f)
+                    for f in references_dir.glob("*.md")
                 ]
 
             templates_dir = skill_dir / "templates"
@@ -1430,7 +1442,7 @@ def skill_view(
                 ]:
                     template_files.extend(
                         [
-                            str(f.relative_to(skill_dir))
+                            _skill_relative_file_path(skill_dir, f)
                             for f in templates_dir.rglob(ext)
                         ]
                     )
@@ -1440,13 +1452,16 @@ def skill_view(
             if assets_dir.exists():
                 for f in assets_dir.rglob("*"):
                     if f.is_file():
-                        asset_files.append(str(f.relative_to(skill_dir)))
+                        asset_files.append(_skill_relative_file_path(skill_dir, f))
 
             scripts_dir = skill_dir / "scripts"
             if scripts_dir.exists():
                 for ext in ["*.py", "*.sh", "*.bash", "*.js", "*.ts", "*.rb"]:
                     script_files.extend(
-                        [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
+                        [
+                            _skill_relative_file_path(skill_dir, f)
+                            for f in scripts_dir.glob(ext)
+                        ]
                     )
 
         # Read tags/related_skills with backward compat:

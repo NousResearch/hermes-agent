@@ -2,7 +2,7 @@
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +14,7 @@ from tools.skills_tool import (
     _parse_tags,
     _get_category_from_path,
     _find_all_skills,
+    _skill_relative_file_path,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -495,6 +496,27 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is False
 
+    def test_view_nonexistent_file_lists_available_assets_with_posix_paths(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_text("API docs", encoding="utf-8")
+            assets_dir = skill_dir / "assets"
+            assets_dir.mkdir()
+            (assets_dir / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "run.py").write_text("print('ok')\n", encoding="utf-8")
+
+            raw = skill_view("my-skill", file_path="references/nope.md")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["available_files"]["references"] == ["references/api.md"]
+        assert result["available_files"]["assets"] == ["assets/logo.png"]
+        assert result["available_files"]["scripts"] == ["scripts/run.py"]
+
     def test_view_shows_linked_files(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
@@ -505,6 +527,12 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["linked_files"] is not None
         assert "references" in result["linked_files"]
+
+    def test_skill_relative_file_path_normalizes_windows_separators(self):
+        skill_dir = PureWindowsPath(r"C:\Users\me\.hermes\skills\my-skill")
+        file_path = skill_dir / "assets" / "logo.png"
+
+        assert _skill_relative_file_path(skill_dir, file_path) == "assets/logo.png"
 
     def test_view_tags_from_metadata(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

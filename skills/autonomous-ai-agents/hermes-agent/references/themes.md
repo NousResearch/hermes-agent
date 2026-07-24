@@ -1,15 +1,4 @@
----
-name: hermes-themes
-description: "Author a Hermes color theme that skins every surface."
-version: 1.0.0
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [theme, skin, appearance, cli, tui, desktop, self-config]
-    related_skills: []
----
-
-# Hermes Themes Skill
+# Themes / Skins — Author a Hermes Color Theme
 
 Author a Hermes **skin** — one YAML file that themes the CLI, the TUI, and the
 desktop GUI at once. The skin engine (`hermes_cli/skin_engine.py`) resolves the

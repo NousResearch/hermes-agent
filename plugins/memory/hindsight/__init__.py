@@ -1284,7 +1284,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = cfg_get(self._config, "banks", "hermes", default={})
-        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        static_bank_id = (
+            os.environ.get("HINDSIGHT_BANK_ID")
+            or self._config.get("bank_id")
+            or banks.get("bankId", "hermes")
+        )
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(
             self._bank_id_template,

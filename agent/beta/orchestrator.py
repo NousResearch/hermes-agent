@@ -199,6 +199,24 @@ def _reconcile_execution_response(
     return response
 
 
+def _reconcile_approved_without_executor(
+    response: ConsolidatedResponse,
+    operations: tuple[Operation, ...],
+    authorized_fingerprints: set[str],
+    executor: Callable[[Operation], str] | None,
+) -> ConsolidatedResponse:
+    """Represent approval as complete without claiming that execution occurred."""
+    if executor is not None or not operations:
+        return response
+    if any(operation.fingerprint not in authorized_fingerprints for operation in operations):
+        return response
+    return response.model_copy(update={
+        "result": "Approved operations awaiting executor",
+        "authorization_required": False,
+        "next_step": "Provide an executor, run the approved operations, and validate execution evidence",
+    })
+
+
 def orchestrate_request(
     request: str,
     parent_agent: Any,
@@ -273,17 +291,23 @@ def orchestrate_request(
     operations = _recommended_operations(request, response)
     issued: list[ApprovalReceipt] = []
     available = dict(receipts)
+    authorized_fingerprints: set[str] = set()
     for operation in operations:
         existing = available.get(operation.fingerprint)
         if existing is not None and gate.authorized(operation, existing):
+            authorized_fingerprints.add(operation.fingerprint)
             continue
         receipt = gate.request(operation)
         if receipt is not None:
             issued.append(receipt)
             available[operation.fingerprint] = receipt
+            authorized_fingerprints.add(operation.fingerprint)
 
     executed = _execute_approved(operations, available, gate, executor)
     response = _reconcile_execution_response(response, operations, executed)
+    response = _reconcile_approved_without_executor(
+        response, operations, authorized_fingerprints, executor
+    )
     return BetaRun(
         decision=decision,
         plan=plan,

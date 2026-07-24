@@ -621,23 +621,26 @@ DEFAULT_INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
 def get_inbound_media_max_bytes() -> int:
     """Return the max inbound image/audio/video bytes allowed in memory.
 
-    Reads ``gateway.max_inbound_media_bytes`` from config.yaml. ``0`` (or a
-    negative / unparseable value) disables the cap. Non-fatal if config is
-    unreadable — falls back to the default.
+    Reads ``gateway.max_inbound_media_bytes`` from config.yaml. ``0`` or a
+    negative value disables the cap. Unparseable values fall back to the
+    default limit. Non-fatal if config is unreadable.
     """
     try:
         from hermes_cli.config import load_config as _load_config
         cfg = _load_config()
     except Exception:
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
+
     gw = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
     if not isinstance(gw, dict) or "max_inbound_media_bytes" not in gw:
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
+
     try:
-        return int(gw["max_inbound_media_bytes"])
+        value = int(gw["max_inbound_media_bytes"])
     except (TypeError, ValueError):
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
 
+    return 0 if value <= 0 else value
 
 def validate_inbound_media_size(
     size: int,

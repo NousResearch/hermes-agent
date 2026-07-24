@@ -23928,8 +23928,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from tools.mcp_tool import discover_mcp_tools
         _loop = asyncio.get_running_loop()
         await _loop.run_in_executor(None, discover_mcp_tools)
+        logger.info("MCP tool discovery completed successfully")
     except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+        logger.warning("MCP tool discovery failed: %s", e)
 
     # Start the gateway
     success = await runner.start()

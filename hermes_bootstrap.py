@@ -49,11 +49,13 @@ against double-reconfigure.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+logger = logging.getLogger(__name__)
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -177,10 +179,13 @@ def activate_durable_lazy_target() -> None:
     try:
         from tools import lazy_deps
         lazy_deps.activate_durable_lazy_target()
-    except Exception:
+    except Exception as exc:
         # Bootstrap must never crash an entry point. If activation fails the
         # backend simply reports itself unavailable, exactly as before.
-        pass
+        logger.warning(
+            "Lazy-install activation failed; optional tools may be unavailable: %s",
+            exc,
+        )
 
 
 # Apply on import — entry points just need ``import hermes_bootstrap``

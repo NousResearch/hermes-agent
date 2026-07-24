@@ -4498,6 +4498,8 @@ def run_conversation(
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         elif classified.reason == FailoverReason.ssl_cert_verification:
                             agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
+                        elif classified.reason == FailoverReason.upstream_html:
+                            agent._buffer_status("⚠️ Upstream CDN/gateway blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
@@ -4529,6 +4531,11 @@ def run_conversation(
                     elif classified.reason == FailoverReason.ssl_cert_verification:
                         agent._emit_status(
                             f"❌ TLS certificate verification failed: "
+                            f"{_nonretryable_summary}"
+                        )
+                    elif classified.reason == FailoverReason.upstream_html:
+                        agent._emit_status(
+                            f"❌ Upstream CDN/gateway blocked this request: "
                             f"{_nonretryable_summary}"
                         )
                     else:
@@ -4580,6 +4587,15 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}      • Does your account have access to {_model}?", force=True)
                             if base_url_host_matches(str(_base), "openrouter.ai"):
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                    elif classified.reason == FailoverReason.upstream_html:
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 The provider endpoint returned a browser challenge.",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}      Try another network, endpoint, or fallback provider.",
+                            force=True,
+                        )
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                     # Content-policy blocks deserve their own actionable

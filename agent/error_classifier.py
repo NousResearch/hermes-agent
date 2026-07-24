@@ -38,6 +38,7 @@ class FailoverReason(enum.Enum):
     # Server-side
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
     server_error = "server_error"        # 500/502 — internal server error, retry
+    upstream_html = "upstream_html"      # CDN/gateway challenge page — fallback, don't re-auth
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
@@ -122,6 +123,14 @@ _BILLING_PATTERNS = [
     "model_not_supported_on_free_tier",
     "not available on the free tier",
 ]
+
+_CLOUDFLARE_CHALLENGE_PATTERNS = (
+    "enable javascript and cookies to continue",
+    "cf-browser-verification",
+    "__cf_challenge",
+    "cdn-cgi/challenge-platform",
+    "challenge-error-text",
+)
 
 # xAI's explicit Grok credit-exhaustion code. Keep the HTTP 403 special case
 # provider-scoped: other providers' generic billing codes historically remain
@@ -951,6 +960,16 @@ def _classify_by_status(
         )
 
     if status_code == 403:
+        # Cloudflare browser challenges block the request before it reaches the
+        # provider. Treating these pages as auth failures produces misleading
+        # API-key guidance and may rotate otherwise healthy credentials.
+        if any(p in error_msg for p in _CLOUDFLARE_CHALLENGE_PATTERNS):
+            return result_fn(
+                FailoverReason.upstream_html,
+                retryable=False,
+                should_fallback=True,
+            )
+
         # OpenRouter 403 "key limit exceeded" is actually billing. Other
         # providers also use 403 for account-plan or credit exhaustion.
         if (

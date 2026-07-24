@@ -131,6 +131,27 @@ class TestUnwrapWorkflow:
         with pytest.raises(ValueError):
             unwrap_workflow({"foo": "bar"})
 
+    def test_drops_non_node_comment_key(self):
+        # ComfyUI's /prompt validator calls .get on every top-level value, so a
+        # string-valued documentation key like "_comment" raises a 500. unwrap
+        # must drop non-node entries while keeping the real nodes.
+        wf = {
+            "_comment": "human-readable note that ComfyUI must never see",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        result = unwrap_workflow(wf)
+        assert "_comment" not in result
+        assert set(result) == {"3"}
+
+    def test_drops_comment_key_under_prompt_wrapper(self):
+        wf = {
+            "_comment": "note",
+            "3": {"class_type": "KSampler", "inputs": {}},
+        }
+        result = unwrap_workflow({"prompt": wf})
+        assert "_comment" not in result
+        assert set(result) == {"3"}
+
 
 class TestIsLink:
     def test_valid_link(self):

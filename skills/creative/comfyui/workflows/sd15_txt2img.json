@@ -1,5 +1,4 @@
 {
-  "_comment": "SD 1.5 text-to-image. Smallest model, fastest. Required model: v1-5-pruned-emaonly.safetensors (or any SD1.5 checkpoint)",
   "3": {
     "class_type": "KSampler",
     "_meta": {"title": "KSampler"},

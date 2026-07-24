@@ -2089,13 +2089,16 @@ class _PreToolCallDirective:
 def set_thread_tool_whitelist(
     allowed: Optional[Set[str]],
     deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+    block_callback: Optional[Callable[..., Optional[str]]] = None,
 ) -> None:
     _thread_tool_whitelist.allowed = allowed
     _thread_tool_whitelist.fmt = deny_msg_fmt
+    _thread_tool_whitelist.block_callback = block_callback
 
 
 def clear_thread_tool_whitelist() -> None:
     _thread_tool_whitelist.allowed = None
+    _thread_tool_whitelist.block_callback = None
 
 
 def _get_pre_tool_call_directive_details(
@@ -2141,6 +2144,20 @@ def _get_pre_tool_call_directive_details(
             action="block",
             message=fmt.format(tool_name=tool_name),
         )
+
+    block_callback = getattr(_thread_tool_whitelist, "block_callback", None)
+    if block_callback is not None:
+        message = block_callback(
+            tool_name=tool_name,
+            args=args if isinstance(args, dict) else {},
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+        if isinstance(message, str) and message:
+            return message
 
     hook_results = invoke_hook(
         "pre_tool_call",

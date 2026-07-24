@@ -29,6 +29,7 @@ def _bare_agent() -> AIAgent:
     agent.background_review_callback = None
     agent.status_callback = None
     agent._safe_print = lambda *_args, **_kwargs: None
+    agent._session_messages = []
     return agent
 
 
@@ -473,3 +474,92 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_background_review_allows_memory_write_when_parent_state_matches(monkeypatch):
+    from hermes_cli import plugins as _plugins
+
+    observed: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            observed["memory_block"] = _plugins.get_pre_tool_call_block_message(
+                "memory",
+                {"action": "add"},
+            )
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(_plugins, "invoke_hook", lambda hook_name, **kwargs: [])
+
+    messages_snapshot = [{"role": "user", "content": "hello"}]
+    agent = _bare_agent()
+    agent._session_messages = [{"content": "hello", "role": "user"}]
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=messages_snapshot,
+        review_memory=True,
+    )
+
+    assert observed["memory_block"] is None
+
+
+def test_background_review_blocks_memory_and_skill_writes_when_parent_state_changes(monkeypatch):
+    from hermes_cli import plugins as _plugins
+
+    observed: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            agent._session_messages.append(
+                {"role": "assistant", "content": "new foreground reply"}
+            )
+            observed["memory_block"] = _plugins.get_pre_tool_call_block_message(
+                "memory",
+                {"action": "add"},
+            )
+            observed["skill_block"] = _plugins.get_pre_tool_call_block_message(
+                "skill_manage",
+                {"action": "patch"},
+            )
+            observed["skill_read_block"] = _plugins.get_pre_tool_call_block_message(
+                "skill_view",
+                {"name": "python"},
+            )
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(_plugins, "invoke_hook", lambda hook_name, **kwargs: [])
+
+    messages_snapshot = [{"role": "user", "content": "hello"}]
+    agent = _bare_agent()
+    agent._session_messages = list(messages_snapshot)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=messages_snapshot,
+        review_memory=True,
+    )
+
+    assert "parent conversation changed" in observed["memory_block"]
+    assert "parent conversation changed" in observed["skill_block"]
+    assert observed["skill_read_block"] is None

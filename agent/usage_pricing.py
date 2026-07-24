@@ -925,6 +925,10 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if base_url_host_matches(base_url or "", "api.minimax.io"):
+        return BillingRoute(provider="minimax", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if base_url_host_matches(base_url or "", "api.minimaxi.com"):
+        return BillingRoute(provider="minimax-cn", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # Vertex AI hosts the same Gemini models as Google AI Studio; price them
     # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
     # the OpenAI-compat endpoint requires so the pricing key matches.

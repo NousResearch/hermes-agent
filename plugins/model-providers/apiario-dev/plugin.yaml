@@ -1,0 +1,4 @@
+name: apiario-dev
+kind: model-provider
+version: 1.0.0
+description: Provedor oficial do Apiário Dev

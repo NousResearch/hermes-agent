@@ -527,6 +527,38 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
+    def get_compact_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+        """Return compact summaries (name + description only) for requested tools.
+
+        Used by lazy loading mode.  Each entry has the same outer shape as
+        ``get_definitions`` but the ``parameters`` block is omitted, saving
+        ~90% of the token cost per tool.  ``check_fn`` filtering still
+        applies.
+        """
+        result = []
+        check_results: Dict[Callable, bool] = {}
+        entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
+        for name in sorted(tool_names):
+            entry = entries_by_name.get(name)
+            if not entry:
+                continue
+            if entry.check_fn:
+                if entry.check_fn not in check_results:
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                if not check_results[entry.check_fn]:
+                    if not quiet:
+                        logger.debug("Tool %s unavailable (check failed)", name)
+                    continue
+            description = entry.description or entry.schema.get("description", "")
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": entry.name,
+                    "description": description,
+                },
+            })
+        return result
+
     def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 

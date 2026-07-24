@@ -4758,7 +4758,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             "POST", "/channels/{channel_id}/typing",
                             channel_id=chat_id,
                         )
-                        await self._client.http.request(route)
+                        await asyncio.wait_for(
+                            self._client.http.request(route), timeout=10
+                        )
                     except asyncio.CancelledError:
                         return
                     except Exception as e:

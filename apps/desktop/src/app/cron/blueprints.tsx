@@ -106,7 +106,11 @@ export function BlueprintSlotControl({
 // no inline expand form or divider.
 function BlueprintCard({ blueprint, onSetUp }: { blueprint: AutomationBlueprint; onSetUp: () => void }) {
   return (
-    <button className={cn(selectableCardClass({ prominent: true }), 'w-full p-2 text-left')} onClick={onSetUp} type="button">
+    <button
+      className={cn(selectableCardClass({ prominent: true }), 'w-full p-2 text-left')}
+      onClick={onSetUp}
+      type="button"
+    >
       <div className="min-w-0">
         <p className="text-sm font-medium text-foreground">{blueprint.title}</p>
         <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{blueprint.description}</p>

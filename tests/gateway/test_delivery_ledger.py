@@ -35,6 +35,7 @@ def _record(oid="ob-1", session_key="agent:main:slack:channel:C1", **kw):
         chat_id=kw.get("chat_id", "C1"),
         thread_id=kw.get("thread_id", "171.001"),
         content=kw.get("content", "the final answer"),
+        reply_to=kw.get("reply_to"),
     )
 
 
@@ -215,7 +216,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.asyncio
     async def test_pending_redelivers_plain_and_clears_resume(self):
-        _record()  # pending
+        _record(reply_to="msg-42")  # pending
         _orphan("ob-1")
         adapter = self._adapter()
         runner = self._runner(adapter)
@@ -225,6 +226,7 @@ class TestGatewayRedeliverySweep:
         assert n == 1
         sent = adapter.send.call_args.kwargs
         assert sent["content"] == "the final answer"  # no marker
+        assert sent["reply_to"] == "msg-42"
         assert sent["metadata"] == {"thread_id": "171.001"}
         assert _row("ob-1")["state"] == "delivered"
         runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
@@ -244,6 +246,39 @@ class TestGatewayRedeliverySweep:
         sent = adapter.send.call_args.kwargs
         assert sent["content"].startswith(dl.RECOVERED_MARKER)
         assert sent["content"].endswith("the final answer")
+
+    def test_existing_database_adds_reply_to_column(self):
+        path = dl._db_path()
+        path.unlink(missing_ok=True)
+        import sqlite3
+
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                """CREATE TABLE delivery_obligations (
+                    obligation_id TEXT PRIMARY KEY,
+                    session_key TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    thread_id TEXT,
+                    content TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    owner_pid INTEGER,
+                    owner_started_at INTEGER,
+                    last_error TEXT
+                )"""
+            )
+
+        with dl._connect() as conn:
+            columns = {
+                row[1] for row in conn.execute(
+                    "PRAGMA table_info(delivery_obligations)"
+                )
+            }
+
+        assert "reply_to" in columns
 
     @pytest.mark.asyncio
     async def test_send_failure_marks_failed_for_next_boot(self):

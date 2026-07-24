@@ -187,6 +187,58 @@ def test_codex_app_server_manual_compression_routes_to_codex_thread():
     ]
 
 
+def test_codex_app_server_compaction_retires_stale_runtime_without_rpc():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
+    )
+    stale_session = agent._codex_session
+    agent.model = "gpt-5.6-sol"
+    agent.reasoning_config = {"enabled": True, "effort": "max"}
+    agent._codex_session_runtime_key = ("gpt-5.6-terra", "high")
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+        force=True,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert stale_session.calls == 0
+    assert stale_session.closed is True
+    assert agent._codex_session is None
+    assert agent.context_compressor.compression_count == 0
+
+
+def test_codex_app_server_compaction_rejects_malformed_reasoning_without_mutation():
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
+    )
+    session = agent._codex_session
+    agent.reasoning_config = "high"
+    messages = [{"role": "user", "content": "hi"}]
+
+    returned, prompt = compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100000,
+        task_id="test",
+        force=True,
+    )
+
+    assert returned is messages
+    assert prompt == "cached prompt"
+    assert agent._codex_session is session
+    assert session.calls == 0
+    assert session.closed is False
+    assert agent.context_compressor.compression_count == 0
+
+
 def test_codex_app_server_hermes_mode_auto_compression_routes_to_codex_thread():
     agent = DummyAgent(
         TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
@@ -232,6 +284,23 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
         ("warn", "⚠ Codex app-server compaction failed: compact failed"),
         ("compacted", COMPACTION_DONE_STATUS),
     ]
+
+
+def test_codex_app_server_compaction_should_retire_closes_session():
+    agent = DummyAgent(TurnResult(error="compact failed", should_retire=True))
+    session = agent._codex_session
+
+    compress_context(
+        agent,
+        [{"role": "user", "content": "hi"}],
+        "system",
+        approx_tokens=100000,
+        force=True,
+    )
+
+    assert session.calls == 1
+    assert session.closed is True
+    assert agent._codex_session is None
 
 
 def test_codex_app_server_native_compaction_notice_emits_status_and_event():

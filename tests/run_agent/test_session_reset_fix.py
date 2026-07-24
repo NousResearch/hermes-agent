@@ -9,6 +9,7 @@ therefore never cleared:
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 
 # Ensure repo root is importable
@@ -118,3 +119,31 @@ class TestResetSessionState:
         agent.reset_session_state()
 
         assert agent._user_turn_count == 0
+
+
+class TestCodexSessionOwnership:
+    def test_release_clients_closes_and_detaches_codex_session_once(self):
+        agent = _make_minimal_agent()
+        session = MagicMock()
+        agent._codex_session = session
+        agent._codex_session_runtime_key = ("gpt-5.6-sol", "max")
+
+        agent.release_clients()
+        agent.release_clients()
+
+        session.close.assert_called_once_with()
+        assert agent._codex_session is None
+        assert "_codex_session_runtime_key" not in vars(agent)
+
+    def test_close_closes_and_detaches_codex_session_once(self):
+        agent = _make_minimal_agent()
+        session = MagicMock()
+        agent._codex_session = session
+        agent._codex_session_runtime_key = ("gpt-5.6-sol", "max")
+
+        agent.close()
+        agent.close()
+
+        session.close.assert_called_once_with()
+        assert agent._codex_session is None
+        assert "_codex_session_runtime_key" not in vars(agent)

@@ -24,6 +24,8 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import os
 import threading
@@ -277,6 +279,8 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
@@ -286,6 +290,10 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        self._model = str(model).strip() if model else None
+        self._reasoning_effort = (
+            str(reasoning_effort).strip() if reasoning_effort else None
+        )
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -319,9 +327,39 @@ class CodexAppServerSession:
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
-            )
+            extra_args: list[str] = []
+            if self._model:
+                extra_args.extend(["-c", f"model={json.dumps(self._model)}"])
+            if self._reasoning_effort:
+                extra_args.extend(
+                    [
+                        "-c",
+                        "model_reasoning_effort="
+                        f"{json.dumps(self._reasoning_effort)}",
+                    ]
+                )
+            factory_kwargs = {
+                "codex_bin": self._codex_bin,
+                "codex_home": self._codex_home,
+                "extra_args": extra_args,
+                "workspace_cwd": self._cwd,
+            }
+            try:
+                parameters = inspect.signature(self._client_factory).parameters
+            except (TypeError, ValueError):
+                accepted = {"codex_bin", "codex_home"}
+            else:
+                accepted = None if any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                ) else parameters
+            if accepted is not None:
+                factory_kwargs = {
+                    name: value
+                    for name, value in factory_kwargs.items()
+                    if name in accepted
+                }
+            self._client = self._client_factory(**factory_kwargs)
         self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",

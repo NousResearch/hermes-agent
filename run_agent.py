@@ -727,6 +727,10 @@ class AIAgent:
         instead of a bare reset. Default callers pass nothing and keep the
         existing reset-only behavior.
         """
+        from agent.codex_runtime import _retire_codex_app_server_session
+
+        _retire_codex_app_server_session(self)
+
         # Token usage counters
         self.session_total_tokens = 0
         self.session_input_tokens = 0
@@ -3785,12 +3789,17 @@ class AIAgent:
         We DO close:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
+          - Codex app-server subprocess owned by this agent
           - Active child subagents (per-turn artefacts; safe to drop)
 
         Safe to call multiple times.  Distinct from close() — which is the
         hard teardown for actual session boundaries (/new, /reset, session
         expiry).
         """
+        from agent.codex_runtime import _retire_codex_app_server_session
+
+        _retire_codex_app_server_session(self)
+
         # Close active child agents (per-turn; no cross-turn persistence).
         try:
             with self._active_children_lock:
@@ -3821,6 +3830,7 @@ class AIAgent:
         """Release all resources held by this agent instance.
 
         Cleans up subprocess resources that would otherwise become orphans:
+        - Codex app-server subprocess owned by this agent
         - Background processes tracked in ProcessRegistry
         - Terminal sandbox environments
         - Browser daemon sessions
@@ -3830,6 +3840,9 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
+        from agent.codex_runtime import _retire_codex_app_server_session
+
+        _retire_codex_app_server_session(self)
         task_id = getattr(self, "session_id", None) or ""
 
         # 1. Kill background processes for this task

@@ -587,6 +587,8 @@ class TestBridgeWiredInRuntime:
         # Minimal stub agent — the runtime only touches a handful of
         # attributes and we mock the heavy ones to keep the test fast.
         agent = SimpleNamespace(
+            model="gpt-5.6-terra",
+            reasoning_config={"enabled": True, "effort": "high"},
             session_cwd=None,
             _codex_session=None,
             tool_progress_callback=MagicMock(),
@@ -625,6 +627,8 @@ class TestBridgeWiredInRuntime:
         assert callable(captured["on_event"]), (
             "on_event must be the bridge callable, not None or a sentinel"
         )
+        assert captured["model"] == "gpt-5.6-terra"
+        assert captured["reasoning_effort"] == "high"
 
         # And the bridge must actually drive the agent's callbacks when
         # fed a representative notification.

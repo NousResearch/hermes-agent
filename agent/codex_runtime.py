@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
@@ -612,6 +614,44 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     return on_event
 
 
+def _codex_app_server_runtime_key(agent) -> tuple[str | None, str | None]:
+    reasoning_config = vars(agent).get("reasoning_config")
+    if not reasoning_config:
+        reasoning_config = {}
+    elif not isinstance(reasoning_config, Mapping):
+        raise TypeError("reasoning_config must be a mapping or None")
+    model = str(getattr(agent, "model", None) or "").strip() or None
+    reasoning_effort = (
+        "none"
+        if reasoning_config.get("enabled") is False
+        else str(reasoning_config.get("effort") or "").strip() or None
+    )
+    return model, reasoning_effort
+
+
+def _retire_codex_app_server_session(agent) -> None:
+    codex_session = getattr(agent, "_codex_session", None)
+    agent._codex_session = None
+    vars(agent).pop("_codex_session_runtime_key", None)
+    if codex_session is None:
+        return
+    try:
+        codex_session.close()
+    except Exception:
+        pass
+
+
+def _codex_app_server_session_for_runtime(agent, runtime_key):
+    codex_session = getattr(agent, "_codex_session", None)
+    if (
+        codex_session is not None
+        and vars(agent).get("_codex_session_runtime_key", runtime_key) != runtime_key
+    ):
+        _retire_codex_app_server_session(agent)
+        return None
+    return codex_session
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -633,10 +673,25 @@ def run_codex_app_server_turn(
         _ServerRequestRouting,
     )
 
-    # Lazy session: one CodexAppServerSession per AIAgent instance.
-    # Spawned on first turn, reused across turns, closed at AIAgent
-    # shutdown (see _cleanup hook).
-    if not hasattr(agent, "_codex_session") or agent._codex_session is None:
+    try:
+        runtime_key = _codex_app_server_runtime_key(agent)
+    except TypeError as exc:
+        return {
+            "final_response": f"Codex app-server configuration invalid: {exc}.",
+            "messages": messages,
+            "api_calls": 0,
+            "completed": False,
+            "partial": True,
+            "error": str(exc),
+        }
+    model, reasoning_effort = runtime_key
+
+    # Lazy session: one CodexAppServerSession per unchanged process runtime.
+    # Model and reasoning are process config, so a live selection change must
+    # retire the old thread before the next turn instead of billing stale config.
+    codex_session = _codex_app_server_session_for_runtime(agent, runtime_key)
+
+    if codex_session is None:
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
@@ -679,6 +734,8 @@ def run_codex_app_server_turn(
         # Supersedes the narrower item/started-only bridge from #38835.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            model=model,
+            reasoning_effort=reasoning_effort,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
@@ -686,24 +743,74 @@ def run_codex_app_server_turn(
             ),
             on_event=make_codex_app_server_event_bridge(agent),
         )
+        agent._codex_session_runtime_key = runtime_key
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
-    try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
-    except Exception as exc:
-        logger.exception("codex app-server turn failed")
-        # Crash → unconditionally drop the session so the next turn
-        # respawns from scratch instead of reusing a dead client.
+    timeout_kwargs = {}
+    if os.environ.get("HERMES_KANBAN_TASK"):
         try:
-            agent._codex_session.close()
-        except Exception:
+            terminal_timeout = float(os.environ.get("TERMINAL_TIMEOUT", ""))
+            if terminal_timeout > 0 and math.isfinite(terminal_timeout):
+                timeout_kwargs = {
+                    "turn_timeout": terminal_timeout,
+                    "post_tool_quiet_timeout": terminal_timeout,
+                }
+        except (TypeError, ValueError):
             pass
-        agent._codex_session = None
+
+    api_calls = 0
+    total_tool_iterations = 0
+    usage_results = []
+    kanban_stop_attempts = getattr(agent, "_kanban_stop_nudges", 0)
+
+    while True:
+        try:
+            turn = agent._codex_session.run_turn(
+                user_input=user_message, **timeout_kwargs
+            )
+        except Exception as exc:
+            logger.exception("codex app-server turn failed")
+            # Crash → unconditionally drop the session so the next turn
+            # respawns from scratch instead of reusing a dead client.
+            _retire_codex_app_server_session(agent)
+            _user_interrupted = bool(
+                getattr(agent, "_interrupt_requested", False)
+            )
+            _interrupt_message = (
+                getattr(agent, "_interrupt_message", None)
+                if _user_interrupted
+                else None
+            )
+            if _user_interrupted:
+                agent.clear_interrupt()
+            return {
+                "final_response": (
+                    f"Codex app-server turn failed: {exc}. "
+                    f"Fall back to default runtime with `/codex-runtime auto`."
+                ),
+                "messages": messages,
+                "api_calls": api_calls,
+                "completed": False,
+                "partial": True,
+                "interrupted": _user_interrupted,
+                **(
+                    {"interrupt_message": _interrupt_message}
+                    if _interrupt_message
+                    else {}
+                ),
+                "error": str(exc),
+            }
+
+        api_calls += 1
+
+        # This runtime bypasses the normal conversation-loop finalizer. Mirror
+        # its interrupt handoff/cleanup so a hard stop cannot poison the next
+        # turn and a message-bearing compatibility interrupt can still replay.
         _user_interrupted = bool(
-            getattr(agent, "_interrupt_requested", False)
+            turn.interrupted and getattr(agent, "_interrupt_requested", False)
         )
         _interrupt_message = (
             getattr(agent, "_interrupt_message", None)
@@ -712,57 +819,69 @@ def run_codex_app_server_turn(
         )
         if _user_interrupted:
             agent.clear_interrupt()
-        return {
-            "final_response": (
-                f"Codex app-server turn failed: {exc}. "
-                f"Fall back to default runtime with `/codex-runtime auto`."
-            ),
-            "messages": messages,
-            "api_calls": 0,
-            "completed": False,
-            "partial": True,
-            "interrupted": _user_interrupted,
-            **(
-                {"interrupt_message": _interrupt_message}
-                if _interrupt_message
-                else {}
-            ),
-            "error": str(exc),
-        }
 
-    # This runtime bypasses the normal conversation-loop finalizer. Mirror its
-    # interrupt handoff/cleanup so a hard stop cannot poison the next turn and a
-    # message-bearing compatibility interrupt can still be replayed by callers.
-    _user_interrupted = bool(
-        turn.interrupted and getattr(agent, "_interrupt_requested", False)
-    )
-    _interrupt_message = (
-        getattr(agent, "_interrupt_message", None) if _user_interrupted else None
-    )
-    if _user_interrupted:
-        agent.clear_interrupt()
+        # If the turn signalled the underlying client is wedged (deadline
+        # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
+        # exited), retire the session so the next turn respawns codex
+        # rather than riding the broken process. Mirrors openclaw beta.8's
+        # "retire timed-out app-server clients" fix.
+        if getattr(turn, "should_retire", False):
+            logger.warning(
+                "codex app-server session retired (turn error: %s)",
+                turn.error,
+            )
+            _retire_codex_app_server_session(agent)
 
-    # If the turn signalled the underlying client is wedged (deadline
-    # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
-    # exited), retire the session so the next turn respawns codex
-    # rather than riding the broken process. Mirrors openclaw beta.8's
-    # "retire timed-out app-server clients" fix.
-    if getattr(turn, "should_retire", False):
-        logger.warning(
-            "codex app-server session retired (turn error: %s)",
-            turn.error,
-        )
-        try:
-            agent._codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
+        projected_messages = list(turn.projected_messages or [])
+        messages.extend(projected_messages)
+        total_tool_iterations += turn.tool_iterations
+        _record_codex_app_server_compaction(agent, turn)
+        turn_usage = _record_codex_app_server_usage(agent, turn)
+        if turn_usage:
+            usage_results.append(turn_usage)
 
-    # Splice projected messages into the conversation. The projector emits
-    # standard {role, content, tool_calls, tool_call_id} entries, which
-    # is exactly what curator.py / sessions DB expect.
-    if turn.projected_messages:
-        messages.extend(turn.projected_messages)
+        kanban_nudge = None
+        if (
+            not turn.interrupted
+            and turn.error is None
+            and not getattr(turn, "should_retire", False)
+        ):
+            try:
+                from agent.kanban_stop import build_kanban_stop_nudge
+
+                kanban_nudge = build_kanban_stop_nudge(
+                    messages=messages,
+                    attempts=kanban_stop_attempts,
+                )
+            except Exception:
+                logger.debug("kanban app-server stop-loop check failed", exc_info=True)
+
+        if kanban_nudge:
+            kanban_stop_attempts += 1
+            agent._kanban_stop_nudges = kanban_stop_attempts
+            if projected_messages and projected_messages[-1].get("role") == "assistant":
+                projected_messages[-1]["_kanban_stop_synthetic"] = True
+            else:
+                messages.append({
+                    "role": "assistant",
+                    "content": turn.final_text or "",
+                    "_kanban_stop_synthetic": True,
+                })
+            messages.append({
+                "role": "user",
+                "content": kanban_nudge,
+                "_kanban_stop_synthetic": True,
+            })
+            agent._session_messages = messages
+            logger.info(
+                "kanban app-server stop-loop nudge issued (attempt %d) task=%s",
+                kanban_stop_attempts,
+                os.environ.get("HERMES_KANBAN_TASK", ""),
+            )
+            agent._emit_status(
+                "⚠️ Kanban worker tried to exit without "
+                "kanban_complete/kanban_block — nudging to finish"
+            )
 
         # Persist the newly-projected assistant/tool messages ourselves.
         # This path is an early return that bypasses conversation_loop, whose
@@ -775,7 +894,8 @@ def run_codex_app_server_turn(
         # agent_persisted=True below, so the gateway skips its own DB write and
         # we avoid the #860/#42039 duplicate user-message write (append_message
         # is a raw INSERT with no dedup, so a gateway re-write would duplicate
-        # the already-flushed user turn). See gateway/run.py agent_persisted.
+        # the already-flushed user turn). Synthetic stop-loop scaffolding is
+        # skipped by the shared persister. See gateway/run.py agent_persisted.
         if getattr(agent, "_session_db", None) is not None:
             try:
                 agent._flush_messages_to_session_db(messages)
@@ -785,6 +905,36 @@ def run_codex_app_server_turn(
                     exc_info=True,
                 )
 
+        if not kanban_nudge:
+            break
+        user_message = kanban_nudge
+
+    usage_result = {}
+    if usage_results:
+        for key in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+        ):
+            usage_result[key] = sum(result.get(key, 0) for result in usage_results)
+        known_costs = [
+            result["estimated_cost_usd"]
+            for result in usage_results
+            if result.get("estimated_cost_usd") is not None
+        ]
+        usage_result.update(
+            {
+                "last_prompt_tokens": usage_results[-1]["last_prompt_tokens"],
+                "estimated_cost_usd": sum(known_costs) if known_costs else None,
+                "cost_status": usage_results[-1]["cost_status"],
+                "cost_source": usage_results[-1]["cost_source"],
+            }
+        )
 
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
@@ -794,11 +944,8 @@ def run_codex_app_server_turn(
     # chat_completions loop bumps it per tool iteration (line ~12110)
     # and that loop is bypassed on this path.
     agent._iters_since_skill = (
-        getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
+        getattr(agent, "_iters_since_skill", 0) + total_tool_iterations
     )
-    _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn)
-    api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same
     # pattern the chat_completions path uses (line ~15432).

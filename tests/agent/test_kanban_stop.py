@@ -13,9 +13,25 @@ from agent.kanban_stop import (
 
 @pytest.fixture
 def clear_kanban_env(monkeypatch):
-    for var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_STOP_NUDGE"):
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_TASK",
+        "HERMES_KANBAN_STOP_NUDGE",
+    ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
+
+
+@pytest.fixture
+def running_kanban_task(clear_kanban_env, tmp_path):
+    from hermes_cli import kanban_db as kb
+
+    clear_kanban_env.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="stop guard", assignee="test-worker")
+        assert kb.claim_task(conn, task_id, claimer="test-dispatcher") is not None
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", task_id)
+    return kb, task_id
 
 
 def test_disabled_without_kanban_task(clear_kanban_env):
@@ -35,8 +51,8 @@ def test_env_can_disable(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=[]) is None
 
 
-def test_nudge_when_no_terminal_tool(clear_kanban_env):
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_46be8aa5")
+def test_nudge_when_no_terminal_tool(running_kanban_task):
+    _kb, task_id = running_kanban_task
     messages = [
         {"role": "user", "content": "work kanban task"},
         {
@@ -56,12 +72,12 @@ def test_nudge_when_no_terminal_tool(clear_kanban_env):
     assert nudge is not None
     assert "kanban_complete" in nudge
     assert "kanban_block" in nudge
-    assert "t_46be8aa5" in nudge
+    assert task_id in nudge
     assert "protocol violation" in nudge.lower() or "protocol" in nudge.lower()
 
 
-def test_no_nudge_after_kanban_complete(clear_kanban_env):
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+def test_no_nudge_after_kanban_complete(running_kanban_task):
+    kb, task_id = running_kanban_task
     messages = [
         {
             "role": "assistant",
@@ -76,20 +92,23 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
         },
         {"role": "tool", "name": "kanban_complete", "tool_call_id": "1", "content": "done"},
     ]
+    with kb.connect_closing() as conn:
+        assert kb.complete_task(conn, task_id, summary="done") is True
     assert session_called_kanban_terminal(messages) is True
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
-def test_no_nudge_after_kanban_block(clear_kanban_env):
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+def test_no_nudge_after_kanban_block(running_kanban_task):
+    kb, task_id = running_kanban_task
     messages = [
         {"role": "tool", "name": "kanban_block", "tool_call_id": "1", "content": "blocked"},
     ]
+    with kb.connect_closing() as conn:
+        assert kb.block_task(conn, task_id, reason="blocked") is True
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
-def test_nudge_budget_exhausted(clear_kanban_env):
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+def test_nudge_budget_exhausted(running_kanban_task):
     assert build_kanban_stop_nudge(messages=[], attempts=2) is None
     assert build_kanban_stop_nudge(messages=[], attempts=1, max_attempts=1) is None
     assert build_kanban_stop_nudge(messages=[], attempts=0, max_attempts=1) is not None
@@ -103,9 +122,8 @@ def test_nudge_budget_exhausted(clear_kanban_env):
 # for the dispatcher-side streak tests.
 
 
-def test_nudge_text_warns_about_blocking(clear_kanban_env):
+def test_nudge_text_warns_about_blocking(running_kanban_task):
     """The nudge should warn that repeated violations will block the task."""
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     nudge = build_kanban_stop_nudge(messages=[], attempts=0)
     assert nudge is not None
     assert "block" in nudge.lower(), (
@@ -113,7 +131,7 @@ def test_nudge_text_warns_about_blocking(clear_kanban_env):
     )
 
 
-def test_nudge_and_dispatcher_budgets_are_independent(clear_kanban_env):
+def test_nudge_and_dispatcher_budgets_are_independent(running_kanban_task):
     """Agent-side nudge budget (2) and dispatcher-side streak (3) are
     separate budgets — the nudge counter does not affect the dispatcher's
     violation streak, and vice versa.
@@ -123,7 +141,6 @@ def test_nudge_and_dispatcher_budgets_are_independent(clear_kanban_env):
     per session, while the dispatcher streak lives in the task_runs DB
     table and persists across worker respawns.
     """
-    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
     # Agent-side: 2 nudge attempts per session
     assert build_kanban_stop_nudge(messages=[], attempts=0) is not None
     assert build_kanban_stop_nudge(messages=[], attempts=1) is not None

@@ -8189,6 +8189,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        # Hermes Stevenson: подтягиваем ВЫДЕЛЕННЫЙ/ПРОЦИТИРОВАННЫЙ фрагмент
+        # (message.quote) прямо в текст, чтобы агент видел, на что отвечает.
+        _q = getattr(msg, "quote", None)
+        _qtext = getattr(_q, "text", None) if _q is not None else None
+        if _qtext:
+            event.text = (
+                "%s\n[ПОЛЬЗОВАТЕЛЬ ПРОЦИТИРОВАЛ ФРАГМЕНТ:\n«%s»\n"
+                "— отвечай ПО СУТИ этого фрагмента.]\n" % (event.text, _qtext)
+            )
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)

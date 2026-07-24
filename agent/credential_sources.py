@@ -232,6 +232,8 @@ def _clear_auth_store_provider(provider: str) -> bool:
         providers_dict = auth_store.get("providers")
         if isinstance(providers_dict, dict) and provider in providers_dict:
             del providers_dict[provider]
+            if auth_store.get("active_provider") == provider:
+                auth_store["active_provider"] = None
             _save_auth_store(auth_store)
             return True
     return False

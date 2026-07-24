@@ -2028,3 +2028,48 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")
+
+
+def test_clear_auth_store_provider_clears_active_provider(tmp_path, monkeypatch):
+    """_clear_auth_store_provider must also clear active_provider when the
+    removed provider is the active one — parity with clear_provider_auth()."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "active_provider": "xai-oauth",
+        "providers": {
+            "xai-oauth": {"access_token": "tok", "refresh_token": "ref"},
+        },
+    })
+
+    from agent.credential_sources import _clear_auth_store_provider
+
+    result = _clear_auth_store_provider("xai-oauth")
+    assert result is True
+
+    auth_file = tmp_path / "hermes" / "auth.json"
+    store = json.loads(auth_file.read_text())
+    assert "xai-oauth" not in store.get("providers", {})
+    assert store.get("active_provider") is None
+
+
+def test_clear_auth_store_provider_preserves_active_provider_for_other(tmp_path, monkeypatch):
+    """When a non-active provider is removed, active_provider must be untouched."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {"access_token": "nous-tok"},
+            "xai-oauth": {"access_token": "xai-tok"},
+        },
+    })
+
+    from agent.credential_sources import _clear_auth_store_provider
+
+    result = _clear_auth_store_provider("xai-oauth")
+    assert result is True
+
+    store = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "xai-oauth" not in store.get("providers", {})
+    assert store.get("active_provider") == "nous"

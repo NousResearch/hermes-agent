@@ -1657,7 +1657,7 @@ def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
 
 
 def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
-    """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
+    """Alibaba default coding /v1 URL should use chat_completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
@@ -1675,13 +1675,13 @@ def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
-    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://coding.dashscope.aliyuncs.com/apps/anthropic")
 
     resolved = rp.resolve_runtime_provider(requested="alibaba")
 
     assert resolved["provider"] == "alibaba"
     assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+    assert resolved["base_url"] == "https://coding.dashscope.aliyuncs.com/apps/anthropic"
 
 
 def test_opencode_zen_gpt_defaults_to_responses(monkeypatch):

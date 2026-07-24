@@ -1,7 +1,7 @@
 """Alibaba Cloud Coding Plan provider profile.
 
 Separate from the standard `alibaba` profile because it hits a different
-endpoint (coding-intl.dashscope.aliyuncs.com) with a dedicated API key tier.
+endpoint (coding.dashscope.aliyuncs.com) with a dedicated API key tier.
 """
 
 from providers import register_provider
@@ -14,7 +14,7 @@ alibaba_coding_plan = ProviderProfile(
     description="Alibaba Cloud Coding Plan (Dedicated coding tier)",
     signup_url="https://help.aliyun.com/zh/model-studio/",
     env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_BASE_URL"),
-    base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
+    base_url="https://coding.dashscope.aliyuncs.com/v1",
     auth_type="api_key",
 )
 

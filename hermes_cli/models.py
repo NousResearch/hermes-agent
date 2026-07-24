@@ -496,7 +496,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
-    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
+    # Alibaba DashScope Coding platform (coding) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
     # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
     # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
@@ -509,12 +509,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        # Third-party models available on coding-intl
+        # Third-party models available on coding (domestic)
         "glm-5",
         "glm-4.7",
         "MiniMax-M2.5",
     ],
-    # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
+    # Alibaba Coding Plan — same platform as alibaba (DashScope coding),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
         "qwen3.7-plus",

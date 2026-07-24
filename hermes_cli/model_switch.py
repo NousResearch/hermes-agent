@@ -1755,7 +1755,7 @@ def list_authenticated_providers(
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
     # Section 4 uses this to hide ``custom_providers`` entries that point at the
     # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
-    # https://coding-intl.dashscope.aliyuncs.com/v1 collides with the built-in
+    # https://coding.dashscope.aliyuncs.com/v1 collides with the built-in
     # alibaba-coding-plan row when DASHSCOPE_API_KEY is present). Fixes #16970.
     _builtin_endpoints: set = set()
 
@@ -2675,7 +2675,7 @@ def list_authenticated_providers(
                 continue
             # Skip if a built-in row (sections 1/2/2b) already represents this
             # endpoint. Fixes #16970: a user-defined "my-dashscope" pointing at
-            # https://coding-intl.dashscope.aliyuncs.com/v1 duplicates the
+            # https://coding.dashscope.aliyuncs.com/v1 duplicates the
             # built-in alibaba-coding-plan row whenever DASHSCOPE_API_KEY is
             # set. The built-in row carries the curated model list, correct
             # auth wiring, and canonical slug — keep it and hide the shadow.

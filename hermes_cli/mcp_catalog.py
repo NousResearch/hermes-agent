@@ -380,7 +380,12 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        try:
+            proc = subprocess.run(cmd, cwd=str(cwd), shell=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise CatalogError(
+                f"bootstrap step timed out after 300s: {cmd}"
+            ) from None
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"
@@ -413,23 +418,37 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
 
     if not is_sha_ref:
-        proc = subprocess.run(
-            [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
-        )
-        if proc.returncode == 0:
-            pass
-        else:
-            # Branch/tag form failed (unlikely for valid manifests; possible if
-            # the ref was deleted upstream). Fall through to the full-clone path.
+        try:
+            proc = subprocess.run(
+                [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
             if dest.exists():
                 shutil.rmtree(dest)
-            is_sha_ref = True  # treat the same as a SHA ref from here
+            is_sha_ref = True
+            proc = None  # fall through to full-clone path
+        else:
+            if proc.returncode == 0:
+                pass
+            else:
+                # Branch/tag form failed (unlikely for valid manifests; possible if
+                # the ref was deleted upstream). Fall through to the full-clone path.
+                if dest.exists():
+                    shutil.rmtree(dest)
+                is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
-        proc = subprocess.run([git, "clone", install.url, str(dest)])
+        try:
+            proc = subprocess.run([git, "clone", install.url, str(dest)], timeout=120)
+        except subprocess.TimeoutExpired:
+            raise CatalogError(f"git clone timed out for {install.url}") from None
         if proc.returncode != 0:
             raise CatalogError(f"git clone failed for {install.url}")
-        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
+        try:
+            proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref], timeout=30)
+        except subprocess.TimeoutExpired:
+            raise CatalogError(f"git checkout timed out for {install.ref}") from None
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 

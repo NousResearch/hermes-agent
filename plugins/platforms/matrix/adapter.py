@@ -981,17 +981,43 @@ class _CryptoStateStore:
     state.
     """
 
-    def __init__(self, client_state_store: Any, joined_rooms: set):
+    def __init__(self, client_state_store: Any, joined_rooms: set, client=None):
         self._ss = client_state_store
         self._joined_rooms = joined_rooms
+        self._client = client
 
     async def is_encrypted(self, room_id: str) -> bool:
         return (await self.get_encryption_info(room_id)) is not None
 
     async def get_encryption_info(self, room_id: str):
+        info = None
         if hasattr(self._ss, "get_encryption_info"):
-            return await self._ss.get_encryption_info(room_id)
-        return None
+            info = await self._ss.get_encryption_info(room_id)
+        if info is not None:
+            return info
+        client = self._client
+        if client is None:
+            return None
+        try:
+            from mautrix.types import (
+                EventType as _ET,
+                RoomEncryptionStateEventContent as _Enc,
+                RoomID as _RID,
+            )
+            raw = await client.get_state_event(_RID(room_id), _ET.ROOM_ENCRYPTION)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        content = raw if isinstance(raw, _Enc) else _Enc.deserialize(
+            raw.serialize() if hasattr(raw, "serialize") else raw
+        )
+        if hasattr(self._ss, "set_encryption_info"):
+            try:
+                await self._ss.set_encryption_info(_RID(room_id), content)
+            except Exception:
+                pass
+        return content
 
     async def find_shared_rooms(self, user_id: str) -> list:
         # Return all joined rooms — simple but correct for a single-user bot.
@@ -1584,7 +1610,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     if client.device_id:
                         await crypto_store.put_device_id(client.device_id)
 
-                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
+                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
                     olm = OlmMachine(client, crypto_store, crypto_state)
                     olm.share_keys_min_trust = TrustState.UNVERIFIED
                     olm.send_keys_min_trust = TrustState.UNVERIFIED

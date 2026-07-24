@@ -21,10 +21,13 @@ Configuration in config.yaml::
             nickserv_password: ""     # optional NickServ identification
             allowed_users: []         # empty = allow all, or list of nicks
             max_message_length: 450   # IRC line limit (safe default)
+            ircv3: true               # request IRCv3 capabilities
+            reactions: true           # send IRCv3 draft reactions when allowed
 
 Or via environment variables (overrides config.yaml):
     IRC_SERVER, IRC_PORT, IRC_NICKNAME, IRC_CHANNEL, IRC_USE_TLS,
-    IRC_SERVER_PASSWORD, IRC_NICKSERV_PASSWORD
+    IRC_SERVER_PASSWORD, IRC_NICKSERV_PASSWORD, IRC_IRCV3,
+    IRC_IRCV3_CAPS, IRC_REACTIONS
 """
 
 import asyncio
@@ -33,6 +36,8 @@ import os
 import re
 import ssl
 import time
+from collections import OrderedDict
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -48,21 +53,136 @@ from gateway.platforms.base import (
     SendResult,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
 )
 from gateway.config import Platform
+from gateway.platforms.helpers import strip_markdown_preserving_urls
 
 
 # ---------------------------------------------------------------------------
 # IRC protocol helpers
 # ---------------------------------------------------------------------------
 
+_DEFAULT_IRCV3_CAPS = (
+    "message-tags",
+    "server-time",
+    "batch",
+    "invite-notify",
+    "echo-message",
+)
+
+_TAG_UNESCAPE = {
+    ":": ";",
+    "s": " ",
+    "\\": "\\",
+    "r": "\r",
+    "n": "\n",
+}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _split_words(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item for item in re.split(r"[\s,]+", value.strip()) if item]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _unescape_tag_value(value: str) -> str:
+    """Decode IRCv3 message-tag escapes."""
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        i += 1
+        if i >= len(value):
+            break
+        out.append(_TAG_UNESCAPE.get(value[i], value[i]))
+        i += 1
+    return "".join(out)
+
+
+def _escape_tag_value(value: str) -> str:
+    """Encode an IRCv3 message-tag value."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace(";", "\\:")
+        .replace(" ", "\\s")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
+def _parse_irc_tags(raw_tags: str) -> Dict[str, Optional[str]]:
+    """Parse an IRCv3 message-tag section into an opaque key/value mapping."""
+    tags: Dict[str, Optional[str]] = {}
+    for item in raw_tags.split(";"):
+        if not item:
+            continue
+        if "=" in item:
+            key, value = item.split("=", 1)
+            tags[key] = _unescape_tag_value(value) if value else None
+        else:
+            tags[item] = None
+    return tags
+
+
+def _format_irc_tags(tags: Dict[str, Optional[str]]) -> str:
+    """Format IRCv3 message tags without the leading ``@``."""
+    parts: list[str] = []
+    for key, value in tags.items():
+        if not key or any(ch in key for ch in " ;\r\n\x00"):
+            continue
+        if value is None:
+            parts.append(key)
+        else:
+            parts.append(f"{key}={_escape_tag_value(value)}")
+    return ";".join(parts)
+
+
+def _cap_name(token: str) -> str:
+    return token.split("=", 1)[0].lower()
+
+
 def _parse_irc_message(raw: str) -> dict:
     """Parse a raw IRC protocol line into components.
 
-    Returns dict with keys: prefix, command, params.
+    Returns dict with keys: tags, prefix, command, params.
     """
+    tags: Dict[str, Optional[str]] = {}
     prefix = ""
     trailing = ""
+
+    if raw.startswith("@"):
+        try:
+            raw_tags, raw = raw[1:].split(" ", 1)
+            tags = _parse_irc_tags(raw_tags)
+        except ValueError:
+            return {"tags": _parse_irc_tags(raw[1:]), "prefix": "", "command": "", "params": []}
 
     if raw.startswith(":"):
         try:
@@ -80,7 +200,7 @@ def _parse_irc_message(raw: str) -> dict:
     if trailing:
         params.append(trailing)
 
-    return {"prefix": prefix, "command": command, "params": params}
+    return {"tags": tags, "prefix": prefix, "command": command, "params": params}
 
 
 def _extract_nick(prefix: str) -> str:
@@ -116,10 +236,41 @@ class IRCAdapter(BasePlatformAdapter):
         self.use_tls = (
             os.getenv("IRC_USE_TLS", "").lower() in {"1", "true", "yes"}
             if os.getenv("IRC_USE_TLS")
-            else extra.get("use_tls", True)
+            else _coerce_bool(extra.get("use_tls"), True)
         )
         self.server_password = os.getenv("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
         self.nickserv_password = os.getenv("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")
+
+        # IRCv3 support.  Capabilities are requested opportunistically and
+        # every feature below checks the server's ACKs before sending tags.
+        self.ircv3_enabled = _env_bool("IRC_IRCV3", _coerce_bool(extra.get("ircv3"), True))
+        caps_override = os.getenv("IRC_IRCV3_CAPS")
+        if caps_override is not None:
+            self._desired_caps = tuple(_cap_name(cap) for cap in _split_words(caps_override))
+        else:
+            configured_caps = _split_words(extra.get("ircv3_caps"))
+            self._desired_caps = tuple(
+                _cap_name(cap) for cap in (configured_caps or _DEFAULT_IRCV3_CAPS)
+            )
+        if not self.ircv3_enabled:
+            self._desired_caps = ()
+
+        self._server_caps: Dict[str, Optional[str]] = {}
+        self._enabled_caps: set[str] = set()
+        self._cap_negotiating = False
+        self._cap_req_pending = False
+        self._clienttagdeny: Optional[str] = None
+
+        self.reactions_enabled = _env_bool(
+            "IRC_REACTIONS",
+            _coerce_bool(extra.get("reactions"), True),
+        )
+        try:
+            self._recent_message_limit = int(extra.get("recent_message_limit", 500))
+        except (TypeError, ValueError):
+            self._recent_message_limit = 500
+        self._recent_messages: OrderedDict[str, str] = OrderedDict()
+        self._last_typing_notice: Dict[str, float] = {}
 
         # Auth
         self.allowed_users: list = extra.get("allowed_users", [])
@@ -189,9 +340,14 @@ class IRCAdapter(BasePlatformAdapter):
             self._set_fatal_error("connect_failed", str(e), retryable=True)
             return False
 
-        # IRC registration sequence
+        # IRC registration sequence. PASS stays first for networks that
+        # require it, then IRCv3 capability negotiation starts before NICK/USER
+        # so servers can pause registration until CAP END.
         if self.server_password:
-            await self._send_raw(f"PASS {self.server_password}")
+            await self._send_raw(f"PASS {_strip_irc_control_chars(self.server_password)}")
+        if self._desired_caps:
+            self._cap_negotiating = True
+            await self._send_raw("CAP LS 302")
         await self._send_raw(f"NICK {self.nickname}")
         await self._send_raw(f"USER {self.nickname} 0 * :Hermes Agent")
 
@@ -209,7 +365,9 @@ class IRCAdapter(BasePlatformAdapter):
 
         # NickServ identification
         if self.nickserv_password:
-            await self._send_raw(f"PRIVMSG NickServ :IDENTIFY {self.nickserv_password}")
+            await self._send_raw(
+                f"PRIVMSG NickServ :IDENTIFY {_strip_irc_control_chars(self.nickserv_password)}"
+            )
             await asyncio.sleep(2)  # Give NickServ time to process
 
         # Join channel
@@ -252,6 +410,12 @@ class IRCAdapter(BasePlatformAdapter):
         self._writer = None
         self._registered = False
         self._registration_event.clear()
+        self._server_caps.clear()
+        self._enabled_caps.clear()
+        self._cap_negotiating = False
+        self._cap_req_pending = False
+        self._clienttagdeny = None
+        self._last_typing_notice.clear()
 
     # ── Sending ───────────────────────────────────────────────────────────
 
@@ -266,11 +430,15 @@ class IRCAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         target = chat_id  # channel name or nick for DMs
+        if not _is_safe_irc_target(target):
+            return SendResult(success=False, error="Invalid IRC target")
+
         lines = self._split_message(content, target)
+        base_tags = self._outbound_message_tags(reply_to=reply_to, metadata=metadata)
 
         for line in lines:
             try:
-                await self._send_raw(f"PRIVMSG {target} :{line}")
+                await self._send_tagged("PRIVMSG", target, trailing=line, tags=base_tags)
                 # Basic rate limiting to avoid excess flood
                 await asyncio.sleep(0.3)
             except Exception as e:
@@ -279,8 +447,8 @@ class IRCAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """IRC has no typing indicator — no-op."""
-        pass
+        """Send an IRCv3 typing notification when negotiated."""
+        await self._send_typing_tag(chat_id, "active")
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         is_channel = chat_id.startswith("#") or chat_id.startswith("&")
@@ -288,6 +456,161 @@ class IRCAdapter(BasePlatformAdapter):
             "name": chat_id,
             "type": "group" if is_channel else "dm",
         }
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React to the triggering message when IRCv3 reactions are available."""
+        await self._send_reaction(event, "👀")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Finalize typing/reaction state for IRCv3-aware clients."""
+        source = getattr(event, "source", None)
+        chat_id = getattr(source, "chat_id", None)
+        if chat_id:
+            await self._send_typing_tag(chat_id, "done", force=True)
+
+        if outcome == ProcessingOutcome.CANCELLED:
+            await self._send_reaction(event, "👀", unreact=True)
+        elif outcome == ProcessingOutcome.SUCCESS:
+            await self._send_reaction(event, "👀", unreact=True)
+            await self._send_reaction(event, "✅")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._send_reaction(event, "👀", unreact=True)
+            await self._send_reaction(event, "❌")
+
+    # ── IRCv3 helpers ────────────────────────────────────────────────────
+
+    def _message_tags_enabled(self) -> bool:
+        return "message-tags" in self._enabled_caps
+
+    def _client_tag_allowed(self, tag_name: str) -> bool:
+        """Return True if CLIENTTAGDENY allows a client-only tag."""
+        name = tag_name[1:] if tag_name.startswith("+") else tag_name
+        deny = self._clienttagdeny
+        if deny is None or deny == "":
+            return True
+
+        parts = [part for part in deny.split(",") if part]
+        if not parts:
+            return True
+        if parts[0] == "*":
+            return f"-{name}" in parts
+        return name not in {part[1:] if part.startswith("-") else part for part in parts}
+
+    def _reply_tag_name(self) -> Optional[str]:
+        # +reply is the registered IRCv3 tag; +draft/reply is accepted for
+        # networks/clients experimenting with the draft name mentioned by
+        # Libera.Chat's 2026 feature note.
+        for tag in ("+reply", "+draft/reply"):
+            if self._client_tag_allowed(tag):
+                return tag
+        return None
+
+    def _outbound_message_tags(
+        self,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Optional[str]]:
+        tags: Dict[str, Optional[str]] = {}
+        if not self._message_tags_enabled():
+            return tags
+
+        reply_id = reply_to or (metadata or {}).get("reply_to_message_id")
+        if reply_id:
+            reply_tag = self._reply_tag_name()
+            if reply_tag:
+                tags[reply_tag] = str(reply_id)
+
+        channel_context = (metadata or {}).get("irc_channel_context")
+        if (
+            channel_context
+            and _is_irc_channel(str(channel_context))
+            and self._client_tag_allowed("+draft/channel-context")
+        ):
+            tags["+draft/channel-context"] = str(channel_context)
+        return tags
+
+    def _reactions_available(self) -> bool:
+        return (
+            self.reactions_enabled
+            and self._message_tags_enabled()
+            and self._reply_tag_name() is not None
+            and self._client_tag_allowed("+draft/react")
+        )
+
+    async def _send_reaction(
+        self,
+        event: MessageEvent,
+        emoji: str,
+        *,
+        unreact: bool = False,
+    ) -> None:
+        if not self._reactions_available():
+            return
+        message_id = getattr(event, "message_id", None)
+        source = getattr(event, "source", None)
+        target = getattr(source, "chat_id", None)
+        if not message_id or not target or not _is_safe_irc_target(str(target)):
+            return
+
+        reaction_tag = "+draft/unreact" if unreact else "+draft/react"
+        if not self._client_tag_allowed(reaction_tag):
+            return
+        reply_tag = self._reply_tag_name()
+        if not reply_tag:
+            return
+        await self._send_tagged(
+            "TAGMSG",
+            str(target),
+            tags={reply_tag: str(message_id), reaction_tag: emoji},
+        )
+
+    async def _send_typing_tag(
+        self,
+        target: str,
+        state: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        if (
+            not self._message_tags_enabled()
+            or not self._client_tag_allowed("+typing")
+            or not _is_safe_irc_target(target)
+        ):
+            return
+        if state not in {"active", "paused", "done"}:
+            return
+        now = time.monotonic()
+        last = self._last_typing_notice.get(target, 0.0)
+        if not force and now - last < 3.0:
+            return
+        self._last_typing_notice[target] = now
+        await self._send_tagged("TAGMSG", target, tags={"+typing": state})
+
+    async def _send_tagged(
+        self,
+        command: str,
+        target: str,
+        *,
+        trailing: Optional[str] = None,
+        tags: Optional[Dict[str, Optional[str]]] = None,
+    ) -> None:
+        line = f"{command} {target}"
+        if trailing is not None:
+            line += f" :{_strip_irc_control_chars(trailing)}"
+        if tags and self._message_tags_enabled():
+            tag_text = _format_irc_tags(tags)
+            if tag_text:
+                line = f"@{tag_text} {line}"
+        await self._send_raw(line)
+
+    def _remember_message(self, message_id: Optional[str], text: str) -> None:
+        if not message_id:
+            return
+        self._recent_messages[str(message_id)] = text
+        self._recent_messages.move_to_end(str(message_id))
+        while len(self._recent_messages) > self._recent_message_limit:
+            self._recent_messages.popitem(last=False)
 
     # ── Message splitting ─────────────────────────────────────────────────
 
@@ -306,6 +629,7 @@ class IRCAdapter(BasePlatformAdapter):
 
         lines: List[str] = []
         for paragraph in content.split("\n"):
+            paragraph = _strip_irc_control_chars(paragraph).rstrip()
             if not paragraph.strip():
                 continue
             while True:
@@ -337,22 +661,9 @@ class IRCAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
-        """Convert basic markdown to plain text for IRC."""
-        # Bold: **text** or __text__ → text
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-        text = re.sub(r"__(.+?)__", r"\1", text)
-        # Italic: *text* or _text_ → text
-        text = re.sub(r"\*(.+?)\*", r"\1", text)
-        text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
-        # Inline code: `text` → text
-        text = re.sub(r"`(.+?)`", r"\1", text)
-        # Code blocks: ```...``` → content
-        text = re.sub(r"```\w*\n?", "", text)
-        # Images: ![alt](url) → url  (must come BEFORE links)
-        text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", text)
-        # Links: [text](url) → text (url)
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
-        return text
+        """Convert Markdown to plain text for IRC while keeping URLs visible."""
+        text = text.replace("\r", " ").replace("\x00", "")
+        return strip_markdown_preserving_urls(text, preserve_urls=True)
 
     # ── Raw IRC I/O ──────────────────────────────────────────────────────
 
@@ -360,6 +671,7 @@ class IRCAdapter(BasePlatformAdapter):
         """Send a raw IRC protocol line."""
         if not self._writer or self._writer.is_closing():
             return
+        line = _strip_irc_control_chars(line)
         encoded = (line + "\r\n").encode("utf-8")
         self._writer.write(encoded)
         await self._writer.drain()
@@ -393,8 +705,9 @@ class IRCAdapter(BasePlatformAdapter):
     async def _handle_line(self, raw: str) -> None:
         """Dispatch a single IRC protocol line."""
         msg = _parse_irc_message(raw)
-        command = msg["command"]
+        command = msg["command"].upper()
         params = msg["params"]
+        tags = msg.get("tags", {})
 
         # PING/PONG keepalive
         if command == "PING":
@@ -402,13 +715,29 @@ class IRCAdapter(BasePlatformAdapter):
             await self._send_raw(f"PONG :{payload}")
             return
 
+        if command == "CAP":
+            await self._handle_cap(msg)
+            return
+
+        # RPL_ISUPPORT — parse CLIENTTAGDENY so we only emit client tags the
+        # server says it will relay.
+        if command == "005":
+            self._handle_isupport(params)
+            return
+
         # RPL_WELCOME (001) — registration complete
         if command == "001":
             self._registered = True
+            self._cap_negotiating = False
             self._registration_event.set()
             if params:
                 # Server may confirm our nick in the first param
                 self._current_nick = params[0]
+            return
+
+        # IRCv3 batch/invite notifications are useful to clients with a UI, but
+        # they are not user text for Hermes.  Consume them quietly.
+        if command in {"BATCH", "INVITE", "TAGMSG"}:
             return
 
         # ERR_NICKNAMEINUSE (433) — nick collision during registration
@@ -431,6 +760,16 @@ class IRCAdapter(BasePlatformAdapter):
             sender_nick = _extract_nick(msg["prefix"])
             target = params[0]
             text = params[1]
+            message_id = tags.get("msgid") or str(int(time.time() * 1000))
+            reply_to_id = (
+                tags.get("+reply")
+                or tags.get("+draft/reply")
+                or tags.get("reply")
+                or tags.get("draft/reply")
+            )
+            timestamp = self._parse_server_time(tags.get("time"))
+
+            self._remember_message(message_id, text)
 
             # Ignore our own messages
             if sender_nick.lower() == self._current_nick.lower():
@@ -472,12 +811,101 @@ class IRCAdapter(BasePlatformAdapter):
                 chat_type=chat_type,
                 user_id=sender_nick,
                 user_name=sender_nick,
+                raw_message=msg,
+                message_id=message_id,
+                timestamp=timestamp,
+                reply_to_message_id=reply_to_id,
+                reply_to_text=self._recent_messages.get(str(reply_to_id)) if reply_to_id else None,
             )
 
         # NICK — track our own nick changes
         if command == "NICK" and _extract_nick(msg["prefix"]).lower() == self._current_nick.lower():
             if params:
                 self._current_nick = params[0]
+
+    async def _handle_cap(self, msg: dict) -> None:
+        params = msg.get("params", [])
+        if len(params) < 2:
+            return
+        subcmd = str(params[1]).upper()
+        rest = params[2:]
+
+        if subcmd == "LS":
+            continuation = bool(rest and rest[0] == "*")
+            cap_text = rest[-1] if rest else ""
+            for token in _split_words(cap_text):
+                name = _cap_name(token)
+                value = token.split("=", 1)[1] if "=" in token else None
+                self._server_caps[name] = value
+            if not continuation:
+                await self._finish_cap_ls()
+            return
+
+        if subcmd == "ACK":
+            for token in _split_words(rest[-1] if rest else ""):
+                self._enabled_caps.add(_cap_name(token))
+            self._cap_req_pending = False
+            if self._cap_negotiating:
+                await self._send_raw("CAP END")
+                self._cap_negotiating = False
+            return
+
+        if subcmd == "NAK":
+            self._cap_req_pending = False
+            if self._cap_negotiating:
+                await self._send_raw("CAP END")
+                self._cap_negotiating = False
+            return
+
+        if subcmd == "NEW":
+            newly_available: list[str] = []
+            for token in _split_words(rest[-1] if rest else ""):
+                name = _cap_name(token)
+                value = token.split("=", 1)[1] if "=" in token else None
+                self._server_caps[name] = value
+                if name in self._desired_caps and name not in self._enabled_caps:
+                    newly_available.append(name)
+            if newly_available and not self._cap_req_pending:
+                self._cap_req_pending = True
+                await self._send_raw(f"CAP REQ :{' '.join(sorted(newly_available))}")
+            return
+
+        if subcmd == "DEL":
+            for token in _split_words(rest[-1] if rest else ""):
+                self._enabled_caps.discard(_cap_name(token))
+
+    async def _finish_cap_ls(self) -> None:
+        requested = [
+            cap for cap in self._desired_caps
+            if cap in self._server_caps and cap not in self._enabled_caps
+        ]
+        if requested:
+            self._cap_req_pending = True
+            await self._send_raw(f"CAP REQ :{' '.join(requested)}")
+        else:
+            await self._send_raw("CAP END")
+            self._cap_negotiating = False
+
+    def _handle_isupport(self, params: list[str]) -> None:
+        for param in params[1:]:
+            if param == "CLIENTTAGDENY":
+                self._clienttagdeny = ""
+            elif param.startswith("CLIENTTAGDENY="):
+                self._clienttagdeny = param.split("=", 1)[1]
+
+    @staticmethod
+    def _parse_server_time(value: Optional[str]) -> datetime:
+        if not value:
+            return datetime.now()
+        try:
+            if value.endswith("Z"):
+                return datetime.fromisoformat(value[:-1] + "+00:00")
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            return datetime.now()
 
     async def _dispatch_message(
         self,
@@ -486,6 +914,11 @@ class IRCAdapter(BasePlatformAdapter):
         chat_type: str,
         user_id: str,
         user_name: str,
+        raw_message: Optional[dict] = None,
+        message_id: Optional[str] = None,
+        timestamp: Optional[datetime] = None,
+        reply_to_message_id: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -503,8 +936,11 @@ class IRCAdapter(BasePlatformAdapter):
             text=text,
             message_type=MessageType.TEXT,
             source=source,
-            message_id=str(int(time.time() * 1000)),
-            timestamp=__import__("datetime").datetime.now(),
+            raw_message=raw_message,
+            message_id=message_id or str(int(time.time() * 1000)),
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            timestamp=timestamp or datetime.now(),
         )
 
         await self.handle_message(event)
@@ -716,6 +1152,10 @@ def _is_irc_channel(target: str) -> bool:
     return bool(target) and target[0] in "#&+!"
 
 
+def _is_safe_irc_target(target: str) -> bool:
+    return bool(target) and not any(ch in target for ch in ("\r", "\n", "\x00", " ", "\t"))
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -760,7 +1200,7 @@ async def _standalone_send(
     if use_tls_env is not None:
         use_tls = use_tls_env.lower() in {"1", "true", "yes"}
     else:
-        use_tls = bool(extra.get("use_tls", True))
+        use_tls = _coerce_bool(extra.get("use_tls"), True)
 
     server_password = os.getenv("IRC_SERVER_PASSWORD") or extra.get("server_password", "")
     nickserv_password = os.getenv("IRC_NICKSERV_PASSWORD") or extra.get("nickserv_password", "")

@@ -12,8 +12,11 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 _irc_mod = load_plugin_adapter("irc")
 
 _parse_irc_message = _irc_mod._parse_irc_message
+_format_irc_tags = _irc_mod._format_irc_tags
 _extract_nick = _irc_mod._extract_nick
 IRCAdapter = _irc_mod.IRCAdapter
+MessageEvent = _irc_mod.MessageEvent
+ProcessingOutcome = _irc_mod.ProcessingOutcome
 check_requirements = _irc_mod.check_requirements
 validate_config = _irc_mod.validate_config
 register = _irc_mod.register
@@ -49,6 +52,22 @@ class TestIRCProtocolHelpers:
 
     def test_extract_nick_bare(self):
         assert _extract_nick("server.example.com") == "server.example.com"
+
+    def test_parse_ircv3_tags(self):
+        msg = _parse_irc_message(
+            "@time=2026-02-11T10:20:30.123Z;msgid=abc\\:def;+reply=old\\sid "
+            ":nick!user@host PRIVMSG #channel :Hello world"
+        )
+        assert msg["tags"]["time"] == "2026-02-11T10:20:30.123Z"
+        assert msg["tags"]["msgid"] == "abc;def"
+        assert msg["tags"]["+reply"] == "old id"
+        assert msg["prefix"] == "nick!user@host"
+        assert msg["command"] == "PRIVMSG"
+
+    def test_format_ircv3_tags_escapes_values(self):
+        assert _format_irc_tags({"+reply": "old id", "+draft/react": "semi;colon"}) == (
+            "+reply=old\\sid;+draft/react=semi\\:colon"
+        )
 
 
 # ── IRC Adapter ──────────────────────────────────────────────────────────
@@ -151,6 +170,77 @@ class TestIRCAdapterSend:
         assert b"PRIVMSG #test :hello world" in sent_data
 
     @pytest.mark.asyncio
+    async def test_send_uses_reply_tag_when_message_tags_enabled(self, adapter):
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        adapter._enabled_caps.add("message-tags")
+
+        result = await adapter.send("#test", "hello world", reply_to="msg 123")
+
+        assert result.success is True
+        sent_data = writer.write.call_args[0][0].decode("utf-8")
+        assert sent_data.startswith("@+reply=msg\\s123 PRIVMSG #test :hello world")
+
+    @pytest.mark.asyncio
+    async def test_send_skips_reply_tag_when_clienttagdeny_blocks_it(self, adapter):
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        adapter._enabled_caps.add("message-tags")
+        adapter._clienttagdeny = "*,-typing"
+
+        result = await adapter.send("#test", "hello world", reply_to="msg123")
+
+        assert result.success is True
+        sent_data = writer.write.call_args[0][0].decode("utf-8")
+        assert sent_data == "PRIVMSG #test :hello world\r\n"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_ircv3_typing_tag(self, adapter):
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        adapter._enabled_caps.add("message-tags")
+
+        await adapter.send_typing("#test")
+
+        sent_data = writer.write.call_args[0][0].decode("utf-8")
+        assert sent_data == "@+typing=active TAGMSG #test\r\n"
+
+    @pytest.mark.asyncio
+    async def test_processing_reactions_use_draft_react_tags(self, adapter):
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        adapter._enabled_caps.add("message-tags")
+        source = adapter.build_source(
+            chat_id="#test",
+            chat_name="#test",
+            chat_type="group",
+            user_id="user",
+            user_name="user",
+        )
+        event = MessageEvent(text="hello", source=source, message_id="msg123")
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        sent_lines = b"".join(call.args[0] for call in writer.write.call_args_list).decode("utf-8").splitlines()
+        assert "@+reply=msg123;+draft/react=👀 TAGMSG #test" in sent_lines
+        assert "@+typing=done TAGMSG #test" in sent_lines
+        assert "@+reply=msg123;+draft/unreact=👀 TAGMSG #test" in sent_lines
+        assert "@+reply=msg123;+draft/react=✅ TAGMSG #test" in sent_lines
+
+    @pytest.mark.asyncio
     async def test_send_splits_long_messages(self, adapter):
         writer = MagicMock()
         writer.is_closing = MagicMock(return_value=False)
@@ -209,6 +299,46 @@ class TestIRCAdapterMessageParsing:
         assert adapter._registration_event.is_set()
 
     @pytest.mark.asyncio
+    async def test_cap_ls_requests_supported_ircv3_caps(self, adapter):
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        adapter._cap_negotiating = True
+
+        await adapter._handle_line(
+            ":server CAP * LS :message-tags server-time batch echo-message unrelated"
+        )
+
+        sent = writer.write.call_args[0][0].decode("utf-8")
+        assert sent == "CAP REQ :message-tags server-time batch echo-message\r\n"
+        assert adapter._server_caps["message-tags"] is None
+
+    @pytest.mark.asyncio
+    async def test_cap_ack_enables_caps_and_ends_negotiation(self, adapter):
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        adapter._writer = writer
+        adapter._cap_negotiating = True
+
+        await adapter._handle_line(":server CAP * ACK :message-tags server-time")
+
+        assert "message-tags" in adapter._enabled_caps
+        assert "server-time" in adapter._enabled_caps
+        sent = writer.write.call_args[0][0].decode("utf-8")
+        assert sent == "CAP END\r\n"
+
+    @pytest.mark.asyncio
+    async def test_isupport_parses_clienttagdeny(self, adapter):
+        await adapter._handle_line(":server 005 hermes CHANTYPES=# CLIENTTAGDENY=*,-typing :supported")
+        assert adapter._clienttagdeny == "*,-typing"
+        assert adapter._client_tag_allowed("+typing") is True
+        assert adapter._client_tag_allowed("+draft/react") is False
+
+    @pytest.mark.asyncio
     async def test_handle_nick_collision(self, adapter):
         writer = MagicMock()
         writer.is_closing = MagicMock(return_value=False)
@@ -240,6 +370,29 @@ class TestIRCAdapterMessageParsing:
         assert len(dispatched) == 1
         assert dispatched[0]["text"] == "hello there"
         assert dispatched[0]["chat_id"] == "#test"
+
+    @pytest.mark.asyncio
+    async def test_handle_ircv3_message_tags_are_dispatched(self, adapter):
+        dispatched = []
+        adapter._message_handler = AsyncMock()
+        adapter._recent_messages["parent1"] = "parent text"
+
+        async def capture_dispatch(**kwargs):
+            dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture_dispatch
+
+        await adapter._handle_line(
+            "@time=2026-02-11T10:20:30.123Z;msgid=child1;+reply=parent1 "
+            ":user!u@host PRIVMSG #test :hermes: tagged hello"
+        )
+
+        assert len(dispatched) == 1
+        assert dispatched[0]["text"] == "tagged hello"
+        assert dispatched[0]["message_id"] == "child1"
+        assert dispatched[0]["reply_to_message_id"] == "parent1"
+        assert dispatched[0]["reply_to_text"] == "parent text"
+        assert dispatched[0]["timestamp"].isoformat() == "2026-02-11T10:20:30.123000+00:00"
 
     @pytest.mark.asyncio
     async def test_ignores_unaddressed_channel_message(self, adapter):
@@ -441,6 +594,19 @@ class TestIRCAdapterMarkdown:
     def test_strip_image(self):
         result = IRCAdapter._strip_markdown("![alt](https://example.com/img.png)")
         assert result == "https://example.com/img.png"
+
+    def test_strip_markdown_keeps_fenced_code_content(self):
+        result = IRCAdapter._strip_markdown("```python\nprint('hi')\n```")
+        assert result == "print('hi')"
+
+    def test_strip_markdown_handles_headings_lists_and_strikethrough(self):
+        result = IRCAdapter._strip_markdown("# Title\n- **done**\n~~old~~")
+        assert "Title" in result
+        assert "done" in result
+        assert "old" in result
+        assert "#" not in result
+        assert "**" not in result
+        assert "~~" not in result
 
 
 # ── Requirements / validation ────────────────────────────────────────────

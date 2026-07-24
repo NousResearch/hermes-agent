@@ -58,6 +58,7 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str = "",
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +66,7 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -393,6 +394,29 @@ class TestResolveApproval:
         assert 5 in adapter._approval_state
 
     @pytest.mark.asyncio
+    async def test_user_id_allowlist_authorizes_click(self):
+        adapter = _make_adapter()
+        adapter._allowed_group_users = {"u_allowed"}
+        adapter._approval_state[55] = {
+            "session_key": "sess-55",
+            "message_id": "msg_055",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._resolve_approval(
+                55,
+                "once",
+                "Norbert",
+                open_id="ou_unknown",
+                user_id="u_allowed",
+                chat_id="oc_12345",
+            )
+
+        mock_resolve.assert_called_once_with("sess-55", "once")
+        assert 55 not in adapter._approval_state
+
+    @pytest.mark.asyncio
     async def test_chat_mismatch_does_not_resolve(self):
         adapter = _make_adapter()
         adapter._approval_state[6] = {
@@ -501,6 +525,30 @@ class TestCardActionCallbackResponse:
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
+
+    def test_returns_card_without_explicit_feishu_allowlist(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._approval_state[11] = {
+            "session_key": "sess-11",
+            "message_id": "msg-11",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 11},
+            open_id="ou_user1",
+        )
+        adapter._sender_name_cache["ou_user1"] = ("User One", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
 
     def test_returns_card_for_deny_action(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -757,7 +805,7 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
-    def test_update_prompt_empty_allowlists_fail_closed(self, _patch_callback_card_types):
+    def test_update_prompt_without_explicit_feishu_allowlist(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
@@ -770,14 +818,14 @@ class TestCardActionCallbackResponse:
             {"hermes_update_prompt_action": "y", "update_prompt_id": 7},
             open_id="ou_intruder",
         )
+        adapter._sender_name_cache["ou_intruder"] = ("Intruder", 9999999999)
 
-        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
 
         assert response is not None
-        assert response.card is None
-        assert 7 in adapter._update_prompt_state
-        mock_submit.assert_not_called()
+        assert response.card is not None
+        assert response.card.type == "raw"
 
     def test_update_prompt_chat_mismatch_returns_no_card(self, _patch_callback_card_types):
         adapter = _make_adapter()

@@ -429,6 +429,43 @@ class TestResolveAliasEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# resolve_alias: sort-key date-stamp handling
+# ---------------------------------------------------------------------------
+
+class TestResolveAliasSorting:
+    """resolve_alias must pick the highest-version model, correctly
+    ignoring YYYYMMDD snapshot stamps that would otherwise dwarf real
+    version numbers (e.g. claude-opus-4-20250514 vs claude-opus-4-8)."""
+
+    def test_anthropic_opus_picks_latest(self, monkeypatch):
+        """Date-stamped snapshot ID must not outrank a higher point version."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "list_provider_models",
+                            lambda p: ["claude-opus-4-1", "claude-opus-4-7",
+                                       "claude-opus-4-8",
+                                       "claude-opus-4-20250514"])
+        result = ms.resolve_alias("opus", "anthropic")
+        assert result is not None and result[1] == "claude-opus-4-8"
+
+    def test_unsynced_new_model_wins(self, monkeypatch):
+        """A just-released model missing from models.dev still outranks
+        older, dated siblings (static _PROVIDER_MODELS merge scenario)."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
+        monkeypatch.setattr(ms, "list_provider_models",
+                            lambda p: ["claude-opus-4-7", "claude-opus-4-8",
+                                       "claude-opus-4-20250514",
+                                       "claude-opus-4-9"])
+        result = ms.resolve_alias("opus", "anthropic")
+        assert result is not None and result[1] == "claude-opus-4-9"
+
+
+# ---------------------------------------------------------------------------
 # switch_model: direct alias base_url override
 # ---------------------------------------------------------------------------
 

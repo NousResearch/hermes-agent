@@ -9397,6 +9397,17 @@ def _update_node_dependencies() -> list[str]:
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
+    # Belt-and-suspenders guard: re-verify the root package.json is still
+    # present before running npm.  The single-flight lock serialises
+    # concurrent updates, but if something else (e.g. an interrupted stash
+    # restore) left the tree mid-stash, abort rather than letting npm rewrite
+    # package-lock.json into a broken shape (issue #70211).
+    if not (PROJECT_ROOT / "package.json").exists():
+        print("  ⚠ Root package.json is missing — tree may be mid-stash or")
+        print("    in an inconsistent state. Skipping npm install to avoid")
+        print("    corrupting package-lock.json.")
+        return _partial_update_failure("repo root")
+
     # Step 1: root install (no workspace recursion).
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts (e.g. @askjo/camofox-browser's browser-binary fetch)
@@ -10670,6 +10681,148 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Single-flight update lock — prevents concurrent ``hermes update`` runs.
+# Overlapping stash/pull/npm cycles corrupt the working tree (issue #70211).
+# ---------------------------------------------------------------------------
+
+_UPDATE_LOCK_FILENAME = ".hermes-update.lock"
+"""File name for the single-flight update lock, relative to PROJECT_ROOT."""
+
+
+def _update_lock_path():
+    """Return the path to the single-flight update lock file."""
+    return PROJECT_ROOT / _UPDATE_LOCK_FILENAME
+
+
+class _UpdateSingleflightLock:
+    """Context manager that serialises ``hermes update`` across processes.
+
+    Uses ``flock`` with ``LOCK_NB`` (non-blocking) so a second concurrent
+    update exits immediately with a clear message rather than waiting or
+    corrupting the working tree.
+
+    Usage::
+
+        with _UpdateSingleflightLock():
+            _cmd_update_body(...)
+    """
+
+    _lock_fd = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:
+            # Non-POSIX (Windows): no flock — skip the guard entirely
+            # rather than blocking the update.
+            self._lock_fd = None
+            return
+
+        # Resolve the lock file path.  If PROJECT_ROOT is patched with a
+        # sentinel (common in tests), skip the lock rather than crashing.
+        try:
+            lock_path = _update_lock_path()
+        except Exception:
+            self._lock_fd = None
+            return
+
+        try:
+            self._lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:
+            self._lock_fd = None
+            return
+
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another process holds the lock.  Try to read its PID from
+            # the lock-file contents for a friendlier message.
+            holder = "(unknown)"
+            try:
+                content = os.read(self._lock_fd, 64)
+                if content:
+                    holder = content.decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            os.close(self._lock_fd)
+            self._lock_fd = None
+            print(
+                f"✗ Another update (PID {holder}) is already in progress — "
+                "wait for it to finish before retrying.",
+            )
+            print(
+                "  Concurrent updates corrupt the working tree "
+                "(stash/pull/npm interleaving).",
+            )
+            sys.exit(1)
+
+        # Write our PID into the lock file so concurrent callers can
+        # identify the holder.
+        try:
+            os.ftruncate(self._lock_fd, 0)
+            os.lseek(self._lock_fd, 0, os.SEEK_SET)
+            os.write(self._lock_fd, str(os.getpid()).encode("utf-8"))
+        except OSError:
+            pass
+
+    def __exit__(self, *args):
+        fd = self._lock_fd
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            self._lock_fd = None
+            # Best-effort cleanup: remove the lock file so next run starts
+            # fresh (avoids stale-PID confusion).
+            try:
+                _update_lock_path().unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _restore_package_lockfiles_from_git(git_cmd, repo_root):
+    """Restore ``package-lock.json`` files that npm dirtied during the update.
+
+    npm can rewrite ``package-lock.json`` when it runs against an inconsistent
+    tree (mid-stash, absent root ``package.json``), gutting the workspace
+    entries and setting every sub-package to ``"extraneous": true``.
+    This function discards those mutations so the tree stays clean and the
+    lockfile matches what git expects.
+
+    Best-effort; only touches files named ``package-lock.json``.  Never
+    raises.
+    """
+    try:
+        diff = subprocess.run(
+            git_cmd + ["diff", "--name-only"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if diff.returncode != 0:
+            return
+        dirty = [
+            line.strip()
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package-lock.json")
+        ]
+        if not dirty:
+            return
+        subprocess.run(
+            git_cmd + ["checkout", "--", *dirty],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        print(f"✓ Restored {len(dirty)} package-lock.json file(s) from git")
+    except Exception:
+        # Never let lockfile restoration block an update.
+        pass
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -10727,8 +10880,22 @@ def cmd_update(args):
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
+    """Entry point for ``hermes update``.
+
+    Protected by a single-flight lock (``_UpdateSingleflightLock``) that
+    prevents concurrent update processes from corrupting the working tree
+    through interleaved stash/pull/npm cycles (issue #70211).  The actual
+    update logic lives in ``_cmd_update_body``.
+    """
+    with _UpdateSingleflightLock():
+        return _cmd_update_body(args, gateway_mode=gateway_mode)
+
+
+def _cmd_update_body(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
-    restore stdio even on ``sys.exit``."""
+    restore stdio even on ``sys.exit``.
+    """
+
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -11311,6 +11478,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(f"  Full build log: {_dhh()}/logs/update.log")
             else:
                 print("  ✓ Desktop app up to date")
+
+        # After all npm steps (node deps, web UI, desktop build), restore
+        # any package-lock.json files that npm may have dirtied against an
+        # inconsistent tree.  This prevents the lockfile-corruption half of
+        # issue #70211 (npm rewriting workspaces out of package-lock.json
+        # when it runs while the root package.json is absent).
+        _restore_package_lockfiles_from_git(git_cmd, PROJECT_ROOT)
 
         print()
         print("✓ Code updated!")

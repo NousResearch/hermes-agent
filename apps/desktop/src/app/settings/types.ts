@@ -10,6 +10,7 @@ export type SettingsView =
   | 'gateway'
   | 'keybinds'
   | 'keys'
+  | 'kanban'
   | 'notifications'
   | 'plugins'
   | 'providers'
@@ -19,6 +20,7 @@ export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
 
 export interface SettingsPageProps {
   gateway?: HermesGateway | null
+  gatewayId?: string
   onClose: () => void
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void

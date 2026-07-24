@@ -10,6 +10,25 @@ export interface ConfigSchemaResponse {
   fields: Record<string, ConfigFieldSchema>
 }
 
+export interface KanbanBoardSummary {
+  archived?: boolean
+  counts?: Record<string, number>
+  is_current?: boolean
+  name?: string
+  slug: string
+  total?: number
+}
+
+export interface KanbanBoardsResponse {
+  boards: KanbanBoardSummary[]
+  current?: string
+}
+
+export interface KanbanBoardResponse {
+  columns: Array<{ name: string; tasks: unknown[] }>
+  [key: string]: unknown
+}
+
 export interface AudioTranscriptionResponse {
   ok: boolean
   provider?: string
@@ -473,6 +492,12 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Sanitized gateway source metadata projected from state.db origin_json. */
+  origin?: {
+    chat_type: string
+    display_label: string
+    platform: string
+  }
 }
 
 export type TimelineDisplayMetadata =

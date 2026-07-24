@@ -1315,6 +1315,7 @@ class _AnthropicCompletionsAdapter:
         tools = kwargs.get("tools")
         tool_choice = kwargs.get("tool_choice")
         reasoning_config = kwargs.get("_reasoning_config")
+        base_url = str(getattr(self._client, "base_url", "") or "") or None
         # ZAI's Anthropic-compatible endpoint rejects max_tokens on vision
         # models (glm-4v-flash etc.) with error code 1210.  When the caller
         # signals this by setting _skip_zai_max_tokens in kwargs, omit it.
@@ -1356,6 +1357,7 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
+            base_url=base_url,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs

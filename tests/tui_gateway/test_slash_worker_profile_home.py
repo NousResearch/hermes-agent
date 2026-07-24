@@ -120,5 +120,8 @@ def test_slash_worker_inherits_argv_correctly():
             assert "tui_gateway.slash_worker" in call_args
             assert "--session-key" in call_args
             assert "my_session" in call_args
+            assert "--parent-pid" in call_args
+            parent_pid_index = call_args.index("--parent-pid")
+            assert call_args[parent_pid_index + 1] == str(os.getpid())
             assert "--model" in call_args
             assert "gpt-4" in call_args

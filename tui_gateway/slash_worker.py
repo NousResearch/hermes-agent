@@ -24,11 +24,12 @@ import os
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
 
-import cli as cli_mod
-from cli import HermesCLI
 from tui_gateway._stdin_recovery import handle_spurious_eof
-from rich.console import Console
+
+if TYPE_CHECKING:
+    from cli import HermesCLI
 
 # Env-overridable so the integration test can drive sub-second timing.
 def _env_float(name: str, default: float) -> float:
@@ -88,7 +89,10 @@ def _start_parent_death_watchdog(original_ppid) -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
-def _run(cli: HermesCLI, command: str) -> str:
+def _run(cli: "HermesCLI", command: str) -> str:
+    import cli as cli_mod
+    from rich.console import Console
+
     cmd = (command or "").strip()
     if not cmd:
         return ""
@@ -127,16 +131,21 @@ def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
+    p.add_argument("--parent-pid", type=int, default=0)
     args = p.parse_args()
 
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
 
-    # Start before the (hundreds-of-ms) HermesCLI build — that window is itself
-    # an orphan risk if the gateway dies mid-spawn.
-    orig_ppid = os.getppid()
+    # The gateway passes its PID at spawn so a fast exit cannot make this child
+    # mistake a subreaper for its original parent before the watchdog starts.
+    orig_ppid = args.parent_pid or os.getppid()
     _start_parent_death_watchdog(orig_ppid)
     _prepare_slash_worker_runtime()
+
+    # Keep the heavyweight CLI import behind the watchdog. Importing it at
+    # module load left a reparenting window before main() could snapshot PPID.
+    from cli import HermesCLI
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)

@@ -1654,10 +1654,21 @@ class MatrixAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.max_message_length)
 
         last_event_id = None
+        split_response = len(chunks) > 1
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
 
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            # Matrix clients render m.in_reply_to as a quoted fallback. On a
+            # multi-part response, repeating that fallback on every chunk makes
+            # the original user message appear again mid-answer. Keep later
+            # chunks in the Matrix thread when present, and attach reply
+            # fallback only on the first chunk (threaded or plain reply).
+            self._apply_relation_metadata(
+                msg_content,
+                reply_to=reply_to if i == 0 else None,
+                metadata=metadata,
+                include_reply_fallback=not split_response or i == 0,
+            )
 
             try:
                 event_id = await asyncio.wait_for(
@@ -4182,6 +4193,7 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        include_reply_fallback: bool = True,
     ) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
@@ -4194,11 +4206,13 @@ class MatrixAdapter(BasePlatformAdapter):
             relates_to["is_falling_back"] = True
             # Matrix clients that do not render threads still use reply
             # fallback. If no explicit reply target is available, fall back
-            # to the thread root.
-            relates_to.setdefault(
-                "m.in_reply_to",
-                {"event_id": reply_to or thread_id},
-            )
+            # to the thread root. Subsequent chunks of a split message omit
+            # the fallback so the original prompt is not re-quoted mid-answer.
+            if include_reply_fallback:
+                relates_to.setdefault(
+                    "m.in_reply_to",
+                    {"event_id": reply_to or thread_id},
+                )
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

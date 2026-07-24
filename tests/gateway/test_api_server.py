@@ -4389,6 +4389,54 @@ class TestCORS:
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Max-Age") == "600"
+
+    @pytest.mark.asyncio
+    async def test_cors_allows_patch_method(self):
+        """PATCH is allowed so browsers can preflight PATCH /api/sessions|jobs/{id}."""
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/api/jobs/abc",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "PATCH",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                },
+            )
+            assert resp.status == 200
+            assert "PATCH" in resp.headers.get("Access-Control-Allow-Methods", "")
+
+    @pytest.mark.asyncio
+    async def test_cors_allows_hermes_session_request_headers(self):
+        """Browsers can preflight the documented X-Hermes-Session-* request headers."""
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "X-Hermes-Session-Id, X-Hermes-Session-Key",
+                },
+            )
+            assert resp.status == 200
+            allow_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "X-Hermes-Session-Id" in allow_headers
+            assert "X-Hermes-Session-Key" in allow_headers
+
+    @pytest.mark.asyncio
+    async def test_cors_exposes_hermes_session_response_headers(self):
+        """The echoed X-Hermes-Session-* response headers are readable by browser JS."""
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health", headers={"Origin": "http://localhost:3000"})
+            assert resp.status == 200
+            expose_headers = resp.headers.get("Access-Control-Expose-Headers", "")
+            assert "X-Hermes-Session-Id" in expose_headers
+            assert "X-Hermes-Session-Key" in expose_headers
 # ---------------------------------------------------------------------------
 # Conversation parameter
 # ---------------------------------------------------------------------------

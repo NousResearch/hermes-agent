@@ -4102,6 +4102,145 @@ class TestSchemaInit:
         assert sessions[0]["preview"] == "first prompt"
         db.close()
 
+    @staticmethod
+    def _make_v1_topic_db(db_path):
+        """Open a SessionDB that already holds the *v1* topic-bindings table.
+
+        v1 differs from v2 only in that ``session_id`` references
+        ``sessions(id)`` WITHOUT ``ON DELETE CASCADE`` — the exact shape that
+        ``apply_telegram_topic_migration`` must rebuild.  Returns the open
+        SessionDB with one session and one pre-existing binding row.
+        """
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="topic-session", source="telegram", user_id="u1")
+        # Hand-build the v1 bindings table (no CASCADE) plus the mode table so
+        # the migration's IF NOT EXISTS create is a no-op and only the v1→v2
+        # rebuild path fires.
+        def _seed(conn):
+            conn.execute(
+                """
+                CREATE TABLE telegram_dm_topic_bindings (
+                    chat_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    session_key TEXT NOT NULL,
+                    session_id TEXT NOT NULL REFERENCES sessions(id),
+                    managed_mode TEXT NOT NULL DEFAULT 'auto',
+                    linked_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (chat_id, thread_id)
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO telegram_dm_topic_bindings "
+                "(chat_id, thread_id, user_id, session_key, session_id, "
+                " managed_mode, linked_at, updated_at) "
+                "VALUES ('c1', 't1', 'u1', 'k1', 'topic-session', 'auto', 1.0, 1.0)"
+            )
+        db._execute_write(_seed)
+        return db
+
+    @staticmethod
+    def _binding_fk_is_cascade(db):
+        rows = db._conn.execute(
+            "PRAGMA foreign_key_list('telegram_dm_topic_bindings')"
+        ).fetchall()
+        return any(row[2] == "sessions" and (row[6] or "") == "CASCADE" for row in rows)
+
+    def test_telegram_topic_v1_to_v2_rebuild_preserves_rows_and_adds_cascade(self, tmp_path):
+        """The v1→v2 rebuild upgrades the FK to CASCADE without losing bindings."""
+        db = self._make_v1_topic_db(tmp_path / "state.db")
+        assert not self._binding_fk_is_cascade(db)  # precondition: genuine v1
+
+        db.apply_telegram_topic_migration()
+
+        assert self._binding_fk_is_cascade(db)
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        rows = db._conn.execute(
+            "SELECT chat_id, thread_id, session_id FROM telegram_dm_topic_bindings"
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [("c1", "t1", "topic-session")]
+        # The scratch table used during the swap must be gone.
+        tables = {
+            r[0]
+            for r in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "telegram_dm_topic_bindings_new" not in tables
+        db.close()
+
+    def test_telegram_topic_migration_is_atomic_on_failure(self, tmp_path):
+        """A failure mid-rebuild rolls back, leaving the v1 table intact.
+
+        Because the rebuild runs inside ``_execute_write``'s BEGIN IMMEDIATE
+        transaction (no ``executescript``, which would implicitly COMMIT), an
+        error after the destructive DROP/RENAME must undo the whole migration
+        rather than leave the bindings table half-rebuilt or missing.
+        """
+        db = self._make_v1_topic_db(tmp_path / "state.db")
+
+        # sqlite3.Connection.execute is read-only, so inject the fault through a
+        # thin delegating proxy that raises right after the destructive swap —
+        # while the BEGIN IMMEDIATE transaction is still open.
+        class _FailOnRename:
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if isinstance(sql, str) and "RENAME TO telegram_dm_topic_bindings" in sql:
+                    self._real.execute(sql, *args, **kwargs)
+                    raise sqlite3.OperationalError("injected failure mid-rebuild")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        real_conn = db._conn
+        db._conn = _FailOnRename(real_conn)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="injected failure"):
+                db.apply_telegram_topic_migration()
+        finally:
+            db._conn = real_conn
+
+        # Rollback restored the original v1 table, its row, and left the
+        # schema-version marker unset (migration never committed).
+        rows = db._conn.execute(
+            "SELECT chat_id, thread_id, session_id FROM telegram_dm_topic_bindings"
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [("c1", "t1", "topic-session")]
+        assert not self._binding_fk_is_cascade(db)
+        assert db.get_meta("telegram_dm_topic_schema_version") is None
+        db.close()
+
+    def test_telegram_topic_rebuild_survives_leftover_scratch_table(self, tmp_path):
+        """A leftover ``_new`` table from an interrupted attempt is reclaimed.
+
+        The rebuild's CREATE has no IF NOT EXISTS, so without an upfront
+        DROP it would raise ``table already exists`` and abort the /topic
+        opt-in.  The migration must instead clear the stale scratch table and
+        complete the rebuild.
+        """
+        db = self._make_v1_topic_db(tmp_path / "state.db")
+
+        def _seed_leftover(conn):
+            conn.execute(
+                "CREATE TABLE telegram_dm_topic_bindings_new (chat_id TEXT, junk TEXT)"
+            )
+        db._execute_write(_seed_leftover)
+
+        db.apply_telegram_topic_migration()
+
+        assert self._binding_fk_is_cascade(db)
+        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        rows = db._conn.execute(
+            "SELECT chat_id, thread_id, session_id FROM telegram_dm_topic_bindings"
+        ).fetchall()
+        assert [tuple(r) for r in rows] == [("c1", "t1", "topic-session")]
+        db.close()
+
     def test_migration_from_v2(self, tmp_path):
         """Simulate a v2 database and verify migration adds title column."""
         import sqlite3

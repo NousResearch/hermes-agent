@@ -9153,7 +9153,19 @@ class SessionDB:
                automatically clears bindings.
         """
         def _do(conn):
-            conn.executescript(
+            # NOTE: every statement below is issued via conn.execute() — never
+            # conn.executescript().  executescript() implicitly COMMITs any
+            # pending transaction before it runs and then executes its
+            # statements in autocommit mode, which would silently break out of
+            # the BEGIN IMMEDIATE transaction _execute_write() has opened for
+            # us.  That matters here because the v1→v2 rebuild below does a
+            # destructive DROP TABLE + RENAME: under executescript() those run
+            # outside any transaction, so a crash between them would lose the
+            # bindings table with no rollback, and a lock-driven retry of _do()
+            # would re-run a half-finished rebuild.  Keeping plain execute()
+            # calls inside the outer transaction makes the whole migration
+            # atomic and safe to retry.
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS telegram_dm_topic_mode (
                     chat_id TEXT PRIMARY KEY,
@@ -9166,8 +9178,11 @@ class SessionDB:
                     capability_checked_at REAL,
                     intro_message_id TEXT,
                     pinned_message_id TEXT
-                );
-
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS telegram_dm_topic_bindings (
                     chat_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
@@ -9178,14 +9193,16 @@ class SessionDB:
                     linked_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (chat_id, thread_id)
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
-                ON telegram_dm_topic_bindings(session_id);
-
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(user_id, chat_id);
+                )
                 """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session "
+                "ON telegram_dm_topic_bindings(session_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user "
+                "ON telegram_dm_topic_bindings(user_id, chat_id)"
             )
 
             # v1 → v2: rebuild telegram_dm_topic_bindings if its session_id FK
@@ -9205,7 +9222,11 @@ class SessionDB:
                     for row in fk_rows
                 )
                 if needs_rebuild:
-                    conn.executescript(
+                    # Drop any scratch table left behind by an interrupted
+                    # earlier attempt so the CREATE below can't trip over a
+                    # stale leftover (the original CREATE had no IF NOT EXISTS).
+                    conn.execute("DROP TABLE IF EXISTS telegram_dm_topic_bindings_new")
+                    conn.execute(
                         """
                         CREATE TABLE telegram_dm_topic_bindings_new (
                             chat_id TEXT NOT NULL,
@@ -9217,19 +9238,29 @@ class SessionDB:
                             linked_at REAL NOT NULL,
                             updated_at REAL NOT NULL,
                             PRIMARY KEY (chat_id, thread_id)
-                        );
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
                         INSERT INTO telegram_dm_topic_bindings_new
                             SELECT chat_id, thread_id, user_id, session_key,
                                    session_id, managed_mode, linked_at, updated_at
-                            FROM telegram_dm_topic_bindings;
-                        DROP TABLE telegram_dm_topic_bindings;
-                        ALTER TABLE telegram_dm_topic_bindings_new
-                            RENAME TO telegram_dm_topic_bindings;
-                        CREATE UNIQUE INDEX idx_telegram_dm_topic_bindings_session
-                            ON telegram_dm_topic_bindings(session_id);
-                        CREATE INDEX idx_telegram_dm_topic_bindings_user
-                            ON telegram_dm_topic_bindings(user_id, chat_id);
+                            FROM telegram_dm_topic_bindings
                         """
+                    )
+                    conn.execute("DROP TABLE telegram_dm_topic_bindings")
+                    conn.execute(
+                        "ALTER TABLE telegram_dm_topic_bindings_new "
+                        "RENAME TO telegram_dm_topic_bindings"
+                    )
+                    conn.execute(
+                        "CREATE UNIQUE INDEX idx_telegram_dm_topic_bindings_session "
+                        "ON telegram_dm_topic_bindings(session_id)"
+                    )
+                    conn.execute(
+                        "CREATE INDEX idx_telegram_dm_topic_bindings_user "
+                        "ON telegram_dm_topic_bindings(user_id, chat_id)"
                     )
 
             conn.execute(

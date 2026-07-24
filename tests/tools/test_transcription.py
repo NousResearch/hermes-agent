@@ -123,6 +123,27 @@ class TestValidateAudioFile:
 
 
 # ---------------------------------------------------------------------------
+# Config resolution
+# ---------------------------------------------------------------------------
+
+
+class TestLoadSttConfig:
+
+    def test_merges_default_local_initial_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "stt:\n  local:\n    model: small\n",
+            encoding="utf-8",
+        )
+
+        from tools.transcription_tools import _load_stt_config
+        local_config = _load_stt_config()["local"]
+
+        assert local_config["model"] == "small"
+        assert local_config["initial_prompt"] == ""
+
+
+# ---------------------------------------------------------------------------
 # Local transcription
 # ---------------------------------------------------------------------------
 
@@ -151,6 +172,72 @@ class TestTranscribeLocal:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
+
+    def test_passes_initial_prompt_when_configured(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_info = MagicMock(language="zh", duration=2.5)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], mock_info)
+
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": {"initial_prompt": "以下是普通话的句子，使用简体中文。"},
+             }), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        assert mock_model.transcribe.call_args.kwargs["initial_prompt"] == (
+            "以下是普通话的句子，使用简体中文。"
+        )
+
+    def test_omits_blank_initial_prompt(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_info = MagicMock(language="en", duration=2.5)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], mock_info)
+
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": {"initial_prompt": "   "},
+             }), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        assert "initial_prompt" not in mock_model.transcribe.call_args.kwargs
+
+    def test_accepts_null_local_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_info = MagicMock(language="en", duration=2.5)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([], mock_info)
+
+        fake_fw = _fake_faster_whisper_module(mock_model)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": None,
+             }), \
+             patch.dict("sys.modules", {"faster_whisper": fake_fw}), \
+             patch("tools.transcription_tools._local_model", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        assert mock_model.transcribe.call_args.kwargs == {"beam_size": 5}
 
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):

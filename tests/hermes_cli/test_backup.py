@@ -206,6 +206,35 @@ class TestBackup:
 
 
 
+    def test_restore_hint_prints_full_archive_path(self, tmp_path, monkeypatch, capsys):
+        """The ``hermes import`` hint must be runnable from any directory.
+
+        ``run_import`` resolves its argument against the *current working
+        directory*, so a bare basename only restores when the user happens to
+        be sitting in the archive's directory.  The default output lands in
+        the home directory, so the printed command was broken from anywhere
+        else.  Mirrors the pre-update hint in ``main.py``, which already
+        prints the full path.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_dir = tmp_path / "archives"
+        out_dir.mkdir()
+        out_zip = out_dir / "backup.zip"
+
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        out = capsys.readouterr().out
+        assert f"Restore with: hermes import {out_zip.resolve()}" in out
+        # The old bare-basename form is not runnable from another cwd.
+        assert f"hermes import {out_zip.name}\n" not in out
+
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
         """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
         hermes_home = tmp_path / ".hermes"

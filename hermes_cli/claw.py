@@ -514,7 +514,12 @@ def _cmd_migrate(args):
                 size_str = _format_size(backup_archive.stat().st_size)
                 print()
                 print_success(f"Pre-migration backup: {backup_archive} ({size_str})")
-                print_info(f"Restore with: hermes import {backup_archive.name}")
+                # Full path, not the basename: ``hermes import`` resolves its
+                # argument against the caller's cwd, and this archive always
+                # lives under ``<HERMES_HOME>/backups/``.  ``.resolve()`` because
+                # ``HERMES_HOME`` is used verbatim and may be relative (the
+                # Migrator calls below resolve it for the same reason).
+                print_info(f"Restore with: hermes import {backup_archive.resolve()}")
         except Exception as e:
             print()
             print_error(f"Could not create pre-migration backup: {e}")
@@ -544,7 +549,7 @@ def _cmd_migrate(args):
         logger.debug("OpenClaw migration error", exc_info=True)
         if backup_archive:
             print_info(f"A pre-migration backup is available at: {backup_archive}")
-            print_info(f"Restore with: hermes import {backup_archive.name}")
+            print_info(f"Restore with: hermes import {backup_archive.resolve()}")
         return
 
     # Print results

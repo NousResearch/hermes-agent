@@ -188,6 +188,62 @@ class TestCmdMigrate:
         captured = capsys.readouterr()
         assert "Could not load migration script" in captured.out
 
+    def test_migration_failure_restore_hint_is_runnable(self, tmp_path, monkeypatch, capsys):
+        """The recovery hint printed after a failed migration must actually work.
+
+        The pre-migration archive is written to ``<HERMES_HOME>/backups/``,
+        which is never the user's cwd, and ``hermes import`` resolves its
+        argument against the cwd -- so the basename form failed 100% of the
+        time at exactly the moment the user needs to recover.
+        """
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("")
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value={"soul"})
+        # Phase 1 previews cleanly; the phase-2 apply is what blows up.
+        preview_migrator = MagicMock()
+        preview_migrator.migrate.return_value = {
+            "summary": {"migrated": 1, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [
+                {"kind": "soul", "status": "migrated", "destination": str(tmp_path / "SOUL.md")},
+            ],
+        }
+        apply_migrator = MagicMock()
+        apply_migrator.migrate.side_effect = RuntimeError("boom")
+        fake_mod.Migrator = MagicMock(side_effect=[preview_migrator, apply_migrator])
+
+        args = Namespace(
+            source=str(openclaw_dir),
+            dry_run=False, preset="full", overwrite=False,
+            migrate_secrets=False, workspace_target=None,
+            skill_conflict="skip", yes=True, no_backup=False,
+        )
+
+        with (
+            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=config_path),
+        ):
+            claw_mod._cmd_migrate(args)
+
+        captured = capsys.readouterr()
+        assert "Migration failed: boom" in captured.out
+
+        archives = sorted((hermes_home / "backups").glob("pre-migration-*.zip"))
+        assert len(archives) == 1
+        archive = archives[0].resolve()
+        # Both the pre-backup hint and the post-failure recovery hint.
+        assert captured.out.count(f"Restore with: hermes import {archive}") == 2
+        assert f"hermes import {archive.name}\n" not in captured.out
+
     def test_full_preset_does_not_enable_secrets_silently(self, tmp_path, capsys):
         """The 'full' preset must NOT auto-enable migrate_secrets.
 

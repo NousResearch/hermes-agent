@@ -791,7 +791,11 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
             print(f"  ... and {len(errors) - 10} more")
 
     if not errors:
-        print(f"\nRestore with: hermes import {out_path.name}")
+        # Full path, not the basename: ``run_import`` resolves its argument
+        # against the caller's cwd, and the default output lands in the home
+        # directory.  ``out_path`` is always absolute (``--output`` is
+        # ``.expanduser().resolve()``d; the default is built from ``Path.home()``).
+        print(f"\nRestore with: hermes import {out_path}")
 
 
 # ---------------------------------------------------------------------------

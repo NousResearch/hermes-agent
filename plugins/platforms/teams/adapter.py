@@ -18,6 +18,7 @@ Configuration in config.yaml:
           client_secret: "your-secret"      # or TEAMS_CLIENT_SECRET env var
           tenant_id: "your-tenant-id"       # or TEAMS_TENANT_ID env var
           port: 3978                        # or TEAMS_PORT env var
+          fetch_reply_context: false         # Graph fallback; see plugin.yaml
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import html
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -106,6 +108,7 @@ _DEFAULT_PORT = 3978
 # aiohttp client_max_size keeps oversized/chunked request bodies bounded.
 _MAX_BODY_BYTES = 1_048_576
 _WEBHOOK_PATH = "/api/messages"
+_MAX_REPLY_CONTEXT_CHARS = 4000
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -125,6 +128,37 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _teams_message_body_text(payload: Any) -> str:
+    """Convert a Microsoft Graph chatMessage body into prompt-safe plain text."""
+    if not isinstance(payload, dict):
+        return ""
+    body = payload.get("body")
+    if not isinstance(body, dict):
+        return ""
+    content = str(body.get("content") or "")
+    if not content:
+        return ""
+
+    if str(body.get("contentType") or "").casefold() == "html":
+        content = re.sub(
+            r"(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)>",
+            "",
+            content,
+        )
+        content = re.sub(r"(?i)<li\b[^>]*>", "\n- ", content)
+        content = re.sub(
+            r"(?i)<br\s*/?>|</(?:p|div|li|h[1-6]|ul|ol)>",
+            "\n",
+            content,
+        )
+        content = re.sub(r"<[^>]+>", "", content)
+        content = html.unescape(content).replace("\xa0", " ")
+
+    lines = [" ".join(line.split()) for line in content.splitlines()]
+    text = "\n".join(line for line in lines if line).strip()
+    return text[:_MAX_REPLY_CONTEXT_CHARS]
 
 
 class _StaticAccessTokenProvider:
@@ -702,6 +736,10 @@ class TeamsAdapter(BasePlatformAdapter):
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
         self._client_secret = extra.get("client_secret") or os.getenv("TEAMS_CLIENT_SECRET", "")
         self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
+        fetch_reply_context = extra.get("fetch_reply_context")
+        if fetch_reply_context is None:
+            fetch_reply_context = os.getenv("TEAMS_FETCH_REPLY_CONTEXT", "")
+        self._fetch_reply_context = _parse_bool(fetch_reply_context, default=False)
         self._port = _coerce_port(
             extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
         )
@@ -711,6 +749,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        self._reply_context_graph_client: Any = None
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -874,6 +913,20 @@ class TeamsAdapter(BasePlatformAdapter):
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         user_name = getattr(from_account, "name", None) or ""
+        thread_id = self._teams_thread_id(activity)
+        if not thread_id:
+            thread_id = self._thread_id_from_conversation_id(conv.id)
+        cron_reply_context = self._cron_reply_context(conv.id, thread_id)
+        reply_to_text = None
+        if cron_reply_context:
+            if not thread_id:
+                thread_id = (
+                    cron_reply_context.get("thread_id")
+                    or cron_reply_context.get("message_id")
+                )
+            reply_to_text = cron_reply_context.get("content")
+        elif thread_id and chat_type == "channel" and self._fetch_reply_context:
+            reply_to_text = await self._fetch_parent_message_text(activity, thread_id)
 
         source = self.build_source(
             chat_id=conv.id,
@@ -882,6 +935,8 @@ class TeamsAdapter(BasePlatformAdapter):
             user_id=str(user_id),
             user_name=user_name,
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            thread_id=thread_id,
+            message_id=msg_id,
         )
 
         # Handle attachments (images, documents, video, audio)
@@ -979,8 +1034,136 @@ class TeamsAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             message_id=msg_id,
+            reply_to_message_id=thread_id,
+            reply_to_text=reply_to_text,
         )
         await self.handle_message(event)
+
+    @classmethod
+    def _teams_thread_id(cls, activity: Any) -> Optional[str]:
+        """Return the root Teams activity ID when this message is a reply."""
+        channel_data = getattr(activity, "channel_data", None)
+        candidates = (
+            getattr(activity, "reply_to_id", None),
+            getattr(activity, "replyToId", None),
+            cls._nested_value(channel_data, "replyToId"),
+            cls._nested_value(channel_data, "reply_to_id"),
+            cls._nested_value(channel_data, "message", "replyToId"),
+            cls._nested_value(channel_data, "message", "reply_to_id"),
+            cls._nested_value(channel_data, "legacy", "replyToId"),
+            cls._nested_value(channel_data, "legacy", "reply_to_id"),
+        )
+        for value in candidates:
+            if isinstance(value, (str, int, float)) and value not in (None, ""):
+                text = str(value).strip()
+                if text:
+                    return text
+        return None
+
+    @staticmethod
+    def _nested_value(value: Any, *keys: str) -> Any:
+        current = value
+        for key in keys:
+            if current is None:
+                return None
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                current = getattr(current, key, None)
+        return current
+
+    @staticmethod
+    def _thread_id_from_conversation_id(conversation_id: Any) -> Optional[str]:
+        if not isinstance(conversation_id, str):
+            return None
+        marker = ";messageid="
+        if marker not in conversation_id:
+            return None
+        message_id = conversation_id.split(marker, 1)[1].strip()
+        return message_id or None
+
+    @staticmethod
+    def _cron_reply_context(conversation_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        try:
+            from gateway.cron_reply_context import find_cron_reply_context
+
+            return find_cron_reply_context(
+                "teams",
+                str(conversation_id),
+                thread_id=str(thread_id) if thread_id else None,
+            )
+        except Exception:
+            logger.debug("[teams] failed to load cron reply context", exc_info=True)
+            return None
+
+    async def _fetch_parent_message_text(
+        self,
+        activity: Any,
+        thread_id: str,
+    ) -> Optional[str]:
+        """Fetch an uncached channel parent from Graph using its Teams message ID."""
+        channel_data = getattr(activity, "channel_data", None)
+        team_id = (
+            self._nested_value(channel_data, "team", "aadGroupId")
+            or self._nested_value(channel_data, "team", "aad_group_id")
+            or self._nested_value(channel_data, "team", "id")
+        )
+        channel_id = self._nested_value(channel_data, "channel", "id")
+        conversation_id = str(getattr(getattr(activity, "conversation", None), "id", "") or "")
+        if not channel_id and "@thread.tacv2" in conversation_id:
+            channel_id = conversation_id.split(";messageid=", 1)[0]
+
+        team_id = str(team_id or "").strip()
+        channel_id = str(channel_id or "").strip()
+        message_id = str(thread_id or "").strip()
+        if not team_id or not channel_id or not message_id:
+            logger.debug(
+                "[teams] cannot fetch parent context without team, channel, and message IDs"
+            )
+            return None
+
+        try:
+            graph_client = self._get_reply_context_graph_client()
+            path = (
+                f"/teams/{quote(team_id, safe='')}/channels/"
+                f"{quote(channel_id, safe='')}/messages/{quote(message_id, safe='')}"
+            )
+            payload = await graph_client.get_json(path)
+            text = _teams_message_body_text(payload)
+            if text:
+                logger.debug(
+                    "[teams] fetched reply context from Graph for channel=%s message=%s",
+                    channel_id,
+                    message_id,
+                )
+                return text
+        except Exception as exc:
+            logger.warning(
+                "[teams] failed to fetch parent message context from Graph: %s",
+                exc,
+            )
+        return None
+
+    def _get_reply_context_graph_client(self) -> Any:
+        if self._reply_context_graph_client is not None:
+            return self._reply_context_graph_client
+
+        from tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProvider
+        from tools.microsoft_graph_client import MicrosoftGraphClient
+
+        credentials = GraphCredentials(
+            tenant_id=str(self._tenant_id),
+            client_id=str(self._client_id),
+            client_secret=str(self._client_secret),
+        )
+        provider = MicrosoftGraphTokenProvider(credentials, timeout=10.0)
+        self._reply_context_graph_client = MicrosoftGraphClient(
+            provider,
+            timeout=10.0,
+            max_retries=0,
+            user_agent="Hermes-Agent/teams-reply-context",
+        )
+        return self._reply_context_graph_client
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

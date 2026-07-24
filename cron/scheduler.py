@@ -1546,6 +1546,43 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    def _record_reply_context(target: dict, send_result) -> None:
+        """Seed Teams thread history so replies can see the cron post."""
+        platform_name = str(target["platform"]).lower()
+        if platform_name != "teams":
+            return
+
+        message_id = None
+        if isinstance(send_result, dict):
+            message_id = send_result.get("message_id")
+        else:
+            message_id = getattr(send_result, "message_id", None)
+
+        target_thread_id = target.get("thread_id") or message_id
+        if not target_thread_id:
+            return
+
+        try:
+            from gateway.cron_reply_context import record_cron_reply_context
+
+            record_cron_reply_context(
+                platform_name,
+                str(target["chat_id"]),
+                cleaned_delivery_content.strip(),
+                thread_id=str(target_thread_id),
+                message_id=str(message_id) if message_id else None,
+                job_id=str(job.get("id", "")),
+            )
+            logger.info(
+                "Job '%s': recorded Teams cron reply context for %s:%s thread_id=%s",
+                job["id"],
+                platform_name,
+                target["chat_id"],
+                target_thread_id,
+            )
+        except Exception:
+            logger.debug("Job '%s': failed to record Teams cron reply context", job["id"], exc_info=True)
+
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
@@ -1948,6 +1985,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    if text_to_send:
+                        _record_reply_context(target, send_result)
                     delivered = True
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
@@ -2059,6 +2098,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _record_reply_context(target, result)
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
                 thread_id=thread_id, user_id=origin_user_id,

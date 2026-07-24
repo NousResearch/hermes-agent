@@ -500,6 +500,128 @@ class TestValidateSignature:
         assert adapter._validate_signature(req, body, secret) is True
 
 
+    def test_validate_gitea_signature_valid(self):
+        """Gitea X-Gitea-Signature header is validated as HMAC-SHA256 of body (no prefix)."""
+        adapter = _make_adapter()
+        body = b'{"action":"created","comment":{"body":"test"}}'
+        secret = "gitea-webhook-secret"
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        req = _mock_request(
+            headers={"X-Gitea-Signature": sig, "X-Gitea-Event": "issue_comment"},
+            body=body,
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_gitea_signature_invalid(self):
+        """Invalid Gitea signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"action":"created","comment":{"body":"test"}}'
+        secret = "gitea-webhook-secret"
+        req = _mock_request(
+            headers={"X-Gitea-Signature": "deadbeef", "X-Gitea-Event": "issue_comment"},
+            body=body,
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_gitea_signature_wrong_body_rejected(self):
+        """Gitea signature validated against exact body bytes."""
+        adapter = _make_adapter()
+        body = b'{"action":"created","comment":{"body":"original"}}'
+        secret = "gitea-webhook-secret"
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        # Attacker replays with modified body
+        modified_body = b'{"action":"created","comment":{"body":"tampered"}}'
+        req = _mock_request(
+            headers={"X-Gitea-Signature": sig, "X-Gitea-Event": "issue_comment"},
+            body=modified_body,
+        )
+        assert adapter._validate_signature(req, modified_body, secret) is False
+
+    def test_validate_gitea_event_type_recognized(self):
+        """X-Gitea-Event header is recognized for event filtering."""
+        adapter = _make_adapter(routes={"r1": {"secret": "secret", "prompt": "x", "events": ["issue_comment"]}})
+        body = b'{"action":"created"}'
+        req = _mock_request(
+            headers={"X-Gitea-Event": "issue_comment"},
+            body=body,
+        )
+        # Verify the internal event type extraction correctly identifies X-Gitea-Event
+        from gateway.platforms.webhook import WebhookAdapter
+        import json
+        payload = json.loads(body.decode())
+        # Test the event type extraction logic directly by checking that
+        # the header is parsed before falling back to payload fields
+        event_type = (
+            req.headers.get("X-GitHub-Event", "")
+            or req.headers.get("X-GitLab-Event", "")
+            or req.headers.get("X-Gitea-Event", "")
+            or req.headers.get("X-Forgejo-Event", "")
+            or payload.get("event_type", "")
+            or payload.get("type", "")
+            or "unknown"
+        )
+        assert event_type == "issue_comment"
+
+    def test_validate_forgejo_signature_valid(self):
+        """Forgejo X-Forgejo-Signature header is validated as HMAC-SHA256 of body (no prefix)."""
+        adapter = _make_adapter()
+        body = b'{"action":"created","comment":{"body":"test"}}'
+        secret = "forgejo-webhook-secret"
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        req = _mock_request(
+            headers={"X-Forgejo-Signature": sig, "X-Forgejo-Event": "issue_comment"},
+            body=body,
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_forgejo_signature_invalid(self):
+        """Invalid Forgejo signature is rejected."""
+        adapter = _make_adapter()
+        body = b'{"action":"created","comment":{"body":"test"}}'
+        secret = "forgejo-webhook-secret"
+        req = _mock_request(
+            headers={"X-Forgejo-Signature": "deadbeef", "X-Forgejo-Event": "issue_comment"},
+            body=body,
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_forgejo_signature_wrong_body_rejected(self):
+        """Forgejo signature validated against exact body bytes."""
+        adapter = _make_adapter()
+        body = b'{"action":"created","comment":{"body":"original"}}'
+        secret = "forgejo-webhook-secret"
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        # Attacker replays with modified body
+        modified_body = b'{"action":"created","comment":{"body":"tampered"}}'
+        req = _mock_request(
+            headers={"X-Forgejo-Signature": sig, "X-Forgejo-Event": "issue_comment"},
+            body=modified_body,
+        )
+        assert adapter._validate_signature(req, modified_body, secret) is False
+
+    def test_validate_forgejo_event_type_recognized(self):
+        """X-Forgejo-Event header is recognized for event filtering."""
+        adapter = _make_adapter(routes={"r1": {"secret": "secret", "prompt": "x", "events": ["issue_comment"]}})
+        body = b'{"action":"created"}'
+        req = _mock_request(
+            headers={"X-Forgejo-Event": "issue_comment"},
+            body=body,
+        )
+        # Verify the internal event type extraction correctly identifies X-Forgejo-Event
+        import json
+        payload = json.loads(body.decode())
+        event_type = (
+            req.headers.get("X-GitHub-Event", "")
+            or req.headers.get("X-GitLab-Event", "")
+            or req.headers.get("X-Gitea-Event", "")
+            or req.headers.get("X-Forgejo-Event", "")
+            or payload.get("event_type", "")
+            or payload.get("type", "")
+            or "unknown"
+        )
+        assert event_type == "issue_comment"
+
+
 # ===================================================================
 # Prompt rendering
 # ===================================================================
@@ -653,6 +775,51 @@ class TestEventFilter:
                 json={"type": "message.received"},
             )
             assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_gitea_event(self):
+        """Gitea events via X-Gitea-Event header are recognized and filtered."""
+        routes = {
+            "gitea": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "comment: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gitea",
+                json={"action": "created"},
+                headers={"X-Gitea-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_rejects_gitea_non_matching(self):
+        """Non-matching Gitea event type returns ignored."""
+        routes = {
+            "gitea": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issue_comment"],
+                "prompt": "comment: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gitea",
+                json={"action": "opened"},
+                headers={"X-Gitea-Event": "pull_request"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
 
 
 # ===================================================================

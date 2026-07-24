@@ -539,6 +539,16 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    configured_env = config.get("embedded_api_env") or config.get("hindsight_api_env") or {}
+    if isinstance(configured_env, dict):
+        for key, value in configured_env.items():
+            key = str(key)
+            if not (key.startswith("HINDSIGHT_API_") or key.startswith("HINDSIGHT_EMBED_")):
+                continue
+            if value is None or value == "":
+                continue
+            env_values[key] = str(value)
     return env_values
 
 
@@ -552,7 +562,15 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    existing = {
+        key: value
+        for key, value in _load_simple_env(profile_env).items()
+        if key.startswith("HINDSIGHT_API_") or key.startswith("HINDSIGHT_EMBED_")
+    }
+    env_values = {
+        **existing,
+        **_build_embedded_profile_env(config, llm_api_key=llm_api_key),
+    }
     profile_env.write_text(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
         encoding="utf-8",
@@ -658,6 +676,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
+        self._prefetch_join_timeout = 3.0
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -1005,6 +1024,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
+            {"key": "prefetch_join_timeout", "description": "Maximum seconds to wait for auto-recall prefetch", "default": 3.0},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
@@ -1263,6 +1283,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
             _DEFAULT_IDLE_TIMEOUT,
         )
+        self._prefetch_join_timeout = float(self._config.get("prefetch_join_timeout", 3.0))
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"
@@ -1421,7 +1442,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    config_changed = any(saved.get(key) != value for key, value in expected_env.items())
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)
@@ -1466,7 +1487,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=max(0.0, self._prefetch_join_timeout))
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""

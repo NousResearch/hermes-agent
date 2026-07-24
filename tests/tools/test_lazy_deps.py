@@ -94,6 +94,26 @@ class TestAllowlist:
                 assert ld._spec_is_safe(spec), \
                     f"{feature}: spec {spec!r} fails safety check"
 
+    def test_trace_upload_hub_range_is_hindsight_compatible(self):
+        """Trace upload must not downgrade Hindsight's shared HF runtime."""
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        specs = ld.feature_specs("tool.trace_upload")
+        assert len(specs) == 1
+
+        spec = specs[0]
+        requirement = Requirement(spec)
+        assert requirement.name == "huggingface-hub"
+        assert ld._spec_is_safe(spec)
+
+        # transformers 5.12.0 requires huggingface-hub>=1.5.0,<2. Keep the
+        # whole compatible 1.x range available instead of forcing a downgrade.
+        assert Version("1.5.0") in requirement.specifier
+        assert Version("1.99.0") in requirement.specifier
+        assert Version("1.4.99") not in requirement.specifier
+        assert Version("2.0.0") not in requirement.specifier
+
     def test_feature_install_command_returns_pip_invocation(self):
         cmd = ld.feature_install_command("memory.honcho")
         assert cmd is not None

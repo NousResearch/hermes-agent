@@ -590,6 +590,8 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
                         cost_details["cache_read_input_tokens"] = float(Decimal(canonical.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_M)
                     if entry.cache_write_cost_per_million is not None and canonical.cache_write_tokens:
                         cost_details["cache_creation_input_tokens"] = float(Decimal(canonical.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_M)
+                    if cost_details:
+                        cost_details["total"] = float(sum(Decimal(str(v)) for v in cost_details.values()))
                 else:
                     cost_details["total"] = float(cost.amount_usd)
             except Exception:
@@ -1010,6 +1012,8 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                     cost_details["cache_read_input_tokens"] = float(Decimal(_cache_read) * entry.cache_read_cost_per_million / _ONE_M)
                 if entry.cache_write_cost_per_million is not None and _cache_write:
                     cost_details["cache_creation_input_tokens"] = float(Decimal(_cache_write) * entry.cache_write_cost_per_million / _ONE_M)
+                if cost_details:
+                    cost_details["total"] = float(sum(Decimal(str(v)) for v in cost_details.values()))
             else:
                 _cost = estimate_usage_cost(model, _cu, provider=provider, base_url=base_url, api_key="")
                 if _cost.amount_usd is not None:

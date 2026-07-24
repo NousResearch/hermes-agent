@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -966,6 +967,7 @@ class TestUsageFromSanitizedResponse:
 
         def fake_end_observation(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
             captured["usage_details"] = usage_details
+            captured["cost_details"] = cost_details
 
         monkeypatch.setattr(mod, "_end_observation", fake_end_observation)
         return captured
@@ -1021,3 +1023,38 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+    def test_sanitized_usage_cost_details_include_total(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+        captured = self._setup(mod, monkeypatch)
+
+        import agent.usage_pricing as usage_pricing
+
+        monkeypatch.setattr(
+            usage_pricing,
+            "get_pricing_entry",
+            lambda *_, **__: usage_pricing.PricingEntry(
+                input_cost_per_million=Decimal("1"),
+                output_cost_per_million=Decimal("2"),
+                cache_read_cost_per_million=Decimal("0.5"),
+                source="user_override",
+            ),
+        )
+
+        mod.on_post_llm_call(
+            task_id="task-1",
+            session_id="session-1",
+            api_call_count=1,
+            model="priced-model",
+            response={"model": "priced-model"},
+            usage={"input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 2},
+            assistant_content_chars=42,
+        )
+
+        assert captured["cost_details"] == {
+            "input": 0.00001,
+            "output": 0.00001,
+            "cache_read_input_tokens": 0.000001,
+            "total": 0.000021,
+        }

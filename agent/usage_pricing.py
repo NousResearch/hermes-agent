@@ -14,12 +14,14 @@ DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
+_VENICE_DEFAULT_BASE_URL = "https://api.venice.ai/api/v1"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
     "provider_cost_api",
     "provider_generation_api",
     "provider_models_api",
+    "models_dev_registry",
     "official_docs_snapshot",
     "user_override",
     "custom_contract",
@@ -915,6 +917,10 @@ def resolve_billing_route(
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
+    if provider_name == "venice" or base_url_host_matches(base_url or "", "api.venice.ai"):
+        if model.startswith("venice/"):
+            model = model.split("/", 1)[1]
+        return BillingRoute(provider="venice", model=model, base_url=base_url or _VENICE_DEFAULT_BASE_URL, billing_mode="models_dev_registry")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     # "openai-api" is the picker/registry slug for direct api.openai.com; it
@@ -1030,6 +1036,33 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+    try:
+        from agent.models_dev import get_model_info
+
+        info = get_model_info(route.provider, route.model)
+    except Exception:
+        return None
+    if info is None or not info.has_cost_data():
+        return None
+
+    def _cost(value: Optional[float]) -> Optional[Decimal]:
+        if value is None:
+            return None
+        return Decimal(str(value))
+
+    return PricingEntry(
+        input_cost_per_million=_cost(info.cost_input),
+        output_cost_per_million=_cost(info.cost_output),
+        cache_read_cost_per_million=_cost(info.cost_cache_read),
+        cache_write_cost_per_million=_cost(info.cost_cache_write),
+        source="models_dev_registry",
+        source_url="https://models.dev/api.json",
+        pricing_version=f"models.dev:{info.provider_id}:{info.id}",
+        fetched_at=_UTC_NOW(),
+    )
+
+
 def _pricing_entry_from_metadata(
     metadata: Dict[str, Dict[str, Any]],
     model_id: str,
@@ -1092,6 +1125,10 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
+    if route.provider == "venice":
+        entry = _models_dev_pricing_entry(route)
+        if entry:
+            return entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),

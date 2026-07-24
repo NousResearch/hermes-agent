@@ -15,6 +15,7 @@ from tools.blueprints import (
     BlueprintError,
     BlueprintSpec,
     create_blueprint_job,
+    blueprint_to_job_spec,
     export_blueprint,
     parse_blueprint,
     blueprint_spec_for_installed,
@@ -32,6 +33,7 @@ metadata:
       schedule: "0 8 * * *"
       deliver: telegram
       prompt: "Summarize my unread email and today's calendar."
+      reasoning_effort: high
 ---
 
 # Morning Brief
@@ -71,6 +73,7 @@ class TestParseBlueprint:
         assert spec.schedule == "0 8 * * *"
         assert spec.deliver == "telegram"
         assert spec.prompt is not None and spec.prompt.startswith("Summarize")
+        assert spec.reasoning_effort == "high"
 
     def test_plain_skill_is_not_a_blueprint(self):
         assert parse_blueprint(PLAIN_SKILL) is None
@@ -141,7 +144,23 @@ class TestCreateBlueprintJob:
         assert captured["skills"] == ["morning-brief"]
         assert captured["deliver"] == "telegram"
         assert captured["prompt"].startswith("Summarize")
+        assert captured["reasoning_effort"] == "high"
         assert job["id"] == "abc123"
+
+
+class TestBlueprintSpecTranslation:
+    def test_unset_reasoning_effort_is_omitted_for_inheritance(self):
+        spec = BlueprintSpec(skill_name="x", schedule="every 1h")
+        assert "reasoning_effort" not in blueprint_to_job_spec(spec)
+
+    def test_false_reasoning_effort_is_passed_to_core_unchanged(self):
+        spec = BlueprintSpec(skill_name="x", schedule="every 1h", reasoning_effort=False)
+        assert blueprint_to_job_spec(spec)["reasoning_effort"] is False
+
+    def test_invalid_reasoning_effort_reaches_core_validation(self):
+        spec = BlueprintSpec(skill_name="x", schedule="every 1h", reasoning_effort="warp9")
+        with pytest.raises(ValueError, match="reasoning_effort"):
+            create_blueprint_job(spec)
 
 
 class TestExportBlueprint:
@@ -152,6 +171,7 @@ class TestExportBlueprint:
             "skills": ["morning-brief"],
             "deliver": "telegram",
             "prompt": "Summarize my unread email.",
+            "reasoning_effort": "xhigh",
         }
         md = export_blueprint(job, "# Morning Brief\n\nDoes the morning digest.")
         # The exported SKILL.md must itself parse back as a blueprint.
@@ -159,6 +179,8 @@ class TestExportBlueprint:
         assert spec is not None
         assert spec.schedule == "0 8 * * *"
         assert spec.deliver == "telegram"
+        assert spec.reasoning_effort == "xhigh"
+        assert blueprint_to_job_spec(spec)["reasoning_effort"] == "xhigh"
         # Name is sanitized to a valid skill identifier.
         assert spec.skill_name == "my-morning-brief"
 

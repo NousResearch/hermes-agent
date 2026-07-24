@@ -50,12 +50,14 @@ def test_call_cron_for_profile_routes_storage_without_mutating_globals(isolated_
         prompt="run scheduled task",
         schedule="every 1h",
         name="worker-alpha-scan",
+        reasoning_effort="high",
     )
 
     assert job["profile"] == "worker_alpha"
     assert job["profile_name"] == "worker_alpha"
     assert job["hermes_home"] == str(isolated_profiles["worker_alpha"])
     assert job["is_default_profile"] is False
+    assert job["reasoning_effort"] == "high"
     assert (isolated_profiles["worker_alpha"] / "cron" / "jobs.json").exists()
     assert not (isolated_profiles["default"] / "cron" / "jobs.json").exists()
 

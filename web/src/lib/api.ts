@@ -2136,10 +2136,13 @@ export interface CronJobMutation {
   base_url?: string | null;
   script?: string | null;
   no_agent?: boolean;
+  reasoning_effort?: string | null;
   context_from?: string[] | null;
   enabled_toolsets?: string[] | null;
   workdir?: string | null;
 }
+
+export type CronJobReasoningEffort = string | false | null;
 
 export interface CronJob {
   id: string;
@@ -2161,6 +2164,7 @@ export interface CronJob {
   provider?: string | null;
   base_url?: string | null;
   no_agent?: boolean | null;
+  reasoning_effort?: CronJobReasoningEffort;
   context_from?: string[] | string | null;
   enabled_toolsets?: string[] | null;
   workdir?: string | null;

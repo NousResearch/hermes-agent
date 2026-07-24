@@ -11,6 +11,7 @@ frontmatter:
           deliver: origin            # optional (default "origin")
           prompt: "..."              # optional task instruction for the run
           no_agent: false            # optional
+          reasoning_effort: high       # optional per-job reasoning override
 
 Because a blueprint is just a skill, it flows through the ENTIRE existing
 skills-hub pipeline for free — search, inspect, quarantine, security scan,
@@ -67,6 +68,7 @@ class BlueprintSpec:
     provider: Optional[str] = None
     enabled_toolsets: Optional[List[str]] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+    reasoning_effort: Any = None
 
 
 def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
@@ -124,6 +126,7 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
     no_agent = bool(blueprint.get("no_agent", False))
     model = blueprint.get("model")
     provider = blueprint.get("provider")
+    reasoning_effort = blueprint.get("reasoning_effort")
     toolsets = blueprint.get("enabled_toolsets")
     if toolsets is not None and not isinstance(toolsets, list):
         raise BlueprintError("blueprint.enabled_toolsets must be a list when present")
@@ -137,6 +140,7 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
         model=str(model).strip() if model else None,
         provider=str(provider).strip() if provider else None,
         enabled_toolsets=[str(t) for t in toolsets] if toolsets else None,
+        reasoning_effort=reasoning_effort,
         raw=blueprint,
     )
 
@@ -181,7 +185,7 @@ def blueprint_to_job_spec(
     (``register_blueprint_suggestion``) build on it, so a blueprint scheduled now and
     a blueprint accepted from a suggestion produce an identical job.
     """
-    return {
+    job_spec = {
         "prompt": spec.prompt,
         "schedule": spec.schedule,
         "name": name or f"blueprint:{spec.skill_name}",
@@ -192,6 +196,12 @@ def blueprint_to_job_spec(
         "enabled_toolsets": spec.enabled_toolsets,
         "no_agent": spec.no_agent,
     }
+    # Omit an unset override so create_job inherits the model/global setting.
+    # Non-None values, including compatibility ``False``, are validated and
+    # canonicalized by cron.jobs.create_job.
+    if spec.reasoning_effort is not None:
+        job_spec["reasoning_effort"] = spec.reasoning_effort
+    return job_spec
 
 
 def create_blueprint_job(
@@ -275,6 +285,10 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
         blueprint_block["provider"] = job["provider"]
     if job.get("enabled_toolsets"):
         blueprint_block["enabled_toolsets"] = job["enabled_toolsets"]
+    if "reasoning_effort" in job and job["reasoning_effort"] is not None:
+        # Stored jobs contain only canonical values; retain the configured
+        # override while omitting inherit/null fields.
+        blueprint_block["reasoning_effort"] = job["reasoning_effort"]
 
     description = (
         (body.strip().splitlines() or ["Shared automation blueprint."])[0][:200]

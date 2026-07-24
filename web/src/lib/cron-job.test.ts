@@ -20,6 +20,7 @@ function form(overrides: Partial<CronJobFormState> = {}): CronJobFormState {
     model: "",
     base_url: "",
     script: "",
+    reasoning_effort: null,
     no_agent: false,
     context_from: "",
     enabled_toolsets: [],
@@ -43,6 +44,7 @@ describe("buildCronJobPayload", () => {
     const payload = buildCronJobPayload(
       form({
         base_url: "https://example.invalid/v1/",
+        reasoning_effort: " NONE ",
         enabled_toolsets: ["web", ""],
         context_from: "upstream-a\nupstream-b",
       }),
@@ -52,6 +54,7 @@ describe("buildCronJobPayload", () => {
       base_url: "https://example.invalid/v1",
       context_from: ["upstream-a", "upstream-b"],
       enabled_toolsets: ["web"],
+      reasoning_effort: "none",
     });
   });
 
@@ -63,12 +66,30 @@ describe("buildCronJobPayload", () => {
       provider: null,
       model: null,
       base_url: null,
+      reasoning_effort: null,
       script: null,
       no_agent: false,
       context_from: null,
       enabled_toolsets: null,
       workdir: null,
     });
+  });
+  it("emits null when the reasoning selector is intentionally cleared", () => {
+    expect(
+      buildCronJobPayload(form({ reasoning_effort: "" })).reasoning_effort,
+    ).toBeNull();
+  });
+  it("canonicalizes malformed legacy reasoning before unrelated edits", () => {
+    const hydrated = cronJobFormFromJob({
+      id: "legacy-invalid",
+      enabled: true,
+      reasoning_effort: " turbo ",
+    });
+
+    expect(hydrated.reasoning_effort).toBeNull();
+    expect(
+      buildCronJobPayload({ ...hydrated, name: "renamed" }).reasoning_effort,
+    ).toBeNull();
   });
 });
 
@@ -89,6 +110,38 @@ describe("cronJobHasExecutionContent", () => {
 });
 
 describe("cronJobFormFromJob", () => {
+  it("hydrates inherit/default separately from explicit none", () => {
+    const inherited = cronJobFormFromJob({ id: "inherit", enabled: true });
+    const none = cronJobFormFromJob({
+      id: "none",
+      enabled: true,
+      reasoning_effort: "none",
+    });
+    const legacyNone = cronJobFormFromJob({
+      id: "legacy-none",
+      enabled: true,
+      reasoning_effort: false,
+    });
+
+    expect(inherited.reasoning_effort).toBeNull();
+    expect(none.reasoning_effort).toBe("none");
+    expect(legacyNone.reasoning_effort).toBe("none");
+  });
+
+  it("retains configured effort for no_agent jobs", () => {
+    const formState = cronJobFormFromJob({
+      id: "script-only",
+      enabled: true,
+      no_agent: true,
+      reasoning_effort: "HIGH",
+    });
+
+    expect(formState).toMatchObject({
+      no_agent: true,
+      reasoning_effort: "high",
+    });
+    expect(buildCronJobPayload(formState).reasoning_effort).toBe("high");
+  });
   it("preserves schedule fallback and editable list fields", () => {
     const job: CronJob = {
       id: "abc",

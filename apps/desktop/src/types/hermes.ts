@@ -632,6 +632,11 @@ export interface AnalyticsTotals {
   total_reasoning: null | number
   total_sessions: number
 }
+/** Canonical per-cron-job reasoning choices accepted by create/update requests. */
+export type CronReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'none' | 'ultra' | 'xhigh'
+
+/** Cron read responses may contain legacy booleans or malformed strings. */
+export type CronReasoningEffortRead = CronReasoningEffort | false | (string & {})
 
 export interface CronJob {
   deliver?: null | string
@@ -644,6 +649,7 @@ export interface CronJob {
   next_run_at?: null | string
   no_agent?: boolean
   prompt?: null | string
+  reasoning_effort?: CronReasoningEffortRead | null
   provider?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
@@ -658,6 +664,7 @@ export interface CronJobCreatePayload {
   prompt: string
   provider?: string
   schedule: string
+  reasoning_effort?: CronReasoningEffort | null
 }
 
 export interface CronJobSchedule {
@@ -674,6 +681,7 @@ export interface CronJobUpdates {
   prompt?: string
   provider?: null | string
   schedule?: string
+  reasoning_effort?: CronReasoningEffort | null
 }
 
 export interface ProfileCreatePayload {

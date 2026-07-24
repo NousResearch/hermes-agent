@@ -156,13 +156,19 @@ class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):
         from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
 
-        spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
+        spec = BlueprintSpec(
+            skill_name="morning-brief",
+            schedule="0 8 * * *",
+            deliver="telegram",
+            reasoning_effort="high",
+        )
         with patch("cron.suggestions.add_suggestion", store.add_suggestion):
             rec = register_blueprint_suggestion(spec)
         assert rec is not None
         assert rec["source"] == "blueprint"
         assert rec["job_spec"]["skills"] == ["morning-brief"]
         assert rec["job_spec"]["schedule"] == "0 8 * * *"
+        assert rec["job_spec"]["reasoning_effort"] == "high"
 
     def test_blueprint_to_job_spec_matches_create_blueprint_job(self):
         from tools.blueprints import BlueprintSpec, blueprint_to_job_spec
@@ -172,6 +178,29 @@ class TestBlueprintBridge:
         assert js["skills"] == ["x"]
         assert js["schedule"] == "every 2h"
         assert js["prompt"] == "p"
+
+
+    def test_blueprint_acceptance_passes_reasoning_effort_to_create_job(self, store):
+        from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
+
+        spec = BlueprintSpec(
+            skill_name="x", schedule="every 2h", reasoning_effort="xhigh"
+        )
+        with patch("cron.suggestions.add_suggestion", store.add_suggestion):
+            rec = register_blueprint_suggestion(spec)
+        assert rec is not None
+
+        captured = {}
+
+        def fake_create_job(**kwargs):
+            captured.update(kwargs)
+            return {"id": "job123", **kwargs}
+
+        with patch("cron.jobs.create_job", fake_create_job):
+            job = store.accept_suggestion(rec["id"], origin={"platform": "cli"})
+
+        assert job["id"] == "job123"
+        assert captured["reasoning_effort"] == "xhigh"
 
 
 class TestCommandHandler:

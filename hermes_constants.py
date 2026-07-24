@@ -807,6 +807,39 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 VALID_REASONING_EFFORTS = (
     "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 )
+CRON_REASONING_EFFORTS = ("none",) + VALID_REASONING_EFFORTS
+
+
+def canonicalize_reasoning_effort(effort, *, allow_inherit: bool = False) -> str | None:
+    """Validate and canonicalize a cron job reasoning-effort value.
+
+    Cron job storage has a deliberately narrow write contract: strings are
+    trimmed and lower-cased, ``False`` means the canonical ``"none"`` value,
+    and every other value must be one of the canonical effort names.  The
+    optional ``"inherit"`` sentinel is accepted only for update operations,
+    where it means remove the per-job override.
+    """
+    if effort is None:
+        return None
+    if effort is False:
+        return "none"
+    if effort is True or not isinstance(effort, str):
+        raise ValueError(
+            "reasoning_effort must be one of: none, "
+            + ", ".join(VALID_REASONING_EFFORTS)
+            + " (or false)"
+        )
+
+    normalized = effort.strip().lower()
+    if allow_inherit and normalized == "inherit":
+        return None
+    if normalized in CRON_REASONING_EFFORTS:
+        return normalized
+    raise ValueError(
+        "reasoning_effort must be one of: none, "
+        + ", ".join(VALID_REASONING_EFFORTS)
+        + " (or false)"
+    )
 
 
 def parse_reasoning_effort(effort) -> dict | None:

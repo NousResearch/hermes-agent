@@ -60,6 +60,65 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 ```
 
 Hermes will use the unified `cronjob` tool internally.
+## Per-job reasoning effort
+
+Agent-backed cron jobs can set a per-job `reasoning_effort`. The canonical values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. At run time, Hermes resolves the effective setting in this order:
+
+1. the job's stored override
+2. the matching per-model override in `agent.reasoning_overrides`
+3. the global `agent.reasoning_effort`
+4. the provider's default
+
+`none` explicitly disables reasoning; it is different from inheriting. On create, omit the field (or pass `null` through the tool/API) to inherit, and no per-job field is stored. On update, omission leaves the current value unchanged, while `null` clears the stored override and resumes inheritance. The CLI uses `inherit` for that clear operation. Boolean `false` is accepted for compatibility and is canonicalized to `none`. Any other invalid value is rejected on a new write.
+
+### CLI
+
+```bash
+hermes cron create "every 2h" "Summarize the latest incidents" \
+  --reasoning-effort high
+
+hermes cron edit <job_id> --reasoning-effort inherit  # clear the job override
+```
+
+The create flag accepts the canonical values only; the edit flag also accepts `inherit`.
+
+### `cronjob` tool
+
+```python
+cronjob(
+    action="create",
+    schedule="every 2h",
+    prompt="Summarize the latest incidents",
+    reasoning_effort="high",
+)
+
+cronjob(
+    action="update",
+    job_id="<job_id>",
+    reasoning_effort=None,  # clear; omission would leave it unchanged
+)
+```
+
+Use `reasoning_effort="none"` when the job must always disable reasoning.
+
+### HTTP API
+
+The authenticated cron API uses `/api/cron/jobs`. `POST` accepts `reasoning_effort` on creation; `PUT /api/cron/jobs/<job_id>` accepts an `updates` object. For example:
+
+```bash
+curl -X POST http://localhost:PORT/api/cron/jobs \
+  -H 'Authorization: Bearer <API_SERVER_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{"schedule":"every 2h","prompt":"Summarize incidents","reasoning_effort":"high"}'
+
+curl -X PUT http://localhost:PORT/api/cron/jobs/<job_id> \
+  -H 'Authorization: Bearer <API_SERVER_KEY>' \
+  -H 'Content-Type: application/json' \
+  -d '{"updates":{"reasoning_effort":null}}'
+```
+
+An omitted update key leaves the override unchanged; `null` removes it. API responses report the configured job value, not the effective value inherited from global or provider settings.
+
 
 ## Skill-backed cron jobs
 
@@ -446,6 +505,8 @@ Semantics:
 - Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
+- Configured `reasoning_effort` is stored for audit and editing, but is not applied: no-agent jobs never invoke the reasoning or model layer.
+
 
 `.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
 
@@ -751,6 +812,7 @@ Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or 
 :::
 
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
+For reasoning, the `reasoning_effort` field is stored only when a job override is explicit. A missing field means inheritance. Existing `jobs.json` records without this field remain backward compatible; reading or listing them does not add or canonicalize the reasoning field. Legacy records that contain a non-canonical value are also returned unchanged on read; the scheduler validates such a value defensively and falls back to the per-model, global, or provider default when it runs.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 

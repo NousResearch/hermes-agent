@@ -2282,6 +2282,10 @@ class TestRunJobConfigEnvVarExpansion:
             "model:\n"
             "  default: gpt-5.6-sol\n"
             "  provider: openai-codex\n"
+            "agent:\n"
+            "  reasoning_overrides:\n"
+            "    gpt-5.6-sol: low\n"
+            "    z-ai/glm-5.2: high\n"
             "fallback_providers:\n"
             "  - provider: anthropic\n"
             "  - provider: openrouter\n"
@@ -2328,6 +2332,7 @@ class TestRunJobConfigEnvVarExpansion:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"
+        assert kwargs["reasoning_config"]["effort"] == "high"
 
     def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
         """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""

@@ -76,6 +76,29 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 
 Older jobs may have a single `skill` field instead of the `skills` array. The scheduler normalizes this at load time — single `skill` is promoted to `skills: [skill]`.
 
+### Per-job reasoning effort
+
+`create_job(..., reasoning_effort=None)` accepts the canonical values `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. `none` disables reasoning; `None` (or an omitted argument) means inherit, so create does not write a `reasoning_effort` key. Boolean `False` is a compatibility input and is canonicalized to `none`. Other invalid create values raise `ValueError`.
+
+`update_job(job_id, updates)` is presence-sensitive:
+
+- no `reasoning_effort` key leaves the current override unchanged
+- `reasoning_effort: null` or the CLI-only value `inherit` removes the key and restores inheritance
+- a canonical value stores or replaces the override; `none` remains an explicit disable
+- invalid new values are rejected rather than stored
+
+The `cronjob` tool exposes the same field: omit it on create to inherit, omit it on update to preserve the existing value, and pass `null` on update to clear it. The authenticated dashboard API uses `POST /api/cron/jobs` for creation and `PUT /api/cron/jobs/{job_id}` with `{"updates": {"reasoning_effort": ...}}` for updates; invalid writes return HTTP 400. Responses expose the configured stored value, not a resolved fallback.
+
+At execution, `_resolve_cron_reasoning_config` applies this precedence:
+
+1. stored per-job override
+2. matching `agent.reasoning_overrides` entry for the selected model
+3. global `agent.reasoning_effort`
+4. provider default
+
+A `no_agent` job still stores a configured value for round-tripping and later editing, but the scheduler takes the script-only path and never applies reasoning. `jobs.json` records from before this field existed remain valid. Reads and list operations do not add or canonicalize the reasoning field; a legacy non-canonical value is validated only when running, and invalid legacy values fall through to the lower-precedence settings.
+
+
 ## Scheduler Runtime
 
 ### Tick Cycle

@@ -48,6 +48,21 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _reasoning_effort_display(job: dict) -> str:
+    """Describe configured reasoning without resolving runtime fallbacks."""
+    raw = job.get("reasoning_effort")
+    if raw is False:
+        configured = "none"
+    elif raw is None or not str(raw).strip():
+        configured = "inherit"
+    else:
+        configured = str(raw).strip()
+
+    if job.get("no_agent"):
+        return f"not applicable (configured: {configured})"
+    return configured
+
+
 def _active_cron_provider_name() -> str:
     """Name of the resolved cron scheduler provider ('builtin', 'chronos', …).
 
@@ -153,6 +168,7 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        print(f"    Reasoning: {_reasoning_effort_display(job)}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
@@ -335,6 +351,7 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        reasoning_effort=getattr(args, "reasoning_effort", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -351,6 +368,7 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
+    print(f"  Reasoning: {_reasoning_effort_display(job_data)}")
     print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
@@ -386,7 +404,8 @@ def cron_edit(args):
             if skill not in final_skills:
                 final_skills.append(skill)
 
-    result = _cron_api(
+    reasoning_effort = getattr(args, "reasoning_effort", None)
+    update_kwargs = dict(
         action="update",
         job_id=args.job_id,
         schedule=getattr(args, "schedule", None),
@@ -399,6 +418,11 @@ def cron_edit(args):
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
     )
+    if reasoning_effort is not None:
+        update_kwargs["reasoning_effort"] = (
+            None if reasoning_effort == "inherit" else reasoning_effort
+        )
+    result = _cron_api(**update_kwargs)
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -417,6 +441,7 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    print(f"  Reasoning: {_reasoning_effort_display(updated)}")
     return 0
 
 

@@ -20,6 +20,7 @@ import {
   cronJobFormFromJob,
   type CronJobFormState,
 } from "@/lib/cron-job";
+import { EFFORT_OPTIONS } from "@/lib/reasoning-effort";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import {
   DEFAULT_SCHEDULE_STATE,
@@ -139,6 +140,7 @@ function emptyCronJobForm(): CronJobEditorState {
     model: "",
     base_url: "",
     script: "",
+    reasoning_effort: null,
     no_agent: false,
     context_from: "",
     enabled_toolsets: [],
@@ -244,6 +246,35 @@ function CronAdvancedFields({
               )}
             </Select>
           </div>
+        </div>
+        <div className="grid gap-1">
+          <Label htmlFor={`${idPrefix}-reasoning-effort`}>Reasoning effort</Label>
+          <Select
+            id={`${idPrefix}-reasoning-effort`}
+            value={form.reasoning_effort ?? ""}
+            onValueChange={(v) => update("reasoning_effort", v || null)}
+          >
+            <SelectOption value="">Inherit / default</SelectOption>
+            {EFFORT_OPTIONS.map((option) => (
+              <SelectOption key={option.value} value={option.value}>
+                {option.label}
+              </SelectOption>
+            ))}
+          </Select>
+          {form.no_agent && (
+            <p className="text-xs text-muted-foreground">
+              {form.reasoning_effort ? (
+                <>
+                  Configured but not applied to no_agent jobs:{" "}
+                  {EFFORT_OPTIONS.find(
+                    (option) => option.value === form.reasoning_effort,
+                  )?.label ?? form.reasoning_effort}
+                </>
+              ) : (
+                "Reasoning effort is not applicable to no_agent jobs."
+              )}
+            </p>
+          )}
         </div>
 
         <div className="grid gap-1">
@@ -480,6 +511,22 @@ function getModelDisplay(job: CronJob): string {
   const model = asText(job.model);
   if (provider && model) return `${provider}/${model}`;
   return model || provider;
+}
+function getReasoningEffortDisplay(job: CronJob): string {
+  const raw: unknown = job.reasoning_effort;
+  const configured =
+    raw === false
+      ? "none"
+      : typeof raw === "string"
+        ? raw.trim().toLowerCase()
+        : "";
+  if (!configured) return job.no_agent ? "not applicable" : "inherit / default";
+  const label =
+    EFFORT_OPTIONS.find((option) => option.value === configured)?.label ??
+    configured;
+  return job.no_agent
+    ? `${label} (configured but not applied)`
+    : label;
 }
 
 function getJobProfile(job: CronJob): string {
@@ -994,6 +1041,7 @@ export default function CronPage() {
           const jobKey = getJobKey(job);
           const mode = getJobMode(job);
           const modelDisplay = getModelDisplay(job);
+          const reasoningEffortDisplay = getReasoningEffortDisplay(job);
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
@@ -1028,6 +1076,12 @@ export default function CronPage() {
                         model
                       </Badge>
                     )}
+                    <Badge
+                      tone="outline"
+                      title={`Reasoning effort: ${reasoningEffortDisplay}`}
+                    >
+                      reasoning: {reasoningEffortDisplay}
+                    </Badge>
                     {toolsets.length > 0 && (
                       <Badge tone="outline" title={toolsets.join(", ")}>
                         {toolsets.length} toolsets

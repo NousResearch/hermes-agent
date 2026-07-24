@@ -121,6 +121,77 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_reasoning_effort_create_edit_list_and_no_agent_display(
+        self, tmp_cron_dir, capsys
+    ):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Use high-quality reasoning",
+                name="Reasoning job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+                reasoning_effort="high",
+            )
+        )
+        job = list_jobs()[0]
+        assert job["reasoning_effort"] == "high"
+
+        cron_command(Namespace(cron_command="list", all=True))
+        listed = capsys.readouterr().out
+        assert "Reasoning: high" in listed
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                no_agent=None,
+                reasoning_effort="inherit",
+            )
+        )
+        assert "reasoning_effort" not in get_job(job["id"])
+        edited = capsys.readouterr().out
+        assert "Reasoning: inherit" in edited
+
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt=None,
+                name="Watchdog",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script="watch.py",
+                workdir=None,
+                no_agent=True,
+                reasoning_effort="max",
+            )
+        )
+        no_agent = list_jobs()[1]
+        assert no_agent["reasoning_effort"] == "max"
+        output = capsys.readouterr().out
+        assert "Reasoning: not applicable (configured: max)" in output
+
     def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
         """A one-shot job can be persisted with ``"repeat": null``. `cron
         list` must render it as ∞ rather than crashing on .get(...)\\.get."""
@@ -402,3 +473,28 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+def test_cron_parser_reasoning_effort_choices():
+    import argparse
+
+    from hermes_cli.subcommands.cron import build_cron_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_cron_parser(subparsers, cmd_cron=lambda _args: None)
+
+    create = parser.parse_args(
+        ["cron", "create", "every 1h", "task", "--reasoning-effort", "max"]
+    )
+    assert create.reasoning_effort == "max"
+
+    edit = parser.parse_args(
+        ["cron", "edit", "job-1", "--reasoning-effort", "inherit"]
+    )
+    assert edit.reasoning_effort == "inherit"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["cron", "create", "every 1h", "task", "--reasoning-effort", "inherit"]
+        )

@@ -162,6 +162,18 @@ class TestConstruction:
                 client_id="hermes-dashboard", portal_url="https://x"
             )
 
+    def test_jwks_client_uses_explicit_request_headers(self):
+        provider = nous_plugin.NousDashboardAuthProvider(
+            client_id="agent:inst1", portal_url="https://portal.example.com"
+        )
+        fake_client = object()
+        with patch("jwt.PyJWKClient", return_value=fake_client) as mock_cls:
+            assert provider._get_jwks_client() is fake_client
+        _, kwargs = mock_cls.call_args
+        assert kwargs["headers"] == nous_plugin._JWKS_REQUEST_HEADERS
+        assert kwargs["cache_keys"] is True
+        assert kwargs["lifespan"] == nous_plugin._JWKS_CACHE_SECONDS
+
 
 # ---------------------------------------------------------------------------
 # Plugin entry point: env-gated registration

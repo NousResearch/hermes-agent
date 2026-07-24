@@ -210,6 +210,10 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        # Resolve the task id before removal so we can drop its sandbox dir
+        # afterwards; docker rm only removes the container, not the host-side
+        # bind mounts it left under <sandbox>/docker/<task-id>/ (#44114).
+        task_id = _container_task_id(docker, cid)
         try:
             result = subprocess.run(
                 [docker, "rm", "-f", cid],
@@ -222,6 +226,8 @@ def reap_orphan_containers(
                     "Reaped orphan container %s (exited %d seconds ago)",
                     cid[:12], int(age),
                 )
+                if task_id:
+                    _remove_sandbox_dir(task_id)
             else:
                 logger.debug(
                     "docker rm -f %s failed: %s",
@@ -265,6 +271,45 @@ def _container_finished_at(docker_exe: str, container_id: str):
     except ValueError as e:
         logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
         return None
+
+
+def _container_task_id(docker_exe: str, container_id: str) -> Optional[str]:
+    """Return the container's ``hermes-task-id`` label, or ``None`` if unavailable.
+
+    Used by the reaper to locate (and delete) the container's host-side
+    bind-mount sandbox dir, which ``docker rm`` does not touch (#44114).
+    """
+    try:
+        result = subprocess.run(
+            [docker_exe, "inspect", "--format", '{{index .Config.Labels "hermes-task-id"}}', container_id],
+            capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("orphan reaper docker inspect task-id %s failed: %s", container_id[:12], e)
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _remove_sandbox_dir(task_id: str) -> None:
+    """Delete the bind-mount sandbox dir left behind by a reaped container.
+
+    ``docker rm`` removes only the container; the host-side bind mounts under
+    ``<sandbox>/docker/<task-id>/`` would otherwise leak forever (#44114). The
+    target is strictly required to be a direct child of ``<sandbox>/docker`` so a
+    malformed ``hermes-task-id`` label can never escape the sandbox root.
+    """
+    try:
+        from tools.environments.base import get_sandbox_dir
+
+        docker_root = (get_sandbox_dir() / "docker").resolve()
+        target = (docker_root / task_id).resolve()
+        if target.parent == docker_root and target != docker_root and target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+    except Exception as e:
+        logger.debug("failed to remove sandbox dir for task %r: %s", task_id, e)
 
 
 def find_docker() -> Optional[str]:

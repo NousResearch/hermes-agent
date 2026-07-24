@@ -1320,6 +1320,59 @@ def test_reap_orphan_removes_stale_exited_container(monkeypatch):
     assert "old-cid" in rms[0][0], f"expected rm of old-cid, got {rms[0][0]}"
 
 
+def test_reap_orphan_removes_sandbox_dir(monkeypatch, tmp_path):
+    """Reaping a container also deletes its host-side bind-mount sandbox dir
+    (``<sandbox>/docker/<task-id>/``). ``docker rm`` alone leaves it to leak
+    forever. Regression for #44114."""
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
+    from tools.environments.base import get_sandbox_dir
+
+    task_id = "20260610_161415_61bb69"
+    sandbox = get_sandbox_dir() / "docker" / task_id
+    (sandbox / "home").mkdir(parents=True)
+    (sandbox / "workspace").mkdir(parents=True)
+    assert sandbox.is_dir()
+
+    old = _now_iso(offset_seconds=900)
+
+    def _run(cmd, **kwargs):
+        sub = cmd[1] if isinstance(cmd, list) and len(cmd) >= 2 else ""
+        if sub == "ps":
+            return subprocess.CompletedProcess(cmd, 0, stdout="old-cid\n", stderr="")
+        if sub == "inspect":
+            fmt = cmd[3] if len(cmd) > 3 else ""
+            if "hermes-task-id" in fmt:
+                return subprocess.CompletedProcess(cmd, 0, stdout=task_id + "\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout=old + "\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1
+    assert not sandbox.exists(), "reaped container's sandbox dir must be deleted (#44114)"
+
+
+def test_remove_sandbox_dir_refuses_to_escape_sandbox(monkeypatch, tmp_path):
+    """A malformed ``hermes-task-id`` label must never delete anything outside
+    ``<sandbox>/docker/`` — path-traversal guard for the reaper's dir cleanup."""
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
+    outside = tmp_path / "secret"
+    outside.mkdir()
+    docker_env._remove_sandbox_dir("../secret")
+    assert outside.is_dir(), "must not delete dirs outside <sandbox>/docker/"
+
+    from tools.environments.base import get_sandbox_dir
+
+    docker_root = get_sandbox_dir() / "docker"
+    docker_root.mkdir(parents=True, exist_ok=True)
+    docker_env._remove_sandbox_dir(".")
+    assert docker_root.is_dir(), "must not wipe the <sandbox>/docker root itself"
+
+
 def test_reap_orphan_spares_recently_exited_container(monkeypatch):
     """A container exited within max_age_seconds must NOT be reaped — that
     container belongs to a Hermes process that just finished and may be

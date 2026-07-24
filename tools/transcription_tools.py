@@ -128,6 +128,12 @@ def _load_stt_config() -> dict:
         return {}
 
 
+def _get_hotwords(stt_config: dict) -> list:
+    """Return cleaned hotwords list from stt config."""
+    raw = stt_config.get("hotwords", [])
+    return [w.strip() for w in raw if isinstance(w, str) and w.strip()]
+
+
 def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     """Return whether STT is enabled in config."""
     if stt_config is None:
@@ -639,6 +645,7 @@ def _transcribe_command_stt(
     | ``{format}``      | configured output format (``txt`` / ``json`` / ``srt`` / ``vtt``) |
     | ``{language}``    | configured language code (default ``en``)                 |
     | ``{model}``       | configured model id (empty when not set)                  |
+    | ``{hotwords}``    | comma-separated hotwords from stt config (empty string when not set)|
 
     All placeholders are shell-quote-aware (see ``_render_command_stt_template``).
     Doubled braces ``{{`` and ``}}`` are preserved as literal braces.
@@ -676,6 +683,8 @@ def _transcribe_command_stt(
     try:
         with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
             output_path = Path(tmpdir) / f"transcript.{output_format}"
+            hotwords_list = _get_hotwords(stt_config)
+            hotwords_str = ", ".join(hotwords_list)
             placeholders = {
                 "input_path": str(audio.resolve()),
                 "output_path": str(output_path),
@@ -683,6 +692,7 @@ def _transcribe_command_stt(
                 "format": output_format,
                 "language": str(language),
                 "model": str(model),
+                "hotwords": hotwords_str,
             }
             command = _render_command_stt_template(command_template, placeholders)
             logger.info(
@@ -1159,6 +1169,9 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        hotwords = _get_hotwords(_load_stt_config())
+        if hotwords:
+            transcribe_kwargs["hotwords"] = ", ".join(hotwords)
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1247,11 +1260,14 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
+            hotwords_list = _get_hotwords(_load_stt_config())
+            hotwords_str = ", ".join(hotwords_list)
             command = command_template.format(
                 input_path=shlex.quote(prepared_input),
                 output_dir=shlex.quote(output_dir),
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
+                hotwords=shlex.quote(hotwords_str),
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
@@ -1316,11 +1332,15 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text",
-                )
+                transcribe_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text",
+                }
+                hotwords = _get_hotwords(_load_stt_config())
+                if hotwords:
+                    transcribe_kwargs["prompt"] = "Key terms: " + ", ".join(hotwords)
+                transcription = client.audio.transcriptions.create(**transcribe_kwargs)
 
             transcript_text = str(transcription).strip()
             logger.info("Transcribed %s via Groq API (%s, %d chars)",
@@ -1387,11 +1407,15 @@ def _transcribe_openai(
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
-                )
+                transcribe_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text" if model_name == "whisper-1" else "json",
+                }
+                hotwords = _get_hotwords(_load_stt_config())
+                if hotwords:
+                    transcribe_kwargs["prompt"] = "Key terms: " + ", ".join(hotwords)
+                transcription = client.audio.transcriptions.create(**transcribe_kwargs)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info(
@@ -1431,6 +1455,10 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
     api_key = get_env_value("MISTRAL_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
+
+    hotwords = _get_hotwords(_load_stt_config())
+    if hotwords:
+        logger.debug("hotwords not supported by Mistral; skipping")
 
     try:
         try:
@@ -1483,6 +1511,10 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
             "transcript": "",
             "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
         }
+
+    hotwords = _get_hotwords(_load_stt_config())
+    if hotwords:
+        logger.debug("hotwords not supported by xAI Grok STT; skipping")
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai") or {}
@@ -1579,6 +1611,10 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
     api_key = get_env_value("ELEVENLABS_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
+
+    hotwords = _get_hotwords(_load_stt_config())
+    if hotwords:
+        logger.debug("hotwords not supported by ElevenLabs Scribe; skipping")
 
     stt_config = _load_stt_config()
     elevenlabs_config = stt_config.get("elevenlabs") or {}

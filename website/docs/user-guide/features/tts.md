@@ -427,6 +427,7 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 # In ~/.hermes/config.yaml
 stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
+  hotwords: []                # words/phrases to bias STT recognition toward (e.g. ["Hermes", "Nous"])
   local:
     model: "base"             # tiny, base, small, medium, large-v3
   openai:
@@ -528,6 +529,7 @@ Your command template can reference these placeholders. Hermes substitutes them 
 | `{format}`        | Configured output format: `txt` / `json` / `srt` / `vtt`             |
 | `{language}`      | Configured language code (defaults to `en`)                          |
 | `{model}`         | `stt.providers.<name>.model`, empty when unset                       |
+| `{hotwords}`      | Comma-separated hotwords from `stt.hotwords` config (empty when unset) |
 
 Use `{{` and `}}` for literal braces (handy when embedding JSON snippets in the command).
 

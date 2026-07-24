@@ -318,3 +318,323 @@ class TestNormalizeLocalModel:
                 )
         finally:
             os.unlink(audio_file)
+
+
+# ---------------------------------------------------------------------------
+# Hotwords for local provider
+# ---------------------------------------------------------------------------
+
+
+class TestHotwordsLocalProvider:
+    """hotwords from stt config are forwarded to faster-whisper."""
+
+    def test_hotwords_passed_to_faster_whisper(self, tmp_path, caplog):
+        import logging
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": ["Hermes", "Nous"],
+            "local": {"model": "base", "language": ""},
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            mock_model.transcribe.assert_called_once()
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" in kwargs
+            assert "Hermes" in kwargs["hotwords"]
+            assert "Nous" in kwargs["hotwords"]
+
+    def test_empty_hotwords_skips_kwarg(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": [],
+            "local": {"model": "base", "language": ""},
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" not in kwargs
+
+    def test_defensive_filter_strips_empty_and_nonstring(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": ["", "Hermes", None, "  OpenCode  ", 42],
+            "local": {"model": "base", "language": ""},
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" in kwargs
+            # Only "Hermes" and "Nous" survive filtering
+            assert kwargs["hotwords"] == "Hermes, OpenCode"
+
+    def test_hotwords_propagate_from_real_config(self, tmp_path, monkeypatch):
+        """DEFAULT_CONFIG → YAML deep-merge propagates hotwords through real load_config() to a mocked provider."""
+        import yaml
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        monkeypatch.setattr("hermes_cli.config._LOAD_CONFIG_CACHE", {})
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(yaml.dump({
+            "stt": {
+                "provider": "local",
+                "hotwords": ["Hermes", "Nous"],
+                "local": {"model": "base", "language": ""},
+            }
+        }))
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            # NOTE: _load_stt_config is NOT patched — it reads the real config path
+            import sys
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            mock_model.transcribe.assert_called_once()
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" in kwargs
+            assert "Hermes" in kwargs["hotwords"]
+            assert "Nous" in kwargs["hotwords"]
+
+
+# ---------------------------------------------------------------------------
+# Hotwords for OpenAI and Groq cloud providers
+# ---------------------------------------------------------------------------
+
+
+class TestHotwordsCloudProviders:
+    """OpenAI and Groq providers pass hotwords as prompt."""
+
+    def test_openai_receives_prompt(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "hello world"
+        mock_client.audio.transcriptions.create.return_value = mock_transcription
+
+        stt_config = {
+            "enabled": True,
+            "provider": "openai",
+            "hotwords": ["Hermes", "Nous"],
+            "openai": {"model": "whisper-1"},
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._resolve_openai_audio_client_config", return_value=("sk-test", "https://api.openai.com/v1")), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+            assert "prompt" in call_kwargs
+            assert "Hermes" in call_kwargs["prompt"]
+            assert "Nous" in call_kwargs["prompt"]
+
+    def test_openai_empty_hotwords_no_prompt(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "hello world"
+        mock_client.audio.transcriptions.create.return_value = mock_transcription
+
+        stt_config = {
+            "enabled": True,
+            "provider": "openai",
+            "hotwords": [],
+            "openai": {"model": "whisper-1"},
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._resolve_openai_audio_client_config", return_value=("sk-test", "https://api.openai.com/v1")), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+            assert "prompt" not in call_kwargs
+
+    def test_groq_receives_prompt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hello world"
+
+        stt_config = {
+            "enabled": True,
+            "provider": "groq",
+            "hotwords": ["Hermes"],
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+            assert "prompt" in call_kwargs
+            assert "Hermes" in call_kwargs["prompt"]
+
+
+class TestHotwordsUnsupportedProviders:
+    """Unsupported providers log debug and continue."""
+
+    def test_mistral_logs_debug_on_hotwords(self, tmp_path, caplog, monkeypatch):
+        monkeypatch.setenv("MISTRAL_API_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=None)
+        mock_result = MagicMock(text="hello")
+        mock_client.audio.transcriptions.complete.return_value = mock_result
+
+        stt_config = {
+            "enabled": True,
+            "provider": "mistral",
+            "hotwords": ["Hermes"],
+            "mistral": {"model": "voxtral-mini-latest"},
+        }
+
+        import logging
+        import sys
+        import tools.transcription_tools as ttt
+        fake_mistralai = MagicMock()
+        fake_mistralai_client = MagicMock()
+        fake_mistralai_client.Mistral = MagicMock(return_value=mock_client)
+        with patch.dict(sys.modules, {"mistralai": fake_mistralai, "mistralai.client": fake_mistralai_client}), \
+             patch.object(ttt, "_HAS_MISTRAL", True), \
+             patch.object(ttt, "_load_stt_config", return_value=stt_config), \
+             patch.object(ttt, "_get_provider", return_value="mistral"):
+            from tools.transcription_tools import transcribe_audio
+            with caplog.at_level(logging.DEBUG, logger="tools.transcription_tools"):
+                result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            assert any("hotwords not supported by Mistral" in r.message for r in caplog.records), \
+                f"Expected debug log with 'not supported by Mistral', got: {[r.message for r in caplog.records]}"
+
+
+class TestHotwordsCommandProviders:
+    """Command-based providers can use {hotwords} template variable."""
+
+    def test_local_command_receives_hotwords_template_var(self, tmp_path, monkeypatch):
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        monkeypatch.setenv("HERMES_LOCAL_STT_COMMAND", "echo '{hotwords}' > {output_dir}/transcript.txt")
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": ["Hermes", "Nous"],
+            "local": {"model": "base", "language": "en"},
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="local_command"), \
+             patch("tools.transcription_tools._has_local_command", return_value=True), \
+             patch("tools.transcription_tools._find_whisper_binary", return_value=None):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            assert "Hermes" in result["transcript"], \
+                f"Expected 'Hermes' in transcript, got: {result['transcript']}"
+
+    def test_command_stt_placeholders_include_hotwords(self, tmp_path):
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        stt_config = {
+            "enabled": True,
+            "provider": "my_custom_stt",
+            "hotwords": ["Hermes"],
+            "providers": {
+                "my_custom_stt": {
+                    "type": "command",
+                    "command": "echo '{hotwords}' > {output_path}",
+                    "format": "txt",
+                }
+            },
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="my_custom_stt"), \
+             patch("tools.transcription_tools._resolve_command_stt_provider_config", return_value=stt_config["providers"]["my_custom_stt"]):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            assert "Hermes" in result["transcript"], \
+                f"Expected 'Hermes' in transcript, got: {result['transcript']}"

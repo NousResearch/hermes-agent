@@ -9,6 +9,7 @@ import {
   estimateTokensRough,
   fmtK,
   hasAnsi,
+  isRtl,
   isToolTrailResultLine,
   lastCotTrailIndex,
   parseToolTrailResultLine,
@@ -252,5 +253,49 @@ describe('estimateRows', () => {
     const plain = 'look at test case with underscores now'
 
     expect(estimateRows(snake, w)).toBe(estimateRows(plain, w))
+  })
+})
+
+describe('isRtl', () => {
+  it('returns false for empty string', () => {
+    expect(isRtl('')).toBe(false)
+  })
+
+  it('returns false for LTR English text', () => {
+    expect(isRtl('Hello world')).toBe(false)
+  })
+
+  it('returns false for LTR Chinese text', () => {
+    expect(isRtl('你好世界')).toBe(false)
+  })
+
+  it('detects Persian text', () => {
+    expect(isRtl('سلام دنیا')).toBe(true)
+  })
+
+  it('detects Arabic text', () => {
+    expect(isRtl('مرحبا بالعالم')).toBe(true)
+  })
+
+  it('detects Hebrew text', () => {
+    expect(isRtl('שלום עולם')).toBe(true)
+  })
+
+  it('detects Urdu text (Arabic script)', () => {
+    expect(isRtl('ہیلو دنیا')).toBe(true)
+  })
+
+  it('detects RTL after leading whitespace', () => {
+    expect(isRtl('   مرحبا')).toBe(true)
+  })
+
+  it('returns false for LTR text with trailing RTL', () => {
+    // First strong character is LTR
+    expect(isRtl('Hello مرحبا')).toBe(false)
+  })
+
+  it('strips ANSI before detection', () => {
+    // \x1b[31m is red color ANSI code — the first real char is Arabic
+    expect(isRtl('\x1b[31mمرحبا\x1b[0m')).toBe(true)
   })
 })

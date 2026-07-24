@@ -15388,6 +15388,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
         attachment contract — trigger post-stream uploads.
         """
+        logger.info("[DEBUG] _deliver_media_from_response called: response=%r chat=%s", response[:100], event.source.chat_id)
         from pathlib import Path
         from urllib.parse import quote as _quote
 
@@ -16615,7 +16616,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # ------------------------------------------------------------------
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
-
 
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
@@ -21078,9 +21078,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # first message that can never be updated, resulting in
                         # duplicate messages (partial + final).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        if not _adapter_supports_edit:
+                        # Adapters that can't edit messages but provide a
+                        # native-streaming transport (e.g. WeCom's
+                        # msgtype: "stream" via send_stream_frame) get
+                        # past the gate — the consumer's native branch
+                        # delivers the full turn through that transport.
+                        _adapter_supports_native_stream = bool(getattr(
+                            _adapter, "SUPPORTS_NATIVE_STREAMING", False,
+                        ))
+                        if not _adapter_supports_edit and not _adapter_supports_native_stream:
                             raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor
+                        # Native-only platforms render their own typing
+                        # animation while the stream is live; suppress the
+                        # consumer-injected cursor so the user doesn't see
+                        # a stray ▉ alongside the platform's UI.
+                        if not _adapter_supports_edit and _adapter_supports_native_stream:
+                            _effective_cursor = ""
                         # Some Matrix clients render the streaming cursor
                         # as a visible tofu/white-box artifact.  Keep
                         # streaming text on Matrix, but suppress the cursor.
@@ -21546,6 +21560,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.memory_notifications = str(_mem_notif).lower() if _mem_notif else "on"
 
             # ------------------------------------------------------------------
+            # Shared native-stream boundary close.  For platforms with native
+            # streaming (e.g. WeCom msgtype:"stream"), an interaction that
+            # interrupts the stream — a dangerous-command approval prompt OR a
+            # clarify decision prompt — must finalize the current stream and
+            # disable native streaming first.  Otherwise the agent's
+            # post-interaction output keeps flowing into send_stream_frame and
+            # updates the *old* bubble that preceded the prompt, instead of
+            # starting a fresh bubble below it (the "气泡割裂" symptom).  After
+            # the boundary, post-prompt output goes through the reliable send()
+            # path as a new message.  Runs on the agent thread; the consumer
+            # processes the boundary serially via its queue.
+            def _close_native_stream_boundary(
+                _reason: str, _placeholder: str | None = None, _reopen: bool = False,
+            ) -> bool:
+                _sc = stream_consumer_holder[0] if stream_consumer_holder else None
+                if not (_sc and getattr(_sc, "_use_native_streaming", False)):
+                    return True
+                _cancelled_flag = None
+                try:
+                    _boundary_result = _sc.close_for_approval_prompt(
+                        _placeholder, reason=_reason, reopen=_reopen,
+                    )
+                    # Returns (future, cancelled_flag) or just a future.
+                    if isinstance(_boundary_result, tuple):
+                        _boundary_future, _cancelled_flag = _boundary_result
+                    else:
+                        _boundary_future = _boundary_result
+                    if hasattr(_boundary_future, "result"):
+                        _ok = _boundary_future.result(timeout=10)
+                        if not _ok:
+                            logger.warning(
+                                "%s boundary failed to close stream properly — "
+                                "prompt may still appear in typing bubble", _reason,
+                            )
+                        return bool(_ok)
+                    return True
+                except (TimeoutError, Exception) as _boundary_err:
+                    if _cancelled_flag is not None:
+                        _cancelled_flag["cancelled"] = True
+                    logger.warning(
+                        "%s boundary timed out or failed: %s", _reason, _boundary_err,
+                    )
+                    return False
+
+            # ------------------------------------------------------------------
             # Clarify callback: present a clarify prompt and block on a response.
             #
             # Runs on the agent's worker thread (see clarify_tool's synchronous
@@ -21569,6 +21628,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key or "",
                     question=question,
                     choices=list(choices) if choices else None,
+                )
+
+                # For WeCom native streaming: finalize the current stream before
+                # showing the clarify prompt so the post-answer output opens a
+                # fresh bubble below the question instead of updating the bubble
+                # that preceded it — the "气泡割裂" symptom.  Unlike the approval
+                # path, clarify passes reopen=True: native streaming stays
+                # enabled so the post-answer continuation re-opens a fresh
+                # native stream (typing bubble) rather than degrading to a
+                # one-shot send().  Clarify waits are short, so stream staleness
+                # is a low risk; if the re-seed fails the consumer degrades to
+                # send() automatically.  The placeholder is only used in the
+                # narrow case where a frame was pushed but no text accumulated.
+                _close_native_stream_boundary(
+                    "Clarify", "💬 等待你的选择...", _reopen=True,
                 )
 
                 # Pause typing — like approval, we don't want a "thinking..."
@@ -21635,6 +21709,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
                     return f"[user did not respond within {int(timeout / 60)}m]"
+
+                # User answered.  Reopen the typing indicator IMMEDIATELY —
+                # don't wait for the LLM's first post-answer token.  On native
+                # streaming (WeCom) the typing bubble is driven by the stream
+                # seed frame, and the reopen path otherwise re-seeds lazily on
+                # the first delta (measured ~48s of dead air).  request_reopen_seed
+                # is a no-op unless we're in the reopen-pending native state, so
+                # it's safe to call unconditionally here.  resume_typing_for_chat
+                # covers non-native platforms (their pause was set before the
+                # prompt) — the WeCom send_typing is a no-op, harmless here.
+                _sc_reopen = stream_consumer_holder[0] if stream_consumer_holder else None
+                if _sc_reopen is not None:
+                    try:
+                        _sc_reopen.request_reopen_seed()
+                    except Exception:
+                        logger.debug(
+                            "request_reopen_seed after clarify answer failed",
+                            exc_info=True,
+                        )
+                try:
+                    _status_adapter.resume_typing_for_chat(_status_chat_id)
+                except Exception:
+                    logger.debug(
+                        "resume_typing_for_chat after clarify answer failed",
+                        exc_info=True,
+                    )
                 return response
 
             agent.clarify_callback = _clarify_callback_sync
@@ -21729,6 +21829,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
+                # For WeCom native streaming: signal the stream consumer to close
+                # the current stream before showing the approval prompt.
+                # This goes through the consumer's queue for serial processing,
+                # avoiding race conditions with pending deltas.
+                _close_native_stream_boundary("Approval")
+
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 
@@ -21788,11 +21894,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     smart_denied=approval_data.get("smart_denied", False),
                 )
                 try:
+                    # Mark as approval prompt so WeCom routes through control lane
+                    _approval_metadata = dict(_status_thread_metadata or {})
+                    _approval_metadata["is_approval_prompt"] = True
+
                     _approval_send_fut = safe_schedule_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
-                            metadata=_status_thread_metadata,
+                            metadata=_approval_metadata,
                         ),
                         _loop_for_step,
                         logger=logger,
@@ -23200,6 +23310,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
+            elif _sc is not None and not _is_empty_sentinel:
+                # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed for this
+                # turn but suppression did NOT fire, so the gateway's normal
+                # final-send is about to run. On WeCom this is the exact window
+                # that produced "回复了两条" — a final-frame ack still in flight
+                # (final_content_delivered not yet set) while this send races
+                # ahead. Log the decision inputs so a recurrence can be pinned to
+                # "signal never set" vs "ack-pending race".
+                # See docs/rca-wecom-stream-final-ack-timeout-duplicate.md.
+                logger.warning(
+                    "Normal final-send NOT suppressed despite active stream "
+                    "consumer for session %s: streamed=%s previewed=%s "
+                    "content_delivered=%s transformed=%s final_len=%d — "
+                    "possible duplicate send (see wecom ack-timeout RCA).",
+                    session_key or "?",
+                    _streamed,
+                    _previewed,
+                    _content_delivered,
+                    _transformed,
+                    len(_final),
+                )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

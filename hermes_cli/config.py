@@ -2026,6 +2026,10 @@ DEFAULT_CONFIG = {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
+            # WeCom uses native streaming (msgtype: "stream") via
+            # aibot_respond_msg — opt in by default so the WeCom client
+            # renders the typing animation and cumulative content updates.
+            "wecom": {"streaming": True},
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

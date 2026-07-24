@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import logging
 import queue
@@ -53,6 +54,25 @@ _COMMENTARY = object()
 # sending a blocking interactive prompt (clarify poll) so the prompt is the
 # last thing on screen, not racing ahead of buffered prose.
 _FLUSH = object()
+
+# Sentinel to signal an interaction boundary (approval prompt OR clarify
+# decision prompt) — finalize the current stream, disable native streaming,
+# and let post-interaction output go via send().
+_APPROVAL_BOUNDARY = object()
+
+# Sentinel to request an EAGER native re-seed after a clarify-reopen boundary.
+# Posted the moment the user answers a clarify (before the LLM produces any
+# post-answer delta), so the WeCom typing bubble reappears immediately instead
+# of waiting for the first token.  On WeCom, typing is driven by the stream
+# seed frame (send_typing is a no-op), and the reopen path otherwise re-seeds
+# lazily on the first delta — measured 48s of dead air in one turn.  Handled
+# serially in run(); see request_reopen_seed() and the run-loop handler.
+_REOPEN_SEED = object()
+
+# Default finalize text shown at an interaction boundary when no content has
+# accumulated yet.  Callers may override per-boundary (e.g. clarify passes its
+# own) via close_for_approval_prompt(placeholder=...).
+_DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
 
 
 def escape_code_fences_for_display(text: str) -> str:
@@ -218,6 +238,14 @@ class GatewayStreamConsumer:
         # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
         self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
+
+        # Per-turn identifier: uniquely identifies this consumer's stream turn.
+        # Passed to adapter.send_stream_frame() to prevent concurrent consumers
+        # from interfering with each other (e.g., /background, parallel subagents).
+        # Mirrors official wecom-openclaw-plugin's per-message streamId generation.
+        import uuid
+        self._turn_id = str(uuid.uuid4())
+
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -302,6 +330,53 @@ class GatewayStreamConsumer:
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
         self._before_finalize_notified = False
+        # Native streaming transport (e.g. WeCom msgtype: "stream"). Unlike
+        # drafts, native streaming is the *only* delivery channel for the
+        # turn — first frame, mid-stream updates, and the final answer all
+        # flow through ``adapter.send_stream_frame()`` and the adapter
+        # manages the stream lifecycle (init → cumulative updates →
+        # finish=true). Resolved at the start of run() and disabled on
+        # any failure so the consumer falls back to edit/send.
+        self._use_native_streaming = False
+        # Tracks whether the native stream bubble has been opened (seed frame sent).
+        # Used in fallback logic to decide if we need to finalize the stream before
+        # falling back to send(). Set to True after seed frame succeeds, even though
+        # seed has zero visible content.
+        self._native_stream_opened = False
+        # Number of visible characters last successfully pushed to the
+        # native stream. Used for "send only when enough new content has
+        # accumulated" throttling so we don't spam frames at WeCom's
+        # 30 frames/min rate ceiling.
+        self._native_last_pushed_len = 0
+        # Finalize text used at an interaction boundary (approval/clarify) when
+        # no content has accumulated yet.  Set by close_for_approval_prompt();
+        # defaults to the approval wording for backward compatibility.
+        self._boundary_placeholder = _DEFAULT_BOUNDARY_PLACEHOLDER
+        # Human-readable label for the current interaction boundary, used only
+        # for log prefixes so a clarify boundary doesn't log as "Approval".
+        # Set by close_for_approval_prompt(); race-free because boundaries are
+        # processed serially.
+        self._boundary_reason = "Approval"
+        # When True, the interaction boundary finalizes the current stream but
+        # KEEPS native streaming enabled so post-prompt output re-opens a fresh
+        # native stream (via the lazy re-seed in _send_or_edit) instead of
+        # degrading to a one-shot send().  Clarify sets this (short waits, low
+        # stream-staleness risk); approval leaves it False (long, unbounded
+        # waits — the stream may go stale, so send() is safer).  Set by
+        # close_for_approval_prompt(); race-free (boundaries are serial).
+        self._boundary_reopen = False
+        # Marks that a boundary asked to reopen the native stream but no
+        # post-prompt content has re-seeded it yet.  Guards got_done from
+        # re-seeding a fresh stream just to emit a lone "✅" placeholder when
+        # the agent produced nothing after the prompt.
+        self._awaiting_reopen_after_boundary = False
+        # Marks that an EAGER re-seed (via _REOPEN_SEED) already opened a fresh
+        # native stream after a clarify answer, BEFORE any post-answer content.
+        # Unlike the lazy path, the typing bubble is already on screen, so
+        # got_done must actively finalize it (not silently skip) when the agent
+        # produces no content — otherwise a blank typing bubble hangs forever.
+        self._reopen_seeded_eagerly = False
+
 
     def _metadata_for_send(
         self,
@@ -410,6 +485,83 @@ class GatewayStreamConsumer:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
 
+    def close_for_approval_prompt(
+        self,
+        placeholder: str | None = None,
+        reason: str = "Approval",
+        reopen: bool = False,
+    ) -> asyncio.Future:
+        """Signal an interaction boundary — finalize stream, then either disable
+        native (approval) or keep it for a fresh re-opened stream (clarify).
+
+        Used for any mid-stream interaction that must not keep updating the
+        current native-stream bubble: a dangerous-command approval prompt or a
+        clarify decision prompt.  Queues a boundary signal that the consumer
+        processes serially: finalize the current stream with accumulated text
+        (creating a stable message for pre-prompt content), then handle
+        post-prompt output per ``reopen``.
+
+        ``placeholder`` is the finalize text used only when there is no
+        accumulated content yet (the prompt fired as the agent's first action).
+        Defaults to the approval placeholder; clarify passes its own so the
+        finalized bubble doesn't read "waiting for approval" for a question.
+
+        ``reason`` is a human-readable label ("Approval"/"Clarify") used only
+        for the boundary handler's log prefixes so a clarify boundary doesn't
+        surface as an "Approval boundary" failure during troubleshooting.
+
+        ``reopen`` controls post-prompt delivery.  False (approval): disable
+        native streaming and buffer post-prompt output into a single reliable
+        send() — approval waits are long and unbounded, so the stream may go
+        stale.  True (clarify): keep native streaming enabled so post-prompt
+        output re-opens a fresh native stream via the existing lazy re-seed,
+        restoring the typing-bubble experience; if the re-seed later fails the
+        consumer degrades to send() automatically.
+
+        Returns a (Future, cancelled_flag) tuple. The Future resolves True
+        when the boundary has been processed. cancelled_flag is included
+        for backward compatibility with callers that set it on timeout;
+        the boundary handler no longer reads it (finalize always runs).
+
+        For platforms without native streaming this is a no-op (returns
+        an immediately-resolved Future).
+
+        Called from sync context (agent/approval thread). The boundary
+        is processed by the consumer's async run() task, ensuring no
+        race conditions with pending deltas or other queue items.
+        """
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if not self._use_native_streaming:
+            # No native stream to close — return resolved future
+            f = asyncio.Future() if loop else concurrent.futures.Future()
+            f.set_result(True)
+            return f
+
+        # Stash the empty-content placeholder, log label, and reopen mode for
+        # the serial boundary handler.  Boundaries are processed one at a time,
+        # so instance attributes are race-free and keep the queue signal shape
+        # unchanged.
+        self._boundary_placeholder = placeholder or _DEFAULT_BOUNDARY_PLACEHOLDER
+        self._boundary_reason = reason or "Approval"
+        self._boundary_reopen = bool(reopen)
+
+        # Create a future that run() will resolve after processing.
+        # cancelled_flag is retained for backward compatibility with callers
+        # (run.py sets it on timeout) but the handler always finalizes regardless.
+        if loop:
+            boundary_future = loop.create_future()
+        else:
+            boundary_future = concurrent.futures.Future()
+
+        cancelled_flag = {"cancelled": False}
+        self._queue.put((_APPROVAL_BOUNDARY, boundary_future, cancelled_flag))
+        return boundary_future, cancelled_flag
+
     def on_commentary(self, text: str) -> None:
         """Queue a completed interim assistant commentary message."""
         if text:
@@ -437,6 +589,27 @@ class GatewayStreamConsumer:
         except Exception:
             return False
         return evt.wait(timeout=max(0.0, float(timeout)))
+
+    def request_reopen_seed(self) -> None:
+        """Request an EAGER native re-seed after a clarify-reopen boundary.
+
+        Called (thread-safe, like on_commentary / close_for_approval_prompt)
+        the instant the user answers a clarify — BEFORE the LLM emits any
+        post-answer delta. Posts _REOPEN_SEED so run() immediately sends an
+        empty seed frame, which is what makes the WeCom typing bubble reappear
+        without waiting for the first token (measured 48s of dead air otherwise).
+
+        No-op unless we're in the reopen-pending state on a native stream: only
+        after a clarify boundary (`_awaiting_reopen_after_boundary`) with native
+        still enabled and no stream currently open. This keeps a stray call from
+        opening a spurious bubble mid-stream or on the approval path.
+        """
+        if (
+            self._use_native_streaming
+            and self._awaiting_reopen_after_boundary
+            and not self._native_stream_opened
+        ):
+            self._queue.put(_REOPEN_SEED)
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -499,6 +672,143 @@ class GatewayStreamConsumer:
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
+
+    async def _handle_approval_boundary(self, boundary_future, cancelled_flag=None) -> None:
+        """Process an approval boundary: finalize stream, disable native for post-approval.
+
+        This method is called serially from run() when _APPROVAL_BOUNDARY is dequeued.
+
+        Strategy: finalize the current stream with accumulated text (creating a
+        stable message for pre-approval content), then disable native streaming
+        so post-approval output goes through the reliable send() path.
+
+        Why not keep the stream open across approval:
+        - WeCom stream finalize ack only confirms server receipt, not client render.
+        - Approval waits introduce an idle gap where the stream may become stale
+          on the client side (no server-side 846608, but client stops tracking it).
+        - If content_delivered=True but the client didn't render, the normal
+          final send is suppressed → user sees nothing.
+        - Approval is a natural interaction boundary; "pre-approval preamble" +
+          "post-approval result" as two messages is acceptable UX.
+
+        Post-approval output uses regular send() which is unconditionally reliable.
+        """
+        # Log label ("Approval"/"Clarify") so a clarify boundary failure doesn't
+        # surface as an "Approval boundary" error during troubleshooting.
+        _reason = getattr(self, "_boundary_reason", "Approval") or "Approval"
+        delivery_failed = False
+        try:
+            if self._native_stream_opened:
+                # Finalize current stream with accumulated content.
+                # This converts the typing bubble into a stable message.
+                finalize_text = self._accumulated or self._boundary_placeholder
+                finalize_ok = False
+                try:
+                    result = await self.adapter.send_stream_frame(
+                        finalize_text,
+                        finalize=True,
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    finalize_ok = bool(result)
+                except Exception as e:
+                    logger.warning("%s boundary: finalize failed: %s", _reason, e)
+
+                if not finalize_ok:
+                    # Stream finalize didn't land — the typing bubble may still
+                    # be showing partial content. Fallback: deliver the pre-prompt
+                    # text via reliable send() so the user at least sees it.
+                    logger.warning(
+                        "%s boundary: finalize not confirmed, "
+                        "falling back to send() for pre-prompt text (chat=%s)",
+                        _reason, self.chat_id,
+                    )
+                    fallback_ok = False
+                    try:
+                        send_result = await self.adapter.send(
+                            self.chat_id, finalize_text,
+                        )
+                        fallback_ok = getattr(send_result, "success", False)
+                    except Exception as send_err:
+                        logger.warning(
+                            "%s boundary: fallback send also failed: %s",
+                            _reason, send_err,
+                        )
+                    if not fallback_ok:
+                        # Both finalize and fallback failed — pre-prompt text
+                        # may be lost. Mark boundary as failed so the caller knows.
+                        logger.error(
+                            "%s boundary: both finalize and fallback send failed "
+                            "(chat=%s) — pre-prompt text may not have been delivered",
+                            _reason, self.chat_id,
+                        )
+                        delivery_failed = True
+                else:
+                    logger.debug(
+                        "%s boundary: finalized stream (chat=%s, turn=%s)",
+                        _reason, self.chat_id, self._turn_id,
+                    )
+
+            if self._boundary_reopen:
+                # Clarify boundary: KEEP native streaming enabled.  The current
+                # stream was finalized above (pre-prompt content is now a stable
+                # bubble); marking it closed makes the next post-prompt delta
+                # re-open a fresh native stream via the lazy re-seed in
+                # _send_or_edit, restoring the typing-bubble experience.  Do NOT
+                # set buffer_only — post-prompt output should stream, not batch.
+                # If the re-seed later fails, the consumer degrades to send()
+                # on its own.  _awaiting_reopen_after_boundary guards got_done
+                # from re-seeding a stream just to emit a lone "✅" when the
+                # agent produced no post-prompt content.
+                self._native_stream_opened = False
+                self._native_last_pushed_len = 0
+                self._awaiting_reopen_after_boundary = True
+                self._reset_segment_state()
+                # INFO (temporary latency probe): boundary finalize is done and
+                # the old bubble is closed.  From here the consumer waits for
+                # the LLM's first post-answer delta before re-seeding the C
+                # bubble — so the gap between THIS line and the
+                # "Re-opened native stream" INFO below is exactly the
+                # "typing slow to reappear after clarify" delay.
+                logger.info(
+                    "[latency] Clarify boundary finalized, awaiting first "
+                    "post-answer delta to re-seed (chat=%s, turn=%s)",
+                    self.chat_id, self._turn_id,
+                )
+            else:
+                # Approval boundary: disable native streaming for post-approval
+                # output, which goes through regular send() (unconditionally
+                # reliable, no client-side stream state dependency).  Set
+                # buffer_only=True so the consumer accumulates all post-approval
+                # text and delivers it in one shot on got_done, avoiding
+                # mid-stream flushes that would create multiple messages on
+                # non-editable platforms like WeCom.
+                self._use_native_streaming = False
+                self._native_stream_opened = False
+                self._native_last_pushed_len = 0
+                self.cfg.buffer_only = True
+
+                # Reset segment state so post-approval output starts fresh via send().
+                self._reset_segment_state()
+
+            boundary_ok = not delivery_failed
+
+        except Exception as e:
+            logger.warning("%s boundary processing failed: %s", _reason, e)
+            boundary_ok = False
+        finally:
+            # Resolve future so approval callback knows the result
+            if boundary_future is not None:
+                try:
+                    if isinstance(boundary_future, asyncio.Future):
+                        if not boundary_future.done():
+                            boundary_future.set_result(boundary_ok)
+                    elif isinstance(boundary_future, concurrent.futures.Future):
+                        if not boundary_future.done():
+                            boundary_future.set_result(boundary_ok)
+                except Exception:
+                    pass
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -688,19 +998,53 @@ class GatewayStreamConsumer:
         _raw_limit = self._raw_message_limit()
         _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
 
-        # Resolve native draft streaming once per run.  When enabled the
-        # consumer routes mid-stream frames through adapter.send_draft and
-        # leaves _message_id=None so the existing got_done path delivers the
-        # final answer as a regular sendMessage (drafts have no message_id
-        # to edit).
-        self._use_draft_streaming = self._resolve_draft_streaming()
-        if self._use_draft_streaming:
-            type(self)._draft_id_counter += 1
-            self._draft_id = type(self)._draft_id_counter
+        # Resolve transport once per run. Native streaming wins over draft
+        # because the only adapters that declare it (WeCom) cannot edit
+        # messages at all — there is no edit path to fall back to mid-turn.
+        # When native is selected we send an empty seed frame immediately so
+        # the user sees the platform's "typing" indicator before the LLM
+        # produces any tokens; if that seed fails (no req_id, transport
+        # error) we disable native and let the consumer take the regular
+        # edit path (which will in turn refuse and fall back to fallback
+        # send via the gateway, since SUPPORTS_MESSAGE_EDITING=False).
+        self._use_native_streaming = self._resolve_native_streaming()
+        if self._use_native_streaming:
             logger.debug(
-                "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
-                self.chat_id, self._draft_id,
+                "Stream consumer using native-stream transport (chat=%s)",
+                self.chat_id,
             )
+            try:
+                seed_ok = await self.adapter.send_stream_frame(
+                    "",
+                    chat_id=self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                    turn_id=self._turn_id,
+                )
+                if seed_ok:
+                    # Mark stream as opened so fallback knows to finalize
+                    self._native_stream_opened = True
+            except Exception:
+                logger.debug(
+                    "Native streaming seed frame raised; disabling native",
+                    exc_info=True,
+                )
+                seed_ok = False
+            if not seed_ok:
+                self._use_native_streaming = False
+
+        # Resolve native draft streaming (Telegram drafts) only when native
+        # streaming is not in use — they target the same first-frame slot.
+        if self._use_native_streaming:
+            self._use_draft_streaming = False
+        else:
+            self._use_draft_streaming = self._resolve_draft_streaming()
+            if self._use_draft_streaming:
+                type(self)._draft_id_counter += 1
+                self._draft_id = type(self)._draft_id_counter
+                logger.debug(
+                    "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
+                    self.chat_id, self._draft_id,
+                )
 
         try:
             while True:
@@ -715,6 +1059,10 @@ class GatewayStreamConsumer:
                 got_segment_break = False
                 got_flush = False
                 flush_event = None
+                got_approval_boundary = False
+                got_reopen_seed = False
+                approval_boundary_future = None
+                approval_boundary_cancelled = None
                 commentary_text = None
                 while True:
                     try:
@@ -724,6 +1072,14 @@ class GatewayStreamConsumer:
                             break
                         if item is _NEW_SEGMENT:
                             got_segment_break = True
+                            break
+                        if item is _REOPEN_SEED:
+                            got_reopen_seed = True
+                            break
+                        if isinstance(item, tuple) and len(item) == 3 and item[0] is _APPROVAL_BOUNDARY:
+                            got_approval_boundary = True
+                            approval_boundary_future = item[1]
+                            approval_boundary_cancelled = item[2]
                             break
                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
                             commentary_text = item[1]
@@ -739,6 +1095,71 @@ class GatewayStreamConsumer:
                         self._filter_and_accumulate(item)
                     except queue.Empty:
                         break
+
+                # Handle approval boundary: close current stream, reset for new turn.
+                # Must happen before got_done/segment_break processing since it
+                # produces its own finalize and resets state.
+                if got_approval_boundary:
+                    await self._handle_approval_boundary(
+                        approval_boundary_future, approval_boundary_cancelled
+                    )
+                    continue
+
+                # Handle eager re-seed: the user just answered a clarify prompt.
+                # Open a fresh native stream NOW (empty seed frame) so the WeCom
+                # typing bubble reappears immediately, without waiting for the
+                # LLM's first post-answer delta.  Only meaningful in the
+                # reopen-pending state with native still live and no stream open;
+                # request_reopen_seed() already gates on that, and we re-check
+                # here because state may have advanced between put and dequeue.
+                #
+                # TRADE-OFF: this moves the start of WeCom's ~6-minute stream
+                # session limit (STREAM_EXPIRED_ERRCODE 846608, counted from the
+                # FIRST frame, not renewed by intermediate frames) forward from
+                # the first post-answer delta to the user-reply instant — the
+                # effective window shrinks by however long the LLM takes to
+                # produce its first token. A first token >5min is very rare, and
+                # if the stream does expire send_stream_frame returns False and
+                # the else branch below degrades to send(), so the answer still
+                # lands (only the streaming animation is lost). Acceptable.
+                if got_reopen_seed:
+                    if (
+                        self._use_native_streaming
+                        and self._awaiting_reopen_after_boundary
+                        and not self._native_stream_opened
+                    ):
+                        try:
+                            seed_ok = await self.adapter.send_stream_frame(
+                                "",
+                                chat_id=self.chat_id,
+                                reply_to=self._initial_reply_to_id,
+                                turn_id=self._turn_id,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Eager reopen seed raised, disabling native: %s", e,
+                            )
+                            seed_ok = False
+                        if seed_ok:
+                            self._native_stream_opened = True
+                            self._native_last_pushed_len = 0
+                            self._awaiting_reopen_after_boundary = False
+                            self._reopen_seeded_eagerly = True
+                            logger.info(
+                                "[latency] Eager re-seed after clarify answer "
+                                "(typing bubble reopened immediately, turn=%s)",
+                                self._turn_id,
+                            )
+                        else:
+                            # Seed failed — degrade to a single buffered send()
+                            # so the post-answer content still lands as one
+                            # bubble (not per-tick fragments on a non-editable
+                            # platform).  Mirrors the approval-boundary degrade.
+                            self._use_native_streaming = False
+                            self._native_stream_opened = False
+                            self._native_last_pushed_len = 0
+                            self.cfg.buffer_only = True
+                    continue
 
                 # Flush any held-back partial-tag buffer on stream end
                 # so trailing text that was waiting for a potential open
@@ -803,8 +1224,13 @@ class GatewayStreamConsumer:
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
+                    # Native streaming bypasses this entirely — the adapter's
+                    # send_stream_frame handles byte-level truncation against
+                    # the stream protocol's larger limit (e.g. WeCom's 20480
+                    # bytes vs. MAX_MESSAGE_LENGTH's 4000 codepoints).
                     if (
-                        _len_fn(self._accumulated) > _safe_limit
+                        not self._use_native_streaming
+                        and _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
                         # No existing message to edit (first message or after a
@@ -951,7 +1377,79 @@ class GatewayStreamConsumer:
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
                     # full response again.
-                    if self._accumulated:
+                    if (
+                        self._awaiting_reopen_after_boundary
+                        and not self._native_stream_opened
+                        and not self._accumulated
+                    ):
+                        # Clarify reopen boundary (LAZY path), but the agent
+                        # produced no post-prompt content.  The pre-prompt stream
+                        # was already finalized into a stable bubble at the
+                        # boundary, and no fresh stream was ever re-seeded, so
+                        # there is nothing on screen to close.  Do NOT re-seed a
+                        # fresh stream just to emit a lone "✅" placeholder — that
+                        # would leave a meaningless empty bubble below the
+                        # question.  Close quietly; the finalized bubble stands.
+                        logger.debug(
+                            "Clarify reopen boundary with no post-prompt content "
+                            "— skipping lone-placeholder finalize (turn=%s)",
+                            self._turn_id,
+                        )
+                    elif (
+                        self._reopen_seeded_eagerly
+                        and self._native_stream_opened
+                        and not self._accumulated
+                        and not current_update_visible
+                    ):
+                        # EAGER-seed path: the typing bubble is ALREADY on screen
+                        # (opened the instant the user answered), but the agent
+                        # then produced no content.  Unlike the lazy case we
+                        # cannot skip — an open, empty typing bubble would hang
+                        # forever.  Close it with an empty finalize (NOT a lone
+                        # "✅", which would be a meaningless bubble below the
+                        # question).  Leave the delivery flags as-is: nothing
+                        # substantive was delivered, so the gateway's own
+                        # whole-response filter still governs any fallback.
+                        try:
+                            await self.adapter.send_stream_frame(
+                                "",
+                                finalize=True,
+                                chat_id=self.chat_id,
+                                reply_to=self._initial_reply_to_id,
+                                turn_id=self._turn_id,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Eager-seed empty finalize failed: %s", e,
+                            )
+                        self._native_stream_opened = False
+                        self._native_last_pushed_len = 0
+                        # Reset for symmetry with _suppress_silence_marker; the
+                        # consumer is per-turn today so this is defensive, but it
+                        # keeps the flag from leaking if a consumer is ever reused
+                        # across turns.
+                        self._reopen_seeded_eagerly = False
+                        logger.debug(
+                            "Eager reopen seed but no post-answer content — "
+                            "closed empty typing bubble (turn=%s)",
+                            self._turn_id,
+                        )
+                    elif self._use_native_streaming:
+                        # Native streaming MUST always close the stream with
+                        # finish=true — even when _accumulated is empty (e.g.
+                        # tool-only turns with no text output). Mirror OpenClaw's
+                        # finishThinkingStream: use a placeholder if needed.
+                        if not current_update_visible:
+                            close_text = self._accumulated or "✅"
+                            self._final_response_sent = await self._send_or_edit(
+                                close_text, finalize=True,
+                            )
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
+                        else:
+                            self._final_response_sent = True
+                            self._final_content_delivered = True
+                    elif self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif self._final_response_sent:
@@ -1011,8 +1509,10 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
                     self._reset_segment_state()
 
-                # Tool boundary: reset message state so the next text chunk
-                # creates a fresh message below any tool-progress messages.
+                # Tool boundary: for edit-based platforms, reset message state
+                # so the next text chunk creates a fresh message below tool-progress.
+                # For WeCom native streaming: NO reset — stream uses cumulative text,
+                # so resetting would lose pre-boundary content in subsequent frames.
                 #
                 # Exception: when _message_id is "__no_edit__" the platform
                 # never returned a real message ID (e.g. Signal, webhook with
@@ -1026,22 +1526,28 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
-                    # If the segment-break edit failed to deliver the
-                    # accumulated content (flood control that has not yet
-                    # promoted to fallback mode, or fallback mode itself),
-                    # _accumulated still holds pre-boundary text the user
-                    # never saw. Flush that tail as a continuation message
-                    # before the reset below wipes _accumulated — otherwise
-                    # text generated before the tool boundary is silently
-                    # dropped (issue #8124).
-                    if (
-                        self._accumulated
-                        and not current_update_visible
-                        and self._message_id
-                        and self._message_id != "__no_edit__"
-                    ):
-                        await self._flush_segment_tail_on_edit_failure()
-                    self._reset_segment_state(preserve_no_edit=True)
+                    # For WeCom native streaming: segment breaks should NOT reset
+                    # accumulated state. WeCom streams use cumulative text — each
+                    # frame must contain the full content so far. Resetting would
+                    # cause subsequent frames to lose the pre-boundary text.
+                    # Only approval boundary and got_done should reset.
+                    if not self._use_native_streaming:
+                        # If the segment-break edit failed to deliver the
+                        # accumulated content (flood control that has not yet
+                        # promoted to fallback mode, or fallback mode itself),
+                        # _accumulated still holds pre-boundary text the user
+                        # never saw. Flush that tail as a continuation message
+                        # before the reset below wipes _accumulated — otherwise
+                        # text generated before the tool boundary is silently
+                        # dropped (issue #8124).
+                        if (
+                            self._accumulated
+                            and not current_update_visible
+                            and self._message_id
+                            and self._message_id != "__no_edit__"
+                        ):
+                            await self._flush_segment_tail_on_edit_failure()
+                        self._reset_segment_state(preserve_no_edit=True)
 
                 # Flush barrier satisfied: the buffered segment (if any) has now
                 # been finalized and delivered above, so wake the thread blocked
@@ -1594,6 +2100,44 @@ class GatewayStreamConsumer:
             return False
         return True
 
+    def _resolve_native_streaming(self) -> bool:
+        """Decide whether this run should use the native-streaming transport.
+
+        Native streaming (e.g. WeCom's ``msgtype: "stream"``) routes ALL
+        frames — first send, mid-stream updates, and the final ``finish=true``
+        — through ``adapter.send_stream_frame()``. It takes precedence over
+        both edit and draft transports because it provides the best client
+        experience on platforms whose API is built for it (the WeCom client,
+        for example, renders cumulative content updates in-place with a
+        built-in typing animation while the stream stays open).
+
+        Adapter eligibility:
+          1. Must subclass :class:`BasePlatformAdapter` (MagicMock test
+             adapters fall back to edit).
+          2. Must declare ``SUPPORTS_NATIVE_STREAMING = True`` at the class
+             level.
+          3. Must provide ``supports_native_streaming(chat_type, metadata)``
+             returning truthy for this chat.
+        """
+        if not isinstance(self.adapter, _BasePlatformAdapter):
+            return False
+        if not getattr(type(self.adapter), "SUPPORTS_NATIVE_STREAMING", False):
+            return False
+        probe = getattr(self.adapter, "supports_native_streaming", None)
+        if probe is None:
+            return False
+        try:
+            supported = probe(
+                chat_type=self.cfg.chat_type or None,
+                metadata=self.metadata,
+            )
+        except Exception:
+            logger.debug(
+                "supports_native_streaming probe raised", exc_info=True,
+            )
+            return False
+        return bool(supported)
+
     async def _send_draft_frame(self, text: str) -> bool:
         """Emit a single animated draft frame for the current accumulated text.
 
@@ -1897,6 +2441,29 @@ class GatewayStreamConsumer:
         send happens either.  ``_already_sent`` is likewise cleared so the
         gateway's ``already_sent`` short-circuits do not fire.
         """
+        # Native-stream bubbles (e.g. WeCom) are NOT deletable messages — they
+        # are an open stream closed by a finalize frame, not delete_message.
+        # If a stream is open (notably one opened by an EAGER re-seed after a
+        # clarify answer, where the typing bubble is already on screen with no
+        # content), close it with an empty finalize so it doesn't hang forever.
+        # Do this before the delete loop; keep the delivery flags False below.
+        if self._native_stream_opened:
+            try:
+                await self.adapter.send_stream_frame(
+                    "",
+                    finalize=True,
+                    chat_id=self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                    turn_id=self._turn_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Silence-marker native stream close failed: %s", e,
+                )
+            self._native_stream_opened = False
+            self._native_last_pushed_len = 0
+            self._reopen_seeded_eagerly = False
+
         stale_ids = set(self._preview_message_ids)
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
@@ -1953,6 +2520,23 @@ class GatewayStreamConsumer:
             visible_without_cursor = visible_without_cursor.replace(self.cfg.cursor, "")
         _visible_stripped = visible_without_cursor.strip()
         if not _visible_stripped:
+            # For native streaming: even when the display text is empty (e.g.
+            # MEDIA-only response cleaned away), we MUST send a finalize frame
+            # to close the thinking bubble. Use placeholder text.
+            if finalize and self._use_native_streaming and self._native_stream_opened:
+                try:
+                    ok = await self.adapter.send_stream_frame(
+                        "✅",
+                        finalize=True,
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    if ok:
+                        self._final_response_sent = True
+                        self._final_content_delivered = True
+                except Exception as e:
+                    logger.debug("Finalize empty stream failed: %s", e)
             return True  # cursor-only / whitespace-only update
         if not text.strip():
             return True  # nothing to send is "success"
@@ -1972,7 +2556,157 @@ class GatewayStreamConsumer:
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
 
-        # Native draft streaming: route mid-stream frames through send_draft.
+        # Native streaming transport (e.g. WeCom): every frame — first send,
+        # mid-stream updates, and the final answer — flows through
+        # adapter.send_stream_frame(), which manages the underlying stream
+        # lifecycle (init seed → cumulative updates → finish=true). The
+        # adapter's send/edit_message paths are NOT touched in this mode.
+        #
+        # Throttling: WeCom AI Bot caps replies at ~30 frames/min per chat.
+        # With 15 concurrent users, we need ≤2 frames per turn on average
+        # to stay under the limit. 60 chars ≈ one short sentence, which
+        # produces 3-5 frames per turn — close to OpenClaw's block-level cadence.
+        if self._use_native_streaming:
+            # Re-seed if stream was closed (e.g., by approval boundary)
+            # and we have new content to send.
+            if not self._native_stream_opened and text:
+                try:
+                    seed_ok = await self.adapter.send_stream_frame(
+                        "",
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    if seed_ok:
+                        self._native_stream_opened = True
+                        # A fresh stream is open — post-prompt content will
+                        # stream into it, so got_done no longer needs the
+                        # lone-placeholder guard for this turn.
+                        self._awaiting_reopen_after_boundary = False
+                        # INFO (temporary latency probe): this is the moment the
+                        # C bubble / typing animation first becomes visible after
+                        # a clarify answer.  Comparing this timestamp to the
+                        # boundary-finalize log below quantifies the "typing is
+                        # slow to reappear" delay the user reported.
+                        logger.info(
+                            "[latency] Re-opened native stream after boundary "
+                            "(turn=%s, waited for first delta)",
+                            self._turn_id,
+                        )
+                    else:
+                        self._use_native_streaming = False
+                except Exception as e:
+                    logger.debug("Re-seed failed, disabling native streaming: %s", e)
+                    self._use_native_streaming = False
+
+        if self._use_native_streaming:
+            # For WeCom native streaming: segment breaks should NOT finalize
+            # the stream. WeCom renders each finalize as a separate message bubble.
+            # Only turn-final (got_done) and approval boundary should close the stream.
+            # Tool boundary segment breaks just continue accumulating in the same stream.
+            if finalize and not is_turn_final:
+                finalize = False
+
+            _MIN_NEW_VISIBLE_CHARS = 60
+            new_visible_chars = len(text) - self._native_last_pushed_len
+            if (
+                not finalize
+                and (text == self._last_sent_text
+                     or new_visible_chars < _MIN_NEW_VISIBLE_CHARS)
+            ):
+                return True  # too small / unchanged — accumulate more
+
+            # B2 — timeout-inversion race fix. For a finalize frame, mark
+            # delivery OPTIMISTICALLY, before send_stream_frame blocks on the
+            # ack. The finalize frame's bytes are written to the wire by an
+            # independent control-worker task *before* the ack wait begins, and
+            # for WeCom a frame on the wire is already rendered by the client
+            # (the same premise the ack-timeout-as-success path already relies
+            # on). Setting the flag here means a gateway join-cancel during the
+            # ack wait — the timeout inversion between run.py's stream_task join
+            # and adapter._REPLY_ACK_TIMEOUT — can no longer strand
+            # final_content_delivered=False while WeCom has already shown the
+            # message, which is what produced the duplicate normal send
+            # (see tests/gateway/test_wecom_double_send.py and
+            # docs/rca-wecom-stream-final-ack-timeout-duplicate.md).
+            #
+            # A DEFINITIVE dispatch failure (ok is False below: stream never
+            # opened, 846608 expired, errcode 6000, or the call raised) rolls
+            # the mark back so the edit/send fallback still delivers exactly
+            # once. Residual window: if the consumer is cancelled between this
+            # optimistic mark and the control worker actually writing the bytes
+            # (queue latency, sub-ms in practice), the message could be
+            # suppressed without being sent — far rarer than the guaranteed
+            # duplicate this replaces, and the send-path idempotency guard
+            # cannot help there (nothing was sent). Accepted trade-off.
+            _optimistic_finalize = bool(finalize)
+            if _optimistic_finalize:
+                self._final_response_sent = True
+                self._final_content_delivered = True
+
+            ok = False
+            try:
+                ok = await self.adapter.send_stream_frame(
+                    text,
+                    finalize=finalize,
+                    chat_id=self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                    turn_id=self._turn_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "send_stream_frame raised, disabling native streaming: %s", e,
+                )
+                ok = False
+
+            if ok:
+                self._already_sent = True
+                self._last_sent_text = text
+                self._native_last_pushed_len = len(text)
+                if finalize:
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                return True
+
+            # Dispatch failed definitively — roll back the optimistic finalize
+            # mark so the edit/send fallback below delivers the content once.
+            if _optimistic_finalize:
+                self._final_response_sent = False
+                self._final_content_delivered = False
+
+            # Native streaming refused / failed — switch off so this and
+            # subsequent frames take the edit/send fallback path below.
+            # The adapter is responsible for marking the chat as expired
+            # so it doesn't keep retrying the dead stream session.
+            self._use_native_streaming = False
+
+            # If the stream bubble was opened (seed frame succeeded), try
+            # best-effort finalize to close it before falling back to send().
+            # This prevents leaving an unclosed thinking stream visible to the
+            # user. Check _native_stream_opened (not _native_last_pushed_len)
+            # because the seed frame has zero length but still opens the bubble.
+            if self._native_stream_opened:
+                try:
+                    await self.adapter.send_stream_frame(
+                        text,
+                        finalize=True,
+                        chat_id=self.chat_id,
+                        reply_to=self._initial_reply_to_id,
+                        turn_id=self._turn_id,
+                    )
+                    logger.debug("Native fallback: finalized stream (best-effort close)")
+                    # DO NOT mark _final_content_delivered here.
+                    # The finalize frame closes the typing bubble, but WeCom may
+                    # not actually render the content (e.g., errcode 6000 race).
+                    # Let the fallback send() path deliver the content reliably.
+                except Exception as e:
+                    logger.debug(
+                        "Native fallback: failed to finalize stream: %s", e,
+                    )
+            # Fall through to the edit/send paths so any accumulated text
+            # still reaches the user as a one-shot proactive markdown send.
+
+
         # The final answer is delivered via the regular sendMessage path
         # below — drafts have no message_id so we can't finalize them
         # in-place; the regular sendMessage clears the draft naturally on

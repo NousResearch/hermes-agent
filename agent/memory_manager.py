@@ -1224,6 +1224,18 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)
+                # Re-index tools after initialize() — providers may populate
+                # tool schemas lazily (e.g. by querying an MCP server), so
+                # get_tool_schemas() returns [] at add_provider() time.
+                for schema in provider.get_tool_schemas():
+                    tool_name = schema.get("name", "")
+                    if tool_name and tool_name not in self._tool_to_provider:
+                        self._tool_to_provider[tool_name] = provider
+                logger.info(
+                    "Memory provider '%s' activated (%d tools)",
+                    provider.name,
+                    len(provider.get_tool_schemas()),
+                )
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",

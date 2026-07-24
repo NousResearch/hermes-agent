@@ -5428,6 +5428,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         _strip_persistence_markers(compressed)
         self._last_compression_made_progress = True
 
+        # Reclaim memory from compressed-away message dicts. Python's arena
+        # allocator keeps pages in the process heap even after objects are freed
+        # from the list; without an explicit collect, RSS grows unbounded over
+        # long sessions. (#70684)
+        import gc
+
+        gc.collect()
+
         return compressed
 
 

@@ -34,6 +34,7 @@ from gateway.platforms.api_server import (
     _derive_chat_session_id,
     _hermes_version,
     _redact_api_error_text,
+    _request_agent_overrides,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -5336,3 +5337,132 @@ class TestKeyRejectionSetsNonRetryableFatalError:
             assert adapter.fatal_error_retryable is True
         finally:
             await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Bare-model opt-in gate (direct_model_requests) for _request_agent_overrides
+# ---------------------------------------------------------------------------
+
+
+class TestDirectModelRequestsGate:
+    """Bare ``model`` (no ``provider``) is opt-in on OpenAI-compatible
+    endpoints so generic clients hardcoding "gpt-4o" keep falling back to
+    the gateway default (idea credit: PR #22825 by @mssteuer)."""
+
+    def test_bare_model_dropped_when_disallowed(self):
+        overrides = _request_agent_overrides(
+            {"model": "openai/gpt-5"}, allow_bare_model=False
+        )
+        assert "requested_model" not in overrides
+
+    def test_bare_model_kept_when_allowed(self):
+        overrides = _request_agent_overrides(
+            {"model": "openai/gpt-5"}, allow_bare_model=True
+        )
+        assert overrides["requested_model"] == "openai/gpt-5"
+
+    def test_explicit_provider_always_honors_model(self):
+        overrides = _request_agent_overrides(
+            {"model": "MiniMax-M3", "provider": "minimax"}, allow_bare_model=False
+        )
+        assert overrides["requested_model"] == "MiniMax-M3"
+        assert overrides["requested_provider"] == "minimax"
+
+    def test_model_options_survive_bare_model_drop(self):
+        overrides = _request_agent_overrides(
+            {"model": "openai/gpt-5", "model_options": {"fast": True}},
+            allow_bare_model=False,
+        )
+        assert overrides == {"model_options": {"fast": True}}
+
+    def test_virtual_model_alias_still_ignored(self):
+        overrides = _request_agent_overrides(
+            {"model": "hermes-agent", "provider": "minimax"},
+            virtual_model="hermes-agent",
+            allow_bare_model=True,
+        )
+        assert "requested_model" not in overrides
+        assert overrides["requested_provider"] == "minimax"
+
+    def test_adapter_flag_default_off(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter._direct_model_requests is False
+
+    def test_adapter_flag_opt_in(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"direct_model_requests": True})
+        )
+        assert adapter._direct_model_requests is True
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_bare_model_ignored_by_default(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "gpt-4o",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs.get("requested_model") is None
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_bare_model_honored_when_enabled(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(enabled=True, extra={"direct_model_requests": True})
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "openai/gpt-5",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs.get("requested_model") == "openai/gpt-5"
+
+
+class TestRouteWithoutModelKeepsDefault:
+    """A model_routes alias whose route has no ``model`` key must keep the
+    global default model — the alias string itself is never a model name."""
+
+    def test_alias_never_leaks_as_model(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "", "api_key": "sk-route"}}
+        )
+        # _parse_model_routes drops routes without model; simulate a
+        # credentials-only route surviving via direct dict (defensive path).
+        adapter._model_routes = {"alias": {"api_key": "sk-route"}}
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(
+            session_id="s1",
+            route=adapter._resolve_route("alias"),
+            requested_model="alias",
+        )
+
+        assert captured["model"] == "global/model"
+        assert captured["api_key"] == "sk-route"

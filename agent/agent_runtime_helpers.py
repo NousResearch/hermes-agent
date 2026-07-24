@@ -306,8 +306,22 @@ def sanitize_tool_call_arguments(
                 continue
 
             try:
-                json.loads(arguments)
+                parsed = json.loads(arguments)
             except json.JSONDecodeError:
+                parsed = None  # handled below
+
+            if parsed is not None and not isinstance(parsed, dict):
+                # Arguments parsed as JSON but are not an object (e.g. a
+                # JSON array like [{"mode": "replace"}]).  Strict providers
+                # reject non-object arguments with HTTP 400.  Unwrap
+                # single-element arrays; anything else falls back to "{}".
+                if isinstance(parsed, list) and len(parsed) == 1 and isinstance(parsed[0], dict):
+                    function["arguments"] = json.dumps(parsed[0])
+                    parsed = parsed[0]  # still valid, skip corruption path
+                else:
+                    parsed = None  # fall through to corruption repair
+
+            if parsed is None:
                 # Use the canonical ``call_id || id`` precedence so both the
                 # scan for an existing tool result and any inserted stub key
                 # on the same id the rest of the pipeline uses. Keying on bare

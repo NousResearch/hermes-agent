@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import pytest
 
+import hermes_constants
 from hermes_cli.dashboard_auth.audit import audit_log, AuditEvent
 
 
@@ -79,3 +80,29 @@ def test_audit_creates_logs_dir_if_missing(tmp_path, monkeypatch):
     audit_log(AuditEvent.LOGIN_START, provider="nous")
     assert (home / "logs").is_dir()
     assert (home / "logs" / "dashboard-auth.log").exists()
+
+
+def test_audit_fallback_uses_platform_native_home_on_windows(tmp_path, monkeypatch):
+    """HERMES_HOME unset on native Windows → %LOCALAPPDATA%\\hermes, not ~/.hermes."""
+    local_appdata = tmp_path / "LocalAppData"
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "Home")
+    monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+    audit_log(AuditEvent.LOGIN_START, provider="nous")
+
+    log_path = local_appdata / "hermes" / "logs" / "dashboard-auth.log"
+    assert log_path.exists(), f"audit log not created at platform-native path: {log_path}"
+    assert not (tmp_path / "Home" / ".hermes").exists(), "audit log leaked into ~/.hermes"
+
+
+def test_audit_fallback_uses_posix_home_off_windows(tmp_path, monkeypatch):
+    """HERMES_HOME unset on POSIX → the documented ~/.hermes fallback still applies."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr(hermes_constants.sys, "platform", "linux")
+
+    audit_log(AuditEvent.LOGIN_START, provider="nous")
+
+    assert (tmp_path / ".hermes" / "logs" / "dashboard-auth.log").exists()

@@ -744,6 +744,26 @@ class VoiceReceiver:
 
         return completed
 
+    def flush_pending(self) -> list:
+        """Return buffered utterances that have not yet reached silence."""
+        completed = []
+
+        with self._lock:
+            ssrc_user_map = dict(self._ssrc_to_user)
+            for ssrc, buf in list(self._buffers.items()):
+                # 48kHz, 16-bit, stereo = 192000 bytes/sec
+                buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
+                if buf_duration >= self.MIN_SPEECH_DURATION:
+                    user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        user_id = self._infer_user_for_ssrc(ssrc)
+                    if user_id:
+                        completed.append((user_id, bytes(buf)))
+                self._buffers.pop(ssrc, None)
+                self._last_packet_time.pop(ssrc, None)
+
+        return completed
+
     # ------------------------------------------------------------------
     # PCM -> WAV conversion (for Whisper STT)
     # ------------------------------------------------------------------
@@ -3804,11 +3824,18 @@ class DiscordAdapter(BasePlatformAdapter):
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Stop voice receiver first
             receiver = self._voice_receivers.pop(guild_id, None)
+            pending_inputs = []
             if receiver:
+                pending_inputs = receiver.flush_pending()
                 receiver.stop()
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
             if listen_task:
                 listen_task.cancel()
+
+            guild = self._client.get_guild(guild_id) if self._client is not None else None
+            for user_id, pcm_data in pending_inputs:
+                if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
+                    await self._process_voice_input(guild_id, user_id, pcm_data)
 
             # Tear down the mixer (stops the continuous outgoing stream).
             if getattr(self, "_voice_mixers", None) is not None:

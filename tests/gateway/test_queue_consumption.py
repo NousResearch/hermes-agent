@@ -361,6 +361,74 @@ class TestQueueConsumptionAfterCompletion:
         ]
         assert collected == texts
 
+    def test_interrupt_depth_requeues_plain_interrupt_text_as_event(self):
+        """Depth-capped interrupt strings must not require adapter.queue_message()."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        session_key = "telegram:user:voice-depth"
+        source = MagicMock(chat_id="123", platform=Platform.TELEGRAM, profile=None)
+
+        stored = runner._requeue_interrupt_depth_pending(
+            session_key,
+            source,
+            adapter=adapter,
+            pending_event=None,
+            pending_text='"transcribed voice follow-up"',
+            event_message_id="voice-1",
+            channel_prompt="voice-channel",
+        )
+
+        assert stored is True
+        queued = adapter._pending_messages[session_key]
+        assert queued.text == '"transcribed voice follow-up"'
+        assert queued.message_type == MessageType.TEXT
+        assert queued.source is source
+        assert queued.message_id == "voice-1"
+        assert queued.channel_prompt == "voice-channel"
+        assert runner._queued_events == {}
+
+    def test_interrupt_depth_requeues_event_behind_existing_slot(self):
+        """Depth-capped full events should preserve FIFO ordering."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        session_key = "telegram:user:voice-depth-fifo"
+        source = MagicMock(chat_id="123", platform=Platform.TELEGRAM, profile=None)
+
+        adapter._pending_messages[session_key] = MessageEvent(
+            text="already queued",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="text-1",
+        )
+        voice_event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=source,
+            message_id="voice-2",
+            media_urls=["/tmp/voice-2.ogg"],
+            media_types=["audio/ogg"],
+        )
+
+        stored = runner._requeue_interrupt_depth_pending(
+            session_key,
+            source,
+            adapter=adapter,
+            pending_event=voice_event,
+            pending_text=None,
+            event_message_id=None,
+            channel_prompt=None,
+        )
+
+        assert stored is True
+        assert adapter._pending_messages[session_key].text == "already queued"
+        assert runner._queued_events[session_key] == [voice_event]
+
 
 class TestBusyInputModeQueueFifo:
     """Regression coverage for issue #28503.

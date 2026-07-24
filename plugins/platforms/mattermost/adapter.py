@@ -50,6 +50,14 @@ _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+_MEDIA_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_MEDIA_REDIRECTS = 5
+
+
+class _MattermostDownloadHTTPError(Exception):
+    def __init__(self, status: int):
+        super().__init__(f"HTTP {status}")
+        self.status = status
 
 
 def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -528,18 +536,27 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status >= 500 or resp.status == 429:
-                        if attempt < 2:
-                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                         attempt + 1, url[:80], resp.status)
-                            await asyncio.sleep(1.5 * (attempt + 1))
-                            continue
-                    if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
-                    file_data = await resp.read()
-                    ct = resp.content_type or "application/octet-stream"
-                    break
+                file_data, ct, _final_url = await self._download_media_url(url)
+                break
+            except _MattermostDownloadHTTPError as exc:
+                if exc.status >= 500 or exc.status == 429:
+                    if attempt < 2:
+                        logger.debug(
+                            "Mattermost download retry %d/2 for %s (status %d)",
+                            attempt + 1,
+                            url[:80],
+                            exc.status,
+                        )
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                return await self.send(
+                    chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata
+                )
+            except ValueError as exc:
+                logger.warning("Mattermost: blocked unsafe media URL: %s", exc)
+                return await self.send(
+                    chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata
+                )
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
@@ -568,6 +585,43 @@ class MattermostAdapter(BasePlatformAdapter):
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to post with file")
         return SendResult(success=True, message_id=data["id"])
+
+    async def _download_media_url(self, url: str) -> Tuple[bytes, str, str]:
+        """Download public media while re-validating every redirect hop.
+
+        Salvages the incomplete pre-check-only posture (aiohttp follows
+        redirects by default) tracked by draft #24831 against the pre-move
+        ``gateway/platforms/mattermost.py`` path.
+        """
+        import aiohttp
+        from urllib.parse import urljoin
+
+        from tools.url_safety import is_safe_url
+
+        current_url = url
+        for _redirect_count in range(_MAX_MEDIA_REDIRECTS + 1):
+            if not is_safe_url(current_url):
+                raise ValueError(f"blocked unsafe URL: {current_url[:80]}")
+
+            async with self._session.get(
+                current_url,
+                timeout=aiohttp.ClientTimeout(total=30),
+                allow_redirects=False,
+            ) as resp:
+                if resp.status in _MEDIA_REDIRECT_STATUSES:
+                    location = resp.headers.get("Location")
+                    if not location:
+                        raise ValueError("redirect response missing Location header")
+                    base_url = str(getattr(resp, "url", None) or current_url)
+                    current_url = urljoin(base_url, location)
+                    continue
+                if resp.status >= 400:
+                    raise _MattermostDownloadHTTPError(resp.status)
+                data = await resp.read()
+                content_type = resp.content_type or "application/octet-stream"
+                return data, content_type, current_url
+
+        raise ValueError(f"too many redirects fetching media URL: {url[:80]}")
 
     async def _send_local_file(
         self,
@@ -656,22 +710,18 @@ class MattermostAdapter(BasePlatformAdapter):
                         ct = mimetypes.guess_type(fname)[0] or "image/png"
                         file_data = p.read_bytes()
                     else:
-                        from tools.url_safety import is_safe_url
-                        if not is_safe_url(image_url):
-                            logger.warning("Mattermost: blocked unsafe image URL in batch")
-                            continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
-                                if resp.status >= 400:
-                                    logger.warning(
-                                        "Mattermost: failed to download image (HTTP %d): %s",
-                                        resp.status, image_url[:80],
-                                    )
-                                    continue
-                                file_data = await resp.read()
-                                ct = resp.content_type or "image/png"
+                            file_data, ct, _final = await self._download_media_url(image_url)
+                        except _MattermostDownloadHTTPError as http_err:
+                            logger.warning(
+                                "Mattermost: failed to download image (HTTP %d): %s",
+                                http_err.status,
+                                image_url[:80],
+                            )
+                            continue
+                        except ValueError as blocked:
+                            logger.warning("Mattermost: blocked unsafe image URL in batch: %s", blocked)
+                            continue
                         except Exception as dl_err:
                             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
                             continue

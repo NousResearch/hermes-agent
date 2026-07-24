@@ -1,7 +1,7 @@
 """Tests for gateway restart-loop defenses (#30719).
 
 Covers:
-- Defense 1: gateway stop/restart refuse when _HERMES_GATEWAY=1
+- Defense 1: gateway start/stop/restart refuse when _HERMES_GATEWAY=1
 - Defense 2: cron create rejects prompts containing gateway lifecycle commands
 - _contains_gateway_lifecycle_command pattern matching
 """
@@ -28,6 +28,8 @@ class TestGatewayLifecyclePattern:
     @pytest.mark.parametrize("text", [
         "hermes gateway restart",
         "hermes gateway stop",
+        "hermes gateway start",
+        "  HeRmEs   GaTeWaY   StArT  ",
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
@@ -62,12 +64,6 @@ class TestGatewayLifecyclePattern:
         "echo 'just a normal cron job'",
         "run the backup script",
         "gateway is running fine",
-        # `hermes gateway start` is benign — starting a gateway from inside a
-        # gateway is a no-op / "already running", and a legit cron job may
-        # start a sibling profile's gateway. Only restart/stop/kill are the
-        # foot-gun (#30719 lists only those).
-        "hermes gateway start",
-        "hermes gateway start --all",
         # Tightened launchctl/systemctl branches: ops on NON-gateway hermes
         # services must not be falsely blocked (the old `.*hermes` matched any
         # hermes token).
@@ -87,6 +83,16 @@ class TestGatewayLifecyclePattern:
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
+    def test_start_is_dangerous_command_metadata(self):
+        from tools.approval import detect_dangerous_command
+
+        is_dangerous, _pattern, description = detect_dangerous_command(
+            "hermes gateway start"
+        )
+
+        assert is_dangerous
+        assert description == "start/stop/restart hermes gateway (kills running agents)"
 
 
 class TestCronCreateLifecycleBlock:
@@ -213,11 +219,25 @@ class TestCronCreateLifecycleBlock:
 
 
 # ---------------------------------------------------------------------------
-# Defense 1: gateway stop/restart refuse inside gateway
+# Defense 1: gateway start/stop/restart refuse inside gateway
 # ---------------------------------------------------------------------------
 
 class TestGatewaySelfTargetingGuard:
-    """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
+    """Verify gateway lifecycle commands refuse when _HERMES_GATEWAY=1."""
+
+    def test_start_refuses_inside_gateway_before_service_mutation(self, monkeypatch):
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        import hermes_cli.gateway as gw
+
+        def _must_not_run(*args, **kwargs):
+            raise AssertionError("service mutation must not be reached")
+
+        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _must_not_run)
+        monkeypatch.setattr(gw, "launchd_start", _must_not_run)
+        args = Namespace(gateway_command="start", all=False, system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gw.gateway_command(args)
+        assert exc_info.value.code == 1
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
@@ -252,6 +272,21 @@ class TestGatewaySelfTargetingGuard:
         monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
         monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6", _sentinel)
         args = Namespace(gateway_command="stop", all=False, system=False)
+        with pytest.raises(_Reached):
+            gw.gateway_command(args)
+
+    def test_start_allows_outside_gateway(self, monkeypatch):
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+        import hermes_cli.gateway as gw
+
+        class _Reached(Exception):
+            pass
+
+        def _sentinel(*args, **kwargs):
+            raise _Reached()
+
+        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", _sentinel)
+        args = Namespace(gateway_command="start", all=False, system=False)
         with pytest.raises(_Reached):
             gw.gateway_command(args)
 
@@ -315,6 +350,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl --user restart hermes-gateway",
         "systemctl stop hermes-gateway.service",
         "hermes gateway restart",
+        "hermes gateway start",
         "launchctl kickstart gui/501/ai.hermes.gateway",
         "pkill -f hermes.*gateway",
     ])
@@ -332,7 +368,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
-            command="systemctl restart hermes-gateway", force=True
+            command="hermes gateway start", force=True
         ))
 
         assert result["exit_code"] == 1

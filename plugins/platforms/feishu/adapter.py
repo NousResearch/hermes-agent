@@ -4884,6 +4884,26 @@ class FeishuAdapter(BasePlatformAdapter):
                             reply_to=None,
                             metadata=metadata,
                         )
+                # If thread_id routing returned a field-validation error the thread
+                # has been deleted or withdrawn (e.g. stale auto-resume source).
+                # Retry with chat_id routing so the message is not silently dropped.
+                if not self._response_succeeded(response):
+                    code = getattr(response, "code", None)
+                    if code == 99992402 and (metadata or {}).get("thread_id"):
+                        logger.warning(
+                            "[Feishu] thread_id %s routing for chat %s returned 99992402"
+                            " (thread deleted or stale); falling back to chat_id routing",
+                            (metadata or {}).get("thread_id"),
+                            chat_id,
+                        )
+                        stripped_meta = {k: v for k, v in metadata.items() if k != "thread_id"}
+                        response = await self._send_raw_message(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=active_reply_to,
+                            metadata=stripped_meta or None,
+                        )
                 return response
             except Exception as exc:
                 last_error = exc

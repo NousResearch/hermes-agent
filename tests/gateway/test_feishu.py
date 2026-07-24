@@ -5301,3 +5301,82 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuSendWithRetryThreadIdFallback(unittest.TestCase):
+    """_feishu_send_with_retry must fall back to chat_id routing when a stale
+    thread_id causes Feishu to return error 99992402 (field validation failed)."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        return FeishuAdapter(PlatformConfig())
+
+    @staticmethod
+    def _resp(success, code=None):
+        return SimpleNamespace(success=lambda: success, code=code)
+
+    def test_stale_thread_id_99992402_retries_with_chat_id(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def fake_send(*, chat_id, msg_type, payload, reply_to, metadata):
+            calls.append({"metadata": dict(metadata) if metadata else None})
+            if len(calls) == 1:
+                return self._resp(False, code=99992402)
+            return self._resp(True)
+
+        async def run():
+            with patch.object(adapter, "_send_raw_message", side_effect=fake_send):
+                return await adapter._feishu_send_with_retry(
+                    chat_id="oc_chat", msg_type="text",
+                    payload='{"text":"hello"}', reply_to=None,
+                    metadata={"thread_id": "stale_thread", "other": "keep"},
+                )
+
+        result = asyncio.run(run())
+        self.assertTrue(result.success())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["metadata"]["thread_id"], "stale_thread")
+        self.assertNotIn("thread_id", calls[1]["metadata"])
+        self.assertEqual(calls[1]["metadata"].get("other"), "keep")
+
+    def test_99992402_without_thread_id_does_not_retry(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def fake_send(*, chat_id, msg_type, payload, reply_to, metadata):
+            calls.append(metadata)
+            return self._resp(False, code=99992402)
+
+        async def run():
+            with patch.object(adapter, "_send_raw_message", side_effect=fake_send):
+                return await adapter._feishu_send_with_retry(
+                    chat_id="oc_chat", msg_type="text",
+                    payload='{"text":"hi"}', reply_to=None,
+                    metadata={"other": "data"},
+                )
+
+        result = asyncio.run(run())
+        self.assertFalse(result.success())
+        self.assertEqual(len(calls), 1)
+
+    def test_other_error_codes_with_thread_id_do_not_trigger_fallback(self):
+        adapter = self._make_adapter()
+        calls = []
+
+        async def fake_send(*, chat_id, msg_type, payload, reply_to, metadata):
+            calls.append(metadata)
+            return self._resp(False, code=230001)
+
+        async def run():
+            with patch.object(adapter, "_send_raw_message", side_effect=fake_send):
+                return await adapter._feishu_send_with_retry(
+                    chat_id="oc_chat", msg_type="text",
+                    payload='{"text":"hi"}', reply_to=None,
+                    metadata={"thread_id": "tid_abc"},
+                )
+
+        result = asyncio.run(run())
+        self.assertFalse(result.success())
+        self.assertEqual(len(calls), 1)

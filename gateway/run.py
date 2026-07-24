@@ -8337,6 +8337,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "gateway:startup",
+            platforms=[p.value for p in self.adapters.keys()],
+        )
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)

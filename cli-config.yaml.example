@@ -1298,8 +1298,11 @@ display:
   #              after the next tool call — no interrupt, no role violation.
   #              Falls back to 'queue' if the agent isn't running yet or if
   #              images are attached (steer only carries text).
+  #   reject:    Gateway/messaging only: discard new ordinary input, including
+  #              text and media, while the current turn is active and ask the
+  #              user to resend it later. Local CLI/TUI keeps interrupt behavior.
   # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
-  # Toggle at runtime with /busy <interrupt|queue|steer>.
+  # Toggle existing interactive modes with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).

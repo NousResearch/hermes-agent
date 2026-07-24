@@ -361,22 +361,23 @@ Send a message while the agent is working to correct the active turn:
 - **Running tools finish safely** — the correction is applied at the next tool-result boundary instead of killing the tool
 - **`/stop` remains a hard stop** — use it to cancel the active turn and foreground work
 
-### Queue vs interrupt vs steer (busy-input mode)
+### Queue vs interrupt vs steer vs reject (busy-input mode)
 
-By default, messaging a busy agent redirects its active turn. Two other modes are available:
+By default, messaging a busy agent redirects its active turn. Three other gateway modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+- `reject` — ordinary follow-up input, including text and media, is discarded while the current turn continues unchanged. Hermes sends an explicit notice telling the user to resend after the response finishes. Slash commands keep their existing mid-turn behavior.
 
 ```yaml
 display:
-  busy_input_mode: steer   # or queue, or interrupt (default)
+  busy_input_mode: reject  # gateway/messaging only; or steer, queue, interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 
-The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
+For `queue`, `steer`, and `interrupt`, the first busy message appends a one-line reminder explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again. `reject` uses its explicit refusal notice without consuming this onboarding flag.
 
-If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. Input handling is unchanged; only the confirmation message is hidden.
+If you find the busy acknowledgment noisy, set `display.busy_ack_enabled: false`. In `queue`, `steer`, and `interrupt` modes, input handling is unchanged and only the confirmation is hidden. In `reject` mode, text and media follow-ups are still discarded, so disabling the acknowledgment removes the user's confirmation that they were refused.
 
 ## Tool Progress Notifications
 

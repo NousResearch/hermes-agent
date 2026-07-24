@@ -360,6 +360,10 @@ def list_agent_created_skill_names() -> List[str]:
             skill_md.relative_to(base)
         except ValueError:
             continue
+        # Skip skills whose directory is a symlink — the real content lives
+        # outside the local skills tree and should not be curated.
+        if skill_md.parent.is_symlink():
+            continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         # Hub-installed skills are always off-limits.
         if name in hub:
@@ -724,6 +728,17 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
 
+    # Symlinked skill — the real content lives outside the local skills
+    # tree (e.g. in hermes-agent repo via --link install, or in PS repo).
+    # These are externally managed and should not be archived — the user
+    # placed them deliberately.  To remove, manually delete the symlink.
+    if skill_dir.is_symlink():
+        return False, (
+            f"'{skill_name}' is a symlinked skill (real content at "
+            f"{skill_dir.resolve()}).  It is managed externally — "
+            f"remove the symlink manually if needed."
+        )
+
     archive_root = _archive_dir()
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
@@ -845,6 +860,25 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
             continue
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
             return skill_md.parent
+
+    # rglob() does not traverse symlinks, so symlinked skill directories
+    # (e.g. installed via --link) are invisible to the loop above.
+    # Fall back to a direct check: look for <base>/**/<skill>/SKILL.md
+    # where the skill directory itself is a symlink.
+    for entry in base.rglob("*"):
+        if not entry.is_symlink() or not entry.is_dir():
+            continue
+        resolved = entry.resolve()
+        skill_md = resolved / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        if is_excluded_skill_path(skill_md):
+            continue
+        if is_external_skill_path(skill_md):
+            continue
+        if _read_skill_name(skill_md, fallback=entry.name) == skill_name:
+            return entry
+
     return None
 
 

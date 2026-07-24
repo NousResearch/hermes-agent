@@ -71,6 +71,7 @@ USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
 NO_SKILLS=false
+LINK_SKILLS=false
 BRANCH="main"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
@@ -107,6 +108,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-skills)
             NO_SKILLS=true
+            shift
+            ;;
+        --link)
+            LINK_SKILLS=true
             shift
             ;;
         --branch|-Branch)
@@ -163,6 +168,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
+            echo "  --link        Install bundled skills as symlinks instead of copies"
+            echo "                   (single copy, zero maintenance on updates)"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
@@ -1838,7 +1845,11 @@ SOUL_EOF
         log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
         log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+        SYNC_CMD=("$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py")
+        if [ "$LINK_SKILLS" = true ]; then
+            SYNC_CMD+=("--link")
+        fi
+        if "${SYNC_CMD[@]}" 2>/dev/null; then
             log_success "Skills synced to ~/.hermes/skills/"
         else
             # Fallback: simple directory copy if Python sync fails

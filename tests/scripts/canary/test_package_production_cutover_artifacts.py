@@ -2233,6 +2233,59 @@ def test_identity_rollback_reverses_every_partial_membership_convergence_boundar
         )
 
 
+def test_psql_json_accepts_single_lf_framing_but_rejects_noncanonical_output(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    path = Path(manifest["artifacts"]["production-database-apply"]["path"])
+    runtime = _load_artifact(path, "production_database_psql_json_artifact")
+    monkeypatch.setattr(runtime, "_postgres_env", lambda _plan: {})
+
+    for stdout in (
+        b'{"ok":true}',
+        b'{"ok":true}\n',
+        b'\n{"ok":true}',
+        b'\n{"ok":true}\n',
+    ):
+        monkeypatch.setattr(
+            runtime.subprocess,
+            "run",
+            lambda *_args, stdout=stdout, **_kwargs: subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=stdout,
+                stderr=b"",
+            ),
+        )
+        assert runtime._psql_json({}, "SELECT '{}'::jsonb::text;") == {"ok": True}
+
+    for stdout in (
+        b' {"ok":true}\n',
+        b'\n{"ok":true} \n',
+        b'\n{"ok":true}\n{"ok":false}\n',
+        b'\n\n{"ok":true}\n',
+    ):
+        monkeypatch.setattr(
+            runtime.subprocess,
+            "run",
+            lambda *_args, stdout=stdout, **_kwargs: subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout=stdout,
+                stderr=b"",
+            ),
+        )
+        with pytest.raises(
+            runtime.ArtifactError,
+            match="artifact_database_observation_invalid",
+        ):
+            runtime._psql_json({}, "SELECT '{}'::jsonb::text;")
+
+
 def test_database_state_distinguishes_reconciled_migrated_and_terminal(tmp_path, monkeypatch):
     release = _release(tmp_path)
     manifest = package.build_release_artifacts(

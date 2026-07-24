@@ -34,6 +34,49 @@ def noop_backend():
     return _get_backend()
 
 
+def test_failed_backend_start_is_not_cached(monkeypatch):
+    """A failed cua-driver startup must not poison the process-wide backend.
+
+    Regression guard for the real-world failure mode where the first MCP
+    startup failed while TCC/daemon state was being corrected, leaving a
+    half-started backend cached. Later calls then skipped start() and failed
+    with "cua-driver session not started" until a Hermes restart.
+    """
+    from tools.computer_use import tool as cu_tool
+
+    class FailingBackend:
+        stopped = False
+
+        def start(self):
+            raise RuntimeError("initial TCC/daemon startup failed")
+
+        def stop(self):
+            self.stopped = True
+
+    class WorkingBackend:
+        started = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            pass
+
+    failing = FailingBackend()
+    working = WorkingBackend()
+
+    cu_tool.reset_backend_for_tests()
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "cua")
+    with patch("tools.computer_use.cua_backend.CuaDriverBackend",
+               side_effect=[failing, working]):
+        with pytest.raises(RuntimeError, match="initial TCC/daemon startup failed"):
+            cu_tool._get_backend()
+
+        assert cu_tool._backend is None
+        assert cu_tool._get_backend() is working
+        assert working.started is True
+
+
 # ---------------------------------------------------------------------------
 # Schema & registration
 # ---------------------------------------------------------------------------

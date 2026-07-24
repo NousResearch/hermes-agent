@@ -27,6 +27,16 @@ def test_resolve_max_concurrent_sessions_values(caplog):
         )
         == 2
     )
+    # A top-level None must fall back to gateway.max_concurrent_sessions.
+    # DEFAULT_CONFIG injects a top-level ``max_concurrent_sessions: None``, so the
+    # deep-merged config always carries the key; the fallback must key off the
+    # value being None, not the key's mere presence.
+    assert (
+        active_sessions.resolve_max_concurrent_sessions(
+            {"max_concurrent_sessions": None, "gateway": {"max_concurrent_sessions": 4}}
+        )
+        == 4
+    )
 
     caplog.set_level(logging.WARNING)
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": "many"}) is None

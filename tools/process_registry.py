@@ -1674,6 +1674,21 @@ class ProcessRegistry:
             return {"status": "already_exited", "error": "Process has already finished"}
 
         if hasattr(session, '_pty') and session._pty:
+            # pywinpty's ``sendeof()`` writes a literal Ctrl-D character. A
+            # native Windows child reads that as application data rather than
+            # observing an exhausted input stream, so reporting success here
+            # would claim an effect the backend cannot provide. Keep the PTY
+            # and its write side untouched; callers can still write or choose
+            # the explicitly destructive ``kill`` action.
+            if _IS_WINDOWS:
+                return {
+                    "status": "error",
+                    "code": "EOF_UNSUPPORTED_FOR_PTY_BACKEND",
+                    "error": (
+                        "The native Windows PTY backend cannot close stdin "
+                        "without terminating the child; no EOF was sent."
+                    ),
+                }
             try:
                 session._pty.sendeof()
                 return {"status": "ok", "message": "EOF sent"}
@@ -2238,7 +2253,8 @@ PROCESS_SCHEMA = {
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
+        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF; "
+        "unsupported for native Windows PTYs)."
     ),
     "parameters": {
         "type": "object",

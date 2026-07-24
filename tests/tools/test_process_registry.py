@@ -459,16 +459,47 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
-    def test_close_stdin_pty_mode(self, registry):
+    def test_close_stdin_posix_pty_mode(self, registry, monkeypatch):
         pty = MagicMock()
         s = _make_session()
         s._pty = pty
         registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
 
         result = registry.close_stdin(s.id)
 
         pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
+
+    def test_close_stdin_windows_pty_reports_unsupported_without_writing(
+        self, registry, monkeypatch
+    ):
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+        monkeypatch.setattr("tools.process_registry._IS_WINDOWS", True)
+
+        result = registry.close_stdin(s.id)
+
+        assert result == {
+            "status": "error",
+            "code": "EOF_UNSUPPORTED_FOR_PTY_BACKEND",
+            "error": (
+                "The native Windows PTY backend cannot close stdin without "
+                "terminating the child; no EOF was sent."
+            ),
+        }
+        pty.sendeof.assert_not_called()
+        pty.write.assert_not_called()
+
+        # Unsupported means no write-side state changed. The child remains
+        # usable and a later write still reaches pywinpty as text.
+        assert registry.write_stdin(s.id, "after-close\r") == {
+            "status": "ok",
+            "bytes_written": 12,
+        }
+        pty.write.assert_called_once_with("after-close\r")
 
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.

@@ -53,21 +53,83 @@ def _flatten_choice(c) -> str:
     return str(c).strip()
 
 
+def _extract_recent_tool_context(
+    messages: list,
+    *,
+    max_chars: int = 3000,
+    max_tool_results: int = 5,
+) -> str:
+    """Extract recent tool-result context from agent messages for clarify prompts.
+
+    Walks backward through ``messages``, skipping the current assistant turn
+    (the one that triggered clarify), and collects tool results from the most
+    recent preceding assistant turn that made tool calls.  This ensures the
+    user sees the search results, page contents, or other tool output that led
+    the agent to ask a clarification question.
+
+    Returns a formatted context block, or empty string when no recent tool
+    results exist.
+    """
+    context_parts: list[str] = []
+    found_current_assistant = False
+
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+
+        if role == "assistant" and msg.get("tool_calls"):
+            if not found_current_assistant:
+                # Skip the first assistant-with-tool-calls — that's the turn
+                # currently calling clarify, not the source of context.
+                found_current_assistant = True
+                continue
+            else:
+                # This is the second assistant-with-tool-calls (the previous
+                # turn) — we've collected all its tool results, stop here.
+                break
+
+        if role == "tool":
+            content = msg.get("content", "")
+            if content and isinstance(content, str) and content.strip():
+                tool_name = msg.get("name", "")
+                label = f"[Tool: {tool_name}]" if tool_name else "[Tool result]"
+                context_parts.append(f"{label}\n{content.strip()[:2000]}")
+
+        if len(context_parts) >= max_tool_results:
+            break
+
+    if not context_parts:
+        return ""
+
+    # Reverse to restore chronological order (most recent work last).
+    context_parts.reverse()
+    result = "\n\n".join(context_parts)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n\n[...truncated...]"
+
+    return result
+
+
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    context: Optional[str] = None,
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
 
     Args:
-        question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
-                  question is purely open-ended.
-        callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
+        question:   The question text to present.
+        choices:    Up to 4 predefined answer choices. When omitted the
+                    question is purely open-ended.
+        callback:   Platform-provided function that handles the actual UI
+                    interaction. Signature: callback(question, choices) -> str.
+                    Injected by the agent runner (cli.py / gateway).
+        context:    Optional context from recent autonomous work (search
+                    results, page contents, tool outputs) to include in the
+                    prompt shown to the user so they have the full picture.
 
     Returns:
         JSON string with the user's response.
@@ -99,7 +161,14 @@ def clarify_tool(
         )
 
     try:
-        user_response = callback(question, choices)
+        # Prepend context to the question for the user-facing prompt so the
+        # user sees the agent's research / tool output that led to the
+        # clarification, not just the bare question. The result JSON stores
+        # only the original question — context is display-only.
+        display_question = question
+        if context and context.strip():
+            display_question = f"{context.strip()}\n\n{question}"
+        user_response = callback(display_question, choices)
     except Exception as exc:
         return json.dumps(
             {"error": f"Failed to get user input: {exc}"},
@@ -137,6 +206,13 @@ CLARIFY_SCHEMA = {
         "into the question string render as dead prose the user can't pick. "
         "Right: question='Which deployment target?', choices=['staging', "
         "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
+        "CONTEXT AUTO-INCLUSION: if you have just performed autonomous work "
+        "(web searches, page extracts, tool calls) that produced results, "
+        "the relevant context (search results, page content, tool output) "
+        "is automatically prepended to your question when shown to the user. "
+        "You do NOT need to repeat the full context in the question text — "
+        "just write a clear, targeted question that makes sense with that "
+        "context visible above it.\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
@@ -154,7 +230,9 @@ CLARIFY_SCHEMA = {
                 "description": (
                     "The question itself, and ONLY the question (e.g. 'Which "
                     "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
+                    "— pass them as separate elements in `choices`. Context "
+                    "from any preceding autonomous work is automatically "
+                    "prepended by the system."
                 ),
             },
             "choices": {

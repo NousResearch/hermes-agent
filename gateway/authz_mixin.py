@@ -71,8 +71,11 @@ class GatewayAuthorizationMixin:
         In multiplex mode, secondary-profile adapters live in
         ``_profile_adapters[profile]`` while the default/active profile uses
         ``self.adapters``. ``SessionSource.profile`` selects which map to consult.
-        When a stamped profile has its own adapter registry entry, the default
-        profile's same-platform adapter must not be consulted as a fallback.
+        When a stamped profile has its own adapter for *platform* in the
+        registry, it is returned; otherwise the default profile's adapter for
+        *platform* is used as a fallback (correct for the shared-token /
+        chat-routed case where the routed profile shares the receiving
+        adapter — see #65236).
         """
         if not platform:
             return None
@@ -80,11 +83,19 @@ class GatewayAuthorizationMixin:
         if profile_name and profile_name != "default":
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(platform)
-            # Fail closed: a stamped secondary profile with no registry entry
-            # (e.g. its adapter failed to connect) must NOT fall back to the
-            # default profile's adapter — that sends replies out the wrong bot.
-            return None
+                adapter = profile_adapters[profile_name].get(platform)
+                if adapter is not None:
+                    return adapter
+                # Profile is registered but has no adapter for *platform*.
+                # This is the shared-token / chat-routed case: the profile
+                # was routed by ``profile_routes`` with no credential of its
+                # own, so the default (receiving) adapter is the correct
+                # outbound transport.  Fall through to ``self.adapters``.
+            # A stamped profile not in ``_profile_adapters`` at all means its
+            # adapter failed to connect — no viable outbound path exists.
+            # Fall through so the default adapter handles the reply rather
+            # than silently dropping it (which was the original bug, see
+            # #65236 / #57871).
         adapters = getattr(self, "adapters", None) or {}
         return adapters.get(platform)
 

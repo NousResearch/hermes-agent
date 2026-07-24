@@ -1355,11 +1355,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
         elif function_name == "clarify":
             def _execute(next_args: dict) -> Any:
-                from tools.clarify_tool import clarify_tool as _clarify_tool
+                from tools.clarify_tool import (
+                    clarify_tool as _clarify_tool,
+                    _extract_recent_tool_context,
+                )
+                # Gather recent tool results from the agent's conversation
+                # history so the user sees the context that led to the
+                # clarification question (search results, page contents, etc.).
+                _ctx = _extract_recent_tool_context(messages)
                 return _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                    context=_ctx,
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

@@ -2565,12 +2565,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             return _finish_agent_tool(agent._memory_manager.handle_tool_call(function_name, next_args), next_args)
     elif function_name == "clarify":
         def _execute(next_args: dict) -> Any:
-            from tools.clarify_tool import clarify_tool as _clarify_tool
+            from tools.clarify_tool import (
+                clarify_tool as _clarify_tool,
+                _extract_recent_tool_context,
+            )
+            _ctx = _extract_recent_tool_context(messages or [])
             return _finish_agent_tool(
                 _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                    context=_ctx,
                 ),
                 next_args,
             )

@@ -14,8 +14,13 @@ export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
+/** Native admin hub (deep-links to settings / messaging / kanban). */
+export const ADMIN_ROUTE = '/admin'
+/** Native kanban board (plugin REST client). */
+export const KANBAN_ROUTE = '/kanban'
 
 export type AppView =
+  | 'admin'
   | 'agents'
   | 'artifacts'
   | 'chat'
@@ -26,6 +31,7 @@ export type AppView =
   // so the sidebar kept a session highlighted and the titlebar kept the
   // session-title dropdown while a plugin page was showing.
   | 'extension'
+  | 'kanban'
   | 'messaging'
   | 'profiles'
   | 'settings'
@@ -33,10 +39,12 @@ export type AppView =
   | 'starmap'
 
 export type AppRouteId =
+  | 'admin'
   | 'agents'
   | 'artifacts'
   | 'command-center'
   | 'cron'
+  | 'kanban'
   | 'messaging'
   | 'new'
   | 'profiles'
@@ -60,7 +68,9 @@ export const APP_ROUTES = [
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
-  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
+  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' },
+  { id: 'admin', path: ADMIN_ROUTE, view: 'admin' },
+  { id: 'kanban', path: KANBAN_ROUTE, view: 'kanban' }
 ] as const satisfies readonly AppRoute[]
 
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))

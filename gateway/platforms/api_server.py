@@ -2305,7 +2305,12 @@ class APIServerAdapter(BasePlatformAdapter):
         if db is None:
             return []
         try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+            # Include compression-ancestor messages so the API server returns
+            # the full transcript after a compression rotation, not just the
+            # child continuation (#51058).
+            return await asyncio.to_thread(
+                db.get_messages_as_conversation, session_id, include_ancestors=True
+            )
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
@@ -2492,7 +2497,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        messages = await asyncio.to_thread(db.get_messages, resolved_id, include_ancestors=True)
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,

@@ -77,10 +77,20 @@ def _jwt_with_exp(exp_epoch: int) -> str:
 
 
 class _StubHTTPResponse:
-    def __init__(self, status_code: int, payload):
+    def __init__(self, status_code: int, payload, *, headers=None):
         self.status_code = status_code
         self._payload = payload
         self.text = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
+        self.headers = dict(headers or {})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def iter_bytes(self):
+        yield self.text.encode("utf-8")
 
     def json(self):
         if isinstance(self._payload, Exception):
@@ -101,6 +111,10 @@ class _StubHTTPClient:
 
     def post(self, *args, **kwargs):
         self.last_call = ("post", args, kwargs)
+        return self._response
+
+    def stream(self, *args, **kwargs):
+        self.last_call = ("stream", args, kwargs)
         return self._response
 
 
@@ -232,7 +246,7 @@ def test_xai_oauth_poll_device_token_waits_until_authorized(monkeypatch):
                 ),
             ]
 
-        def post(self, *args, **kwargs):
+        def stream(self, *args, **kwargs):
             self.calls.append((args, kwargs))
             return self.responses.pop(0)
 
@@ -836,6 +850,38 @@ def test_refresh_xai_oauth_pure_raises_typed_error_on_malformed_json(monkeypatch
             "at", "rt", token_endpoint="https://auth.x.ai/oauth2/token"
         )
     assert exc.value.code == "xai_refresh_invalid_json"
+
+
+def test_refresh_xai_oauth_pure_rejects_oversized_response(monkeypatch):
+    monkeypatch.setattr("hermes_cli.auth.XAI_OAUTH_RESPONSE_MAX_BYTES", 8)
+    response = _StubHTTPResponse(200, "x" * 9)
+    _patch_httpx_client(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc:
+        refresh_xai_oauth_pure(
+            "at", "rt", token_endpoint="https://auth.x.ai/oauth2/token"
+        )
+
+    assert exc.value.code == "xai_refresh_failed"
+    assert "exceeds 8 bytes" in str(exc.value)
+
+
+def test_xai_oauth_device_token_polling_rejects_oversized_response(monkeypatch):
+    monkeypatch.setattr("hermes_cli.auth.XAI_OAUTH_RESPONSE_MAX_BYTES", 8)
+    response = _StubHTTPResponse(200, "x" * 9)
+    client = _StubHTTPClient(response)
+
+    with pytest.raises(AuthError) as exc:
+        _xai_oauth_poll_device_token(
+            client,
+            token_endpoint="https://auth.x.ai/oauth2/token",
+            device_code="device-code",
+            expires_in=1,
+            poll_interval=1,
+        )
+
+    assert exc.value.code == "xai_device_token_failed"
+    assert "exceeds 8 bytes" in str(exc.value)
 
 
 def test_xai_oauth_discovery_raises_typed_error_on_malformed_json(monkeypatch):

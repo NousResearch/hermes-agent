@@ -305,8 +305,16 @@ def _read_runtime_snapshot(config: Dict[str, Any]):
     gateway_snapshot = _read_gateway_snapshot(config)
     try:
         cron_snapshot = _read_cron_snapshot()
-    except Exception:
-        logger.debug("cron health snapshot unavailable", exc_info=True)
+    except Exception as exc:
+        # Content-free visibility: cron telemetry silently dropping out is a
+        # release-relevant regression, so surface it at WARNING with only the
+        # exception *type* name (never the message, which could carry paths or
+        # other environment detail). exc_info stays on the DEBUG record.
+        logger.warning(
+            "cron health snapshot unavailable; cron telemetry not exported (error_type=%s)",
+            type(exc).__name__,
+        )
+        logger.debug("cron health snapshot traceback", exc_info=True)
         return gateway_snapshot
     gateway_snapshot.metrics.extend(cron_snapshot.metrics)
     return gateway_snapshot

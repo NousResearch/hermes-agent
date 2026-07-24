@@ -1,7 +1,16 @@
 """Behavioral contract for xurl / x_search routing guidance.
 
-These tests assert structural invariants (required topics + mutual exclusivity
-of responsibility), not frozen prose snapshots.
+These tests assert structural invariants (required topics + placement of the
+routing guidance), not frozen prose snapshots.
+
+Placement contract (July 2026):
+- The xurl SKILL must NOT name `x_search` (or any other credential-gated
+  surface): the skill loads even when that tool isn't registered, so it must
+  describe its own search distinctively in its own terms (raw, engageable
+  post objects as the authenticated account).
+- Cross-surface routing guidance lives where both surfaces are known to
+  exist together: the x_search feature docs, the toolset description, and
+  the tools-config setup note.
 """
 
 from pathlib import Path
@@ -21,45 +30,31 @@ def _contains_any(text: str, *needles: str) -> bool:
     return any(n.lower() in lowered for n in needles)
 
 
-def test_xurl_skill_routes_by_intent_not_interchangeably():
+def test_xurl_skill_never_names_credential_gated_surfaces():
+    """The skill must be self-contained: no cross-references to tools that
+    may not be registered (x_search is check_fn-gated on xAI credentials)."""
+    lowered = _read(XURL_SKILL).lower()
+    assert "x_search" not in lowered
+    assert "web_search" not in lowered
+
+
+def test_xurl_skill_search_is_distinct_standalone():
+    """Search must be described so an agent can route correctly even when
+    another X search surface exists — raw engageable posts, authenticated."""
     text = _read(XURL_SKILL)
-    lowered = text.lower()
-
-    # Both surfaces named so agents can choose by capability.
-    assert "x_search" in lowered
-    assert "xurl" in lowered
-
-    # x_search is discovery / read-only public research.
-    assert _contains_any(text, "read-only public", "public x discovery", "broad public")
-    # xurl owns authenticated / write / exact API work.
-    assert _contains_any(
-        text,
-        "authenticated",
-        "exact or authenticated",
-        "exact api",
-        "account actions",
-        "write action",
-    )
-    # Writes must not be evidenced by x_search answers.
-    assert _contains_any(
-        text,
-        "never treat an `x_search` answer",
-        "never evidence",
-        "proves the action",
-        "x api response",
-    )
-    # Prefer x_search over xurl search for broad public discovery when available.
-    assert "x_search" in lowered and "xurl search" in lowered
-    assert _contains_any(text, "prefer `x_search`", "use `x_search` instead", "route by intent")
+    assert _contains_any(text, "raw post")
+    assert _contains_any(text, "authenticated")
+    assert _contains_any(text, "engage", "engageable")
+    # Distinguish from synthesized-answer surfaces in xurl's own terms.
+    assert _contains_any(text, "summarized answer", "summary of a topic")
 
 
-def test_xurl_agent_workflow_prefers_x_search_for_broad_discovery():
+def test_xurl_skill_write_evidence_rule():
+    """State-changing X actions are proven only by xurl output / X API
+    response — never by search results or summaries."""
     text = _read(XURL_SKILL)
-    # Workflow must preflight intent before xurl search.
-    assert "xurl search" in text.lower()
-    assert _contains_any(text, "check intent", "before using `xurl search`")
-    assert _contains_any(text, "broad public", "public x discovery")
-    assert _contains_any(text, "write action", "authenticated account", "exact api")
+    assert _contains_any(text, "proves that a state-changing", "proves the action")
+    assert _contains_any(text, "never report a write", "never treat")
 
 
 def test_x_search_doc_separates_discovery_from_account_actions():

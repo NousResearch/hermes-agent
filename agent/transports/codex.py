@@ -177,10 +177,13 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
-        if "gpt-5.6" in (model or "").lower():
-            # Ultra is the Codex product tier; the Responses API wire value is max.
-            _effort_clamp["ultra"] = "max"
+        # Clamp Hermes-generic effort levels onto the wire vocabulary for this
+        # surface. Codex/OpenAI Responses accepts none|minimal|low|medium|high|xhigh
+        # (observed 2026-07: effort=max returns HTTP 400 invalid_value). xAI
+        # Responses tops out at high. "minimal" is always promoted to "low" for
+        # backends that never learned the minimal tier.
+        reasoning_effort = str(reasoning_effort or "medium").strip().lower()
+        _effort_clamp = {"minimal": "low", "max": "xhigh", "ultra": "xhigh"}
         if params.get("is_xai_responses", False):
             # xAI Responses tops out at high; keep generic stronger values usable.
             _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})

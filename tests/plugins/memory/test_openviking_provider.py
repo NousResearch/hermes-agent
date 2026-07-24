@@ -1,15 +1,19 @@
+import io
 import json
 import os
 import stat
+import subprocess
 import threading
 import time
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
 import plugins.memory.openviking as openviking_module
+from plugins.memory.openviking import local_server, quick_local
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _DEFERRED_COMMIT_TIMEOUT,
@@ -18,7 +22,12 @@ from plugins.memory.openviking import (
 
 
 def _clear_openviking_tenant_env(monkeypatch):
-    for name in ("OPENVIKING_ACCOUNT", "OPENVIKING_USER", "OPENVIKING_AGENT"):
+    for name in (
+        "OPENVIKING_ACCOUNT",
+        "OPENVIKING_USER",
+        "OPENVIKING_ACTOR_PEER_ID",
+        "OPENVIKING_AGENT",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -30,15 +39,43 @@ def _isolate_openviking_home(tmp_path, monkeypatch):
 
 def _clear_openviking_env(monkeypatch):
     for key in (
+        "OPENVIKING_URL",
         "OPENVIKING_ENDPOINT",
         "OPENVIKING_API_KEY",
         "OPENVIKING_ACCOUNT",
         "OPENVIKING_USER",
+        "OPENVIKING_ACTOR_PEER_ID",
         "OPENVIKING_AGENT",
         "OPENVIKING_CLI_CONFIG_FILE",
         "OPENVIKING_PROFILE_TOKEN_BUDGET",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def _started_server(process=None, message="started"):
+    if process is None:
+        process = MagicMock()
+        process.poll.return_value = None
+    return openviking_module._LocalServerStartResult(process, message)
+
+
+def _failed_server(message="openviking-server was not found on PATH."):
+    return openviking_module._LocalServerStartResult(None, message)
+
+
+def _reachability(state=None, message=""):
+    return openviking_module._OpenVikingReachability(
+        state or openviking_module._OpenVikingReachabilityState.HEALTHY,
+        message,
+    )
+
+
+def _set_reachability(monkeypatch, state=None, message=""):
+    monkeypatch.setattr(
+        openviking_module,
+        "_probe_openviking_reachability",
+        lambda endpoint: _reachability(state, message),
+    )
 
 
 def _prompt_from_values(values: dict[str, str], *, forbidden: set[str] | None = None):
@@ -59,6 +96,7 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
         lambda endpoint: (True, ""),
         raising=False,
     )
+    _set_reachability(monkeypatch)
     monkeypatch.setattr(
         openviking_module,
         "_validate_openviking_auth",
@@ -114,6 +152,69 @@ def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
         "api_key": "test-key",
     }
     assert config is not backing_config["memory"]["openviking"]
+
+
+def test_backup_paths_include_linked_profile_without_collecting_unrelated_profiles(
+    tmp_path, monkeypatch
+):
+    linked = tmp_path / "ovcli.conf.hermes"
+    default = tmp_path / "ovcli.conf"
+    unrelated = tmp_path / "ovcli.conf.other"
+    for path in (linked, default, unrelated):
+        path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(default))
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(linked),
+        },
+    )
+
+    paths = OpenVikingMemoryProvider().backup_paths()
+
+    assert paths == [str(linked)]
+    assert str(default) not in paths
+    assert str(unrelated) not in paths
+
+
+def test_backup_paths_preserve_legacy_resolved_profile(tmp_path, monkeypatch):
+    profile = tmp_path / "ovcli.conf"
+    profile.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(profile))
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {"use_ovcli_config": False},
+    )
+
+    assert OpenVikingMemoryProvider().backup_paths() == [str(profile)]
+
+
+def test_backup_paths_skip_quick_local_profile_already_inside_hermes_home(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes"
+    profile = hermes_home / "openviking" / "ovcli.conf"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_current_hermes_home",
+        lambda: hermes_home,
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(profile),
+        },
+    )
+
+    assert OpenVikingMemoryProvider().backup_paths() == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
@@ -276,7 +377,51 @@ def test_openviking_env_overrides_linked_ovcli_config(tmp_path, monkeypatch):
     }
 
 
-def test_openviking_cli_config_env_overrides_saved_profile_path(tmp_path, monkeypatch):
+def test_canonical_openviking_env_names_override_legacy_names(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://profile.local",
+            "actor_peer_id": "profile-agent",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_URL", "http://canonical.local")
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://legacy.local")
+    monkeypatch.setenv("OPENVIKING_ACTOR_PEER_ID", "canonical-agent")
+    monkeypatch.setenv("OPENVIKING_AGENT", "legacy-agent")
+
+    settings = openviking_module._resolve_connection_settings({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(ovcli_path),
+    })
+
+    assert settings["endpoint"] == "http://canonical.local"
+    assert settings["agent"] == "canonical-agent"
+
+
+def test_missing_linked_profile_does_not_fall_back_to_localhost(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    missing_profile = tmp_path / "missing-ovcli.conf"
+
+    with pytest.raises(ValueError, match="profile file was not found"):
+        openviking_module._resolve_connection_settings({
+            "use_ovcli_config": True,
+            "ovcli_config_path": str(missing_profile),
+        })
+
+
+def test_ovcli_profile_rejects_conflicting_actor_id_fields():
+    with pytest.raises(ValueError, match="actor_peer_id cannot be used with agent_id"):
+        openviking_module._connection_values_from_ovcli({
+            "url": "http://127.0.0.1:1933",
+            "actor_peer_id": "canonical",
+            "agent_id": "legacy",
+        })
+
+
+def test_linked_profile_path_overrides_process_wide_ovcli_config(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     saved_path = tmp_path / "ovcli.conf.saved"
     env_path = tmp_path / "ovcli.conf.env"
@@ -295,8 +440,30 @@ def test_openviking_cli_config_env_overrides_saved_profile_path(tmp_path, monkey
         "ovcli_config_path": str(saved_path),
     })
 
-    assert settings["endpoint"] == "http://env-profile.local"
-    assert settings["api_key"] == "env-profile-key"
+    assert settings["endpoint"] == "http://saved.local"
+    assert settings["api_key"] == "saved-key"
+
+
+def test_linking_default_profile_persists_exact_path(tmp_path, monkeypatch):
+    default_path = tmp_path / ".openviking" / "ovcli.conf"
+    env_path = tmp_path / "other-ovcli.conf"
+    default_path.parent.mkdir()
+    default_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_ovcli_config_path",
+        lambda: default_path,
+    )
+    monkeypatch.delenv("OPENVIKING_CLI_CONFIG_FILE", raising=False)
+    provider_config = {}
+
+    openviking_module._remember_ovcli_path(provider_config, default_path)
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(env_path))
+
+    assert provider_config == {"ovcli_config_path": str(default_path)}
+    assert openviking_module._resolve_ovcli_config_path(
+        provider_config["ovcli_config_path"]
+    ) == default_path
 
 
 def test_connection_values_omit_stale_identity_for_user_key_with_root_key():
@@ -348,7 +515,14 @@ def test_discover_ovcli_profiles_lists_saved_profiles_without_active_label(tmp_p
 
 def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
     env_path = tmp_path / ".env"
-    env_path.write_text("OPENVIKING_ENDPOINT=http://old.local\nOTHER_KEY=keep\n", encoding="utf-8")
+    env_path.write_text(
+        "OPENVIKING_URL=http://canonical.local\n"
+        "OPENVIKING_ENDPOINT=http://legacy.local\n"
+        "OPENVIKING_ACTOR_PEER_ID=canonical-agent\n"
+        "OPENVIKING_AGENT=legacy-agent\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
     config = {"memory": {}}
     provider_config = {
         "use_ovcli_config": False,
@@ -372,8 +546,9 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
         "use_ovcli_config": True,
         "ovcli_config_path": str(ovcli_path),
     }
-    assert "OPENVIKING_ENDPOINT" not in env_path.read_text(encoding="utf-8")
-    assert "OTHER_KEY=keep" in env_path.read_text(encoding="utf-8")
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_" not in env_text
+    assert "OTHER_KEY=keep" in env_text
 
 
 def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
@@ -408,7 +583,7 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
         validate_values,
         raising=False,
     )
-    choices = iter([0, 0])
+    choices = iter([2, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     config = {"memory": {}}
 
@@ -432,7 +607,7 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     assert "OTHER_KEY=keep" in env_text
 
 
-def test_post_setup_create_remote_user_profile_can_mirror_to_openviking_store(tmp_path, monkeypatch):
+def test_post_setup_create_remote_user_profile_in_openviking_store(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -442,7 +617,7 @@ def test_post_setup_create_remote_user_profile_can_mirror_to_openviking_store(tm
 
     from hermes_cli import memory_setup
 
-    choices = iter([1, 0, 1])
+    choices = iter([2, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     monkeypatch.setattr(
         memory_setup,
@@ -450,7 +625,7 @@ def test_post_setup_create_remote_user_profile_can_mirror_to_openviking_store(tm
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
             "OpenViking user API key": "user-secret",
-            "Hermes peer ID in OpenViking": "hermes",
+            "Agent ID": "hermes",
             "OpenViking profile name": "VPS",
         }),
     )
@@ -475,7 +650,7 @@ def test_post_setup_create_remote_user_profile_can_mirror_to_openviking_store(tm
         assert "OPENVIKING_" not in env_path.read_text(encoding="utf-8")
 
 
-def test_post_setup_create_remote_user_can_keep_hermes_only(tmp_path, monkeypatch):
+def test_post_setup_create_remote_user_always_links_openviking_profile(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
@@ -484,7 +659,7 @@ def test_post_setup_create_remote_user_can_keep_hermes_only(tmp_path, monkeypatc
 
     from hermes_cli import memory_setup
 
-    choices = iter([1, 0, 0])
+    choices = iter([2, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     monkeypatch.setattr(
         memory_setup,
@@ -492,7 +667,8 @@ def test_post_setup_create_remote_user_can_keep_hermes_only(tmp_path, monkeypatc
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
             "OpenViking user API key": "user-secret",
-            "Hermes peer ID in OpenViking": "agent",
+            "Agent ID": "agent",
+            "OpenViking profile name": "remote",
         }),
     )
     config = {"memory": {}}
@@ -500,12 +676,19 @@ def test_post_setup_create_remote_user_can_keep_hermes_only(tmp_path, monkeypatc
     OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
 
     assert config["memory"]["provider"] == "openviking"
-    assert config["memory"]["openviking"] == {"use_ovcli_config": False}
-    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
-    assert "OPENVIKING_ENDPOINT=https://openviking.example" in env_text
-    assert "OPENVIKING_API_KEY=user-secret" in env_text
-    assert "OPENVIKING_AGENT=agent" in env_text
-    assert not (tmp_path / "home" / ".openviking").exists()
+    profile_path = tmp_path / "home" / ".openviking" / "ovcli.conf.remote"
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "https://openviking.example",
+        "api_key": "user-secret",
+        "actor_peer_id": "agent",
+    }
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(profile_path),
+    }
+    env_path = hermes_home / ".env"
+    if env_path.exists():
+        assert "OPENVIKING_" not in env_path.read_text(encoding="utf-8")
 
 
 def test_post_setup_create_openviking_service_validates_after_api_key(tmp_path, monkeypatch):
@@ -536,7 +719,8 @@ def test_post_setup_create_openviking_service_validates_after_api_key(tmp_path, 
         _prompt_from_values(
             {
                 "OpenViking API key": "service-secret",
-                "Hermes peer ID in OpenViking": "agent",
+                "Agent ID": "agent",
+                "OpenViking profile name": "service",
             },
             forbidden={"OpenViking server URL", "OpenViking user API key", "OpenViking root API key"},
         ),
@@ -557,10 +741,16 @@ def test_post_setup_create_openviking_service_validates_after_api_key(tmp_path, 
         },
         True,
     )]
-    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
-    assert "OPENVIKING_ENDPOINT=https://api.vikingdb.cn-beijing.volces.com/openviking" in env_text
-    assert "OPENVIKING_API_KEY=service-secret" in env_text
-    assert "OPENVIKING_AGENT=agent" in env_text
+    profile_path = tmp_path / "home" / ".openviking" / "ovcli.conf.service"
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "https://api.vikingdb.cn-beijing.volces.com/openviking",
+        "api_key": "service-secret",
+        "actor_peer_id": "agent",
+    }
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(profile_path),
+    }
 
 
 def test_post_setup_remote_blank_api_key_cancels_without_saving(tmp_path, monkeypatch):
@@ -568,14 +758,14 @@ def test_post_setup_remote_blank_api_key_cancels_without_saving(tmp_path, monkey
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", lambda endpoint: (True, ""))
+    _set_reachability(monkeypatch)
 
     from hermes_cli import config as hermes_config
     from hermes_cli import memory_setup
 
     save_config = MagicMock()
     monkeypatch.setattr(hermes_config, "save_config", save_config)
-    choices = iter([1, 0, 1])
+    choices = iter([2, 0, 1])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     monkeypatch.setattr(
         memory_setup,
@@ -606,9 +796,9 @@ def test_post_setup_user_key_path_can_route_detected_root_key_to_root_setup(tmp_
         assert values["api_key"] == "root-secret"
         return True, "", "root"
 
-    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", lambda endpoint: (True, ""))
+    _set_reachability(monkeypatch)
     monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", validate_values)
-    choices = iter([1, 0, 0, 0])
+    choices = iter([2, 0, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     prompt_events = []
 
@@ -621,7 +811,8 @@ def test_post_setup_user_key_path_can_route_detected_root_key_to_root_setup(tmp_
             "OpenViking user API key": "root-secret",
             "OpenViking account": "acct",
             "OpenViking user": "alice",
-            "Hermes peer ID in OpenViking": "agent",
+            "Agent ID": "agent",
+            "OpenViking profile name": "root-profile",
         }
         return values.get(label, default or "")
 
@@ -630,12 +821,16 @@ def test_post_setup_user_key_path_can_route_detected_root_key_to_root_setup(tmp_
 
     OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
 
-    assert prompt_events.count("Hermes peer ID in OpenViking") == 1
-    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
-    assert "OPENVIKING_API_KEY=root-secret" in env_text
-    assert "OPENVIKING_ACCOUNT=acct" in env_text
-    assert "OPENVIKING_USER=alice" in env_text
-    assert "OPENVIKING_AGENT=agent" in env_text
+    assert prompt_events.count("Agent ID") == 1
+    profile_path = tmp_path / "home" / ".openviking" / "ovcli.conf.root-profile"
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "https://openviking.example",
+        "api_key": "root-secret",
+        "root_api_key": "root-secret",
+        "account": "acct",
+        "user": "alice",
+        "actor_peer_id": "agent",
+    }
 
 
 def test_post_setup_root_key_path_can_route_detected_user_key_to_user_setup(tmp_path, monkeypatch):
@@ -650,9 +845,9 @@ def test_post_setup_root_key_path_can_route_detected_user_key_to_user_setup(tmp_
         assert values["api_key"] == "user-secret"
         return True, "", "user"
 
-    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", lambda endpoint: (True, ""))
+    _set_reachability(monkeypatch)
     monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", validate_values)
-    choices = iter([1, 1, 0, 0])
+    choices = iter([2, 1, 0, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     monkeypatch.setattr(
         memory_setup,
@@ -661,7 +856,8 @@ def test_post_setup_root_key_path_can_route_detected_user_key_to_user_setup(tmp_
             {
                 "OpenViking server URL": "https://openviking.example",
                 "OpenViking root API key": "user-secret",
-                "Hermes peer ID in OpenViking": "agent",
+                "Agent ID": "agent",
+                "OpenViking profile name": "user-profile",
             },
             forbidden={"OpenViking user API key", "OpenViking account", "OpenViking user"},
         ),
@@ -670,17 +866,18 @@ def test_post_setup_root_key_path_can_route_detected_user_key_to_user_setup(tmp_
 
     OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
 
-    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
-    assert "OPENVIKING_API_KEY=user-secret" in env_text
-    assert "OPENVIKING_AGENT=agent" in env_text
-    assert "OPENVIKING_ACCOUNT" not in env_text
-    assert "OPENVIKING_USER" not in env_text
+    profile_path = tmp_path / "home" / ".openviking" / "ovcli.conf.user-profile"
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "https://openviking.example",
+        "api_key": "user-secret",
+        "actor_peer_id": "agent",
+    }
 
 
 def test_manual_root_key_flow_prints_validation_progress(monkeypatch, capsys):
     _clear_openviking_env(monkeypatch)
 
-    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", lambda endpoint: (True, ""))
+    _set_reachability(monkeypatch)
 
     validate_calls = []
 
@@ -697,7 +894,7 @@ def test_manual_root_key_flow_prints_validation_progress(monkeypatch, capsys):
             "OpenViking root API key": "root-secret",
             "OpenViking account": "acct",
             "OpenViking user": "alice",
-            "Hermes peer ID in OpenViking": "agent",
+            "Agent ID": "agent",
         }),
         lambda *args, **kwargs: next(choices),
         -1,
@@ -711,23 +908,1062 @@ def test_manual_root_key_flow_prints_validation_progress(monkeypatch, capsys):
     assert "Validating OpenViking API access..." in output
 
 
+def test_setup_has_one_clear_three_way_connection_choice(tmp_path):
+    seen = []
+
+    def select(title, options, **kwargs):
+        seen.append((title, options, kwargs))
+        return -1
+
+    result = openviking_module._run_create_profile_setup(
+        prompt=MagicMock(),
+        select=select,
+        cancelled=-1,
+        config={"memory": {}},
+        provider_config={},
+        env_path=tmp_path / ".env",
+    )
+
+    assert result is openviking_module._SETUP_CANCELLED
+    assert [label for label, _description in seen[0][1]] == [
+        "OpenViking Service (VolcEngine Cloud)",
+        "Quick local setup",
+        "Connect to an existing server",
+    ]
+    assert [description for _label, description in seen[0][1]] == [
+        "Managed cloud service; API key required",
+        "Set up OpenViking and Ollama on this device",
+        "Use a self-managed custom server (Remote/Local)",
+    ]
+    assert "for me" not in str(seen[0][1]).lower()
+
+
+def test_resolve_hermes_vlm_config_reuses_effective_openai_compatible_runtime(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://llm.example/v1",
+            "api_key": "secret",
+            "source": "custom_provider:test",
+            "extra_headers": {"X-Tenant": "tenant"},
+            "request_overrides": {"extra_body": {"thinking": {"type": "disabled"}}},
+        },
+    )
+
+    vlm = quick_local.resolve_hermes_vlm_config({
+        "model": {"provider": "custom", "default": "model-1"},
+    })
+
+    assert vlm == {
+        "provider": "openai",
+        "model": "model-1",
+        "api_key": "secret",
+        "api_base": "https://llm.example/v1",
+        "extra_headers": {"X-Tenant": "tenant"},
+        "extra_request_body": {"thinking": {"type": "disabled"}},
+        "temperature": 0.0,
+        "max_retries": 2,
+    }
+
+
+def test_resolve_hermes_vlm_config_reuses_anthropic_compatible_runtime(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "secret",
+            "source": "environment",
+            "model": "claude-sonnet-4-20250514",
+            "extra_headers": {"anthropic-version": "2023-06-01"},
+        },
+    )
+
+    vlm = quick_local.resolve_hermes_vlm_config({
+        "model": {
+            "provider": "anthropic",
+            "default": "claude-sonnet-4-20250514",
+        },
+    })
+
+    assert vlm == {
+        "provider": "litellm",
+        "model": "anthropic/claude-sonnet-4-20250514",
+        "api_key": "secret",
+        "api_base": "https://api.anthropic.com",
+        "extra_headers": {"anthropic-version": "2023-06-01"},
+        "temperature": 0.0,
+        "max_retries": 2,
+    }
+
+
+def test_resolve_hermes_vlm_config_rejects_ephemeral_auth(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "short-lived",
+            "source": "hermes-auth-store",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="cannot be copied safely"):
+        quick_local.resolve_hermes_vlm_config({
+            "model": {"provider": "openai-codex", "default": "gpt-5"},
+        })
+
+
+def test_quick_local_ollama_installs_starts_and_pulls_model(monkeypatch):
+    events = []
+    installed = iter([False, True])
+    fake_ollama = SimpleNamespace(
+        is_ollama_installed=lambda: next(installed),
+        install_ollama=lambda: events.append("install") or True,
+        check_ollama_running=lambda: False,
+        start_ollama=lambda: events.append("start") or SimpleNamespace(
+            success=True,
+            stderr_output="",
+            message="started",
+        ),
+        get_ollama_models=lambda: [],
+        is_model_available=lambda model, available: False,
+        ollama_pull_model=lambda model: events.append(("pull", model)) or True,
+    )
+    monkeypatch.setattr(
+        quick_local.importlib,
+        "import_module",
+        lambda name: fake_ollama,
+    )
+
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (True, ""),
+    )
+    setup._ensure_ollama(allow_install=True, cancel_event=None)
+
+    assert events == [
+        "install",
+        "start",
+        ("pull", "qwen3-embedding:0.6b"),
+    ]
+
+
+def test_quick_local_ollama_cancel_does_not_install(monkeypatch):
+    install = MagicMock(side_effect=AssertionError("cancelled setup must not install Ollama"))
+    fake_ollama = SimpleNamespace(
+        is_ollama_installed=lambda: False,
+        install_ollama=install,
+    )
+    monkeypatch.setattr(
+        quick_local.importlib,
+        "import_module",
+        lambda name: fake_ollama,
+    )
+
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (True, ""),
+    )
+    with pytest.raises(quick_local.OllamaInstallRequired):
+        setup._ensure_ollama(allow_install=False, cancel_event=None)
+
+    install.assert_not_called()
+
+
+def test_quick_local_ollama_uses_official_windows_installer(monkeypatch):
+    fake_ollama = SimpleNamespace(
+        is_ollama_installed=MagicMock(side_effect=[False, True]),
+        check_ollama_running=lambda: True,
+        get_ollama_models=lambda: ["qwen3-embedding:0.6b"],
+        is_model_available=lambda model, available: model in available,
+    )
+    run = MagicMock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr(quick_local, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        quick_local.shutil,
+        "which",
+        lambda name: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        if name == "powershell.exe"
+        else None,
+    )
+    monkeypatch.setattr(quick_local.subprocess, "run", run)
+
+    monkeypatch.setattr(
+        quick_local.importlib,
+        "import_module",
+        lambda _name: fake_ollama,
+    )
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (True, ""),
+    )
+    setup._ensure_ollama(allow_install=True, cancel_event=None)
+
+    run.assert_called_once_with(
+        [
+            "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Invoke-RestMethod https://ollama.com/install.ps1 | Invoke-Expression",
+        ],
+        check=False,
+    )
+
+
+def test_quick_local_installs_openviking_only_when_server_is_missing(monkeypatch):
+    locations = iter([None, "/bin/openviking-server"])
+    pip_install = MagicMock(return_value=SimpleNamespace(returncode=0, stderr=""))
+    monkeypatch.setattr(
+        local_server,
+        "server_command",
+        lambda: next(locations),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._pip_install", pip_install)
+
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (True, ""),
+    )
+    setup._ensure_openviking_installed(cancel_event=None)
+
+    pip_install.assert_called_once_with(
+        ["openviking"],
+        timeout=600,
+        capture_output=False,
+    )
+    assert "UV_NATIVE_TLS" not in os.environ
+
+
+def test_quick_local_cancellation_prevents_preflight_and_filesystem_changes(
+    tmp_path,
+):
+    hermes_home = tmp_path / "hermes"
+    health_check = MagicMock(
+        side_effect=AssertionError("cancelled setup must not run preflight")
+    )
+    setup = quick_local.QuickLocalSetup(health_check=health_check)
+    cancelled = threading.Event()
+    cancelled.set()
+
+    with pytest.raises(quick_local.QuickLocalSetupCancelled):
+        setup.provision(
+            hermes_home=hermes_home,
+            hermes_config={},
+            allow_ollama_install=False,
+            cancel_event=cancelled,
+        )
+
+    health_check.assert_not_called()
+    assert not quick_local.managed_paths(hermes_home).root.exists()
+
+
+def test_quick_local_preflight_wraps_unexpected_health_failure(tmp_path):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    openviking_module.atomic_json_write(
+        paths.server_config,
+        {"storage": {"workspace": str(paths.workspace)}},
+        mode=0o600,
+    )
+    openviking_module.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1933"},
+        mode=0o600,
+    )
+    setup = quick_local.QuickLocalSetup(
+        health_check=MagicMock(side_effect=LookupError("health unavailable")),
+    )
+
+    with pytest.raises(
+        quick_local.QuickLocalSetupError,
+        match="Quick Local preflight failed: health unavailable",
+    ) as exc_info:
+        setup.preflight(tmp_path)
+
+    assert isinstance(exc_info.value.__cause__, LookupError)
+
+
+def test_quick_local_wraps_unexpected_failures_in_domain_error(
+    tmp_path,
+    monkeypatch,
+):
+    hermes_home = tmp_path / "hermes"
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (False, "")
+    )
+    preflight = quick_local.QuickLocalPreflight(
+        paths=quick_local.managed_paths(hermes_home),
+        reusable_endpoint=None,
+        ollama_install_required=False,
+    )
+    monkeypatch.setattr(
+        quick_local,
+        "resolve_hermes_vlm_config",
+        MagicMock(side_effect=LookupError("provider resolution failed")),
+    )
+
+    with pytest.raises(
+        quick_local.QuickLocalSetupError,
+        match="Quick Local setup failed: provider resolution failed",
+    ) as exc_info:
+        setup.provision(
+            hermes_home=hermes_home,
+            hermes_config={},
+            allow_ollama_install=False,
+            preflight=preflight,
+        )
+
+    assert isinstance(exc_info.value.__cause__, LookupError)
+
+
+def test_quick_local_validation_drain_uses_bounded_system_wait(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'{"status":"ok","result":{"Embedding":{"processed":10}}}'
+
+    class Opener:
+        def open(self, request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(quick_local, "build_opener", lambda *_args: Opener())
+
+    quick_local._wait_for_processing(
+        "http://127.0.0.1:1933",
+        timeout_seconds=12.5,
+    )
+
+    request = captured["request"]
+    assert request.full_url == "http://127.0.0.1:1933/api/v1/system/wait"
+    assert request.method == "POST"
+    assert json.loads(request.data) == {"timeout": 12.5}
+    assert captured["timeout"] == 13.5
+
+
+def test_quick_local_validation_rejects_drained_queue_errors(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return (
+                b'{"status":"ok","result":{"Embedding":'
+                b'{"processed":0,"error_count":1,'
+                b'"errors":[{"message":"secret provider detail"}]}}}'
+            )
+
+    class Opener:
+        def open(self, _request, timeout):
+            return Response()
+
+    monkeypatch.setattr(quick_local, "build_opener", lambda *_args: Opener())
+
+    with pytest.raises(
+        quick_local.QuickLocalSetupError,
+        match=r"processing errors \(Embedding: 1\)",
+    ) as exc_info:
+        quick_local._wait_for_processing(
+            "http://127.0.0.1:1933",
+            timeout_seconds=12.5,
+        )
+
+    assert "secret provider detail" not in str(exc_info.value)
+
+
+def test_quick_local_reports_structured_progress_when_reusing_server(tmp_path):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    openviking_module.atomic_json_write(
+        paths.server_config,
+        {"storage": {"workspace": str(paths.workspace)}},
+        mode=0o600,
+    )
+    openviking_module.atomic_json_write(
+        paths.ovcli_config,
+        {
+            "url": "http://127.0.0.1:1933",
+            "actor_peer_id": "hermes",
+        },
+        mode=0o600,
+    )
+    progress = []
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda endpoint: (endpoint.endswith(":1933"), ""),
+        progress=progress.append,
+    )
+
+    preflight = setup.preflight(tmp_path)
+    result = setup.provision(
+        hermes_home=tmp_path,
+        hermes_config={},
+        allow_ollama_install=False,
+        preflight=preflight,
+    )
+
+    assert result.reused is True
+    assert [event.stage for event in progress] == [
+        quick_local.QuickLocalStage.PREFLIGHT,
+        quick_local.QuickLocalStage.COMPLETE,
+    ]
+
+
+def test_quick_local_rechecks_reusable_server_after_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    openviking_module.atomic_json_write(
+        paths.server_config,
+        {"storage": {"workspace": str(paths.workspace)}},
+        mode=0o600,
+    )
+    openviking_module.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1933"},
+        mode=0o600,
+    )
+    health_results = iter([(False, "not ready"), (True, "")])
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: next(health_results),
+    )
+    monkeypatch.setattr(quick_local, "_ollama_command_available", lambda: True)
+    resolve_vlm = MagicMock(
+        side_effect=AssertionError(
+            "a server that became healthy must be reused before provisioning"
+        )
+    )
+    monkeypatch.setattr(quick_local, "resolve_hermes_vlm_config", resolve_vlm)
+
+    preflight = setup.preflight(tmp_path)
+    assert preflight.reusable_endpoint is None
+
+    result = setup.provision(
+        hermes_home=tmp_path,
+        hermes_config={},
+        allow_ollama_install=False,
+        preflight=preflight,
+    )
+
+    assert result.reused is True
+    assert result.endpoint == "http://127.0.0.1:1933"
+    resolve_vlm.assert_not_called()
+
+
+def test_quick_local_does_not_trust_stale_reusable_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.workspace.mkdir(parents=True)
+    openviking_module.atomic_json_write(
+        paths.server_config,
+        {"storage": {"workspace": str(paths.workspace)}},
+        mode=0o600,
+    )
+    openviking_module.atomic_json_write(
+        paths.ovcli_config,
+        {"url": "http://127.0.0.1:1933"},
+        mode=0o600,
+    )
+    health_results = iter([(True, ""), (False, "stopped")])
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: next(health_results),
+    )
+    resolve_vlm = MagicMock(
+        side_effect=quick_local.QuickLocalSetupError(
+            "continued into provisioning"
+        )
+    )
+    monkeypatch.setattr(quick_local, "resolve_hermes_vlm_config", resolve_vlm)
+
+    preflight = setup.preflight(tmp_path)
+    assert preflight.reusable_endpoint == "http://127.0.0.1:1933"
+
+    with pytest.raises(
+        quick_local.QuickLocalSetupError,
+        match="continued into provisioning",
+    ):
+        setup.provision(
+            hermes_home=tmp_path,
+            hermes_config={},
+            allow_ollama_install=False,
+            preflight=preflight,
+        )
+
+    resolve_vlm.assert_called_once_with({})
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_quick_local_setup_writes_owned_config_and_marker(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    provider_config = {}
+    config = {"memory": {}, "model": {"default": "model-1"}}
+    start_calls = []
+    validation_configs = []
+    validation_process = MagicMock()
+    validation_process.poll.return_value = None
+    shutdown_events = []
+
+    monkeypatch.setattr(
+        quick_local,
+        "resolve_hermes_vlm_config",
+        lambda config: {
+            "provider": "openai",
+            "model": "model-1",
+            "api_key": "llm-secret",
+            "api_base": "https://llm.example/v1",
+        },
+    )
+    monkeypatch.setattr(local_server, "server_command", lambda: "/bin/openviking-server")
+    monkeypatch.setattr(quick_local, "_ollama_command_available", lambda: True)
+    monkeypatch.setattr(
+        quick_local.QuickLocalSetup,
+        "_ensure_ollama",
+        lambda self, **kwargs: None,
+    )
+    monkeypatch.setattr(quick_local, "find_available_port", lambda: 1933)
+    monkeypatch.setattr(
+        local_server,
+        "start_local_server",
+        lambda endpoint, **kwargs: (
+            start_calls.append((endpoint, kwargs["config_path"]))
+            or validation_configs.append(
+                json.loads(kwargs["config_path"].read_text(encoding="utf-8"))
+            )
+            or _started_server(validation_process)
+        ),
+    )
+    monkeypatch.setattr(local_server, "wait_for_health", lambda *args, **kwargs: True)
+    drain_processing = MagicMock(
+        side_effect=lambda *args, **kwargs: shutdown_events.append("drain")
+    )
+    monkeypatch.setattr(quick_local, "_wait_for_processing", drain_processing)
+    stop_process = MagicMock(
+        side_effect=lambda process: shutdown_events.append("stop") or True
+    )
+    monkeypatch.setattr(local_server, "stop_owned_process", stop_process)
+
+    result = openviking_module._run_managed_local_setup(
+        select=MagicMock(),
+        cancelled=-1,
+        config=config,
+        provider_config=provider_config,
+        env_path=hermes_home / ".env",
+    )
+
+    paths = quick_local.managed_paths(hermes_home)
+    assert result is True
+    assert stat.S_IMODE(paths.config.stat().st_mode) == 0o600
+    server_config = json.loads(paths.config.read_text(encoding="utf-8"))
+    assert server_config["server"] == {"host": "127.0.0.1", "port": 1933}
+    assert server_config["storage"]["workspace"] == str(paths.workspace)
+    assert server_config["embedding"]["dense"] == {
+        "provider": "ollama",
+        "model": "qwen3-embedding:0.6b",
+        "api_base": "http://localhost:11434/v1",
+        "dimension": 1024,
+        "input": "text",
+    }
+    assert server_config["vlm"]["api_key"] == "llm-secret"
+    assert json.loads(paths.ovcli_config.read_text(encoding="utf-8")) == {
+        "url": "http://127.0.0.1:1933",
+        "actor_peer_id": "hermes",
+    }
+    assert provider_config == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(paths.ovcli_config),
+        "deployment": openviking_module._MANAGED_LOCAL_DEPLOYMENT,
+        "server_config_path": str(paths.config),
+    }
+    assert len(start_calls) == 1
+    validation_endpoint, validation_config_path = start_calls[0]
+    assert validation_endpoint == "http://127.0.0.1:1933"
+    assert validation_config_path != paths.config
+    assert validation_config_path.parent.parent == paths.root
+    assert not validation_config_path.exists()
+    assert validation_configs[0]["storage"]["workspace"] != str(paths.workspace)
+    assert Path(validation_configs[0]["storage"]["workspace"]).parent == (
+        validation_config_path.parent
+    )
+    drain_processing.assert_called_once_with(
+        "http://127.0.0.1:1933",
+        timeout_seconds=60.0,
+    )
+    stop_process.assert_called_once_with(validation_process)
+    assert shutdown_events == ["drain", "stop"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_quick_local_setup_reuses_healthy_managed_server(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    paths = quick_local.managed_paths(hermes_home)
+    paths.workspace.mkdir(parents=True)
+    # Reproduce an interrupted setup: the persisted profile still identifies
+    # the healthy server on 1933, but ov.conf was overwritten with a free port.
+    openviking_module.atomic_json_write(
+        paths.config,
+        {
+            "server": {"host": "127.0.0.1", "port": 1934},
+            "storage": {"workspace": str(paths.workspace)},
+            "vlm": {"provider": "openai", "model": "already-running-model"},
+        },
+        mode=0o600,
+    )
+    openviking_module._write_ovcli_config(
+        paths.ovcli_config,
+        {"endpoint": "http://127.0.0.1:1933", "agent": "hermes"},
+    )
+    provider_config = {
+        "deployment": openviking_module._MANAGED_LOCAL_DEPLOYMENT,
+        "server_config_path": str(paths.config),
+    }
+    config = {"memory": {}, "model": {"default": "model-1"}}
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_reachability",
+        lambda endpoint: (endpoint == "http://127.0.0.1:1933", ""),
+    )
+
+    def must_not_run(*args, **kwargs):
+        pytest.fail("healthy managed server should be reused before provisioning")
+
+    monkeypatch.setattr(quick_local, "resolve_hermes_vlm_config", must_not_run)
+    monkeypatch.setattr(quick_local, "_ollama_command_available", must_not_run)
+    monkeypatch.setattr(local_server, "server_command", must_not_run)
+    monkeypatch.setattr(local_server, "start_local_server", must_not_run)
+
+    result = openviking_module._run_managed_local_setup(
+        select=MagicMock(),
+        cancelled=-1,
+        config=config,
+        provider_config=provider_config,
+        env_path=hermes_home / ".env",
+    )
+
+    assert result is True
+    repaired_config = json.loads(paths.config.read_text(encoding="utf-8"))
+    assert repaired_config["server"] == {"host": "127.0.0.1", "port": 1933}
+    assert repaired_config["storage"]["workspace"] == str(paths.workspace)
+    assert repaired_config["vlm"] == {
+        "provider": "openai",
+        "model": "already-running-model",
+    }
+    assert stat.S_IMODE(paths.config.stat().st_mode) == 0o600
+    assert json.loads(paths.ovcli_config.read_text(encoding="utf-8"))["url"] == (
+        "http://127.0.0.1:1933"
+    )
+    assert provider_config["deployment"] == openviking_module._MANAGED_LOCAL_DEPLOYMENT
+    assert provider_config["server_config_path"] == str(paths.config)
+
+
+def test_quick_local_does_not_reuse_unowned_profile(tmp_path, monkeypatch):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    openviking_module.atomic_json_write(
+        paths.config,
+        {"storage": {"workspace": str(tmp_path / "someone-elses-data")}},
+        mode=0o600,
+    )
+    openviking_module._write_ovcli_config(
+        paths.ovcli_config,
+        {"endpoint": "http://127.0.0.1:1933", "agent": "hermes"},
+    )
+    reachability = MagicMock(return_value=(True, ""))
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_reachability",
+        reachability,
+    )
+
+    endpoint = quick_local.find_reusable_endpoint(paths, reachability)
+
+    assert endpoint is None
+    reachability.assert_not_called()
+
+
+def test_quick_local_config_uses_selected_available_port(tmp_path):
+    paths = quick_local.managed_paths(tmp_path)
+
+    server_config = quick_local.build_server_config(
+        paths,
+        {"provider": "openai"},
+        port=1941,
+    )
+
+    assert server_config["server"] == {"host": "127.0.0.1", "port": 1941}
+
+
+def test_quick_local_setup_stops_validation_server_when_health_check_fails(
+    tmp_path,
+    monkeypatch,
+):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    process = MagicMock()
+    process.poll.return_value = None
+    monkeypatch.setattr(
+        quick_local,
+        "resolve_hermes_vlm_config",
+        lambda config: {"provider": "openai"},
+    )
+    monkeypatch.setattr(local_server, "server_command", lambda: "/bin/openviking-server")
+    monkeypatch.setattr(quick_local, "_ollama_command_available", lambda: True)
+    monkeypatch.setattr(
+        quick_local.QuickLocalSetup,
+        "_ensure_ollama",
+        lambda self, **kwargs: None,
+    )
+    monkeypatch.setattr(quick_local, "find_available_port", lambda: 1933)
+    monkeypatch.setattr(
+        local_server,
+        "start_local_server",
+        lambda *args, **kwargs: _started_server(process),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "wait_for_health",
+        lambda *args, **kwargs: False,
+    )
+    stop_process = MagicMock(return_value=True)
+    monkeypatch.setattr(local_server, "stop_owned_process", stop_process)
+
+    result = openviking_module._run_managed_local_setup(
+        select=MagicMock(),
+        cancelled=-1,
+        config={"memory": {}, "model": {"default": "model-1"}},
+        provider_config={},
+        env_path=hermes_home / ".env",
+    )
+
+    assert result is False
+    stop_process.assert_called_once_with(process)
+
+
+def test_quick_local_setup_stops_validation_server_when_queue_drain_fails(
+    tmp_path,
+    monkeypatch,
+):
+    paths = quick_local.managed_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    process = MagicMock()
+    monkeypatch.setattr(
+        local_server,
+        "start_local_server",
+        lambda *_args, **_kwargs: _started_server(process),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "wait_for_health",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        quick_local,
+        "_wait_for_processing",
+        MagicMock(
+            side_effect=quick_local.QuickLocalSetupError(
+                "validation processing failed"
+            )
+        ),
+    )
+    stop_process = MagicMock(return_value=True)
+    monkeypatch.setattr(local_server, "stop_owned_process", stop_process)
+    setup = quick_local.QuickLocalSetup(
+        health_check=lambda _endpoint: (True, ""),
+    )
+
+    with pytest.raises(
+        quick_local.QuickLocalSetupError,
+        match="validation processing failed",
+    ):
+        setup._validate_generated_config(
+            paths=paths,
+            endpoint="http://127.0.0.1:1933",
+            server_config=quick_local.build_server_config(
+                paths,
+                {"provider": "openai"},
+            ),
+            cancel_event=None,
+        )
+
+    stop_process.assert_called_once_with(process)
+
+
+def test_linking_existing_profile_clears_quick_local_ownership(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf.remote"
+    openviking_module._write_ovcli_config(
+        ovcli_path,
+        {"endpoint": "https://openviking.example", "api_key": "secret"},
+    )
+    provider_config = {
+        "deployment": openviking_module._MANAGED_LOCAL_DEPLOYMENT,
+        "server_config_path": "/old/ov.conf",
+    }
+    config = {"memory": {}}
+
+    openviking_module._link_ovcli_profile(
+        config=config,
+        provider_config=provider_config,
+        env_path=tmp_path / ".env",
+        ovcli_path=ovcli_path,
+    )
+
+    assert "deployment" not in provider_config
+    assert "server_config_path" not in provider_config
+    assert provider_config["use_ovcli_config"] is True
+
+
+def test_missing_existing_local_config_routes_to_quick_local(tmp_path, monkeypatch):
+    missing = tmp_path / "missing-ov.conf"
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_openviking_server_config_path",
+        lambda: missing,
+    )
+    monkeypatch.setattr(local_server, "server_command", lambda: "/bin/openviking-server")
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("a config-less existing server must not be started")),
+    )
+
+    result = openviking_module._handle_unreachable_endpoint(
+        "http://127.0.0.1:1933",
+        "OpenViking server is not reachable.",
+        lambda *args, **kwargs: 0,
+        -1,
+    )
+
+    assert result is openviking_module._ROUTE_TO_QUICK_LOCAL
+
+
+def test_detected_local_profile_connection_refused_routes_to_quick_local(
+    tmp_path, monkeypatch
+):
+    missing = tmp_path / "missing-ov.conf"
+    profile_path = tmp_path / "ovcli.conf.local"
+    profile = openviking_module._OvcliProfile(
+        source="saved",
+        name="local",
+        path=profile_path,
+        data={"url": "http://127.0.0.1:1933"},
+        values={"endpoint": "http://127.0.0.1:1933"},
+    )
+    _set_reachability(
+        monkeypatch,
+        openviking_module._OpenVikingReachabilityState.UNREACHABLE,
+        "OpenViking validation failed: [Errno 61] Connection refused",
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_profile_for_setup",
+        MagicMock(
+            side_effect=AssertionError(
+                "an unreachable local profile must enter recovery before validation"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_openviking_server_config_path",
+        lambda: missing,
+    )
+    monkeypatch.setattr(local_server, "server_command", lambda: "/bin/openviking-server")
+    choices = iter([0, 0])
+
+    result = openviking_module._run_existing_profile_setup(
+        profiles=[profile],
+        select=lambda *args, **kwargs: next(choices),
+        cancelled=-1,
+        config={"memory": {}},
+        provider_config={},
+        env_path=tmp_path / ".env",
+        allow_manual_endpoint=True,
+    )
+
+    assert result is openviking_module._ROUTE_TO_QUICK_LOCAL
+
+
+@pytest.mark.parametrize(
+    ("reachability_state", "validation_message"),
+    [
+        (
+            openviking_module._OpenVikingReachabilityState.UNHEALTHY,
+            "OpenViking server responded but reported unhealthy status.",
+        ),
+        (
+            openviking_module._OpenVikingReachabilityState.RESPONDED_ERROR,
+            "OpenViking health validation failed: malformed response",
+        ),
+        (
+            openviking_module._OpenVikingReachabilityState.HEALTHY,
+            "OpenViking authentication validation failed: forbidden",
+        ),
+    ],
+)
+def test_local_profile_server_and_auth_failures_do_not_trigger_autostart(
+    tmp_path,
+    monkeypatch,
+    reachability_state,
+    validation_message,
+):
+    profile = openviking_module._OvcliProfile(
+        source="saved",
+        name="local",
+        path=tmp_path / "ovcli.conf.local",
+        data={"url": "http://127.0.0.1:1933"},
+        values={"endpoint": "http://127.0.0.1:1933"},
+    )
+    _set_reachability(monkeypatch, reachability_state, validation_message)
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_profile_for_setup",
+        lambda profile: (False, validation_message, None),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_handle_unreachable_endpoint",
+        MagicMock(
+            side_effect=AssertionError(
+                "a responding server or auth failure must not trigger local autostart"
+            )
+        ),
+    )
+    choices = iter([0, 2])
+
+    result = openviking_module._run_existing_profile_setup(
+        profiles=[profile],
+        select=lambda *args, **kwargs: next(choices),
+        cancelled=-1,
+        config={"memory": {}},
+        provider_config={},
+        env_path=tmp_path / ".env",
+        allow_manual_endpoint=True,
+    )
+
+    assert result is openviking_module._SETUP_CANCELLED
+
+
 def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
     popen_calls = []
+    process = object()
 
     def fake_popen(args, **kwargs):
         popen_calls.append((args, kwargs))
-        return object()
+        return process
 
-    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
-    monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_server.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(local_server.subprocess, "Popen", fake_popen)
 
-    started, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+    result = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
 
-    assert started is True
-    assert "127.0.0.1:1934" in message
+    assert result.started is True
+    assert result.process is process
+    assert "127.0.0.1:1934" in result.message
     args, kwargs = popen_calls[0]
     assert args == ["/usr/local/bin/openviking-server", "--host", "127.0.0.1", "--port", "1934"]
     assert kwargs["start_new_session"] is True
+
+
+def test_start_local_openviking_server_uses_explicit_owned_config(tmp_path, monkeypatch):
+    popen_calls = []
+    config_path = tmp_path / "ov.conf"
+    monkeypatch.setattr(local_server.shutil, "which", lambda name: "/bin/openviking-server")
+    monkeypatch.setattr(
+        local_server.subprocess,
+        "Popen",
+        lambda args, **kwargs: popen_calls.append((args, kwargs)) or object(),
+    )
+
+    result = openviking_module._start_local_openviking_server(
+        "http://localhost:1940",
+        config_path=config_path,
+    )
+
+    assert result.started is True
+    assert popen_calls[0][0] == [
+        "/bin/openviking-server",
+        "--config",
+        str(config_path),
+        "--host",
+        "localhost",
+        "--port",
+        "1940",
+    ]
+
+
+def test_start_local_openviking_server_uses_shared_windows_detach_flags(monkeypatch):
+    popen = MagicMock(return_value=object())
+    expected_flags = 0x10
+    monkeypatch.setattr(local_server, "is_windows", lambda: True)
+    monkeypatch.setattr(
+        local_server,
+        "server_command",
+        lambda: "C:/Hermes/openviking-server.exe",
+    )
+    monkeypatch.setattr(
+        local_server,
+        "windows_detach_flags",
+        lambda: expected_flags,
+    )
+    monkeypatch.setattr(local_server.subprocess, "Popen", popen)
+
+    result = openviking_module._start_local_openviking_server(
+        "http://127.0.0.1:1934"
+    )
+
+    assert result.started is True
+    kwargs = popen.call_args.kwargs
+    assert kwargs["creationflags"] == expected_flags
+    assert "start_new_session" not in kwargs
+
+
+def test_windows_detached_process_retries_without_breakaway(monkeypatch):
+    process = object()
+    popen = MagicMock(side_effect=[OSError("breakaway denied"), process])
+    preferred_flags = 0x10
+    fallback_flags = 0x20
+    monkeypatch.setattr(local_server, "is_windows", lambda: True)
+    monkeypatch.setattr(
+        local_server,
+        "windows_detach_flags",
+        lambda: preferred_flags,
+    )
+    monkeypatch.setattr(
+        local_server,
+        "windows_detach_flags_without_breakaway",
+        lambda: fallback_flags,
+    )
+    monkeypatch.setattr(local_server.subprocess, "Popen", popen)
+
+    result = local_server.start_detached_process(
+        ["C:/Hermes/openviking-server.exe"],
+        stdin=subprocess.DEVNULL,
+    )
+
+    assert result is process
+    assert popen.call_count == 2
+    assert popen.call_args_list[0].kwargs["creationflags"] == preferred_flags
+    assert popen.call_args_list[1].kwargs["creationflags"] == fallback_flags
 
 
 def test_start_local_openviking_server_writes_output_to_log(tmp_path, monkeypatch):
@@ -745,14 +1981,89 @@ def test_start_local_openviking_server_writes_output_to_log(tmp_path, monkeypatc
         assert not kwargs["stdout"].closed
         return FakeProcess()
 
-    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
-    monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(local_server.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(local_server.subprocess, "Popen", fake_popen)
 
-    started, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+    result = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
 
-    assert started is True
-    assert str(hermes_home / "logs" / "openviking-server.log") in message
+    assert result.started is True
+    assert str(hermes_home / "logs" / "openviking-server.log") in result.message
     assert popen_calls
+
+
+def test_local_server_health_wait_honors_setup_cancellation():
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    healthy = local_server.wait_for_health(
+        "http://127.0.0.1:1933",
+        MagicMock(side_effect=AssertionError("cancelled wait must not probe health")),
+        cancel_event=cancel_event,
+        monotonic=iter([0.0, 0.1]).__next__,
+        sleep=MagicMock(),
+    )
+
+    assert healthy is False
+
+
+def test_local_server_health_wait_honors_runtime_shutdown_predicate():
+    should_stop = MagicMock(return_value=True)
+
+    healthy = local_server.wait_for_health(
+        "http://127.0.0.1:1933",
+        MagicMock(side_effect=AssertionError("stopped wait must not probe health")),
+        should_stop=should_stop,
+        monotonic=iter([0.0, 0.1]).__next__,
+        sleep=MagicMock(),
+    )
+
+    assert healthy is False
+    should_stop.assert_called_once_with()
+
+
+def test_stop_owned_local_openviking_process_force_kills_after_graceful_timeout(caplog):
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [
+        local_server.subprocess.TimeoutExpired(
+            cmd="openviking-server",
+            timeout=0.01,
+        ),
+        0,
+    ]
+
+    with caplog.at_level("WARNING", logger=local_server.__name__):
+        stopped = openviking_module._stop_owned_local_openviking_process(
+            process,
+            timeout_seconds=0.01,
+        )
+
+    assert stopped is True
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert process.wait.call_args_list == [call(timeout=0.01), call(timeout=0.01)]
+    assert "force-stopping it" in caplog.text
+
+
+def test_stop_owned_local_openviking_process_reports_force_kill_timeout(caplog):
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = local_server.subprocess.TimeoutExpired(
+        cmd="openviking-server",
+        timeout=0.01,
+    )
+
+    with caplog.at_level("WARNING", logger=local_server.__name__):
+        stopped = openviking_module._stop_owned_local_openviking_process(
+            process,
+            timeout_seconds=0.01,
+        )
+
+    assert stopped is False
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert process.wait.call_count == 2
+    assert "still did not exit after force-stop" in caplog.text
 
 
 def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
@@ -817,43 +2128,130 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
     ]
 
 
-def test_handle_unreachable_endpoint_does_not_wait_when_autostart_command_missing(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("malformed health response"),
+        openviking_module._get_httpx().ReadTimeout("read timed out"),
+    ],
+)
+def test_runtime_does_not_autostart_after_non_transport_health_failure(
+    tmp_path, monkeypatch, error
+):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         openviking_module,
-        "_start_local_openviking_server",
-        lambda endpoint: (False, "openviking-server was not found on PATH."),
+        "_load_hermes_openviking_config",
+        lambda: {
+            "deployment": openviking_module._MANAGED_LOCAL_DEPLOYMENT,
+            "server_config_path": str(server_config),
+        },
+    )
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://localhost:1934"
+
+        def health_payload(self):
+            raise error
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    start_server = MagicMock(
+        side_effect=AssertionError(
+            "a server response failure must not start another local process"
+        )
+    )
+    monkeypatch.setattr(local_server, "start_local_server", start_server)
+
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+
+    assert provider._client is None
+    start_server.assert_not_called()
+    assert len(warnings) == 1
+    assert "health validation" in warnings[0]
+
+
+def test_handle_unreachable_endpoint_explains_missing_server_command(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_openviking_server_config_path",
+        lambda: server_config,
+    )
+    monkeypatch.setattr(
+        local_server,
+        "server_command",
+        lambda: None,
     )
     monkeypatch.setattr(
         openviking_module,
-        "_wait_for_openviking_health",
-        MagicMock(side_effect=AssertionError("should not wait when server did not start")),
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("missing command must not be started")),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_reachability",
+        lambda endpoint: (False, "OpenViking server is not reachable."),
     )
 
     result = openviking_module._handle_unreachable_endpoint(
         "http://127.0.0.1:1934",
         "OpenViking server is not reachable.",
-        lambda *args, **kwargs: 0,
+        lambda *args, **kwargs: 1,
         -1,
     )
 
     assert result is False
     output = capsys.readouterr().out
-    assert "openviking-server was not found on PATH." in output
-    assert "did not become reachable" not in output
+    assert "OpenViking is not installed" in output
+    assert "Install the OpenViking server command" in output
 
 
-def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypatch, capsys):
+def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(tmp_path, monkeypatch, capsys):
     wait_calls = []
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_openviking_server_config_path",
+        lambda: server_config,
+    )
+    monkeypatch.setattr(local_server, "server_command", lambda: "/bin/openviking-server")
 
+    start_server = MagicMock(
+        return_value=_started_server(
+            message="Started openviking-server on 127.0.0.1:1934 in the background."
+        )
+    )
     monkeypatch.setattr(
         openviking_module,
         "_start_local_openviking_server",
-        lambda endpoint: (True, "Started openviking-server on 127.0.0.1:1934 in the background."),
+        start_server,
     )
     monkeypatch.setattr(
         openviking_module,
         "_wait_for_openviking_health",
         lambda endpoint, *, timeout_seconds=0: wait_calls.append((endpoint, timeout_seconds)) or True,
+    )
+    stop_process = MagicMock(
+        side_effect=AssertionError(
+            "a healthy self-managed custom server must remain running"
+        )
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_stop_owned_local_openviking_process",
+        stop_process,
     )
 
     result = openviking_module._handle_unreachable_endpoint(
@@ -864,9 +2262,62 @@ def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypat
     )
 
     assert result is True
+    start_server.assert_called_once_with(
+        "http://127.0.0.1:1934",
+        config_path=server_config,
+    )
     assert wait_calls == [("http://127.0.0.1:1934", 60.0)]
+    stop_process.assert_not_called()
     output = capsys.readouterr().out
     assert "Waiting for OpenViking server to become reachable..." in output
+    assert "self-managed server will remain running" in output
+
+
+def test_handle_unreachable_endpoint_stops_failed_validation_process(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    process = MagicMock()
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_openviking_server_config_path",
+        lambda: server_config,
+    )
+    monkeypatch.setattr(
+        local_server,
+        "server_command",
+        lambda: "/bin/openviking-server",
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda *args, **kwargs: _started_server(process=process),
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_wait_for_openviking_health",
+        lambda *args, **kwargs: False,
+    )
+    stop_process = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        openviking_module,
+        "_stop_owned_local_openviking_process",
+        stop_process,
+    )
+
+    result = openviking_module._handle_unreachable_endpoint(
+        "http://127.0.0.1:1934",
+        "OpenViking server is not reachable.",
+        lambda *args, **kwargs: 0,
+        -1,
+    )
+
+    assert result is False
+    stop_process.assert_called_once_with(process)
+    assert "did not become reachable" in capsys.readouterr().out
 
 
 def test_manual_setup_does_not_offer_autostart_when_local_server_is_unhealthy(monkeypatch):
@@ -909,12 +2360,24 @@ def test_manual_setup_does_not_offer_autostart_when_local_server_is_unhealthy(mo
     )]
 
 
-def test_initialize_autostarts_local_openviking_in_background_when_runtime_health_fails(monkeypatch):
+def test_initialize_autostarts_managed_local_openviking_in_background_when_runtime_health_fails(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "deployment": openviking_module._MANAGED_LOCAL_DEPLOYMENT,
+            "server_config_path": str(server_config),
+        },
+    )
     health_calls = []
     start_calls = []
     waiter_calls = []
+    owned_process = MagicMock()
+    owned_process.poll.return_value = None
 
     class FakeVikingClient:
         def __init__(self, endpoint, api_key="", account="", user="", agent=""):
@@ -926,9 +2389,12 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
 
     monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
     monkeypatch.setattr(
-        openviking_module,
-        "_start_local_openviking_server",
-        lambda endpoint: start_calls.append(endpoint) or (True, "started"),
+        local_server,
+        "start_local_server",
+        lambda endpoint, **kwargs: (
+            start_calls.append((endpoint, kwargs))
+            or _started_server(owned_process)
+        ),
     )
     monkeypatch.setattr(
         openviking_module,
@@ -948,15 +2414,34 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
 
     assert provider._client is None
     assert health_calls == ["health"]
-    assert start_calls == ["http://127.0.0.1:1934"]
+    assert len(start_calls) == 1
+    start_endpoint, start_kwargs = start_calls[0]
+    assert start_endpoint == "http://127.0.0.1:1934"
+    assert start_kwargs == {
+        "hermes_home": Path(provider._hermes_home),
+        "config_path": server_config,
+    }
     assert len(waiter_calls) == 1
     assert waiter_calls[0]["status_callback"] == statuses.append
+    assert provider._owned_local_server_process is owned_process
     assert any("starting in the background" in message for message in statuses)
 
 
-def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(monkeypatch):
+def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(
+    tmp_path, monkeypatch
+):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_load_hermes_openviking_config",
+        lambda: {
+            "deployment": openviking_module._MANAGED_LOCAL_DEPLOYMENT,
+            "server_config_path": str(server_config),
+        },
+    )
 
     class FakeVikingClient:
         def __init__(self, endpoint, api_key="", account="", user="", agent=""):
@@ -966,10 +2451,12 @@ def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(monke
             return False
 
     monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    process = MagicMock()
+    process.poll.return_value = None
     monkeypatch.setattr(
-        openviking_module,
-        "_start_local_openviking_server",
-        lambda endpoint: (True, "started"),
+        local_server,
+        "start_local_server",
+        lambda endpoint, **kwargs: _started_server(process),
     )
 
     provider = OpenVikingMemoryProvider()
@@ -986,6 +2473,38 @@ def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(monke
 
     assert "starting in the background" in statuses[0]
     assert "memory is active" in statuses[1]
+
+
+def test_runtime_start_status_callback_shutdown_stops_unattached_child(
+    tmp_path, monkeypatch
+):
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    process = MagicMock()
+    process.poll.return_value = None
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1934"
+    provider._hermes_home = str(tmp_path / "hermes")
+    provider._managed_local_server_config = server_config
+    monkeypatch.setattr(
+        local_server,
+        "start_local_server",
+        lambda endpoint, **kwargs: _started_server(process),
+    )
+    handoff = MagicMock(
+        side_effect=AssertionError(
+            "an unattached child has accepted no work and must stop directly"
+        )
+    )
+    monkeypatch.setattr(local_server, "defer_owned_shutdown", handoff)
+
+    provider._handle_runtime_openviking_unreachable(
+        status_callback=lambda _message: provider.shutdown(),
+    )
+
+    process.terminate.assert_called_once_with()
+    handoff.assert_not_called()
+    assert provider._owned_local_server_process is None
 
 
 def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeypatch):
@@ -1108,6 +2627,27 @@ def test_runtime_openviking_waiter_warns_when_background_start_times_out(monkeyp
     ]
 
 
+def test_runtime_openviking_waiter_shutdown_stops_child_without_late_warning(monkeypatch):
+    process = MagicMock()
+    process.poll.return_value = None
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1934"
+    provider._owned_local_server_process = process
+    provider._shutting_down = True
+    warnings = []
+    monkeypatch.setattr(
+        openviking_module,
+        "_wait_for_openviking_health",
+        lambda endpoint, **kwargs: False,
+    )
+
+    provider._finish_runtime_openviking_start(warning_callback=warnings.append)
+
+    assert warnings == []
+    process.terminate.assert_called_once_with()
+    assert provider._owned_local_server_process is None
+
+
 def test_initialize_does_not_autostart_remote_openviking(monkeypatch, caplog):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
@@ -1139,7 +2679,7 @@ def test_initialize_does_not_autostart_remote_openviking(monkeypatch, caplog):
     assert "Remote OpenViking server at https://openviking.example is not reachable" in caplog.text
 
 
-def test_initialize_warns_clearly_when_local_runtime_autostart_fails(monkeypatch, caplog):
+def test_initialize_does_not_autostart_separately_managed_local_server(monkeypatch, caplog):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
 
@@ -1154,7 +2694,7 @@ def test_initialize_warns_clearly_when_local_runtime_autostart_fails(monkeypatch
     monkeypatch.setattr(
         openviking_module,
         "_start_local_openviking_server",
-        lambda endpoint: (False, "openviking-server was not found on PATH."),
+        lambda endpoint: _failed_server(),
     )
     monkeypatch.setattr(
         openviking_module,
@@ -1168,10 +2708,10 @@ def test_initialize_warns_clearly_when_local_runtime_autostart_fails(monkeypatch
 
     assert provider._client is None
     assert "Local OpenViking server at http://localhost:1934 is not reachable" in caplog.text
-    assert "openviking-server was not found on PATH" in caplog.text
+    assert "Start the separately managed server" in caplog.text
 
 
-def test_initialize_emits_cli_warning_when_local_runtime_autostart_fails(monkeypatch):
+def test_initialize_emits_cli_warning_for_separately_managed_local_server(monkeypatch):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
 
@@ -1187,7 +2727,7 @@ def test_initialize_emits_cli_warning_when_local_runtime_autostart_fails(monkeyp
     monkeypatch.setattr(
         openviking_module,
         "_start_local_openviking_server",
-        lambda endpoint: (False, "openviking-server was not found on PATH."),
+        lambda endpoint: _failed_server(),
     )
 
     provider = OpenVikingMemoryProvider()
@@ -1195,9 +2735,9 @@ def test_initialize_emits_cli_warning_when_local_runtime_autostart_fails(monkeyp
 
     assert provider._client is None
     assert warnings == [
-        "Local OpenViking server at http://localhost:1934 is not reachable. "
-        "openviking-server was not found on PATH. "
-        "OpenViking memory disabled for this Hermes run."
+        "Local OpenViking server at http://localhost:1934 is not reachable; "
+        "OpenViking memory disabled for this Hermes run. Start the separately "
+        "managed server, then begin a new Hermes session."
     ]
 
 
@@ -1216,7 +2756,7 @@ def test_initialize_does_not_emit_cli_warning_when_callback_absent(monkeypatch):
     monkeypatch.setattr(
         openviking_module,
         "_start_local_openviking_server",
-        lambda endpoint: (False, "openviking-server was not found on PATH."),
+        lambda endpoint: _failed_server(),
     )
 
     provider = OpenVikingMemoryProvider()
@@ -1230,39 +2770,67 @@ def test_post_setup_local_server_down_can_offer_autostart(tmp_path, monkeypatch)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        openviking_module,
+        "_default_openviking_server_config_path",
+        lambda: server_config,
+    )
+    monkeypatch.setattr(local_server, "server_command", lambda: "/bin/openviking-server")
     monkeypatch.setattr(openviking_module, "_validate_openviking_setup_values", lambda values, *, require_api_key=False: (True, "", None))
 
     from hermes_cli import memory_setup
 
     reachability_calls = []
 
-    def validate_reachability(endpoint):
+    def probe_reachability(endpoint):
         reachability_calls.append(endpoint)
-        return False, "OpenViking server is not reachable." if len(reachability_calls) == 1 else ""
+        return _reachability(
+            openviking_module._OpenVikingReachabilityState.UNREACHABLE,
+            "OpenViking server is not reachable.",
+        )
 
     started = []
-    monkeypatch.setattr(openviking_module, "_validate_openviking_reachability", validate_reachability)
-    monkeypatch.setattr(openviking_module, "_start_local_openviking_server", lambda endpoint: (started.append(endpoint) or True, "started"))
+    monkeypatch.setattr(
+        openviking_module,
+        "_probe_openviking_reachability",
+        probe_reachability,
+    )
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        lambda endpoint, **kwargs: started.append((endpoint, kwargs)) or _started_server(),
+    )
     monkeypatch.setattr(openviking_module, "_wait_for_openviking_health", lambda endpoint, **kwargs: True)
-    choices = iter([1, 0, 0, 0])
+    choices = iter([2, 0, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     monkeypatch.setattr(
         memory_setup,
         "_prompt",
         _prompt_from_values({
             "OpenViking server URL": "localhost",
-            "Hermes peer ID in OpenViking": "agent",
+            "Agent ID": "agent",
+            "OpenViking profile name": "local",
         }),
     )
     config = {"memory": {}}
 
     OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
 
-    assert started == ["http://localhost:1933"]
+    assert started == [
+        ("http://localhost:1933", {"config_path": server_config})
+    ]
     assert reachability_calls == ["http://localhost:1933"]
-    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
-    assert "OPENVIKING_ENDPOINT=http://localhost:1933" in env_text
-    assert "OPENVIKING_API_KEY" not in env_text
+    profile_path = tmp_path / "home" / ".openviking" / "ovcli.conf.local"
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "http://localhost:1933",
+        "actor_peer_id": "agent",
+    }
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(profile_path),
+    }
 
 
 def test_post_setup_invalid_env_profile_can_create_new_config(tmp_path, monkeypatch):
@@ -1278,7 +2846,7 @@ def test_post_setup_invalid_env_profile_can_create_new_config(tmp_path, monkeypa
 
     from hermes_cli import memory_setup
 
-    choices = iter([1, 0, 0])
+    choices = iter([2, 0])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     monkeypatch.setattr(
         memory_setup,
@@ -1286,7 +2854,8 @@ def test_post_setup_invalid_env_profile_can_create_new_config(tmp_path, monkeypa
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
             "OpenViking user API key": "user-secret",
-            "Hermes peer ID in OpenViking": "agent",
+            "Agent ID": "agent",
+            "OpenViking profile name": "recovered",
         }),
     )
     config = {"memory": {}}
@@ -1294,7 +2863,12 @@ def test_post_setup_invalid_env_profile_can_create_new_config(tmp_path, monkeypa
     OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
 
     assert ovcli_path.read_text(encoding="utf-8") == "{"
-    assert config["memory"]["openviking"] == {"use_ovcli_config": False}
+    recovered_path = tmp_path / "home" / ".openviking" / "ovcli.conf.recovered"
+    assert recovered_path.exists()
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(recovered_path),
+    }
 
 
 def test_tool_search_sorts_by_raw_score_across_buckets():
@@ -1647,7 +3221,10 @@ def test_tool_add_resource_sends_remote_url_as_path():
     provider._client = MagicMock()
     provider._client.post.return_value = {
         "status": "ok",
-        "result": {"root_uri": "viking://resources/remote"},
+        "result": {
+            "root_uri": "viking://resources/remote",
+            "task_id": "resource-task-1",
+        },
     }
 
     provider._tool_add_resource({"url": "https://example.com/doc.md"})
@@ -1656,6 +3233,24 @@ def test_tool_add_resource_sends_remote_url_as_path():
     provider._client.post.assert_called_once_with("/api/v1/resources", {
         "path": "https://example.com/doc.md",
     })
+    assert provider._pending_task_ids == {"resource-task-1"}
+
+
+def test_tool_add_resource_wait_true_does_not_register_background_task():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/remote"},
+    }
+
+    provider._tool_add_resource({
+        "url": "https://example.com/doc.md",
+        "wait": True,
+    })
+
+    assert provider._pending_task_ids == set()
+    assert provider._task_tracking_uncertain is False
 
 
 @pytest.mark.parametrize("url", [
@@ -2209,6 +3804,86 @@ def test_validate_openviking_reachability_uses_health_only(monkeypatch):
     assert events == ["health"]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionRefusedError(61, "Connection refused"),
+        openviking_module._get_httpx().ConnectTimeout("connect timed out"),
+    ],
+)
+def test_probe_openviking_reachability_classifies_transport_errors(
+    monkeypatch, error
+):
+    class FakeVikingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            raise error
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    result = openviking_module._probe_openviking_reachability(
+        "http://127.0.0.1:1933"
+    )
+
+    assert (
+        result.state
+        is openviking_module._OpenVikingReachabilityState.UNREACHABLE
+    )
+    assert result.allows_local_autostart is True
+
+
+@pytest.mark.parametrize(
+    ("health_result", "error", "expected_state"),
+    [
+        (
+            {"healthy": False},
+            None,
+            openviking_module._OpenVikingReachabilityState.UNHEALTHY,
+        ),
+        (
+            None,
+            openviking_module._OpenVikingHTTPError("service unavailable", 503),
+            openviking_module._OpenVikingReachabilityState.RESPONDED_ERROR,
+        ),
+        (
+            None,
+            RuntimeError("malformed health response"),
+            openviking_module._OpenVikingReachabilityState.RESPONDED_ERROR,
+        ),
+        (
+            None,
+            openviking_module._get_httpx().ReadTimeout("read timed out"),
+            openviking_module._OpenVikingReachabilityState.RESPONDED_ERROR,
+        ),
+    ],
+)
+def test_probe_openviking_reachability_does_not_autostart_for_server_failures(
+    monkeypatch,
+    health_result,
+    error,
+    expected_state,
+):
+    class FakeVikingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def health_payload(self):
+            if error is not None:
+                raise error
+            return health_result
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    result = openviking_module._probe_openviking_reachability(
+        "http://127.0.0.1:1933"
+    )
+
+    assert result.state is expected_state
+    assert result.allows_local_autostart is False
+
+
 def test_validate_openviking_auth_uses_status_without_health(monkeypatch):
     events = []
 
@@ -2414,6 +4089,9 @@ def test_validate_openviking_identity_value_matches_cli_rules(value, field, ok):
 def _make_provider_with_session(session_id: str, turn_count: int):
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "result": {"task_id": f"commit-{session_id}"},
+    }
     provider._session_id = session_id
     provider._turn_count = turn_count
     return provider
@@ -3730,6 +5408,278 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     assert not returned_before_worker_finished
     assert worker_finished.is_set()
     assert provider._memory_write_threads == set()
+
+
+def test_shutdown_hands_commit_task_and_owned_server_to_reaper(monkeypatch):
+    provider = _make_provider_with_session("sid-1", turn_count=1)
+    statuses = []
+    provider._runtime_status_callback = statuses.append
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    provider._owned_local_server_ready = True
+    handoff = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        local_server,
+        "defer_owned_shutdown",
+        handoff,
+    )
+
+    provider.on_session_end([])
+    provider.shutdown()
+
+    handoff.assert_called_once_with(
+        process,
+        hermes_home=Path(provider._hermes_home),
+        endpoint=provider._endpoint,
+        headers=provider._client._headers(),
+        task_ids={"commit-sid-1"},
+    )
+    process.terminate.assert_not_called()
+    assert provider._owned_local_server_process is None
+    assert any("finishing 1 background task" in status for status in statuses)
+    assert any("stop automatically" in status for status in statuses)
+
+
+def test_reaper_handoff_sends_credentials_over_stdin_not_argv(monkeypatch, tmp_path):
+    class CapturingStdin(io.BytesIO):
+        def close(self):
+            self.was_closed = True
+
+    reaper_stdin = CapturingStdin()
+    reaper_process = SimpleNamespace(stdin=reaper_stdin)
+    popen = MagicMock(return_value=reaper_process)
+    server_process = SimpleNamespace(pid=4321)
+    process_identity = SimpleNamespace(create_time=lambda: 123.5)
+    monkeypatch.setattr("psutil.Process", MagicMock(return_value=process_identity))
+    monkeypatch.setattr(local_server.subprocess, "Popen", popen)
+
+    assert local_server.defer_owned_shutdown(
+        server_process,
+        hermes_home=tmp_path,
+        endpoint="http://127.0.0.1:1933",
+        headers={"Authorization": "Bearer top-secret"},
+        task_ids={"task-2", "task-1"},
+    )
+
+    argv = popen.call_args.args[0]
+    assert argv == [
+        local_server.sys.executable,
+        str(Path(local_server.__file__).with_name("reaper.py")),
+    ]
+    assert "top-secret" not in " ".join(argv)
+    payload = json.loads(reaper_stdin.getvalue())
+    assert payload["headers"] == {"Authorization": "Bearer top-secret"}
+    assert payload["task_ids"] == ["task-1", "task-2"]
+    assert payload["pid"] == 4321
+    assert payload["create_time"] == 123.5
+    assert reaper_stdin.was_closed is True
+
+
+def test_reaper_handoff_cleans_up_helper_if_payload_write_fails(monkeypatch, tmp_path):
+    reaper_stdin = MagicMock()
+    reaper_stdin.closed = False
+    reaper_stdin.write.side_effect = OSError("broken pipe")
+    reaper_process = SimpleNamespace(stdin=reaper_stdin, terminate=MagicMock())
+    monkeypatch.setattr(
+        "psutil.Process",
+        MagicMock(return_value=SimpleNamespace(create_time=lambda: 123.5)),
+    )
+    monkeypatch.setattr(
+        local_server.subprocess,
+        "Popen",
+        MagicMock(return_value=reaper_process),
+    )
+
+    assert not local_server.defer_owned_shutdown(
+        SimpleNamespace(pid=4321),
+        hermes_home=tmp_path,
+        endpoint="http://127.0.0.1:1933",
+        headers={},
+        task_ids={"task-1"},
+    )
+
+    reaper_stdin.close.assert_called_once_with()
+    reaper_process.terminate.assert_called_once_with()
+
+
+def test_shutdown_leaves_server_running_when_reaper_handoff_fails(monkeypatch, caplog):
+    provider = _make_provider_with_session("sid-1", turn_count=1)
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    provider._owned_local_server_ready = True
+    monkeypatch.setattr(
+        local_server,
+        "defer_owned_shutdown",
+        MagicMock(return_value=False),
+    )
+
+    provider.on_session_end([])
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        provider.shutdown()
+
+    process.terminate.assert_not_called()
+    assert "could not be handed off safely" in caplog.text
+
+
+def test_shutdown_leaves_owned_server_running_when_commit_status_is_uncertain(caplog):
+    provider = _make_provider_with_session("sid-1", turn_count=1)
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    provider._owned_local_server_ready = True
+    provider._client.get.side_effect = RuntimeError("connection dropped")
+
+    provider.on_session_end([])
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        provider.shutdown()
+
+    process.terminate.assert_not_called()
+    assert "leaving the local server running" in caplog.text
+
+
+def test_shutdown_leaves_owned_server_running_when_commit_response_has_no_task_id(caplog):
+    provider = _make_provider_with_session("sid-1", turn_count=1)
+    provider._client.post.return_value = {"result": {}}
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    provider._owned_local_server_ready = True
+
+    provider.on_session_end([])
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        provider.shutdown()
+
+    provider._client.get.assert_not_called()
+    process.terminate.assert_not_called()
+    assert "cannot be verified" in caplog.text
+
+
+def test_shutdown_drains_queues_when_commit_is_explicitly_skipped(monkeypatch):
+    provider = _make_provider_with_session("sid-1", turn_count=1)
+    provider._client.post.return_value = {
+        "result": {
+            "session_id": "sid-1",
+            "status": "skipped",
+            "task_id": None,
+            "reason": "no_messages",
+        }
+    }
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    provider._owned_local_server_ready = True
+    handoff = MagicMock(return_value=True)
+    monkeypatch.setattr(
+        local_server,
+        "defer_owned_shutdown",
+        handoff,
+    )
+
+    provider.on_session_end([])
+    provider.shutdown()
+
+    provider._client.get.assert_not_called()
+    handoff.assert_called_once_with(
+        process,
+        hermes_home=Path(provider._hermes_home),
+        endpoint=provider._endpoint,
+        headers=provider._client._headers(),
+        task_ids=set(),
+    )
+    process.terminate.assert_not_called()
+
+
+@pytest.mark.parametrize("deployment", [None, "custom", "quick_local"])
+def test_shutdown_never_stops_server_without_owned_process_handle(deployment, monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._managed_local_server_config = (
+        MagicMock() if deployment == "quick_local" else None
+    )
+    stop = MagicMock(side_effect=AssertionError("unowned server must not be stopped"))
+    monkeypatch.setattr(
+        openviking_module,
+        "_stop_owned_local_openviking_process",
+        stop,
+    )
+
+    provider.shutdown()
+
+    stop.assert_not_called()
+
+
+def test_shutdown_leaves_owned_server_running_if_background_writer_did_not_drain(caplog):
+    provider = OpenVikingMemoryProvider()
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    provider._owned_local_server_ready = True
+    provider._inflight_writers["sid-1"] = {_HungThread()}
+
+    with caplog.at_level("WARNING", logger=openviking_module.__name__):
+        provider.shutdown()
+
+    process.terminate.assert_not_called()
+    assert "background work is still active" in caplog.text
+
+
+def test_shutdown_joins_cancelled_runtime_start_before_releasing_ownership(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1933"
+    process = MagicMock()
+    process.poll.return_value = None
+    provider._owned_local_server_process = process
+    entered_wait = threading.Event()
+
+    def wait_for_health(_endpoint, *, should_stop, **_kwargs):
+        entered_wait.set()
+        deadline = time.monotonic() + 2.0
+        while not should_stop() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert should_stop()
+        return False
+
+    monkeypatch.setattr(
+        openviking_module,
+        "_wait_for_openviking_health",
+        wait_for_health,
+    )
+    handoff = MagicMock()
+    monkeypatch.setattr(
+        local_server,
+        "defer_owned_shutdown",
+        handoff,
+    )
+    runtime_thread = threading.Thread(
+        target=provider._finish_runtime_openviking_start,
+        daemon=True,
+    )
+    provider._runtime_start_thread = runtime_thread
+    runtime_thread.start()
+    assert entered_wait.wait(timeout=2.0)
+
+    provider.shutdown()
+
+    runtime_thread.join(timeout=2.0)
+    assert not runtime_thread.is_alive()
+    process.terminate.assert_called_once_with()
+    handoff.assert_not_called()
+    assert provider._owned_local_server_process is None
+
+
+def test_atexit_safety_net_finalizes_before_provider_shutdown(monkeypatch):
+    provider = MagicMock()
+    monkeypatch.setattr(openviking_module, "_last_active_provider", provider)
+
+    openviking_module._atexit_commit_sessions()
+
+    assert provider.method_calls == [
+        call.on_session_end([]),
+        call.shutdown(),
+        call._release_run_lock(),
+    ]
+    assert openviking_module._last_active_provider is None
 
 
 @pytest.mark.parametrize(

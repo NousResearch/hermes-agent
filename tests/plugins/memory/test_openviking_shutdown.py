@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import plugins.memory.openviking as openviking_module
 from plugins.memory.openviking import OpenVikingMemoryProvider
@@ -70,18 +70,29 @@ def test_shutdown_waits_for_runtime_start_thread():
     assert not t.is_alive()
 
 
-def test_shutdown_during_pending_runtime_start_does_not_launch_waiter(monkeypatch):
+def test_shutdown_during_pending_managed_runtime_start_does_not_launch_waiter(
+    tmp_path, monkeypatch
+):
     """A waiter reserved before shutdown must not start after shutdown returns."""
     provider = OpenVikingMemoryProvider()
     provider._endpoint = "http://127.0.0.1:1934"
+    provider._hermes_home = str(tmp_path / "hermes")
+    server_config = tmp_path / "ov.conf"
+    server_config.write_text("{}", encoding="utf-8")
+    provider._managed_local_server_config = server_config
     status_entered = threading.Event()
     release_status = threading.Event()
     waiter_calls = []
+    process = MagicMock()
+    process.poll.return_value = None
 
     monkeypatch.setattr(
-        openviking_module,
-        "_start_local_openviking_server",
-        lambda endpoint: (True, "started"),
+        openviking_module.local_server,
+        "start_local_server",
+        lambda endpoint, **kwargs: openviking_module._LocalServerStartResult(
+            process,
+            "started",
+        ),
     )
     monkeypatch.setattr(
         provider,
@@ -108,6 +119,7 @@ def test_shutdown_during_pending_runtime_start_does_not_launch_waiter(monkeypatc
     assert not starter.is_alive()
     assert provider._runtime_start_pending is False
     assert waiter_calls == []
+    process.terminate.assert_called_once_with()
 
 
 def test_shutdown_during_final_health_probe_does_not_publish_client(monkeypatch):

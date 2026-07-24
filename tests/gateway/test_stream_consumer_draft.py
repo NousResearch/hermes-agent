@@ -13,6 +13,7 @@ isinstance(BasePlatformAdapter) gate excludes plain MagicMocks.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -182,11 +183,179 @@ class TestDraftStreamingHappyPath:
 
 
 class TestDraftFallbackOnFailure:
-    """When a draft frame fails, the consumer disables drafts for the rest
-    of the response and continues via the edit-based path."""
+    """Draft-frame failure resilience: the consumer tolerates up to
+    _MAX_DRAFT_FAILURES consecutive failures before disabling draft streaming,
+    and resets the counter on success.
+
+    These tests call _send_draft_frame directly to get deterministic results
+    without relying on run-loop timing.
+    """
+
+    def _make_consumer_for_direct_call(self):
+        """Set up a draft-capable consumer with _draft_id pre-seeded so
+        _send_draft_frame can be exercised without running the full loop."""
+        adapter = _make_draft_capable_adapter()
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._use_draft_streaming = True
+        consumer._draft_id = 1
+        return consumer, adapter
 
     @pytest.mark.asyncio
-    async def test_first_draft_failure_disables_drafts_for_run(self):
+    async def test_single_failure_does_not_disable_drafts(self):
+        """One bad frame must NOT kill draft streaming for the whole session."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="transient")
+        )
+
+        await consumer._send_draft_frame("frame1")
+
+        assert consumer._draft_failures == 1
+        assert consumer._draft_failures < consumer._MAX_DRAFT_FAILURES
+        assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_three_consecutive_failures_disable_drafts(self):
+        """Exactly three consecutive failures must disable draft streaming."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="hard_error")
+        )
+
+        for i in range(3):
+            await consumer._send_draft_frame(f"frame{i}")
+
+        assert consumer._draft_failures == consumer._MAX_DRAFT_FAILURES
+        assert consumer._use_draft_streaming is False
+
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_streak(self):
+        """A successful frame after failures resets _draft_failures to 0."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+
+        fail_result = SendResult(success=False, error="transient")
+        ok_result = SendResult(success=True, message_id=None)
+
+        adapter.send_draft = AsyncMock(side_effect=[fail_result, fail_result, ok_result])
+
+        await consumer._send_draft_frame("frame1")
+        await consumer._send_draft_frame("frame2")
+        assert consumer._draft_failures == 2
+
+        await consumer._send_draft_frame("frame3")
+
+        assert consumer._draft_failures == 0
+        assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_retryable_failure_not_counted(self):
+        """A retryable=True result (long flood-control) must not increment
+        _draft_failures so it never counts toward the disable threshold."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:260", retryable=True)
+        )
+
+        for _ in range(10):
+            await consumer._send_draft_frame("frame")
+
+        assert consumer._draft_failures == 0
+        assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_long_retryable_failure_does_not_fall_through_to_send_or_edit(self):
+        """A long flood-control RetryAfter on send_draft must not fall
+        through to adapter.send()/edit_message() for this tick — that would
+        spend another call in the same flood-control window instead of just
+        waiting for the cooldown to clear. (#54275 / hermes-sweeper review
+        of PR #53865: the retryable branch previously skipped counting the
+        failure but the caller still treated any False from
+        _send_draft_frame as "fall through to the regular edit/send path".)
+        """
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(
+                success=False, error="flood_control:280", retryable=True, retry_after=280.0,
+            )
+        )
+
+        handled = await consumer._send_or_edit("partial text", finalize=False)
+
+        assert handled is True
+        adapter.send.assert_not_awaited()
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._use_draft_streaming is True
+        assert consumer._message_id is None
+
+    @pytest.mark.asyncio
+    async def test_retryable_cooldown_skips_subsequent_send_draft_calls(self):
+        """Once a long RetryAfter sets a cooldown, further ticks must not
+        call send_draft again until the deadline passes — otherwise every
+        tick during the wait repeats the same flood-control hit."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(
+                success=False, error="flood_control:280", retryable=True, retry_after=280.0,
+            )
+        )
+
+        first = await consumer._send_draft_frame("frame1")
+        assert first is False
+        assert adapter.send_draft.await_count == 1
+        assert consumer._draft_cooldown_until is not None
+
+        second = await consumer._send_draft_frame("frame2")
+        assert second is False
+        assert consumer._last_draft_retryable is True
+        # Still cooling down — must not call send_draft again.
+        assert adapter.send_draft.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_expired_cooldown_resumes_calling_send_draft(self):
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=True, message_id=None)
+        )
+        consumer._draft_cooldown_until = time.monotonic() - 0.01  # already expired
+
+        ok = await consumer._send_draft_frame("frame")
+
+        assert ok is True
+        adapter.send_draft.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_draft_failure_falls_back_and_delivers_final_via_send(self):
+        """When draft frames fail, the consumer must NOT drop the message — it
+        must fall back to the edit/send path and deliver the final answer via
+        adapter.send.  This is the integration companion to the unit tests
+        above: it verifies that the fallback path actually completes, not just
+        that internal state variables are set correctly.
+
+        Note: in the run loop, a single draft failure causes the first frame to
+        fall through to adapter.send(), which sets _message_id.  Subsequent
+        frames skip the draft check because _message_id is already set.  So
+        _use_draft_streaming stays True (only 1 failure, below the 3-failure
+        threshold), but the end-to-end behavior is correct: draft was attempted,
+        failed, and the final message was delivered via the regular path.
+        """
         adapter = _make_draft_capable_adapter(draft_succeeds=False)
         cfg = StreamConsumerConfig(
             transport="auto", chat_type="dm",
@@ -194,19 +363,83 @@ class TestDraftFallbackOnFailure:
         )
         consumer = GatewayStreamConsumer(adapter, "12345", cfg)
 
-        consumer.on_delta("Hello ")
+        consumer.on_delta("Hello world")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
-        consumer.on_delta("world!")
         await asyncio.sleep(0.05)
         consumer.finish()
         await task
 
-        # The consumer attempted draft, hit failure, disabled drafts.
-        assert consumer._draft_failures >= 1
-        assert consumer._use_draft_streaming is False
-        # Final message delivered via the regular send path.
+        # Draft was attempted at least once (the flag was True and text was queued).
+        assert len(adapter.draft_calls) >= 1
+        # Final message was delivered — no silent drop.
         adapter.send.assert_awaited()
+        assert consumer.final_response_sent is True
+
+
+class TestDraftSuppressionPreventsEditCascade:
+    """When sendMessageDraft is suppressed (success=True, message_id=None) the
+    consumer must stay in draft mode for the entire response and never fall
+    back to editMessageText — which is the cascade that exhausts the quota.
+
+    This mirrors what PR #51886 does for guest chats: returning success=True
+    keeps the consumer believing drafts are working, so it never switches paths.
+    The final message arrives via adapter.send() at finalize — one call, no edits.
+    """
+
+    @pytest.mark.asyncio
+    async def test_suppressed_drafts_never_call_edit_message(self):
+        """When every draft frame is suppressed (success=True, no message_id),
+        the consumer must not call edit_message at any point mid-stream."""
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_draft_capable_adapter()
+        # Simulate the adapter suppressing every frame (typing expired, etc.)
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=True, message_id=None)
+        )
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        for i in range(5):
+            consumer.on_delta(f"token{i} ")
+            await asyncio.sleep(0.03)
+        consumer.finish()
+        await task
+
+        # Consumer stayed in draft mode throughout — no edit calls.
+        adapter.edit_message.assert_not_called()
+        # _message_id was never set mid-stream (would only exist if edits fired).
+        # Final response still delivered via send().
+        adapter.send.assert_awaited()
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_suppressed_drafts_do_not_accumulate_failures(self):
+        """Suppressed frames (success=True) must not increment _draft_failures,
+        so draft streaming is never permanently disabled by suppressed frames."""
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_draft_capable_adapter()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=True, message_id=None)
+        )
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._use_draft_streaming = True
+        consumer._draft_id = 1
+
+        for _ in range(20):
+            await consumer._send_draft_frame("frame")
+
+        assert consumer._draft_failures == 0
+        assert consumer._use_draft_streaming is True
 
 
 class TestDraftIdLifecycle:
@@ -507,3 +740,206 @@ class TestRichAwareOverflow:
         assert consumer._message_id == "final1"
         assert consumer._preview_message_ids == set()
         assert consumer.final_response_sent is True
+
+
+class TestTryStripCursor:
+    """_try_strip_cursor removes the ▉ cursor after stream termination.
+
+    When the edit to strip the cursor is flood-controlled (a RetryAfter error
+    coming back via result.error), the consumer falls back to delete_message
+    so the stuck cursor at least disappears before the full response arrives.
+    """
+
+    def _make_consumer(self, *, message_id="msg_abc"):
+        """Return a consumer whose _message_id and _last_sent_text are already
+        set to simulate a partially-streamed message that needs cursor removal."""
+        adapter = _make_draft_capable_adapter()
+        adapter.delete_message = AsyncMock(return_value=True)
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._message_id = message_id
+        consumer._last_sent_text = "Partial reply so far"
+        return consumer, adapter
+
+    @pytest.mark.asyncio
+    async def test_successful_edit_skips_delete(self):
+        """When the cursor-strip edit succeeds, delete_message must NOT be called."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(return_value=SendResult(success=True))
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._last_sent_text == "Partial reply so far"
+
+    @pytest.mark.asyncio
+    async def test_flood_controlled_edit_leaves_message_intact(self):
+        """A flood-control result on the cursor-strip edit must NOT delete the
+        message — a partial with a stuck cursor is better UX than a blank screen
+        for the duration of the flood-control wait."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:280")
+        )
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+        # message_id preserved — the partial message is still visible.
+        assert consumer._message_id == "msg_abc"
+
+    @pytest.mark.asyncio
+    async def test_raised_edit_exception_leaves_message_intact(self):
+        """If _edit_message raises, the message must be left as-is — no delete."""
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(side_effect=RuntimeError("rate limit"))
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._message_id == "msg_abc"
+
+    @pytest.mark.asyncio
+    async def test_no_message_id_is_a_noop(self):
+        """Nothing to strip if there is no live message yet."""
+        consumer, adapter = self._make_consumer(message_id=None)
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_edit_sentinel_is_a_noop(self):
+        """The '__no_edit__' sentinel signals the message must not be edited;
+        _try_strip_cursor must return without touching delete_message."""
+        consumer, adapter = self._make_consumer(message_id="__no_edit__")
+
+        await consumer._try_strip_cursor()
+
+        adapter.delete_message.assert_not_awaited()
+
+
+class TestSendFallbackFinalEditInPlace:
+    """_send_fallback_final tries to edit the stale partial in-place first.
+
+    When the final text fits in one message and a stale partial exists, we
+    edit the existing message rather than sending a new one and deleting the
+    old one.  No deletion, no new message position in chat, no rate-limit cost
+    of an extra send.  If the edit fails we fall through to the original
+    send+delete path.
+    """
+
+    def _make_consumer(self, *, message_id="stale_msg"):
+        adapter = _make_draft_capable_adapter()
+        adapter.delete_message = AsyncMock(return_value=True)
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._message_id = message_id
+        # Empty _last_sent_text → _visible_prefix() = "" → continuation = final_text
+        consumer._last_sent_text = ""
+        return consumer, adapter
+
+    @pytest.mark.asyncio
+    async def test_edit_in_place_skips_send_and_delete(self):
+        """On a successful edit: no send, no delete, all completion flags set,
+        message_id and last_sent_text updated to reflect the final content."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(return_value=SendResult(success=True))
+
+        await consumer._send_fallback_final("The complete reply")
+
+        adapter.send.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._already_sent is True
+        assert consumer._final_response_sent is True
+        assert consumer._final_content_delivered is True
+        assert consumer._message_id == "stale_msg"
+        assert consumer._last_sent_text == "The complete reply"
+        assert consumer._fallback_prefix == ""
+
+    @pytest.mark.asyncio
+    async def test_failed_edit_falls_through_to_send_and_delete(self):
+        """When the in-place edit returns failure, send is called and the stale
+        partial is deleted (since the full text is re-sent from scratch)."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(
+            return_value=SendResult(success=False, error="flood_control:280")
+        )
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="new_msg"))
+
+        await consumer._send_fallback_final("The complete reply")
+
+        adapter.send.assert_awaited()
+        # Full resend path: stale partial deleted so user doesn't see duplicate.
+        adapter.delete_message.assert_awaited_once_with("12345", "stale_msg")
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_raised_edit_falls_through_to_send(self):
+        """An edit exception also falls through to the send path."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        adapter.edit_message = AsyncMock(side_effect=RuntimeError("network error"))
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="new_msg"))
+
+        await consumer._send_fallback_final("The complete reply")
+
+        adapter.send.assert_awaited()
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_no_stale_message_id_goes_straight_to_send(self):
+        """Without a stale message there is nothing to edit — send fires directly."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer(message_id=None)
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="fresh"))
+
+        await consumer._send_fallback_final("Reply")
+
+        adapter.send.assert_awaited()
+        adapter.edit_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_edit_sentinel_goes_straight_to_send(self):
+        """The __no_edit__ sentinel skips the edit attempt and uses the send path."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer(message_id="__no_edit__")
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="fresh"))
+
+        await consumer._send_fallback_final("Reply")
+
+        adapter.send.assert_awaited()
+        adapter.edit_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_preserve_partial_skips_edit(self):
+        """When _fallback_preserve_partial_messages is True the edit is skipped;
+        a new message is appended instead (multi-chunk / tool-boundary case)."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer()
+        consumer._fallback_preserve_partial_messages = True
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="new"))
+
+        await consumer._send_fallback_final("Reply")
+
+        adapter.send.assert_awaited()
+        adapter.edit_message.assert_not_awaited()
+

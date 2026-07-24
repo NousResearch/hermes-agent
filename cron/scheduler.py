@@ -3276,6 +3276,10 @@ def run_job(
                 # below, which already passes its fb_model.
                 "target_model": model,
             }
+            # An explicitly pinned provider can require an API surface derived
+            # from the effective job model (not config.yaml's stale default).
+            if model and job.get("provider"):
+                runtime_kwargs["target_model"] = model
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)

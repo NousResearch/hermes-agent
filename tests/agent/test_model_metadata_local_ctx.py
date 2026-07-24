@@ -638,6 +638,34 @@ class TestFetchEndpointModelMetadataLmStudio:
         assert result["publisher/model-a"]["context_length"] == 65536
 
 
+class TestFetchEndpointModelMetadataStreaming:
+    """Cloud endpoint probes should inspect status before reading the body."""
+
+    def test_error_status_does_not_read_response_body(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        responses = []
+        for status_code in (401, 404):
+            response = MagicMock()
+            response.status_code = status_code
+            response.raise_for_status.side_effect = RuntimeError(status_code)
+            responses.append(response)
+
+        with patch("agent.model_metadata.is_local_endpoint", return_value=False), \
+             patch("agent.model_metadata.requests.get", side_effect=responses) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "https://provider.example/v1",
+                force_refresh=True,
+            )
+
+        assert result == {}
+        assert mock_get.call_count == 2
+        assert all(call.kwargs["stream"] is True for call in mock_get.call_args_list)
+        for response in responses:
+            response.json.assert_not_called()
+            response.close.assert_called_once()
+
+
 class TestQueryLocalContextLengthNetworkError:
     """_query_local_context_length handles network failures gracefully."""
 

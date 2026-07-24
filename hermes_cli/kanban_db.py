@@ -5593,6 +5593,263 @@ def block_task(
     return True
 
 
+# ---------------------------------------------------------------------------
+# close_as_obsolete (Issue: dispatcher race on unblock → ready → claim)
+# ---------------------------------------------------------------------------
+# Background: an unblock of a blocked card transitions ``blocked → ready``,
+# which makes the card immediately claimable by the next dispatcher tick.
+# If an orchestrator then tries to complete/close the same card a moment
+# later, the dispatcher's claim lock can race in and bounce the
+# complete/close call. This verb eliminates that window by going
+# ``blocked → done`` in a single atomic transition: the card never visits
+# ``ready``, so the dispatcher has no state to claim.
+#
+# Refusal rules (per spec):
+#   * Active ``claim_lock`` — there is a live worker; this is not obsolete.
+#   * Open children — unresolved dependencies would silently drop on a
+#     terminal transition.
+#   * ``reason`` is mandatory (validated by the tool layer, not here).
+
+class CardHasActiveClaimError(RuntimeError):
+    """Raised by ``close_as_obsolete`` when the card holds an active claim_lock.
+
+    A card in ``blocked`` state with a non-NULL ``claim_lock`` has a live
+    worker attached (rare but possible — a worker set the lock then the
+    task was force-blocked by some non-block_tool path, or a future
+    feature path leaves a stale lock). Closing it as obsolete would
+    yank the task out from under that worker. Subclass ``RuntimeError``
+    so the tool layer treats it as an operational refusal, not a user
+    input error.
+    """
+
+    def __init__(self, task_id: str, claim_lock: str):
+        self.task_id = task_id
+        self.claim_lock = claim_lock
+        super().__init__(
+            f"task {task_id} has active claim_lock={claim_lock!r}; "
+            f"refusing to close as obsolete while a worker holds the lock"
+        )
+
+
+class CardHasOpenChildrenError(RuntimeError):
+    """Raised by ``close_as_obsolete`` when the card has unresolved child deps.
+
+    Closing a parent as ``done`` while children are still in flight
+    would silently drop the dependency edge — a child that should
+    block waiting for the parent instead transitions through ``ready``
+    on the next ``recompute_ready``. Refused at the kernel so the
+    orchestrator has to address the children first.
+    """
+
+    def __init__(self, task_id: str, open_children: list[str]):
+        self.task_id = task_id
+        self.open_children = list(open_children)
+        super().__init__(
+            f"task {task_id} has open children that must reach a "
+            f"terminal state before close-as-obsolete: "
+            f"{', '.join(open_children)}"
+        )
+
+
+# Terminal statuses for the open-children check. Mirrors the set used by
+# ``_cleanup_workspace`` (``done`` / ``archived`` / ``failed`` /
+# ``cancelled``). Any status outside this set is treated as still in
+# flight and blocks the obsolete close.
+_OBSOLETE_CLOSE_TERMINAL_STATUSES = frozenset(
+    {"done", "archived", "failed", "cancelled"}
+)
+
+
+def close_as_obsolete(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    closed_by: str,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Atomically transition ``blocked → done`` without passing through ``ready``.
+
+    Used by the ``kanban_close_as_obsolete`` tool (and the operator CLI
+    equivalent) to retire a blocked card whose work is no longer
+    relevant — superseded by another task, removed from scope, or
+    otherwise moot. The transition is a single ``UPDATE … WHERE
+    id=? AND status='blocked'`` inside :func:`write_txn` so the
+    dispatcher cannot observe a claimable state between the read and the
+    write.
+
+    Refusals (raise before any write):
+
+    * :class:`CardHasActiveClaimError` — ``tasks.claim_lock`` is non-NULL.
+      A live worker holds the card; this is not obsolete.
+    * :class:`CardHasOpenChildrenError` — at least one child in
+      ``task_links`` is still in a non-terminal status.
+
+    The verb accepts ``reason`` and ``closed_by`` and writes them onto
+    the ``completed`` event payload (alongside ``obsolete: True``) so
+    downstream notifiers and audit consumers can distinguish a normal
+    completion from an obsolete close. The task row's
+    ``completed_at`` is stamped; ``claim_lock`` / ``claim_expires`` /
+    ``worker_pid`` are cleared (defensive — should already be NULL on a
+    blocked card that wasn't actively claimed).
+    """
+    now = int(time.time())
+
+    # Pre-flight refusal checks (read-only). Done outside the write_txn
+    # so the refusal message can name the offending claim_lock / open
+    # children ids; doing it inside the txn would require holding the
+    # SQLite write lock for the duration of a possibly-expensive
+    # children scan. SQLite WAL serialises writers anyway, so the
+    # subsequent UPDATE inside write_txn is still atomic.
+    row = conn.execute(
+        "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if row["status"] != "blocked":
+        return False
+    if row["claim_lock"]:
+        raise CardHasActiveClaimError(task_id, row["claim_lock"])
+    open_children = [
+        r["child_id"]
+        for r in conn.execute(
+            "SELECT child_id FROM tasks t "
+            "JOIN task_links l ON l.child_id = t.id "
+            "WHERE l.parent_id = ? "
+            "AND t.status NOT IN ("
+            + ",".join("?" for _ in _OBSOLETE_CLOSE_TERMINAL_STATUSES)
+            + ")",
+            (task_id, *_OBSOLETE_CLOSE_TERMINAL_STATUSES),
+        ).fetchall()
+    ]
+    if open_children:
+        raise CardHasOpenChildrenError(task_id, open_children)
+
+    with write_txn(conn):
+        # Atomic single-statement transition: only succeeds when the
+        # row is still ``blocked``. The ``status='blocked'`` guard is
+        # the load-bearing constraint — without it a concurrent
+        # ``unblock → claim → running`` would silently succeed because
+        # the WHERE on `id` alone matches any status. The ``claim_lock
+        # IS NULL`` mirror is belt-and-suspenders: a stale lock that
+        # slipped past the pre-flight check (race window) is caught
+        # here too.
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status = 'blocked'
+                   AND claim_lock IS NULL
+                """,
+                (f"obsolete: {reason}", now, task_id),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'done',
+                       result       = ?,
+                       completed_at = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status = 'blocked'
+                   AND claim_lock IS NULL
+                   AND current_run_id = ?
+                """,
+                (f"obsolete: {reason}", now, task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            # Lost the race: someone unblocked/claimed between the
+            # pre-flight read and the write. The dispatcher now holds
+            # the card and ``close_as_obsolete`` must refuse cleanly.
+            # Re-read inside the txn so the error message names the
+            # current state.
+            current = conn.execute(
+                "SELECT status, claim_lock FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            if current["claim_lock"]:
+                raise CardHasActiveClaimError(task_id, current["claim_lock"])
+            return False
+
+        # Persist the close in attempt history so the dashboard shows
+        # why the card is done. ``close_as_obsolete`` may run on a
+        # blocked card that was never claimed (the common case — a
+        # worker-initiated ``kanban_block`` cleared claim_lock), in
+        # which case there's no run to end and we synthesise one.
+        run_id = _end_run(
+            conn, task_id,
+            outcome="completed", status="done",
+            summary=reason,
+            metadata={
+                "obsolete": True,
+                "closed_by": closed_by,
+            },
+        )
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="completed",
+                summary=reason,
+                metadata={
+                    "obsolete": True,
+                    "closed_by": closed_by,
+                },
+            )
+
+        # Emit ``completed`` (matches existing notifier wiring in
+        # gateway/run.py — a fresh event kind would silently bypass
+        # dashboard renderers and attachment uploads) with the
+        # ``obsolete: True`` flag as the discriminator. The verb name
+        # in the payload makes the audit trail unambiguous without
+        # inventing a new event kind.
+        _append_event(
+            conn, task_id, "completed",
+            {
+                "obsolete": True,
+                "verb": "close_as_obsolete",
+                "reason": reason,
+                "closed_by": closed_by,
+                "summary_preview": (
+                    reason.strip().splitlines()[0][:200] if reason else None
+                ),
+            },
+            run_id=run_id,
+        )
+
+    # Post-commit side effects, mirroring complete_task so behaviour
+    # stays consistent for downstream consumers (children gating,
+    # failure counter, workspace cleanup, lifecycle hooks).
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
+    _done_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_completed",
+        task_id,
+        board=get_current_board(),
+        assignee=_done_task.assignee if _done_task else None,
+        run_id=run_id,
+        summary=reason,
+    )
+    return True
+
+
 
 def promote_task(
     conn: sqlite3.Connection,

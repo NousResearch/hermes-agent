@@ -679,6 +679,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F811,E402
+from hermes_constants import get_default_hermes_root  # noqa: F811,E402
 from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
@@ -7893,6 +7894,52 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
+def _is_in_profile_scope(home: Path, root: Path) -> bool:
+    """True when ``home`` is a profile directory under ``<root>/profiles/``.
+
+    Determined via ``Path.relative_to`` arithmetic — no env reads, no
+    substring matches, platform-agnostic (POSIX + Windows native).  Validated
+    under interactive env AND ``env -i`` (launchd-stripped) in the test
+    matrix: handles default root, missing-profile paths, Docker profile
+    paths (``/opt/data/profiles/<x>``), and Docker-root paths.
+    """
+    try:
+        profiles_root = (root / "profiles").resolve()
+        home.resolve().relative_to(profiles_root)
+        return True
+    except ValueError:
+        return False
+    except Exception:
+        # Truly pathological (path-resolve failure between the two calls).
+        # Fail-closed: caller treats this as "skip root fallback", which is
+        # the pre-fix behavior.  Never a wrong-path guess.
+        return False
+
+
+def _load_env_from_path(path: Path) -> Dict[str, str]:
+    """Parse a single .env file into a dict.  Single-file variant of load_env().
+
+    No caching (the caller controls re-read frequency); no sanitization
+    pass (callers only invoke this on files we trust — currently only the
+    global root ``.env`` in the profile-fallback path).
+    """
+    out: Dict[str, str] = {}
+    if not path.exists():
+        return out
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    if line.startswith("export "):
+                        line = line[7:]
+                    k, _, v = line.partition("=")
+                    out[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        return out
+    return out
+
+
 _STRUCTURED_VALUE_MARKERS = ("://", "?", "&")
 
 
@@ -8362,11 +8409,50 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     that, under an active profile scope (multiplexed gateway turn), this read
     is scope-checked rather than leaking another profile's raw ``os.environ``
     value — matching the credential-pool seeding path's behaviour.
+
+    In profile mode (``HERMES_HOME`` is a profile directory), after the
+    profile .env misses, falls back to the **global root** ``~/.hermes/.env``
+    so cron/launchd resolution can resolve keys seeded at global scope
+    without requiring per-profile duplication.  Profile always wins when
+    it has a value — root is a fallback, not an override.  Addresses the
+    issue #18594 profile-isolation trap: an empty profile-pool return used
+    to surface as ``Bearer None`` over the wire because the credential-pool
+    shadowing (``read_credential_pool`` profile-wins) blocked the global
+    pool entry without any profile key taking its place.
+
+    The global root path comes from ``get_default_hermes_root()`` which is
+    platform-aware (POSIX + Windows native) and Docker-aware
+    (``/opt/data`` layouts); no hardcoded path.  Skipped silently when
+    ``HERMES_HOME`` is already the root (avoids redundant re-read of the
+    same file).
     """
     env_vars = load_env()
     val = env_vars.get(key)
     if val:
         return val
+    # Profile-root fallback: only when we're actually in a profile scope.
+    # Calling get_default_hermes_root() (rather than hardcoding ~/.hermes)
+    # keeps this correct for Docker/custom-root deployments and for
+    # Windows installs where the native root is %LOCALAPPDATA%\hermes.
+    try:
+        home = get_hermes_home()
+        root = get_default_hermes_root()
+    except Exception:
+        # get_default_hermes_root is import-safe (no Hermes-logging
+        # bootstrap); anything that throws here means the env is too broken
+        # to safely consult a fallback path.  Skip silently — caller
+        # proceeds to the secret_scope / os.environ tiers below.
+        home = root = None
+    if (
+        home is not None
+        and root is not None
+        and _is_in_profile_scope(home, root)
+        and root != home
+    ):
+        root_vars = _load_env_from_path(root / ".env")
+        root_val = root_vars.get(key)
+        if root_val:
+            return root_val
     try:
         from agent.secret_scope import (
             UnscopedSecretError,

@@ -796,6 +796,127 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error(f"kanban_block: {e}")
 
 
+def _handle_close_as_obsolete(args: dict, **kw) -> str:
+    """Atomically transition a BLOCKED card directly to done.
+
+    Closes a blocked card as obsolete (superseded / removed from scope /
+    otherwise moot) in a single atomic transaction: ``blocked → done``
+    with no intermediate ``ready`` state, so the dispatcher can never
+    race in and claim the card mid-close. Emits a ``completed`` event
+    carrying ``obsolete: True``, ``reason``, and ``closed_by`` so
+    downstream notifiers and audit consumers can distinguish this from
+    a normal completion.
+
+    Refuses (returns tool_error, no state change) when:
+
+    * ``reason`` is missing or blank.
+    * The card has an active ``claim_lock`` (live worker attached).
+    * The card has open children (unresolved dependencies).
+    * The card is not currently in ``blocked`` status (callers should
+      use ``kanban_complete`` for running/ready tasks).
+
+    Worker-scope semantics: ``_enforce_worker_task_ownership`` is
+    enforced for symmetry with ``kanban_complete`` / ``kanban_block``
+    so a worker cannot close a sibling task by passing an explicit
+    ``task_id``. Orchestrators (kanban toolset, no HERMES_KANBAN_TASK)
+    may target any task id.
+    """
+    tid = args.get("task_id") or _default_task_id(None)
+    if not tid:
+        return tool_error(
+            "task_id is required (close-as-obsolete is targeted, not "
+            "defaulted from HERMES_KANBAN_TASK — caller must name the "
+            "card explicitly)"
+        )
+    ownership_err = _enforce_worker_task_ownership(str(tid))
+    if ownership_err:
+        return ownership_err
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error(
+            "reason is required — explain why the card is being closed "
+            "as obsolete"
+        )
+    closed_by = args.get("closed_by")
+    if not closed_by or not str(closed_by).strip():
+        # Default to the active profile so the audit trail is never
+        # blank. Orchestrator contexts resolve to their profile;
+        # worker contexts resolve to the task they're scoped to.
+        closed_by = (
+            os.environ.get("HERMES_PROFILE")
+            or os.environ.get("HERMES_KANBAN_TASK")
+            or "operator"
+        )
+    reason = redact_sensitive_text(str(reason).strip(), force=True)
+    closed_by = redact_sensitive_text(str(closed_by).strip(), force=True)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            try:
+                ok = kb.close_as_obsolete(
+                    conn, str(tid),
+                    reason=reason,
+                    closed_by=closed_by,
+                    expected_run_id=_worker_run_id(str(tid)),
+                )
+            except kb.CardHasActiveClaimError as claim_err:
+                # Card has a live worker — refuse with a structured
+                # error that names the offending claim_lock so the
+                # orchestrator can wait for it to clear or kill it.
+                return tool_error(
+                    f"kanban_close_as_obsolete refused: {claim_err}. "
+                    f"Wait for the worker to exit (or force-clear the "
+                    f"claim_lock via the operator path) before retrying."
+                )
+            except kb.CardHasOpenChildrenError as children_err:
+                # Open children mean closing now would silently drop a
+                # dependency edge. Surface the offending child ids so
+                # the orchestrator can route them to done first.
+                return tool_error(
+                    f"kanban_close_as_obsolete refused: {children_err}. "
+                    f"Resolve the children (kanban_complete or archive) "
+                    f"before closing the parent."
+                )
+            if not ok:
+                # Card wasn't in 'blocked' status, or the transition
+                # lost the race against an unblock/claim. Re-read so the
+                # error names the actual state.
+                current = kb.get_task(conn, str(tid))
+                if current is None:
+                    return tool_error(
+                        f"kanban_close_as_obsolete: task {tid} not found"
+                    )
+                if current.status == "done":
+                    # Idempotent — a concurrent caller already closed
+                    # it. Return success so retries don't bounce.
+                    return _ok(
+                        task_id=str(tid),
+                        status="done",
+                        obsolete=True,
+                        note="already closed (idempotent)",
+                    )
+                return tool_error(
+                    f"kanban_close_as_obsolete refused: task {tid} is "
+                    f"in status {current.status!r}; only 'blocked' "
+                    f"tasks can be closed as obsolete. Use "
+                    f"kanban_complete for running/ready tasks."
+                )
+            return _ok(
+                task_id=str(tid),
+                status="done",
+                obsolete=True,
+                closed_by=closed_by,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_close_as_obsolete: {e}")
+    except Exception as e:
+        logger.exception("kanban_close_as_obsolete failed")
+        return tool_error(f"kanban_close_as_obsolete: {e}")
+
+
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal that the worker is still alive during a long operation.
 
@@ -1646,6 +1767,60 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+
+KANBAN_CLOSE_AS_OBSOLETE_SCHEMA = {
+    "name": "kanban_close_as_obsolete",
+    "description": (
+        "Atomically close a BLOCKED card as obsolete without ever "
+        "transitioning through ``ready``. Use this to retire a blocked "
+        "card whose work is no longer relevant (superseded, removed "
+        "from scope, moot) without giving the dispatcher a window to "
+        "claim the card mid-close. The transition is a single "
+        "``blocked → done`` write — there is no intermediate "
+        "claimable state. Emits a ``completed`` event with "
+        "``obsolete: True`` so existing notifiers and dashboard "
+        "renderers fire as usual. Refuses (no state change) when the "
+        "card has an active ``claim_lock`` (live worker), has open "
+        "children (unresolved dependencies), or is not in ``blocked`` "
+        "status. ``reason`` is required; ``closed_by`` defaults to the "
+        "caller's profile. Orchestrator-only — dispatcher-spawned task "
+        "workers should not retire sibling cards."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": (
+                    "Id of the BLOCKED card to close. Required (do not "
+                    "default from HERMES_KANBAN_TASK — this verb is "
+                    "explicitly targeted)."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Non-empty human-readable explanation of why the "
+                    "card is being closed as obsolete. Recorded on the "
+                    "completed event payload and on the run summary."
+                ),
+            },
+            "closed_by": {
+                "type": "string",
+                "description": (
+                    "Operator / orchestrator id that issued the close. "
+                    "Defaults to HERMES_PROFILE or HERMES_KANBAN_TASK "
+                    "when omitted. Recorded on the completed event "
+                    "payload for audit."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "reason"],
+    },
+}
+
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -2056,6 +2231,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_close_as_obsolete",
+    toolset="kanban",
+    schema=KANBAN_CLOSE_AS_OBSOLETE_SCHEMA,
+    handler=_handle_close_as_obsolete,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🗑",
 )
 
 registry.register(

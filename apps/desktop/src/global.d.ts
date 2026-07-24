@@ -41,6 +41,12 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      windowControls: {
+        custom: boolean
+        minimize: () => void
+        toggleMaximize: () => void
+        close: () => void
+      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -394,7 +400,9 @@ export interface DesktopUpdateProgress {
 
 export interface HermesConnection {
   baseUrl: string
+  customWindowControls?: boolean
   isFullscreen: boolean
+  isMaximized?: boolean
   // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
@@ -421,7 +429,9 @@ export interface HermesTitleBarTheme {
 }
 
 export interface HermesWindowState {
+  customWindowControls?: boolean
   isFullscreen: boolean
+  isMaximized?: boolean
   nativeOverlayWidth: number
   windowButtonPosition: { x: number; y: number } | null
 }

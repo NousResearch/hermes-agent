@@ -165,9 +165,11 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { registerWindowControlIpc, windowControlState } from './window-controls'
 import {
   computeWindowOptions,
   debounce,
+  maximizedBoundsCorrection,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
@@ -204,6 +206,14 @@ import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath } from './wsl-path-bridge'
+import {
+  decideWslgGpuLaunch,
+  gpuCrashEngagesFallback,
+  isGpuChildCrash,
+  readWslgGpuMarker,
+  writeWslgGpuMarker,
+  wslgGpuMarkerAfterSuccessfulBoot
+} from './wslg-gpu-fallback'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -250,13 +260,38 @@ if (REMOTE_DISPLAY_REASON) {
 }
 
 // WSLg: Chromium blocklists the Mesa vGPU → software compositing → typing lag.
-// /dev/dxg means a real GPU is available; un-blocklist it. Skipped when a remote
-// display already forced software (SSH'd-into-WSL).
+// /dev/dxg means a real GPU is available; un-blocklist it for a snappier UI.
+// Skipped when a remote display already forced software (SSH'd-into-WSL), or
+// when a prior session's un-blocklisted GPU crash-looped — decideWslgGpuLaunch
+// consults a sticky per-version marker so we don't re-enter the crash loop on
+// every launch. Runtime GPU-crash detection (child-process-gone below) arms the
+// fallback; a successful boot / app update re-probes it.
+let wslgGpuFallbackActive = false
+let wslgGpuCrashCount = 0
+
 if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
-  app.commandLine.appendSwitch('ignore-gpu-blocklist')
-  app.commandLine.appendSwitch('enable-gpu-rasterization')
-  app.commandLine.appendSwitch('enable-zero-copy')
-  console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
+  const wslgUserData = app.getPath('userData')
+
+  const gpuDecision = decideWslgGpuLaunch({
+    marker: readWslgGpuMarker(wslgUserData),
+    appVersion: app.getVersion()
+  })
+
+  writeWslgGpuMarker(wslgUserData, gpuDecision.nextMarker)
+
+  if (gpuDecision.enableGpu) {
+    app.commandLine.appendSwitch('ignore-gpu-blocklist')
+    app.commandLine.appendSwitch('enable-gpu-rasterization')
+    app.commandLine.appendSwitch('enable-zero-copy')
+    console.log(
+      `[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration${gpuDecision.reason ? ` (${gpuDecision.reason})` : ''}`
+    )
+  } else {
+    wslgGpuFallbackActive = true
+    console.log(
+      `[hermes] WSL GPU passthrough disabled (${gpuDecision.reason}); a prior session crash-looped the vGPU — using software compositing`
+    )
+  }
 }
 
 // Windows sandbox / GPU breakpoint crash recovery (#38216).
@@ -356,6 +391,37 @@ if (IS_WINDOWS) {
       app.exit(0)
     } catch (error) {
       console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+    }
+  })
+}
+
+// WSLg GPU crash-loop guard. When this session un-blocklisted the vGPU
+// (wslgGpuFallbackActive === false) but the GPU process keeps segfaulting
+// (exit_code=139, "samplerYcbcrConversion is not supported"), count the crashes
+// and, past the threshold, persist a sticky fallback so the NEXT launch skips
+// the un-blocklist and rides Chromium's stable software path. Unlike the
+// Windows breakpoint path we do NOT relaunch this session — Chromium already
+// disables the GPU after repeated crashes, so we just make the fix stick.
+if (IS_WSL && !wslgGpuFallbackActive) {
+  app.on('child-process-gone', (_event, details) => {
+    if (!isGpuChildCrash(details)) {
+      return
+    }
+
+    wslgGpuCrashCount += 1
+
+    const fallback = gpuCrashEngagesFallback({
+      crashCount: wslgGpuCrashCount,
+      appVersion: app.getVersion()
+    })
+
+    if (fallback && !wslgGpuFallbackActive) {
+      wslgGpuFallbackActive = true
+      writeWslgGpuMarker(app.getPath('userData'), fallback)
+      console.warn(
+        `[hermes] WSLg GPU crashed ${wslgGpuCrashCount}x (exit=${details?.exitCode}); ` +
+          'disabling GPU passthrough on next launch to stop the crash loop'
+      )
     }
   })
 }
@@ -4655,7 +4721,8 @@ function getWindowState(win = mainWindow) {
   return {
     isFullscreen: Boolean(win?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition()
+    windowButtonPosition: getWindowButtonPosition(),
+    ...windowControlState(win, IS_WSL)
   }
 }
 
@@ -4775,6 +4842,30 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   }
 
   webContents.send('hermes:window-state-changed', state)
+}
+
+// WSLg's RAIL compositor can settle a frameless window's native maximize offset
+// from the display work area (a desktop strip at top/left, content clipped
+// bottom/right — reported on WSLg 1.0.65). Snap it back onto the work area.
+// WSL-only and a no-op when the window already fills the work area, so healthy
+// compositors (plain Linux, most WSLg versions) are never fought and it cannot
+// loop on setBounds. See maximizedBoundsCorrection in window-state.ts.
+function correctWslgMaximizeGap(win = mainWindow) {
+  if (!IS_WSL || !win || win.isDestroyed() || !win.isMaximized?.()) {
+    return
+  }
+
+  try {
+    const bounds = win.getBounds()
+    const workArea = screen.getDisplayMatching(bounds)?.workArea
+    const correction = maximizedBoundsCorrection(bounds, workArea)
+
+    if (correction) {
+      win.setBounds(correction)
+    }
+  } catch (error) {
+    rememberLog(`[wslg] maximize gap correction failed: ${error?.message || error}`)
+  }
 }
 
 function buildApplicationMenu() {
@@ -4939,18 +5030,21 @@ function installPreviewShortcut(window) {
   })
 }
 
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
+// Zoom level is persisted primarily in a main-process JSON file so crash
+// recovery cannot wipe it. Renderer localStorage remains a compatibility
+// mirror for older installs and downgrades. The main process owns setZoomLevel
+// and re-applies the coordinated value after reloads and window transitions.
 import {
   applyZoomLevel,
+  createZoomCoordinator,
   installZoomReassertOnWindowEvents,
   percentToZoomLevel,
   ZOOM_STORAGE_KEY,
   zoomLevelToPercent,
   zoomWiringForWindowKind
 } from './zoom'
+
+const zoomCoordinator = createZoomCoordinator()
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
@@ -4959,7 +5053,8 @@ function setAndPersistZoomLevel(window, zoomLevel) {
 
   // Apply + notify in one funnel so the settings UI stays in sync, including
   // changes made via the keyboard shortcuts or the View menu.
-  const next = applyZoomLevel(window.webContents, zoomLevel)
+  const next = zoomCoordinator.setDesired(zoomLevel)
+  applyZoomLevel(window.webContents, next)
 
   // Primary store: main-process JSON (survives crash recovery — #56726).
   writeZoomState(next)
@@ -4979,19 +5074,29 @@ function restorePersistedZoomLevel(window) {
     return
   }
 
+  const cached = zoomCoordinator.getDesired()
+
+  if (cached !== undefined) {
+    applyZoomLevel(window.webContents, cached)
+
+    return
+  }
+
   // Prefer the JSON file — it survives crash recovery wiping Electron's
   // cache/storage folders (#56726). applyZoomLevel notifies the renderer so
   // the Appearance UI Scale control stays in sync.
   const saved = readZoomState()
 
   if (saved != null) {
-    applyZoomLevel(window.webContents, saved)
+    applyZoomLevel(window.webContents, zoomCoordinator.setDesired(saved))
 
     return
   }
 
   // Fall back to localStorage for installs that predate zoom-state.json,
   // migrating the value into the JSON store on first read.
+  const commitRestore = zoomCoordinator.beginRestore()
+
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -5001,10 +5106,16 @@ function restorePersistedZoomLevel(window) {
         return
       }
 
+      const desired = commitRestore(Number(stored))
+
+      if (desired === undefined) {
+        return
+      }
+
       // Notify the renderer too — otherwise the Appearance UI Scale control
       // can stay stuck at 100% even though the window zoom was restored.
-      const applied = applyZoomLevel(window.webContents, Number(stored))
-      writeZoomState(applied)
+      applyZoomLevel(window.webContents, desired)
+      writeZoomState(desired)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
@@ -8431,6 +8542,28 @@ function createWindow() {
         rememberLog(`[sandbox] marker update after ready-to-show failed: ${error?.message || error}`)
       }
     }
+
+    // WSLg GPU: confirm a clean boot only after the window has survived a few
+    // seconds of real compositing. The vGPU crash loop fires within the first
+    // ~2s (see the child-process-gone guard above), so a short delay lets the
+    // crash detector win the race and keep the sticky `fallback` instead of a
+    // premature `ok`. Skipped once the fallback has already engaged this run.
+    if (IS_WSL) {
+      setTimeout(() => {
+        if (wslgGpuFallbackActive) {
+          return
+        }
+
+        try {
+          writeWslgGpuMarker(
+            app.getPath('userData'),
+            wslgGpuMarkerAfterSuccessfulBoot({ fallbackActive: false, appVersion: app.getVersion() })
+          )
+        } catch (error) {
+          rememberLog(`[wslg] gpu marker update after boot failed: ${error?.message || error}`)
+        }
+      }, 5000).unref?.()
+    }
   })
 
   // Under Playright testing, instantly show the window.
@@ -8450,8 +8583,16 @@ function createWindow() {
   // the cross-platform backstop, flushed synchronously before the window is gone.
   mainWindow.on('resized', schedulePersistWindowState)
   mainWindow.on('moved', schedulePersistWindowState)
-  mainWindow.on('maximize', schedulePersistWindowState)
-  mainWindow.on('unmaximize', schedulePersistWindowState)
+  mainWindow.on('maximize', () => {
+    correctWslgMaximizeGap(mainWindow)
+    // Renderer-drawn WSLg controls swap the maximize/restore glyph off this.
+    sendWindowStateChanged(undefined, mainWindow)
+    schedulePersistWindowState()
+  })
+  mainWindow.on('unmaximize', () => {
+    sendWindowStateChanged(undefined, mainWindow)
+    schedulePersistWindowState()
+  })
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
@@ -8642,6 +8783,7 @@ ipcMain.handle('hermes:window:openInstance', async () => {
 
   return { ok: true }
 })
+registerWindowControlIpc(ipcMain, sender => BrowserWindow.fromWebContents(sender))
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd

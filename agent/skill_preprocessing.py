@@ -40,6 +40,7 @@ def substitute_template_vars(
     content: str,
     skill_dir: Path | None,
     session_id: str | None,
+    template_skill_dir: Path | str | None = None,
 ) -> str:
     """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
 
@@ -49,7 +50,8 @@ def substitute_template_vars(
     if not content:
         return content
 
-    skill_dir_str = str(skill_dir) if skill_dir else None
+    display_skill_dir = template_skill_dir if template_skill_dir is not None else skill_dir
+    skill_dir_str = str(display_skill_dir) if display_skill_dir else None
 
     def _replace(match: re.Match) -> str:
         token = match.group(1)
@@ -130,6 +132,7 @@ def preprocess_skill_content(
     skill_dir: Path | None,
     session_id: str | None = None,
     skills_cfg: dict | None = None,
+    template_skill_dir: Path | str | None = None,
 ) -> str:
     """Apply configured SKILL.md template and inline-shell preprocessing."""
     if not content:
@@ -137,7 +140,12 @@ def preprocess_skill_content(
 
     cfg = skills_cfg if isinstance(skills_cfg, dict) else load_skills_config()
     if cfg.get("template_vars", True):
-        content = substitute_template_vars(content, skill_dir, session_id)
+        content = substitute_template_vars(
+            content,
+            skill_dir,
+            session_id,
+            template_skill_dir=template_skill_dir,
+        )
     if cfg.get("inline_shell", False):
         timeout = int(cfg.get("inline_shell_timeout", 10) or 10)
         content = expand_inline_shell(content, skill_dir, timeout)

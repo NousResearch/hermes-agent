@@ -424,6 +424,46 @@ class TestSkillView:
         assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
         assert "${HERMES_SKILL_DIR}" not in result["content"]
 
+    def test_skill_view_docker_uses_container_skill_dir_not_host_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "host-home" / ".hermes"
+        skills_dir = hermes_home / "skills"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            _make_skill(
+                skills_dir,
+                "docker-skill",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh",
+            )
+            raw = skill_view("docker-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert str(hermes_home) not in raw
+        assert result["skill_dir"] == "/root/.hermes/skills/docker-skill"
+        assert "Run /root/.hermes/skills/docker-skill/scripts/do.sh" in result["content"]
+
+    def test_skill_view_internal_mode_preserves_host_skill_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "host-home" / ".hermes"
+        skills_dir = hermes_home / "skills"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            skill_dir = _make_skill(skills_dir, "docker-skill")
+            raw = skill_view("docker-skill", preprocess=False, agent_visible_paths=False)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skill_dir"] == str(skill_dir)
+
     def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

@@ -7,6 +7,7 @@ can invoke skills via /skill-name commands.
 import json
 import logging
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +20,17 @@ from agent.skill_preprocessing import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _join_visible_skill_path(skill_dir: str, relative_path: str) -> str:
+    """Join a model-visible skill path without corrupting Docker paths.
+
+    Docker-visible skill paths point into a Linux container, so they must keep
+    POSIX separators even when the host process runs on Windows.
+    """
+    if os.environ.get("TERMINAL_ENV", "local") == "docker":
+        return posixpath.join(skill_dir.rstrip("/"), relative_path)
+    return str(Path(skill_dir) / relative_path)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
@@ -148,7 +160,12 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         normalized = normalize_skill_lookup_name(raw_identifier)
 
         loaded_skill = json.loads(
-            skill_view(normalized, task_id=task_id, preprocess=False)
+            skill_view(
+                normalized,
+                task_id=task_id,
+                preprocess=False,
+                agent_visible_paths=False,
+            )
         )
     except Exception:
         return None
@@ -224,15 +241,22 @@ def _build_skill_message(
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
+    from tools.credential_files import to_agent_visible_skill_path
 
     content = str(loaded_skill.get("content") or "")
+    visible_skill_dir = to_agent_visible_skill_path(str(skill_dir)) if skill_dir else None
 
     # ── Template substitution and inline-shell expansion ──
     # Done before anything else so downstream blocks (setup notes,
     # supporting-file hints) see the expanded content.
     skills_cfg = _load_skills_config()
     if skills_cfg.get("template_vars", True):
-        content = _substitute_template_vars(content, skill_dir, session_id)
+        content = _substitute_template_vars(
+            content,
+            skill_dir,
+            session_id,
+            template_skill_dir=visible_skill_dir,
+        )
     if skills_cfg.get("inline_shell", False):
         timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
         content = _expand_inline_shell(content, skill_dir, timeout)
@@ -243,7 +267,7 @@ def _build_skill_message(
     #    bundled scripts without an extra skill_view() round-trip. ──
     if skill_dir:
         parts.append("")
-        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(f"[Skill directory: {visible_skill_dir}]")
         parts.append(
             "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
             "`templates/config.yaml`) against that directory, then run them "
@@ -290,7 +314,7 @@ def _build_skill_message(
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
 
-    if supporting and skill_dir:
+    if supporting and skill_dir and visible_skill_dir:
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
@@ -299,11 +323,11 @@ def _build_skill_message(
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {skill_dir / sf}")
+            parts.append(f"- {sf}  ->  {_join_visible_skill_path(visible_skill_dir, sf)}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {_join_visible_skill_path(visible_skill_dir, 'scripts/foo.js')}`)."
         )
 
     if user_instruction:

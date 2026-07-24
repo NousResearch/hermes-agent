@@ -961,8 +961,9 @@ def _serve_plugin_skill(
 def skill_view(
     name: str,
     file_path: str = None,
-    task_id: str = None,
+    task_id: str | None = None,
     preprocess: bool = True,
+    agent_visible_paths: bool = True,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -975,6 +976,9 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        agent_visible_paths: When true, translate returned/template skill paths
+            to the active execution backend's visible path. Internal callers that
+            need host filesystem paths should set this to false.
 
     Returns:
         JSON string with skill content or error message
@@ -1547,6 +1551,14 @@ def skill_view(
                 )
 
         rendered_content = content
+        visible_skill_dir = str(skill_dir) if skill_dir else None
+        if skill_dir and agent_visible_paths:
+            try:
+                from tools.credential_files import to_agent_visible_skill_path
+
+                visible_skill_dir = to_agent_visible_skill_path(str(skill_dir))
+            except Exception:
+                visible_skill_dir = str(skill_dir)
         if preprocess:
             try:
                 from agent.skill_preprocessing import preprocess_skill_content
@@ -1555,6 +1567,7 @@ def skill_view(
                     content,
                     skill_dir,
                     session_id=task_id,
+                    template_skill_dir=visible_skill_dir,
                 )
             except Exception:
                 logger.debug(
@@ -1569,7 +1582,7 @@ def skill_view(
             "related_skills": related_skills,
             "content": rendered_content,
             "path": rel_path,
-            "skill_dir": str(skill_dir) if skill_dir else None,
+            "skill_dir": visible_skill_dir,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files

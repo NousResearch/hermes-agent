@@ -761,6 +761,30 @@ class TestSkillDirectoryHeader:
         assert str(skill_dir / "scripts" / "run.js") in msg
         assert f"node {skill_dir}/scripts/foo.js" in msg
 
+    def test_docker_header_uses_container_skill_dir_not_host_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "host-home" / ".hermes"
+        skills_dir = hermes_home / "skills"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+            skill_dir = _make_skill(
+                skills_dir,
+                "docker-skill",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh",
+            )
+            (skill_dir / "scripts").mkdir()
+            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/docker-skill")
+
+        assert msg is not None
+        assert str(hermes_home) not in msg
+        assert "[Skill directory: /root/.hermes/skills/docker-skill]" in msg
+        assert "Run /root/.hermes/skills/docker-skill/scripts/do.sh" in msg
+        assert "scripts/run.js  ->  /root/.hermes/skills/docker-skill/scripts/run.js" in msg
+        assert "node /root/.hermes/skills/docker-skill/scripts/foo.js" in msg
+
 
 class TestTemplateVarSubstitution:
     """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body

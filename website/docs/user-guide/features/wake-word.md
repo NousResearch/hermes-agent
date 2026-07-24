@@ -32,14 +32,18 @@ It is **off by default** — nothing listens until you turn it on.
 
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
-| **openWakeWord** (default) | Free | None | Local ONNX models. Ships with `hey_jarvis`, `alexa`, `hey_mycroft`, … |
+| **openWakeWord** (default) | Free | None | Local ONNX models. Ships a bundled **"hey hermes"** model (default); also supports `hey_jarvis`, `alexa`, `hey_mycroft`, … and custom models |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
+
+By default the phrase is **"hey hermes"** — a model for it ships with Hermes, so
+it works out of the box with no training. (On first use, openWakeWord downloads
+its shared feature-extraction models — a small one-time fetch.)
 
 Both are lazy-installed the first time you enable the wake word. To install ahead
 of time:
 
 ```bash
-uv pip install 'hermes-agent[wake]'   # or: pip install 'hermes-agent[wake]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"
 ```
 
 ## Quick start
@@ -65,11 +69,11 @@ wake_word:
   enabled: false
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
   provider: openwakeword      # "openwakeword" (free, local) | "porcupine"
-  phrase: "hey jarvis"        # cosmetic label only — detection is keyed by the model/keyword below
+  phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.5            # 0.0-1.0 — raise to reduce false triggers
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
-    model: hey_jarvis         # built-in name OR path to a custom .onnx/.tflite
+    model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
     inference_framework: onnx # "onnx" | "tflite"
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
@@ -99,24 +103,25 @@ The TUI and desktop GUI share the same Python backend (`tui_gateway`), which
 runs the detector server-side and yields the mic to voice capture while a
 command records.
 
-## Using a real "Hey Hermes"
+## Using a different phrase
 
-The bundled openWakeWord models do **not** include "hey hermes" — `hey_jarvis`
-is the free, instantly-working default. To detect the literal phrase you supply
-your own model and point the config at it:
+"Hey Hermes" works out of the box — the bundled openWakeWord model
+(`model: hey_hermes`) is the default. To wake on something else, either name a
+built-in openWakeWord model or supply your own:
 
 ### Option A — openWakeWord (free)
 
-Train a custom model (≈75–90 min on a free/Colab GPU), then drop the `.onnx`
-file somewhere and reference it:
+Name a built-in model (`hey_jarvis`, `alexa`, `hey_mycroft`, …), or train a
+custom model (≈75–90 min on a free/Colab GPU), drop the `.onnx` file somewhere,
+and reference it:
 
 ```yaml
 wake_word:
   enabled: true
   provider: openwakeword
-  phrase: "hey hermes"
+  phrase: "computer"
   openwakeword:
-    model: ~/.hermes/wakewords/hey_hermes.onnx
+    model: ~/.hermes/wakewords/computer.onnx   # or a built-in name like hey_jarvis
 ```
 
 Training references:

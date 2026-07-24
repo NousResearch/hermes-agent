@@ -2305,14 +2305,15 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "provider": "openwakeword",   # "openwakeword" (free, local) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
-        "phrase": "hey jarvis",       # cosmetic label only; detection is keyed by the engine model/keyword below
+        "phrase": "hey hermes",       # cosmetic label only; detection is keyed by the engine model/keyword below
         "sensitivity": 0.5,           # 0.0-1.0 detection threshold (higher = stricter)
         "start_new_session": True,    # start a fresh session on wake vs. continue the current one
         "openwakeword": {
-            # Built-in model name ("hey_jarvis", "alexa", "hey_mycroft", ...) or
-            # a path to a custom .onnx/.tflite model. Train a "hey hermes" model
-            # and point this at it — see the wake-word docs.
-            "model": "hey_jarvis",
+            # "hey_hermes" (the bundled, works-out-of-the-box default) OR a
+            # built-in openWakeWord name ("hey_jarvis", "alexa", "hey_mycroft",
+            # ...) OR a path to a custom .onnx/.tflite model for another phrase.
+            # See the wake-word docs for the custom-model training guide.
+            "model": "hey_hermes",
             "inference_framework": "onnx",  # "onnx" | "tflite"
         },
         "porcupine": {

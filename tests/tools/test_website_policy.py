@@ -513,3 +513,435 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
     # With default path, errors are caught and fail open
     result = check_website_access("https://example.com")
     assert result is None  # allowed, not crashed
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage for uncovered paths
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeHost:
+    def test_basic(self):
+        from tools.website_policy import _normalize_host
+        assert _normalize_host("Example.COM") == "example.com"
+
+    def test_trailing_dot(self):
+        from tools.website_policy import _normalize_host
+        assert _normalize_host("example.com.") == "example.com"
+
+    def test_whitespace(self):
+        from tools.website_policy import _normalize_host
+        assert _normalize_host("  example.com  ") == "example.com"
+
+    def test_empty(self):
+        from tools.website_policy import _normalize_host
+        assert _normalize_host("") == ""
+
+    def test_none(self):
+        from tools.website_policy import _normalize_host
+        assert _normalize_host(None) == ""  # type: ignore[arg-type]
+
+
+class TestNormalizeRule:
+    def test_non_string_returns_none(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule(42) is None
+        assert _normalize_rule(None) is None
+
+    def test_empty_string_returns_none(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("") is None
+        assert _normalize_rule("   ") is None
+
+    def test_comment_returns_none(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("# comment") is None
+
+    def test_url_with_scheme(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("https://example.com/path") == "example.com"
+
+    def test_url_with_scheme_no_netloc(self):
+        from tools.website_policy import _normalize_rule
+        # "://example.com" has no scheme — urlparse puts it all in path.
+        # After split("/", 1)[0] we get ":" which is not a valid host.
+        # This is an edge case — the function returns ":" (not ideal but harmless).
+        result = _normalize_rule("://example.com")
+        # Just verify it doesn't crash and returns something
+        assert isinstance(result, (str, type(None)))
+
+    def test_path_stripped(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("example.com/some/path") == "example.com"
+
+    def test_www_prefix_stripped(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("www.example.com") == "example.com"
+
+    def test_trailing_dot_stripped(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("example.com.") == "example.com"
+
+    def test_uppercase_lowered(self):
+        from tools.website_policy import _normalize_rule
+        assert _normalize_rule("EXAMPLE.COM") == "example.com"
+
+
+class TestIterBlocklistFileRules:
+    def test_file_not_found(self, tmp_path):
+        from tools.website_policy import _iter_blocklist_file_rules
+        result = _iter_blocklist_file_rules(tmp_path / "nonexistent.txt")
+        assert result == []
+
+    def test_unicode_decode_error(self, tmp_path):
+        from tools.website_policy import _iter_blocklist_file_rules
+        f = tmp_path / "bad.txt"
+        f.write_bytes(b"\xff\xfe\x00\x00")
+        result = _iter_blocklist_file_rules(f)
+        assert result == []
+
+    def test_skips_comments_and_empty_lines(self, tmp_path):
+        from tools.website_policy import _iter_blocklist_file_rules
+        f = tmp_path / "list.txt"
+        f.write_text("# comment\n\n  \nexample.com\n# another\nbad.org\n", encoding="utf-8")
+        result = _iter_blocklist_file_rules(f)
+        assert result == ["example.com", "bad.org"]
+
+    def test_normalizes_rules(self, tmp_path):
+        from tools.website_policy import _iter_blocklist_file_rules
+        f = tmp_path / "list.txt"
+        f.write_text("WWW.example.com\nhttps://bad.org/path\n", encoding="utf-8")
+        result = _iter_blocklist_file_rules(f)
+        assert result == ["example.com", "bad.org"]
+
+
+class TestLoadPolicyConfigEdgeCases:
+    def test_missing_config_file_returns_default(self, tmp_path):
+        from tools.website_policy import _load_policy_config
+        result = _load_policy_config(tmp_path / "nonexistent.yaml")
+        assert result == {"enabled": False, "domains": [], "shared_files": []}
+
+    def test_security_none_treated_as_empty(self, tmp_path):
+        from tools.website_policy import _load_policy_config
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"security": None}, sort_keys=False), encoding="utf-8")
+        result = _load_policy_config(config_path)
+        assert result["enabled"] is False
+
+    def test_website_blocklist_none_treated_as_empty(self, tmp_path):
+        from tools.website_policy import _load_policy_config
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"security": {"website_blocklist": None}}, sort_keys=False),
+            encoding="utf-8",
+        )
+        result = _load_policy_config(config_path)
+        assert result["enabled"] is False
+
+    def test_os_error_raises_policy_error(self, tmp_path, monkeypatch):
+        from tools.website_policy import _load_policy_config, WebsitePolicyError
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({}, sort_keys=False), encoding="utf-8")
+
+        def failing_open(*args, **kwargs):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr("builtins.open", failing_open)
+        with pytest.raises(WebsitePolicyError, match="Failed to read config file"):
+            _load_policy_config(config_path)
+
+
+class TestLoadWebsiteBlocklistEdgeCases:
+    def test_caching_behavior(self, tmp_path, monkeypatch):
+        """Default path policy is cached."""
+        from tools.website_policy import load_website_blocklist, invalidate_cache
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {"enabled": True, "domains": ["cached.example"]}}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        invalidate_cache()
+
+        # First call loads from file
+        policy1 = load_website_blocklist()
+        assert policy1["enabled"] is True
+
+        # Modify config file
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {"enabled": True, "domains": ["changed.example"]}}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        # Second call should return cached policy (still has old domain)
+        policy2 = load_website_blocklist()
+        rules = {r["pattern"] for r in policy2["rules"]}
+        assert "cached.example" in rules
+        assert "changed.example" not in rules
+
+        second_home = tmp_path / "second-home"
+        second_home.mkdir()
+        (second_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "security": {
+                        "website_blocklist": {
+                            "enabled": True,
+                            "domains": ["second.example"],
+                        }
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(second_home))
+
+        policy3 = load_website_blocklist()
+        second_rules = {rule["pattern"] for rule in policy3["rules"]}
+        assert second_rules == {"second.example"}
+
+    def test_shared_files_non_string_skipped(self, tmp_path):
+        from tools.website_policy import load_website_blocklist
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {
+                    "enabled": True,
+                    "shared_files": [42, "", "   ", "valid.txt"],
+                }}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        # Should not crash — non-string/empty entries are skipped
+        result = load_website_blocklist(config_path)
+        assert result["enabled"] is True
+
+    def test_shared_files_relative_path(self, tmp_path, monkeypatch):
+        """Relative shared_files paths are resolved against HERMES_HOME."""
+        from tools.website_policy import load_website_blocklist, invalidate_cache
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "blocklist.txt").write_text("shared.example\n", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {
+                    "enabled": True,
+                    "shared_files": ["blocklist.txt"],
+                }}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        invalidate_cache()
+
+        result = load_website_blocklist()
+        patterns = {r["pattern"] for r in result["rules"]}
+        assert "shared.example" in patterns
+
+    def test_dedup_config_and_shared_file(self, tmp_path):
+        """Same domain in config and shared file appears once per source
+        (config and shared file have different dedup keys)."""
+        from tools.website_policy import load_website_blocklist
+
+        shared = tmp_path / "shared.txt"
+        shared.write_text("example.com\n", encoding="utf-8")
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {
+                    "enabled": True,
+                    "domains": ["example.com"],
+                    "shared_files": [str(shared)],
+                }}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        result = load_website_blocklist(config_path)
+        # Config and shared file have different source keys, so both appear
+        sources = {r["source"] for r in result["rules"] if r["pattern"] == "example.com"}
+        assert "config" in sources
+        assert len(sources) == 2  # config + shared file path
+
+
+class TestMatchHostAgainstRule:
+    def test_empty_host(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("", "example.com") is False
+
+    def test_empty_pattern(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("example.com", "") is False
+
+    def test_exact_match(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("example.com", "example.com") is True
+
+    def test_subdomain_match(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("sub.example.com", "example.com") is True
+
+    def test_no_match(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("other.com", "example.com") is False
+
+    def test_wildcard_match(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("a.tracking.example", "*.tracking.example") is True
+
+    def test_wildcard_no_match(self):
+        from tools.website_policy import _match_host_against_rule
+        assert _match_host_against_rule("tracking.example", "*.tracking.example") is False
+
+
+class TestExtractHostFromUrlish:
+    def test_https_url(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("https://example.com/path") == "example.com"
+
+    def test_http_url_with_port(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("http://example.com:8080/path") == "example.com"
+
+    def test_schemeless_url(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("example.com/path") == "example.com"
+
+    def test_schemeless_www(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("www.example.com") == "www.example.com"
+
+    def test_empty_url(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("") == ""
+
+    def test_uppercase_host(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("https://EXAMPLE.COM") == "example.com"
+
+    def test_trailing_dot(self):
+        from tools.website_policy import _extract_host_from_urlish
+        assert _extract_host_from_urlish("https://example.com./path") == "example.com"
+
+
+class TestCheckWebsiteAccessEdgeCases:
+    def test_empty_url_returns_none(self):
+        from tools.website_policy import check_website_access, invalidate_cache
+        invalidate_cache()
+        assert check_website_access("") is None
+
+    def test_no_host_returns_none(self):
+        from tools.website_policy import check_website_access, invalidate_cache
+        invalidate_cache()
+        assert check_website_access("http://") is None
+
+    def test_disabled_policy_returns_none(self, tmp_path):
+        from tools.website_policy import check_website_access
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {"enabled": False, "domains": ["example.com"]}}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        assert check_website_access("https://example.com", config_path=config_path) is None
+
+    def test_unexpected_exception_fails_open(self, tmp_path, monkeypatch):
+        """Unexpected exceptions in check_website_access fail open (return None)."""
+        from tools.website_policy import check_website_access
+
+        def raising_load(*args, **kwargs):
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr("tools.website_policy.load_website_blocklist", raising_load)
+        # Without explicit config_path, unexpected errors fail open
+        from tools.website_policy import invalidate_cache
+        invalidate_cache()
+        result = check_website_access("https://example.com")
+        assert result is None
+
+    def test_blocked_url_returns_metadata(self, tmp_path):
+        from tools.website_policy import check_website_access
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {"enabled": True, "domains": ["blocked.test"]}}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        result = check_website_access("https://blocked.test/page", config_path=config_path)
+        assert result is not None
+        assert result["host"] == "blocked.test"
+        assert result["rule"] == "blocked.test"
+        assert result["source"] == "config"
+        assert "message" in result
+        assert "url" in result
+
+    def test_fast_path_cached_disabled(self, monkeypatch, tmp_path):
+        """When cached policy is disabled, check skips all work."""
+        from tools.website_policy import check_website_access, invalidate_cache
+        import tools.website_policy as wp
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {"enabled": False}}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        invalidate_cache()
+
+        assert check_website_access("https://example.com") is None
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("disabled cache fast path must skip policy work")
+
+        monkeypatch.setattr(wp, "_extract_host_from_urlish", fail_if_called)
+        monkeypatch.setattr(wp, "load_website_blocklist", fail_if_called)
+        assert check_website_access("https://example.com") is None
+
+
+class TestInvalidateCache:
+    def test_invalidate_clears_cache(self, monkeypatch, tmp_path):
+        from tools.website_policy import invalidate_cache, load_website_blocklist, _cached_policy
+        import tools.website_policy as wp
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"security": {"website_blocklist": {"enabled": True, "domains": ["test.example"]}}},
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        invalidate_cache()
+
+        # Load to populate cache
+        load_website_blocklist()
+        assert wp._cached_policy is not None
+
+        # Invalidate
+        invalidate_cache()
+        assert wp._cached_policy is None

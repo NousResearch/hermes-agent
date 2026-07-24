@@ -102,6 +102,89 @@ class TestBuildJobPromptContextFrom:
         assert "Today's top story: AI is everywhere." in prompt
         assert f"Output from job '{job_a['id']}'" in prompt
 
+    def test_injects_response_section_from_full_cron_artifact(self, cron_env):
+        """context_from should pass curated responses, not full cron artifacts."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            "\n".join(
+                [
+                    "# Cron Job: upstream",
+                    "",
+                    "## Prompt",
+                    "UPSTREAM PROMPT SHOULD NOT BE INJECTED",
+                    "",
+                    "## Script Output",
+                    "RAW COLLECTOR CONTEXT SHOULD NOT BE INJECTED",
+                    "",
+                    "## Response",
+                    "Curated upstream summary for the digest.",
+                    "",
+                    "## Curated Heading Inside Response",
+                    "Response-owned markdown headings stay available.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Summarize the news",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Curated upstream summary for the digest." in prompt
+        assert "## Curated Heading Inside Response" in prompt
+        assert "Response-owned markdown headings stay available." in prompt
+        assert "UPSTREAM PROMPT SHOULD NOT BE INJECTED" not in prompt
+        assert "RAW COLLECTOR CONTEXT SHOULD NOT BE INJECTED" not in prompt
+
+    def test_uses_last_response_section_when_script_output_mentions_response(self, cron_env):
+        """A collector mentioning ## Response must not become digest context."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            "\n".join(
+                [
+                    "# Cron Job: upstream",
+                    "",
+                    "## Prompt",
+                    "UPSTREAM PROMPT SHOULD NOT BE INJECTED",
+                    "",
+                    "## Script Output",
+                    "```",
+                    "Collector copied a markdown heading:",
+                    "## Response",
+                    "SCRIPT OUTPUT SHOULD NOT BE INJECTED",
+                    "```",
+                    "",
+                    "## Response",
+                    "Final curated answer only.",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Summarize the news",
+            schedule="every 2h",
+            context_from=job_a["id"],
+        )
+
+        prompt = _build_job_prompt(job_b)
+        assert "Final curated answer only." in prompt
+        assert "SCRIPT OUTPUT SHOULD NOT BE INJECTED" not in prompt
+        assert "UPSTREAM PROMPT SHOULD NOT BE INJECTED" not in prompt
+
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt

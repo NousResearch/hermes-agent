@@ -371,7 +371,7 @@ CATALOG: List[AutomationBlueprint] = [
         prompt_template=(
             "Build the user a meal plan for the coming week: {meals} per day, "
             "suited to a {diet} diet and roughly {effort} cooking effort. "
-            "Include a consolidated grocery list grouped by aisle. Keep blueprints "
+            "Include a consolidated grocery list grouped by aisle. Keep the plan "
             "simple and skimmable."
         ),
         slots=[

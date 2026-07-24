@@ -37,6 +37,26 @@ export function currentPickerSelection(
   }
 }
 
+/** Provider label for the composer pill tooltip. Custom endpoints carry an
+ *  opaque slug (`custom`, or a `custom:<id>` scheme for `custom_providers`
+ *  entries) — prefer the catalog's display name (the endpoint's user-chosen
+ *  `name`), else strip the `custom:` scheme so the endpoint id shows, else
+ *  the raw slug. */
+export function displayProviderLabel(provider: string, catalogName?: string): string {
+  const slug = provider.trim()
+  const name = catalogName?.trim()
+
+  if (name) {
+    return name
+  }
+
+  if (/^custom:/i.test(slug)) {
+    return slug.slice('custom:'.length) || slug
+  }
+
+  return slug
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()

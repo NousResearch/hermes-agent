@@ -10,7 +10,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { displayEntityName } from '@/lib/display-name'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { displayProviderLabel, formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
@@ -106,9 +106,11 @@ export function ModelPill({
       )
     : PILL
 
+  // Custom endpoints have an opaque slug (often literally "custom") — the
+  // catalog name carries the endpoint's user-chosen name instead.
   const baseTitle = currentProvider
     ? copy.modelTitle(
-        isMoa ? 'MOA' : currentProvider,
+        isMoa ? 'MOA' : displayProviderLabel(currentProvider, model.providerName),
         (isMoa ? displayEntityName(currentModel, t) : currentModel) || copy.modelNone
       )
     : copy.switchModel

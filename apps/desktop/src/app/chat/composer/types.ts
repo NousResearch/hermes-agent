@@ -21,6 +21,9 @@ export interface ChatBarState {
   model: {
     model: string
     provider: string
+    /** Catalog display name for `provider` (e.g. a custom endpoint's
+     *  user-chosen name). Absent until the model catalog loads. */
+    providerName?: string
     canSwitch: boolean
     loading?: boolean
     quickModels?: QuickModelOption[]

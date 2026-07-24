@@ -1071,6 +1071,8 @@ class Run:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
+        if row["id"] is None:
+            raise ValueError("Row has NULL id — likely database corruption")
         try:
             meta = json.loads(row["metadata"]) if row["metadata"] else None
         except Exception:
@@ -7968,6 +7970,36 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _dispatchable_rows(
+    conn: sqlite3.Connection,
+    status: str,
+    only_task_ids: Optional[list] = None,
+) -> list:
+    """Return unclaimed ``status`` tasks in dispatch order.
+
+    When ``only_task_ids`` is given the result is restricted to those IDs.
+    Both the ready and review queues go through here so a targeted
+    dispatch can never reach a task the caller did not name — the caps
+    that would otherwise bound the spawn loop are cleared for targeted
+    dispatch, making the filter the only thing confining it.
+
+    An empty ``only_task_ids`` list is treated as "no filter" so it
+    matches the ``if only_task_ids:`` checks the caller uses to decide
+    whether a dispatch is targeted at all.
+    """
+    q = (
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = ? AND claim_lock IS NULL "
+    )
+    params: tuple = (status,)
+    if only_task_ids:
+        placeholders = ", ".join("?" * len(only_task_ids))
+        q += f"AND id IN ({placeholders}) "
+        params += tuple(only_task_ids)
+    q += "ORDER BY priority DESC, created_at ASC"
+    return conn.execute(q, params).fetchall()
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -7981,6 +8013,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    only_task_ids: Optional[list] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8015,6 +8048,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            only_task_ids=only_task_ids,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8031,6 +8065,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            only_task_ids=only_task_ids,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8051,6 +8086,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    only_task_ids: Optional[list] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -8109,6 +8145,12 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
+    # When dispatching explicit task IDs, the caller manages concurrency
+    # externally — bypass max_spawn and max_in_progress caps.
+    if only_task_ids:
+        max_spawn = None
+        max_in_progress = None
+
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
     # rationale; the short version is that a 60-second tick interval with a
@@ -8124,16 +8166,12 @@ def _dispatch_once_locked(
             ).fetchone()[0]
         )
 
-    ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    ready_rows = _dispatchable_rows(conn, "ready", only_task_ids)
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
-    if max_in_progress is not None and ready_rows:
+    if max_in_progress is not None and ready_rows and not only_task_ids:
         in_progress = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
@@ -8366,11 +8404,10 @@ def _dispatch_once_locked(
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
-    review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    # Filtered by ``only_task_ids`` for the same reason as the ready queue:
+    # a targeted dispatch clears max_spawn, so an unfiltered review query
+    # would spawn every review task on the board (#53956 review).
+    review_rows = _dispatchable_rows(conn, "review", only_task_ids)
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -9710,7 +9747,7 @@ def list_runs(
         params.append(state_name)
     q += " ORDER BY started_at ASC, id ASC"
     rows = conn.execute(q, params).fetchall()
-    return [Run.from_row(r) for r in rows]
+    return [Run.from_row(r) for r in rows if r["id"] is not None]
 
 
 def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:

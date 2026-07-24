@@ -3977,6 +3977,121 @@ def test_dispatch_review_spawns_when_ready_empty(
     assert spawns[0] == t
 
 
+# ---------------------------------------------------------------------------
+# Targeted dispatch (``--task`` / ``only_task_ids``)
+# ---------------------------------------------------------------------------
+
+def _collecting_spawn():
+    """Return ``(spawns, fake_spawn)`` recording every spawned task id."""
+    spawns: list = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    return spawns, fake_spawn
+
+
+def test_dispatch_only_task_ids_spawns_selected_ready_only(
+    kanban_home, all_assignees_spawnable,
+):
+    """A targeted dispatch spawns the named ready task and nothing else."""
+    spawns, fake_spawn = _collecting_spawn()
+    with kb.connect() as conn:
+        picked = kb.create_task(conn, title="ready picked", assignee="alice")
+        kb.create_task(conn, title="ready other", assignee="bob")
+        res = kb.dispatch_once(
+            conn, spawn_fn=fake_spawn, only_task_ids=[picked],
+        )
+    assert spawns == [picked]
+    assert [t[0] for t in res.spawned] == [picked]
+
+
+def test_dispatch_only_task_ids_does_not_spawn_unselected_review(
+    kanban_home, all_assignees_spawnable,
+):
+    """Targeted dispatch must not spawn review tasks it was not given.
+
+    Regression for the #53956 review: ``only_task_ids`` clears
+    ``max_spawn``, so an unfiltered review query would spawn every review
+    task on the board on any targeted dispatch.
+    """
+    spawns, fake_spawn = _collecting_spawn()
+    with kb.connect() as conn:
+        picked = kb.create_task(conn, title="ready picked", assignee="alice")
+        r1 = kb.create_task(conn, title="review one", assignee="alice")
+        r2 = kb.create_task(conn, title="review two", assignee="bob")
+        _set_task_status(conn, r1, "review")
+        _set_task_status(conn, r2, "review")
+        res = kb.dispatch_once(
+            conn, spawn_fn=fake_spawn, only_task_ids=[picked],
+        )
+    assert spawns == [picked]
+    assert r1 not in spawns and r2 not in spawns
+    assert [t[0] for t in res.spawned] == [picked]
+
+
+def test_dispatch_only_task_ids_can_target_a_review_task(
+    kanban_home, all_assignees_spawnable,
+):
+    """A review task named explicitly still dispatches."""
+    spawns, fake_spawn = _collecting_spawn()
+    with kb.connect() as conn:
+        picked = kb.create_task(conn, title="review picked", assignee="alice")
+        other = kb.create_task(conn, title="review other", assignee="bob")
+        _set_task_status(conn, picked, "review")
+        _set_task_status(conn, other, "review")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, only_task_ids=[picked])
+    assert spawns == [picked]
+
+
+def test_dispatch_only_task_ids_bypasses_caps_for_selected_only(
+    kanban_home, all_assignees_spawnable,
+):
+    """Cap bypass lets the selected task through without freeing the rest."""
+    spawns, fake_spawn = _collecting_spawn()
+    with kb.connect() as conn:
+        # Occupy the board so max_in_progress would normally block everything.
+        busy = kb.create_task(conn, title="busy", assignee="alice")
+        kb.claim_task(conn, busy)
+        picked = kb.create_task(conn, title="ready picked", assignee="alice")
+        kb.create_task(conn, title="ready other", assignee="bob")
+        extra_review = kb.create_task(conn, title="review other", assignee="bob")
+        _set_task_status(conn, extra_review, "review")
+        kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            only_task_ids=[picked],
+            max_spawn=1,
+            max_in_progress=1,
+        )
+    assert spawns == [picked]
+
+
+def test_dispatch_without_only_task_ids_is_unchanged(
+    kanban_home, all_assignees_spawnable,
+):
+    """Default dispatch still sweeps both ready and review queues."""
+    spawns, fake_spawn = _collecting_spawn()
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="ready", assignee="alice")
+        t2 = kb.create_task(conn, title="review", assignee="bob")
+        _set_task_status(conn, t2, "review")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn)
+    assert sorted(spawns) == sorted([t1, t2])
+
+
+def test_dispatch_empty_only_task_ids_falls_back_to_full_sweep(
+    kanban_home, all_assignees_spawnable,
+):
+    """An empty list is 'no selection', matching the caller's truthiness check."""
+    spawns, fake_spawn = _collecting_spawn()
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="ready", assignee="alice")
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, only_task_ids=[])
+    assert spawns == [t1]
+
+
 def test_has_spawnable_review_true(kanban_home):
     """has_spawnable_review returns True when review tasks exist with real profiles."""
     with kb.connect() as conn:

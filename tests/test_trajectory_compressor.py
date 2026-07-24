@@ -116,6 +116,8 @@ class TestCompressionConfig:
         assert config.summary_target_tokens == 750
         assert config.protect_last_n_turns == 4
         assert config.skip_under_target is True
+        assert config.toon_encode_tool_results is False
+        assert config.toon_min_rows == 2
 
     def test_from_yaml(self, tmp_path):
         yaml_content = """\
@@ -125,6 +127,8 @@ tokenizer:
 compression:
   target_max_tokens: 10000
   summary_target_tokens: 500
+  toon_encode_tool_results: true
+  toon_min_rows: 3
 protected_turns:
   first_system: true
   first_human: false
@@ -153,6 +157,8 @@ metrics:
         assert config.trust_remote_code is False
         assert config.target_max_tokens == 10000
         assert config.summary_target_tokens == 500
+        assert config.toon_encode_tool_results is True
+        assert config.toon_min_rows == 3
         assert config.protect_first_human is False
         assert config.protect_last_n_turns == 6
         assert config.summarization_model == "gpt-4"
@@ -200,11 +206,13 @@ class TestTrajectoryMetrics:
         m.compressed_turns = 10
         m.turns_removed = 10
         m.was_compressed = True
+        m.toon_encoded_tool_results = 2
         d = m.to_dict()
         assert d["original_tokens"] == 10000
         assert d["compressed_tokens"] == 5000
         assert d["compression_ratio"] == 0.5
         assert d["was_compressed"] is True
+        assert d["toon_encoded_tool_results"] == 2
         assert d["compression_region"]["start_idx"] == -1
 
     def test_default_values(self):
@@ -477,6 +485,69 @@ class TestTokenCounting:
         tc.tokenizer.encode = MagicMock(side_effect=Exception("fail"))
         # Should fallback to len(text) // 4
         assert tc.count_tokens("12345678") == 2
+
+
+class TestToolResultToonEncoding:
+    def test_uniform_json_array_tool_result_is_encoded(self):
+        config = CompressionConfig(
+            toon_encode_tool_results=True,
+            target_max_tokens=10000,
+        )
+        tc = _make_compressor(config)
+        tool_result = json.dumps([
+            {"very_long_field_name": "alpha", "score_value": 0.91, "ok": True},
+            {"very_long_field_name": "beta", "score_value": 0.82, "ok": False},
+            {"very_long_field_name": "gamma", "score_value": 0.73, "ok": True},
+        ])
+        trajectory = [
+            {"from": "human", "value": "Find records."},
+            {"from": "tool", "value": tool_result},
+        ]
+
+        compressed, metrics = tc.compress_trajectory(trajectory)
+
+        encoded_value = compressed[1]["value"]
+        assert encoded_value.startswith("[TOON_ENCODED_TOOL_RESULT]")
+        assert "rows[3]{very_long_field_name,score_value,ok}" in encoded_value
+        assert "alpha|0.91|true" in encoded_value
+        assert metrics.toon_encoded_tool_results == 1
+        assert metrics.skipped_under_target is True
+        assert metrics.tokens_saved > 0
+
+    def test_heterogeneous_json_array_is_not_encoded(self):
+        config = CompressionConfig(toon_encode_tool_results=True)
+        tc = _make_compressor(config)
+
+        encoded = tc._toon_encode_json_array('[{"a":1},{"b":2}]')
+
+        assert encoded is None
+
+    def test_process_entry_includes_metrics_for_encoding_without_summary(self):
+        config = CompressionConfig(
+            toon_encode_tool_results=True,
+            target_max_tokens=10000,
+            metrics_per_trajectory=True,
+        )
+        tc = _make_compressor(config)
+        entry = {
+            "conversations": [
+                {"from": "human", "value": "Fetch rows."},
+                {
+                    "from": "tool",
+                    "value": json.dumps([
+                        {"repeated_key": "one", "another_repeated_key": 1},
+                        {"repeated_key": "two", "another_repeated_key": 2},
+                        {"repeated_key": "three", "another_repeated_key": 3},
+                    ]),
+                },
+            ]
+        }
+
+        processed, _ = tc.process_entry(entry)
+
+        assert "compression_metrics" in processed
+        assert processed["compression_metrics"]["was_compressed"] is False
+        assert processed["compression_metrics"]["toon_encoded_tool_results"] == 1
 
 
 class TestGenerateSummary:

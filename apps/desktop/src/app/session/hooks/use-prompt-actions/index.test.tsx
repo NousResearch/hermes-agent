@@ -3,8 +3,8 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession } from '@/hermes'
-import { textPart } from '@/lib/chat-messages'
+import { getSession, getSessionMessages } from '@/hermes'
+import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -27,10 +27,20 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getSession: vi.fn(),
+  getSessionMessages: vi.fn(async () => ({ messages: [], session_id: 'session' })),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
+
+function resetSessionMessagesMock() {
+  vi.mocked(getSessionMessages).mockReset()
+  vi.mocked(getSessionMessages).mockImplementation(async () => ({ messages: [], session_id: 'session' }))
+}
+
+beforeEach(() => {
+  resetSessionMessagesMock()
+})
 
 // The active id the desktop holds is the *runtime* session id from
 // session.create — deliberately distinct from the stored DB id here, because
@@ -1263,6 +1273,189 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
   })
 })
+
+describe('usePromptActions stale multi-window guard (#65047)', () => {
+  beforeEach(() => {
+    resetSessionMessagesMock()
+    $notifications.set([])
+    setSessions(() => [])
+  })
+
+  afterEach(() => {
+    cleanup()
+    resetSessionMessagesMock()
+    $notifications.set([])
+    setSessions(() => [])
+  })
+
+  it('blocks prompt.submit when the local transcript is behind and refreshes messages', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      session_id: RUNTIME_SESSION_ID,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 },
+        { content: 'c', role: 'user', timestamp: 3 },
+        { content: 'd', role: 'assistant', timestamp: 4 }
+      ]
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const seeds: Record<string, unknown>[] = []
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('a')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+        ]}
+        storedSessionId={RUNTIME_SESSION_ID}
+      />
+    )
+
+    const accepted = await handle!.submitText('stale send from secondary window')
+
+    expect(accepted).toBe(false)
+    expect(getSessionMessages).toHaveBeenCalledWith(RUNTIME_SESSION_ID, undefined)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+
+    const last = seeds.at(-1) as { busy?: boolean; messages?: unknown[] } | undefined
+    expect(last?.busy).toBe(false)
+    expect(last?.messages).toHaveLength(4)
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+  })
+
+  it('routes the hard-guard transcript read through the session owning profile', async () => {
+    const STORED_ID = 'stored-cross-profile'
+    setSessions(() => [sessionInfo({ id: STORED_ID, profile: 'work-vps', title: 'Remote chat' })])
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      session_id: STORED_ID,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 },
+        { content: 'c', role: 'user', timestamp: 3 },
+        { content: 'd', role: 'assistant', timestamp: 4 }
+      ]
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('a')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+        ]}
+        storedSessionId={STORED_ID}
+      />
+    )
+
+    expect(await handle!.submitText('stale cross-profile send')).toBe(false)
+    expect(getSessionMessages).toHaveBeenCalledWith(STORED_ID, 'work-vps')
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+  })
+
+  it('allows prompt.submit when the authoritative transcript is not ahead', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      session_id: RUNTIME_SESSION_ID,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 }
+      ]
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('a')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+        ]}
+        storedSessionId={RUNTIME_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('fresh enough')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'fresh enough'
+      },
+      1_800_000
+    )
+  })
+
+  it('does not block when raw SessionMessage count is higher only because tools fold into ChatMessages', async () => {
+    // user + assistant(tool_calls) + tool + assistant → fewer ChatMessages after
+    // toChatMessages. Comparing raw SessionMessage length would false-positive
+    // forever after a "refresh" and soft-lock every send.
+    const remoteSessionMessages = [
+      { content: 'check the repo', role: 'user' as const, timestamp: 1 },
+      {
+        content: 'Looking.',
+        role: 'assistant' as const,
+        timestamp: 2,
+        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{"command":"ls"}' } }]
+      },
+      {
+        content: '{"output":"ok"}',
+        role: 'tool' as const,
+        tool_call_id: 'tc-1',
+        tool_name: 'terminal',
+        timestamp: 3
+      },
+      { content: 'Done.', role: 'assistant' as const, timestamp: 4 }
+    ]
+
+    const localChat = toChatMessages(remoteSessionMessages)
+    expect(remoteSessionMessages.length).toBeGreaterThan(localChat.length)
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      session_id: RUNTIME_SESSION_ID,
+      messages: remoteSessionMessages
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={localChat}
+        storedSessionId={RUNTIME_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('follow-up after tools')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'follow-up after tools'
+      },
+      1_800_000
+    )
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(false)
+  })
+})
+
 
 describe('usePromptActions redirectPrompt', () => {
   afterEach(() => {

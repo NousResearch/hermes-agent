@@ -1,11 +1,11 @@
 /**
- * Real-featureset wiring for the contrib (layout tree) root — the minimal
+ * Real-featureset wiring for the contrib (layout tree) root ??the minimal
  * subset of DesktopController's hook chain that makes the REAL surfaces work:
  * gateway boot -> sessions list -> click-to-resume -> live transcript ->
  * composer send, plus the real terminal.
  *
  * The wired nodes (sidebar / chat routes / terminal) are exposed through
- * context; registered panes render `<WiredPane part="…"/>` to consume them.
+ * context; registered panes render `<WiredPane part="??/>` to consume them.
  */
 
 import { useStore } from '@nanostores/react'
@@ -89,6 +89,7 @@ import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
+import { useTranscriptSync } from '../session/hooks/use-transcript-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
@@ -105,7 +106,7 @@ import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 
-// Overlay views the controller mounts over the shell — lazy, load on demand.
+// Overlay views the controller mounts over the shell ??lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
 // ChatRoutesSurface's and live in ./surfaces.
 const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
@@ -116,7 +117,7 @@ const SettingsView = lazy(async () => ({ default: (await import('../settings')).
 const StarmapView = lazy(async () => ({ default: (await import('../starmap')).StarmapView }))
 
 // Surfaces (the four wired panes), the render context + WiredPane, and the
-// WiringActions/WiringApi contracts all live in sibling modules — this file is
+// WiringActions/WiringApi contracts all live in sibling modules ??this file is
 // the controller that assembles them.
 export { WiredPane } from './context'
 
@@ -127,7 +128,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
-  // Billing recovery routes to Settings → Billing from surfaces without router
+  // Billing recovery routes to Settings ??Billing from surfaces without router
   // context (the sticky toast). The shell owns `navigate`, so it consumes the
   // intent counter here; the ref skips the initial mount value.
   const billingSettingsSeenRef = useRef(0)
@@ -175,7 +176,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     routedSessionIdRef.current = null
   }, [])
 
-  // Mirror "the workspace is showing a full page" into its atom — the
+  // Mirror "the workspace is showing a full page" into its atom ??the
   // workspace pane contribution re-registers headerVeto from it, so the main
   // zone's tab bar stands down on pages (and returns with the chat).
   useEffect(() => {
@@ -272,7 +273,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
   }, [navigate])
 
-  // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ⌘K palette
+  // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ?�K palette
   // / window.__creditsDemo). Dynamic import inside the DEV guard so the module
   // is dropped from production builds.
   useEffect(() => {
@@ -384,6 +385,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
+  // Cross-window transcript refresh when another window advances the same chat
+  // (#65047). Soft sync only; submit still has a hard stale guard.
+  useTranscriptSync({
+    activeSessionIdRef,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  })
+
   // Agent-driven preview routing (agent opens a URL/file -> the preview rail
   // follows) + the preview server restart handler, layered over the base
   // gateway event stream exactly like DesktopController.
@@ -407,7 +416,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   // Expose the restart handler to the preview pane contribution (module
-  // boundary crossed via atom — contrib-panes can't import this file).
+  // boundary crossed via atom ??contrib-panes can't import this file).
   useEffect(() => {
     $restartPreviewServer.set(restartPreviewServer)
 
@@ -459,7 +468,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
-  // global model + active-profile pill (both are nanostores — the blanket
+  // global model + active-profile pill (both are nanostores ??the blanket
   // invalidateQueries on swap doesn't touch them).
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
@@ -587,7 +596,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Clear a failed turn's red error banner. Errors are renderer-local (never
   // persisted): a bare error placeholder is dropped entirely; a partial-output
   // failure keeps its content and sheds the error. Both the runtime cache AND
-  // the live $messages view must be updated — preserveLocalAssistantErrors
+  // the live $messages view must be updated ??preserveLocalAssistantErrors
   // re-grafts any still-errored view message on the next session.info flush.
   const dismissError = useCallback(
     (messageId: string) => {
@@ -641,7 +650,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   // Plugins hear the stream FIRST (isolated fan-out in contrib/events), then
-  // the app dispatches as before — a plugin listener can't affect app flow.
+  // the app dispatches as before ??a plugin listener can't affect app flow.
   const handleGatewayEventWithPlugins = useCallback(
     (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
       emitGatewayEvent(event)
@@ -668,7 +677,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshSessions
   })
 
-  // Only the open messaging transcript needs its own poll — local chats are
+  // Only the open messaging transcript needs its own poll ??local chats are
   // live over the websocket already.
   const activeIsMessaging =
     !!selectedStoredSessionId &&
@@ -691,7 +700,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway
   })
 
-  // Electron-main / OS / cross-window integrations: update polling, ⌘W close,
+  // Electron-main / OS / cross-window integrations: update polling, ?�W close,
   // deep links, native-notification nav, preview-shortcut enablement,
   // remembered-session restore, and cross-window session-list sync.
   const previewTarget = useStore($previewTarget)
@@ -708,7 +717,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef
   })
 
-  // Pin/unpin the selected session (statusbar keybind + chat header) — pinned
+  // Pin/unpin the selected session (statusbar keybind + chat header) ??pinned
   // on the durable lineage-root id so it survives auto-compression.
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -727,11 +736,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // The tab-strip "+" and ⌘T share one action: open a new session as its own
+  // The tab-strip "+" and ?�T share one action: open a new session as its own
   // tab (stacked into the workspace zone) WITHOUT polluting the session list.
   // Created `listed: false`, so each new tab's in-memory session stays out of
   // the sidebar until its first message persists a turn and a refresh surfaces
-  // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
+  // it ??Cursor-style. Every click opens a fresh "New session" tab (multiple
   // empty tabs are fine since none touch the session list).
   const openNewSessionTab = useCallback(() => {
     void openNewSessionTile('center', { listed: false })
@@ -833,7 +842,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // everything else reaches its surface through `actions` (stable) or the
   // surface's own atom subscriptions. A wiring tick that doesn't touch a
   // node's keys leaves its element reference intact, so `WiredPane` (memoized)
-  // bails on that pane subtree — panes render independently of one another.
+  // bails on that pane subtree ??panes render independently of one another.
   const sidebarNode = useMemo(
     () => <SidebarSurface actions={actions} currentView={currentView} />,
     [actions, currentView]
@@ -871,9 +880,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
-  // settings gear) — fixed chrome positioned via the same CSS vars AppShell
+  // settings gear) ??fixed chrome positioned via the same CSS vars AppShell
   // sets, computed here from the live connection. Page-registered tools
-  // (preview's monitor/devtools cluster, …) arrive as registry contributions.
+  // (preview's monitor/devtools cluster, ?? arrive as registry contributions.
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
@@ -881,7 +890,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Exact vertical centering: titlebarControlsPosition() returns
   // (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2, but TitlebarControls
   // also applies a hard translate-y-0.5 (+2px) to its clusters. Cancel that
-  // constant so cluster center == bar center — measured, not eyeballed.
+  // constant so cluster center == bar center ??measured, not eyeballed.
   const controlsTranslateY = 2
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
@@ -889,7 +898,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
   // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
-  // against the static system cluster — in the tree layout the titlebar band
+  // against the static system cluster ??in the tree layout the titlebar band
   // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
   const SYSTEM_TOOL_COUNT = 4
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
@@ -1021,7 +1030,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Toasts above everything. */}
       <NotificationStack />
 
-      {/* Petdex floating mascot — renders nothing unless installed + enabled. */}
+      {/* Petdex floating mascot ??renders nothing unless installed + enabled. */}
       <FloatingPet />
 
       {/* Single persistent xterm host chasing the terminal pane's slot rect. */}

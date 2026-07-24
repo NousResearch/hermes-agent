@@ -1,7 +1,10 @@
 import { useEffect } from 'react'
 
 import { getSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { toChatMessages } from '@/lib/chat-messages'
+import { refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { notify } from '@/store/notifications'
 import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
@@ -103,6 +106,37 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
+        // Same multi-window stale guarantee as useSubmitPrompt (#65047). Tile
+        // resume retains an existing cache (above), so a peer window that
+        // advanced the transcript must be caught here before prompt.submit.
+        const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+        const storedSessionId = cached?.storedSessionId
+
+        if (storedSessionId) {
+          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached.messages)
+
+          if (refreshed) {
+            updateSessionState(
+              runtimeId,
+              state => ({
+                ...state,
+                messages: refreshed,
+                busy: false,
+                awaitingResponse: false,
+                pendingBranchGroup: null
+              }),
+              storedSessionId
+            )
+            notify({
+              kind: 'warning',
+              title: translateNow('desktop.staleSessionTitle'),
+              message: translateNow('desktop.staleSessionBody')
+            })
+
+            return
+          }
+        }
+
         await requestGateway('prompt.submit', { session_id: runtimeId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
       },
       updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)

@@ -10,6 +10,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 
 import os
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,6 +75,104 @@ class TestProviderEnvBlocklist:
 
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("BWS_ACCESS_TOKEN", "0.inert-test-token"),
+            ("OP_SERVICE_ACCOUNT_TOKEN", "ops_inert_test_token"),
+        ],
+    )
+    def test_secret_source_bootstrap_tokens_are_stripped(self, name, value):
+        """Secret-manager bootstrap credentials must not reach terminal shells."""
+        result_env = _run_with_env(extra_os_env={name: value})
+
+        assert name not in result_env
+
+    def test_external_secret_source_vars_are_stripped(self, monkeypatch):
+        """Vault-injected custom names must not be serialized by export -p."""
+        from hermes_cli import env_loader
+
+        monkeypatch.setattr(
+            env_loader,
+            "get_external_secret_env_vars",
+            lambda _home: frozenset({"CUSTOM_DEPLOY_CREDENTIAL"}),
+            raising=False,
+        )
+        result_env = _run_with_env(extra_os_env={
+            "CUSTOM_DEPLOY_CREDENTIAL": "inert-secret-value",
+        })
+
+        assert "CUSTOM_DEPLOY_CREDENTIAL" not in result_env
+
+    def test_external_secret_source_var_preserves_explicit_passthrough(
+        self, monkeypatch
+    ):
+        """Existing trusted passthrough remains an explicit compatibility path."""
+        from hermes_cli import env_loader
+
+        monkeypatch.setattr(
+            env_loader,
+            "get_external_secret_env_vars",
+            lambda _home: frozenset({"CUSTOM_DEPLOY_CREDENTIAL"}),
+        )
+        monkeypatch.setattr(
+            "tools.env_passthrough.is_env_passthrough",
+            lambda name: name == "CUSTOM_DEPLOY_CREDENTIAL",
+        )
+
+        result_env = _run_with_env(extra_os_env={
+            "CUSTOM_DEPLOY_CREDENTIAL": "inert-secret-value",
+        })
+
+        assert result_env["CUSTOM_DEPLOY_CREDENTIAL"] == "inert-secret-value"
+
+    def test_external_secret_source_vars_never_reach_snapshot(
+        self, monkeypatch, tmp_path
+    ):
+        """Behavioral regression for #62336 using the real export snapshot."""
+        from hermes_cli import env_loader
+
+        monkeypatch.setattr(
+            env_loader,
+            "get_external_secret_env_vars",
+            lambda _home: frozenset({"CUSTOM_DEPLOY_CREDENTIAL"}),
+            raising=False,
+        )
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
+        monkeypatch.setenv("CUSTOM_DEPLOY_CREDENTIAL", "inert-secret-value")
+        monkeypatch.setenv("SNAPSHOT_POSITIVE_CONTROL", "keep-this")
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            snapshot = Path(env._snapshot_path).read_text(encoding="utf-8")
+            assert "CUSTOM_DEPLOY_CREDENTIAL" not in snapshot
+            assert "inert-secret-value" not in snapshot
+            assert "SNAPSHOT_POSITIVE_CONTROL" in snapshot
+            assert "keep-this" in snapshot
+        finally:
+            env.cleanup()
+
+    def test_external_secret_names_are_scoped_to_effective_home(
+        self, monkeypatch, tmp_path
+    ):
+        """A secret from profile A must not suppress profile B's ordinary var."""
+        from hermes_cli import env_loader
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+        env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_a.resolve())] = {
+            "CUSTOM_DEPLOY_CREDENTIAL": "profile-a-secret"
+        }
+
+        result_env = _run_with_env(
+            extra_os_env={"CUSTOM_DEPLOY_CREDENTIAL": "profile-b-ordinary"},
+            self_env={"HERMES_HOME": str(home_b)},
+        )
+
+        assert result_env["CUSTOM_DEPLOY_CREDENTIAL"] == "profile-b-ordinary"
 
     def test_registry_derived_vars_are_stripped(self):
         """Vars from the provider registry (ANTHROPIC_TOKEN, ZAI_API_KEY, etc.)

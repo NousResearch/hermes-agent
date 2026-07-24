@@ -26,10 +26,12 @@ def _reset_sources():
     """Each test starts with a clean source map and applied-home guard."""
     env_loader._SECRET_SOURCES.clear()
     env_loader._SECRET_SOURCE_VALUES_BY_HOME.clear()
+    env_loader._SECRET_SOURCE_PROTECTED_VARS_BY_HOME.clear()
     env_loader.reset_secret_source_cache()
     yield
     env_loader._SECRET_SOURCES.clear()
     env_loader._SECRET_SOURCE_VALUES_BY_HOME.clear()
+    env_loader._SECRET_SOURCE_PROTECTED_VARS_BY_HOME.clear()
     env_loader.reset_secret_source_cache()
 
 
@@ -61,6 +63,26 @@ def test_get_secret_source_values_returns_home_snapshot_copy(tmp_path):
     assert env_loader.get_secret_source_values(home_a) == {
         "ANTHROPIC_API_KEY": "sk-profile-a"
     }
+
+
+def test_get_external_secret_env_vars_returns_scoped_names_only(tmp_path):
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+
+    env_loader._SECRET_SOURCE_VALUES_BY_HOME[str(home_a.resolve())] = {
+        "CUSTOM_DEPLOY_CREDENTIAL": "inert-secret-value"
+    }
+    env_loader._SECRET_SOURCE_PROTECTED_VARS_BY_HOME[str(home_a.resolve())] = (
+        frozenset({"CUSTOM_BWS_ACCESS_TOKEN"})
+    )
+
+    assert env_loader.get_external_secret_env_vars(home_a) == frozenset({
+        "CUSTOM_BWS_ACCESS_TOKEN",
+        "CUSTOM_DEPLOY_CREDENTIAL",
+    })
+    assert env_loader.get_external_secret_env_vars(home_b) == frozenset()
 
 
 def test_format_secret_source_suffix_empty_for_untracked():
@@ -100,7 +122,7 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     end up in ``_SECRET_SOURCES`` so the UI can label them."""
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.setenv("CUSTOM_BWS_ACCESS_TOKEN", "0.test-token")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -108,7 +130,7 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
         "  bitwarden:\n"
         "    enabled: true\n"
         "    project_id: test-project\n"
-        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        "    access_token_env: CUSTOM_BWS_ACCESS_TOKEN\n",
         encoding="utf-8",
     )
 
@@ -129,6 +151,10 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     env_loader._apply_external_secret_sources(tmp_path)
 
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
+    assert env_loader.get_external_secret_env_vars(tmp_path) == frozenset({
+        "ANTHROPIC_API_KEY",
+        "CUSTOM_BWS_ACCESS_TOKEN",
+    })
     assert (
         env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
         == " (from Bitwarden)"
@@ -203,6 +229,10 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     assert env_loader.get_secret_source_values(tmp_path) == {
         "ANTHROPIC_API_KEY": "sk-ant-test"
     }
+    assert env_loader.get_external_secret_env_vars(tmp_path) == frozenset({
+        "ANTHROPIC_API_KEY",
+        "BWS_ACCESS_TOKEN",
+    })
 
     # reset_secret_source_cache() forces a fresh pull on the next call.
     env_loader.reset_secret_source_cache()

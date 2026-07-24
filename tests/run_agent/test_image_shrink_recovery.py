@@ -661,3 +661,103 @@ class TestShrinkImagePartsHelper:
         # Default cap (8000) — no explicit max_dimension passed.
         assert agent._try_shrink_image_parts_in_messages(msgs) is True
         assert msgs[0]["content"][0]["image_url"]["url"] == shrunk
+
+
+class TestAggregatePayloadShrink:
+    """Aggregate-413 path: several individually-under-4MB images whose SUM
+    blows a gateway's request-body byte limit (observed on GitHub Copilot
+    with native-vision screenshots).  The default 4 MB per-image budget
+    no-ops on these, so the 413 handler passes a small ``target_bytes`` to
+    force every embedded image down.  Regression for the
+    ``payload_too_large`` image-shrink branch in ``conversation_loop``.
+    """
+
+    def test_default_budget_noops_on_sub_4mb_images(self, monkeypatch):
+        """~500 KB images are under the 4 MB default - shrink must NOT fire."""
+        agent = _make_agent()
+        url1 = _big_png_data_url(500)
+        url2 = _big_png_data_url(480)
+        url3 = _big_png_data_url(520)
+        for u in (url1, url2, url3):
+            assert len(u) < 4 * 1024 * 1024
+
+        resize_hits = {"count": 0}
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: resize_hits.__setitem__(
+                "count", resize_hits["count"] + 1
+            ) or "shrunk",
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": url1}},
+                {"type": "image_url", "image_url": {"url": url2}},
+                {"type": "image_url", "image_url": {"url": url3}},
+            ],
+        }]
+        # No target_bytes override -> 4 MB default -> nothing exceeds it.
+        assert agent._try_shrink_image_parts_in_messages(msgs) is False
+        assert resize_hits["count"] == 0
+        assert msgs[0]["content"][0]["image_url"]["url"] == url1
+
+    def test_small_target_bytes_shrinks_sub_4mb_images(self, monkeypatch):
+        """With a 512 KB target_bytes, the same ~500 KB images DO get shrunk."""
+        agent = _make_agent()
+        url1 = _big_png_data_url(500)
+        url2 = _big_png_data_url(520)
+        shrunk = "data:image/jpeg;base64," + "S" * 1000
+
+        seen = {"max_base64_bytes": None}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["max_base64_bytes"] = max_base64_bytes
+            return shrunk
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": url1}},
+                {"type": "image_url", "image_url": {"url": url2}},
+            ],
+        }]
+        changed = agent._try_shrink_image_parts_in_messages(
+            msgs,
+            max_dimension=2000,
+            target_bytes=512 * 1024,
+        )
+        assert changed is True
+        assert seen["max_base64_bytes"] == 512 * 1024
+        assert msgs[0]["content"][0]["image_url"]["url"] == shrunk
+        assert msgs[0]["content"][1]["image_url"]["url"] == shrunk
+
+    def test_target_bytes_zero_falls_back_to_default(self, monkeypatch):
+        """target_bytes<=0 must fall back to the 4 MB default, not break."""
+        agent = _make_agent()
+        small = _big_png_data_url(500)
+        resize_hits = {"count": 0}
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: resize_hits.__setitem__(
+                "count", resize_hits["count"] + 1
+            ) or "shrunk",
+            raising=False,
+        )
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": small}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, target_bytes=0,
+        ) is False
+        assert resize_hits["count"] == 0

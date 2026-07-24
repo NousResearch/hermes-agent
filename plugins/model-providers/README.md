@@ -25,6 +25,13 @@ User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override
 bundled plugins of the same name — last-writer-wins in
 `register_provider()`. Drop a file there to replace a built-in.
 
+## prompt-codec (local densify)
+
+Bundled profile `prompt_codec` targets `http://127.0.0.1:8787/v1`. Install the
+proxy from https://github.com/jwaynelowry/prompt-codec. Complementary to Hermes
+`compression:` / ContextCompressor — densify runs on every outbound request;
+do not disable mid-session compaction.
+
 ## Adding a new provider
 
 1. Create `plugins/model-providers/<your_provider>/__init__.py`:

@@ -66,6 +66,31 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
 
+    def test_windows_skips_controlmaster_flags(self, monkeypatch):
+        # Native Windows OpenSSH cannot create the ControlMaster AF_UNIX
+        # socket, so the three multiplexing -o flags must be omitted there;
+        # the remaining hardening flags stay on every platform.
+        monkeypatch.setattr("tools.environments.ssh._IS_WINDOWS", True)
+        cmd = " ".join(SSHEnvironment(host="h", user="u")._build_ssh_command())
+        for token in ("ControlMaster", "ControlPersist", "ControlPath"):
+            assert token not in cmd
+        assert "BatchMode=yes" in cmd
+        assert "StrictHostKeyChecking=accept-new" in cmd
+
+    def test_scp_omits_controlpath_on_windows(self, monkeypatch):
+        monkeypatch.setattr("tools.environments.ssh._IS_WINDOWS", True)
+        calls = []
+
+        def _capture(cmd, *a, **k):
+            calls.append(cmd)
+            return subprocess.CompletedProcess([], 0)
+
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", _capture)
+        SSHEnvironment(host="h", user="u")._scp_upload("/local/f", "/remote/f")
+        scp_calls = [c for c in calls if c and c[0] == "scp"]
+        assert scp_calls, "scp should have been invoked"
+        assert "ControlPath" not in " ".join(scp_calls[0])
+
 
 class TestControlSocketPath:
     """Regression tests for issue #11840.

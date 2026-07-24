@@ -20,6 +20,13 @@ from tools.environments.file_sync import (
 
 logger = logging.getLogger(__name__)
 
+# Native Windows OpenSSH cannot create the AF_UNIX control socket that
+# ControlMaster multiplexing requires (every ssh/scp call fails with
+# "getsockname failed: Not a socket"). ControlMaster is pure connection-
+# reuse perf; session state persists via in-band stdout markers, so on
+# Windows we just skip multiplexing and use a fresh connection per call.
+_IS_WINDOWS = os.name == "nt"
+
 
 def _ensure_ssh_available() -> None:
     """Fail fast with a clear error when the SSH client is unavailable."""
@@ -82,9 +89,10 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        if not _IS_WINDOWS:
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", "ControlMaster=auto"])
+            cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
@@ -169,7 +177,9 @@ class SSHEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
         )
 
-        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        scp_cmd = ["scp"]
+        if not _IS_WINDOWS:
+            scp_cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:

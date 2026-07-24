@@ -2729,9 +2729,18 @@ class _FakeSignalHttp:
         item = self.responses.pop(0)
         if isinstance(item, BaseException):
             raise item
+        if isinstance(item, dict) and "error" in item:
+            status_code = item.get("_status", 400)
+            data = item
+        else:
+            status_code = item.get("_status", 201) if isinstance(item, dict) else 201
+            data = item if isinstance(item, dict) else {"timestamp": "1"}
         resp = SimpleNamespace(
+            status_code=status_code,
+            content=b"{}",
+            text="",
             raise_for_status=lambda: None,
-            json=lambda data=item: data,
+            json=lambda data=data: data,
         )
         return resp
 
@@ -2774,7 +2783,7 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
 
 class TestSendSignalChunking:
     def test_text_only_single_rpc(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -2789,14 +2798,16 @@ class TestSendSignalChunking:
         assert result["platform"] == "signal"
         assert result["chat_id"].endswith("4321")
         assert len(fake.calls) == 1
-        params = fake.calls[0]["payload"]["params"]
-        assert params["message"] == "hello"
-        assert "attachments" not in params
-        assert "textStyle" not in params
-        assert "textStyles" not in params
+        assert fake.calls[0]["url"].endswith("/v2/send")
+        body = fake.calls[0]["payload"]
+        assert body["message"] == "hello"
+        assert body["number"] == "+15551234567"
+        assert body["recipients"] == ["+15557654321"]
+        assert "base64_attachments" not in body
+        assert "text_mode" not in body
 
-    def test_text_only_markdown_uses_singular_text_style(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+    def test_text_only_markdown_uses_styled_mode(self, monkeypatch):
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -2808,13 +2819,14 @@ class TestSendSignalChunking:
         )
 
         assert result["success"] is True
-        params = fake.calls[0]["payload"]["params"]
-        assert params["message"] == "hello"
-        assert params["textStyle"] == "0:5:BOLD"
-        assert "textStyles" not in params
+        body = fake.calls[0]["payload"]
+        # /v2/send styled mode carries the raw markdown; the REST API
+        # computes the body ranges server-side (no textStyle params).
+        assert body["message"] == "**hello**"
+        assert body["text_mode"] == "styled"
 
-    def test_text_only_multiple_styles_use_plural_text_styles(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+    def test_text_only_multiple_styles_use_styled_mode(self, monkeypatch):
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -2826,27 +2838,9 @@ class TestSendSignalChunking:
         )
 
         assert result["success"] is True
-        params = fake.calls[0]["payload"]["params"]
-        assert params["message"] == "bold and italic"
-        assert "textStyle" not in params
-        assert params["textStyles"] == ["0:4:BOLD", "9:6:ITALIC"]
-
-    def test_text_style_offsets_use_utf16_code_units(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
-        _install_signal_http(monkeypatch, fake)
-
-        result = asyncio.run(
-            _send_signal(
-                {"http_url": "http://localhost:8080", "account": "+155****4567"},
-                "+155****4321",
-                "🙂 **bold**",
-            )
-        )
-
-        assert result["success"] is True
-        params = fake.calls[0]["payload"]["params"]
-        assert params["message"] == "🙂 bold"
-        assert params["textStyle"] == "3:4:BOLD"
+        body = fake.calls[0]["payload"]
+        assert body["message"] == "**bold** and *italic*"
+        assert body["text_mode"] == "styled"
 
     def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
         """33 attachments → 2 batches; text only on first batch. Batch 1
@@ -2862,8 +2856,8 @@ class TestSendSignalChunking:
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
-            {"result": {"timestamp": 1}},   # batch 0
-            {"result": {"timestamp": 2}},   # batch 1
+            {"timestamp": "1"},   # batch 0
+            {"timestamp": "2"},   # batch 1
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2883,17 +2877,15 @@ class TestSendSignalChunking:
         assert len(fake.calls) == 2
         assert len(sleep_calls) == 0
 
-        first = fake.calls[0]["payload"]["params"]
+        first = fake.calls[0]["payload"]
         assert first["message"] == "Caption goes here"
-        assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        assert "textStyle" not in first
-        assert "textStyles" not in first
+        assert len(first["base64_attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "text_mode" not in first
 
-        second = fake.calls[1]["payload"]["params"]
+        second = fake.calls[1]["payload"]
         assert second["message"] == ""  # caption only on batch 0
-        assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        assert "textStyle" not in second
-        assert "textStyles" not in second
+        assert len(second["base64_attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "text_mode" not in second
 
     def test_caption_styles_only_apply_to_first_attachment_batch(self, tmp_path, monkeypatch):
         from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
@@ -2905,8 +2897,8 @@ class TestSendSignalChunking:
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
-            {"result": {"timestamp": 1}},
-            {"result": {"timestamp": 2}},
+            {"timestamp": "1"},
+            {"timestamp": "2"},
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2921,18 +2913,17 @@ class TestSendSignalChunking:
 
         assert result["success"] is True
         assert result["chat_id"] == "group:***"
-        first = fake.calls[0]["payload"]["params"]
-        assert first["groupId"] == "abc123"
-        assert first["message"] == "Bold and italic"
-        assert first["textStyles"] == ["0:4:BOLD", "9:6:ITALIC"]
-        assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        first = fake.calls[0]["payload"]
+        assert first["recipients"] == ["group.abc123"]
+        assert first["message"] == "**Bold** and *italic*"
+        assert first["text_mode"] == "styled"
+        assert len(first["base64_attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
 
-        second = fake.calls[1]["payload"]["params"]
-        assert second["groupId"] == "abc123"
+        second = fake.calls[1]["payload"]
+        assert second["recipients"] == ["group.abc123"]
         assert second["message"] == ""
-        assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
-        assert "textStyle" not in second
-        assert "textStyles" not in second
+        assert len(second["base64_attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "text_mode" not in second
 
     def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
         """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
@@ -2951,9 +2942,9 @@ class TestSendSignalChunking:
             paths.append((str(p), False))
 
         fake = _FakeSignalHttp([
-            {"result": {"timestamp": 1}},   # batch 0
-            {"result": {"timestamp": 99}},  # pacing notice
-            {"result": {"timestamp": 2}},   # batch 1
+            {"timestamp": "1"},   # batch 0
+            {"timestamp": "99"},  # pacing notice
+            {"timestamp": "2"},   # batch 1
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -2971,9 +2962,9 @@ class TestSendSignalChunking:
 
         assert result["success"] is True
         assert len(fake.calls) == 3
-        notice = fake.calls[1]["payload"]["params"]
+        notice = fake.calls[1]["payload"]
         assert "More images coming" in notice["message"]
-        assert "attachments" not in notice
+        assert "base64_attachments" not in notice
         # Batch 1 deficit: 32 - (50 - 32) = 14 tokens × 4s = 56s
         expected = (
             SIGNAL_MAX_ATTACHMENTS_PER_MSG
@@ -3006,7 +2997,7 @@ class TestSendSignalChunking:
                     },
                 }
             },
-            {"result": {"timestamp": 7}},
+            {"timestamp": "7"},
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -3036,7 +3027,7 @@ class TestSendSignalChunking:
 
         fake = _FakeSignalHttp([
             {"error": {"message": "Failed: [429] Rate Limited"}},
-            {"result": {"timestamp": 7}},
+            {"timestamp": "7"},
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -3085,7 +3076,7 @@ class TestSendSignalChunking:
         fake = _FakeSignalHttp([
             rate_limit_err,                  # batch 0, attempt 1
             rate_limit_err,                  # batch 0, attempt 2 (exhaust)
-            {"result": {"timestamp": 9}},    # batch 1 succeeds
+            {"timestamp": "9"},    # batch 1 succeeds
         ])
         _install_signal_http(monkeypatch, fake)
 
@@ -3135,7 +3126,7 @@ class TestSendSignalChunking:
         good = tmp_path / "ok.png"
         good.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -3150,8 +3141,8 @@ class TestSendSignalChunking:
         assert result["success"] is True
         assert "warnings" in result
         # Only the existing file made it into the RPC
-        params = fake.calls[0]["payload"]["params"]
-        assert len(params["attachments"]) == 1
+        body = fake.calls[0]["payload"]
+        assert len(body["base64_attachments"]) == 1
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

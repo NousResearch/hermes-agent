@@ -440,6 +440,13 @@ describe('preserveLocalPendingTurnMessages', () => {
       'user-optimistic'
     ])
   })
+
+  it('does not resurrect a completed stream bubble after persisted history catches up', () => {
+    const next = [msg('1-user-stored', 'user', 'question'), msg('2-assistant-stored', 'assistant', 'answer')]
+    const completedLocalStream = msg('assistant-stream-runtime-1', 'assistant', 'answer', { pending: false })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, completedLocalStream])).toBe(next)
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

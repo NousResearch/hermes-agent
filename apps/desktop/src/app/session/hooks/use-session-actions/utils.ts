@@ -292,8 +292,7 @@ export function preserveLocalPendingTurnMessages(
 
     const isOptimisticUser = message.role === 'user' && message.id.startsWith('user-')
 
-    const isPendingAssistant =
-      message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
+    const isPendingAssistant = message.role === 'assistant' && message.pending === true
 
     if ((!isOptimisticUser && !isPendingAssistant) || nextIds.has(message.id)) {
       continue

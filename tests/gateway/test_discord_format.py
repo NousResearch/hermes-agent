@@ -53,6 +53,17 @@ class TestDiscordFormatMessage:
         text = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
         assert adapter.format_message(text) == text
 
+    def test_table_preserves_literal_pipe_cell(self):
+        adapter = _make_discord_adapter()
+        text = (
+            "| Expression | Result |\n"
+            "|------------|--------|\n"
+            "| a \\| b    | true   |"
+        )
+        out = adapter.format_message(text)
+        assert "**a | b**" in out
+        assert "• Result: true" in out
+
     def test_empty_string(self):
         adapter = _make_discord_adapter()
         assert adapter.format_message("") == ""

@@ -33,6 +33,16 @@ TABLE_ONLY_CONTENT = (
     "| Red Sox | 36 | 34 | 6.0 |\n"
     "| Dodgers | 40 | 30 | 2.0 |"
 )
+LITERAL_PIPE_TABLE = (
+    "| Expression | Result |\n"
+    "|------------|--------|\n"
+    "| a \\| b    | true   |"
+)
+COLLAPSED_PREESCAPED_TABLE = (
+    "\\| Name \\| Status \\| "
+    "\\|------\\|--------\\| "
+    "\\| Hermes \\| Ready \\|"
+)
 DANGEROUS_DETAILS_MATH = (
     "<details><summary>Complex proof</summary>\n\n"
     "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n"
@@ -123,6 +133,18 @@ async def test_rich_happy_path_sends_raw_markdown():
     assert "| Case | Status |" in api_kwargs["rich_message"]["markdown"]
     assert "- [x] table renders" in api_kwargs["rich_message"]["markdown"]
     # Legacy path must not run on rich success.
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_table_preserves_literal_pipe_escape():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", LITERAL_PIPE_TABLE)
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == LITERAL_PIPE_TABLE
     adapter._bot.send_message.assert_not_called()
 
 
@@ -851,6 +873,36 @@ async def test_finalize_edit_uses_rich_for_table_content():
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_repairs_collapsed_preescaped_table():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", COLLAPSED_PREESCAPED_TABLE, finalize=True,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == (
+        "| Name | Status |\n"
+        "| ------ | -------- |\n"
+        "| Hermes | Ready |"
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_preserves_literal_pipe_escape():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", LITERAL_PIPE_TABLE, finalize=True,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == LITERAL_PIPE_TABLE
 
 
 @pytest.mark.asyncio

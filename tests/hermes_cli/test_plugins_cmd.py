@@ -452,10 +452,13 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
+    @patch("hermes_cli.plugins_cmd._assert_gateway_not_running")
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
+    def test_update_git_pull_success(
+        self, mock_run, mock_plugins_dir, mock_sanitize, mock_assert_gateway
+    ):
         from hermes_cli.plugins_cmd import cmd_update
 
         mock_plugins_dir_val = MagicMock()
@@ -472,10 +475,12 @@ class TestCmdUpdate:
         cmd_update("test-plugin")
 
         mock_run.assert_called_once()
+        mock_assert_gateway.assert_called_once()
 
+    @patch("hermes_cli.plugins_cmd._assert_gateway_not_running")
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_update_plugin_not_found(self, mock_plugins_dir, mock_sanitize):
+    def test_update_plugin_not_found(self, mock_plugins_dir, mock_sanitize, mock_assert_gateway):
         from hermes_cli.plugins_cmd import cmd_update
 
         mock_plugins_dir_val = MagicMock()
@@ -487,6 +492,32 @@ class TestCmdUpdate:
 
         with pytest.raises(SystemExit) as exc_info:
             cmd_update("nonexistent-plugin")
+
+        assert exc_info.value.code == 1
+        mock_assert_gateway.assert_not_called()
+
+    @patch("hermes_cli.gateway.find_gateway_pids")
+    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_update_fails_when_gateway_running(
+        self, mock_plugins_dir, mock_sanitize, mock_find_pids
+    ):
+        """Updating a plugin when the gateway is running must fail."""
+        from hermes_cli.plugins_cmd import cmd_update
+
+        mock_find_pids.return_value = [12345]
+
+        mock_plugins_dir_val = MagicMock()
+        mock_plugins_dir.return_value = mock_plugins_dir_val
+        mock_target = MagicMock()
+        mock_target.exists.return_value = True
+        mock_target.__truediv__ = lambda self, x: MagicMock(
+            exists=MagicMock(return_value=True)
+        )
+        mock_sanitize.return_value = mock_target
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update("test-plugin")
 
         assert exc_info.value.code == 1
 

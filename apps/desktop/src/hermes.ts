@@ -738,12 +738,14 @@ export function validateProviderCredential(
 
 export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
   return window.hermesDesktop.api<CustomEndpointsResponse>({
+    ...profileScoped(),
     path: '/api/providers/custom-endpoints'
   })
 }
 
 export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
   return window.hermesDesktop.api<CustomEndpointsResponse>({
+    ...profileScoped(),
     path: '/api/providers/custom-endpoints',
     method: 'POST',
     body: endpoint
@@ -752,6 +754,7 @@ export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<Cust
 
 export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
   return window.hermesDesktop.api<CustomEndpointValidationResponse>({
+    ...profileScoped(),
     path: '/api/providers/custom-endpoints/validate',
     method: 'POST',
     body: endpoint
@@ -760,6 +763,7 @@ export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<
 
 export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
   return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
+    ...profileScoped(),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
     method: 'POST'
   })
@@ -767,6 +771,7 @@ export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provi
 
 export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
   return window.hermesDesktop.api<CustomEndpointsResponse>({
+    ...profileScoped(),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })

@@ -296,6 +296,25 @@ You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolv
 **`[scriptblock]::Create(...)` fails with `The assignment expression is not valid`.**
 Your download of `install.ps1` picked up a UTF-8 BOM. The `irm | iex` form strips BOMs automatically; `[scriptblock]::Create((irm ...))` does not. Re-run with the simple `irm | iex` form, or download the script manually and save it without a BOM via `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`.
 
+**Corporate TLS proxy or private CA errors.**
+On corporate-managed Windows machines, your organization's root CA may already be installed in the Windows Root / CA stores. Some stdlib Windows trust paths can use those stores, but Python packages, `certifi`, Node, and other OpenSSL-backed tooling may still use their own trust bundle and fail with certificate verification errors.
+
+For Hermes' Python venv, install `pip-system-certs`. It auto-activates when installed through its `.pth` startup hook; your code does not need to import it:
+
+```bash
+cd "%LOCALAPPDATA%\hermes"
+./bin/uv.exe pip install --python "./hermes-agent/venv/Scripts/python.exe" pip-system-certs
+```
+
+If a tool or library explicitly supports PEM bundle overrides, ask your IT team for the CA bundle and set only the variables that path consumes:
+
+```powershell
+$env:HERMES_CA_BUNDLE = "C:\path\to\corporate-ca.pem"
+$env:REQUESTS_CA_BUNDLE = "C:\path\to\corporate-ca.pem"
+$env:SSL_CERT_FILE = "C:\path\to\corporate-ca.pem"
+$env:NODE_EXTRA_CA_CERTS = "C:\path\to\corporate-ca.pem"
+```
+
 **Gateway won't stay running after restart.**
 Check `hermes gateway status` — it merges the schtasks entry, the Startup-folder shortcut (if used), and the live PID. If schtasks is registered but not running, group policy may be blocking `ONLOGON` triggers. Run `schtasks /Query /TN HermesGateway /V /FO LIST` to see the task's failure reason, or fall back to the Startup-folder path by uninstalling and reinstalling with `HERMES_GATEWAY_FORCE_STARTUP=1`.
 

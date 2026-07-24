@@ -712,6 +712,31 @@ class TestValidateApiFallback:
         assert result["recognized"] is False
         assert "note" in result["message"].lower()
 
+
+class TestValidateEmptyCatalog:
+    """#58826: a REACHABLE but empty catalog (`[]` — endpoint responded with no
+    models) is distinct from an UNREACHABLE probe (`None`). An empty `[]` must
+    NOT fall through to the generic no-catalog fallback that accepts arbitrary
+    IDs; only `None` (endpoint down) should.
+    """
+
+    def test_empty_catalog_rejects_unknown_model(self):
+        # Endpoint is live yet lists nothing -> an unlisted model is rejected.
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = _validate("anthropic/claude-nonexistent", api_models=[])
+        assert result["accepted"] is False
+        assert "not found" in result["message"].lower()
+
+    def test_empty_catalog_rejects_where_unreachable_soft_accepts(self):
+        # The crux of #58826: `[]` (reachable, empty) must NOT behave like
+        # `None` (unreachable). An unreachable probe soft-accepts an unknown
+        # model; a reachable-empty catalog rejects it.
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            empty = _validate("totally-made-up-model", api_models=[])
+            unreachable = _validate("totally-made-up-model", api_models=None)
+        assert empty["accepted"] is False
+        assert unreachable["accepted"] is True
+
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(
             "hermes_cli.models.probe_api_models",

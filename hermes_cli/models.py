@@ -4695,6 +4695,14 @@ def validate_requested_model(
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
+        # ponytail (#58826): distinguish a REACHABLE empty catalog (`[]`,
+        # endpoint responded with no models) from an UNREACHABLE probe
+        # (`None`). Both are falsy, but only `None` should fall through to the
+        # generic no-catalog fallback that accepts arbitrary IDs. An empty `[]`
+        # means the endpoint is live yet lists nothing, so the model-not-found
+        # branch below correctly rejects unlisted IDs (after the curated-catalog
+        # check). The earlier `if api_models:` form let a successful empty
+        # response slip past validation and accept any model name.
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs
         # prefixed with "models/" (e.g. "models/gemini-2.5-flash") — native
         # Gemini-API convention.  Our curated list and user input both use

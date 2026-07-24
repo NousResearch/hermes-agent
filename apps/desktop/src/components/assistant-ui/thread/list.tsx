@@ -27,6 +27,15 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
+import {
+  BOTTOM,
+  recallSessionScroll,
+  recordSessionScroll,
+  type SessionScrollState,
+  stateFromMetrics,
+  targetScrollTop
+} from './session-scroll-memory'
+
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
 export type MessageGroup = { id: string; weight: number } & (
@@ -216,6 +225,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const hiddenCount = firstVisibleGroupIndex(groups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
+  // Live scroll state of the CURRENT session, updated on every scroll event
+  // and persisted per session key when this key's restore effect cleans up
+  // (#70101). Scroll events are the complete capture points: no scroll event
+  // means scrollTop hasn't moved since the last one, and the cleanup runs
+  // synchronously in the commit that swaps sessions — before any clamp from
+  // the new transcript can fire.
+  const liveScrollStateRef = useRef<SessionScrollState>(BOTTOM)
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
@@ -234,6 +250,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
+
+  // Track where the user is in the current session (sticky-bottom vs exact
+  // offset) so the restore effect below can put them back there (#70101).
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const track = () => {
+      liveScrollStateRef.current = stateFromMetrics(el)
+    }
+
+    el.addEventListener('scroll', track, { passive: true })
+
+    return () => el.removeEventListener('scroll', track)
+  }, [scrollRef])
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
@@ -262,12 +296,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // New run → snap to the latest turn.
   useAuiEvent('thread.runStart', () => void scrollToBottom())
 
-  // Reset the cap and pin to bottom on mount + every session switch (messages
-  // swap in place on a long-lived runtime, so sessionKey is the only signal).
-  // The swap is multi-step and lays out over many frames; letting the library
-  // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
-  // Instead: quiet it, glue to the true bottom until the height holds steady,
-  // then hand back locked. Live streaming afterward uses the normal resize follow.
+  // Restore the remembered scroll state on mount + every session switch
+  // (messages swap in place on a long-lived runtime, so sessionKey is the only
+  // signal). Sticky-bottom sessions pin to the bottom; sessions the user left
+  // mid-read reapply their exact distance-from-bottom (#70101). The swap is
+  // multi-step and lays out over many frames; letting the library follow
+  // re-pins every frame to a moving target — visible as ~10 scroll jumps.
+  // Instead: quiet it, glue to the remembered target until the height holds
+  // steady, then hand back (locked at the bottom, escaped at an offset). Live
+  // streaming afterward uses the normal resize follow.
+  //
+  // A COLD switch changes sessionKey while the transcript is still empty and
+  // the prefetched messages land later under the SAME key (see the render
+  // budget above), so the restore must re-run at first content — that's what
+  // `restoredContentKeyRef` gates: one restore per key AFTER its transcript
+  // exists. The effect cleanup is the record point: it runs with the OLD
+  // session's closure, synchronously in the commit that swaps transcripts.
+  const restoredContentKeyRef = useRef<string | null | undefined>(undefined)
+
   useLayoutEffect(() => {
     const el = scrollRef.current
 
@@ -275,8 +321,42 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    // Record only states that were actually shown under this key: the gate
+    // ref equals this closure's sessionKey exactly when this instance restored
+    // (cleanups run before the next instance's effect, so a later cold-switch
+    // instance clearing the ref can't spoof it). An empty-transcript instance
+    // still holds the PREVIOUS session's live state, which must not be filed
+    // under this key.
+    const record = () => {
+      if (restoredContentKeyRef.current === sessionKey) {
+        recordSessionScroll(sessionKey, liveScrollStateRef.current)
+      }
+    }
+
+    if (!hasGroups) {
+      // Cold switch: transcript not landed yet (or emptied for a reload). The
+      // DOM collapse clamps scrollTop to garbage, so forget the restore gate —
+      // when content (re)arrives, reapply from memory. The previous session's
+      // real state was already recorded by its own cleanup just before this.
+      restoredContentKeyRef.current = null
+
+      return record
+    }
+
+    if (restoredContentKeyRef.current === sessionKey) {
+      return record
+    }
+
+    restoredContentKeyRef.current = sessionKey
+
+    const remembered = recallSessionScroll(sessionKey)
+
+    // The previous session's parting state must not leak into this one: from
+    // here every scroll event describes the restored session.
+    liveScrollStateRef.current = remembered
+
     stopScroll()
-    el.scrollTop = el.scrollHeight
+    el.scrollTop = targetScrollTop(remembered, el)
 
     let frame = 0
     let stableFrames = 0
@@ -290,16 +370,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
 
       const height = node.scrollHeight
+      // An offset deeper than the current scroll range means content is still
+      // arriving (e.g. the startTransition budget backfill above) — a quiet
+      // frame in that state is not stability, keep waiting for the height.
+      const clamped = remembered.kind === 'offset' && remembered.fromBottom > Math.max(0, height - node.clientHeight)
 
-      stableFrames = height === lastHeight ? stableFrames + 1 : 0
+      stableFrames = height === lastHeight && !clamped ? stableFrames + 1 : 0
       lastHeight = height
-      node.scrollTop = height
+      node.scrollTop = targetScrollTop(remembered, node)
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
-        void scrollToBottom('instant')
+        if (remembered.kind === 'bottom') {
+          // Hand back to use-stick-to-bottom locked, so late async growth
+          // (images, highlight) keeps following the bottom.
+          void scrollToBottom('instant')
+        }
 
         return
       }
@@ -309,8 +397,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
-    return () => cancelAnimationFrame(rafId)
-  }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
+    return () => {
+      cancelAnimationFrame(rafId)
+      record()
+    }
+  }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and

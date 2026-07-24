@@ -192,6 +192,40 @@ class TestIsAvailable:
         monkeypatch.setenv("EXA_API_KEY", "real")
         assert p.is_available() is True
 
+    def test_exa_client_sets_user_agent_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Regression: Cloudflare 403s (error 1010) the Exa SDK's default
+        User-Agent. _get_exa_client must set a standard User-Agent header on
+        the client so requests behind Cloudflare aren't rejected."""
+        import sys
+        import types
+
+        captured = {}
+
+        class _FakeExa:
+            def __init__(self, api_key=None):
+                captured["api_key"] = api_key
+                self.headers = {}
+
+        fake_module = types.ModuleType("exa_py")
+        fake_module.Exa = _FakeExa
+        monkeypatch.setitem(sys.modules, "exa_py", fake_module)
+        # _get_exa_client tries lazy-installing the SDK first; we've already
+        # injected a fake exa_py, so stub the ensure call to a no-op.
+        import tools.lazy_deps as _lazy
+        monkeypatch.setattr(_lazy, "ensure", lambda *a, **k: None)
+        monkeypatch.setenv("EXA_API_KEY", "real-key")
+
+        import tools.web_tools as _wt
+        monkeypatch.setattr(_wt, "_exa_client", None, raising=False)
+
+        from plugins.web.exa.provider import _get_exa_client
+
+        client = _get_exa_client()
+        assert "User-Agent" in client.headers
+        assert "Hermes-Agent" in client.headers["User-Agent"]
+        # Existing integration header preserved.
+        assert client.headers["x-exa-integration"] == "hermes-agent"
+
     def test_parallel_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider

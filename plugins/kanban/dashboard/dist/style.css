@@ -1542,6 +1542,19 @@
   padding-left: 0.5rem;
   border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 }
+/* Bulk review: comment box + "Comment & unblock" button. Wider input than the
+   priority field since it holds prose; same left-border separator as the other
+   bulk groups. */
+.hermes-kanban-bulk-comment {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-bulk-comment > input {
+  min-width: 12rem;
+}
 .hermes-kanban-bulk-reclaim-first {
   display: inline-flex;
   align-items: center;

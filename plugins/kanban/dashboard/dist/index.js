@@ -890,6 +890,32 @@
       if (col.tasks && col.tasks.length > 0) setLastSelectedId(col.tasks[0].id);
     }, [filteredBoard, selectedIds]);
 
+    // Bulk review: post one comment to every selected card, then unblock them
+    // all (status -> ready). Lets a reviewer clear a stack of review-required
+    // cards in a single pass instead of opening each drawer to comment. Per-card
+    // comment failures don't abort siblings (same spirit as /tasks/bulk).
+    const bulkCommentUnblock = useCallback(function (commentBody) {
+      const body = (commentBody || "").trim();
+      const ids = Array.from(selectedIds);
+      if (!body || ids.length === 0) return Promise.resolve();
+      return Promise.all(ids.map(function (id) {
+        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(id)}/comments`, board), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: body }),
+        }).catch(function () { /* independent — keep going */ });
+      })).then(function () {
+        return SDK.fetchJSON(withBoard(`${API}/tasks/bulk`, board), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ids, status: "ready" }),
+        });
+      }).then(function () {
+        loadBoard();
+        clearSelected();
+      }).catch(function (e) { setError(String(e && e.message ? e.message : e)); });
+    }, [selectedIds, board]);
+
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
@@ -1089,6 +1115,7 @@
          count: selectedIds.size,
          assignees: (boardData && boardData.assignees) || [],
          onApply: applyBulk,
+         onCommentUnblock: bulkCommentUnblock,
          onClear: clearSelected,
          onSelectAllVisible: selectAllVisible,
          onDelete: deleteSelected,
@@ -2256,9 +2283,35 @@
     const [assignee, setAssignee] = useState("");
     const [reclaimFirst, setReclaimFirst] = useState(false);
     const [priority, setPriority] = useState("");
+    const [comment, setComment] = useState("");
+    const submitCommentUnblock = function () {
+      if (!comment.trim() || !props.onCommentUnblock) return;
+      props.onCommentUnblock(comment);
+      setComment("");
+    };
     return h("div", { className: "hermes-kanban-bulk" },
       h("span", { className: "hermes-kanban-bulk-count" },
         `${props.count} ${tx(t, "selected", "selected")}`),
+      h("div", {
+        className: "hermes-kanban-bulk-comment",
+        title: "Post this comment to every selected card, then unblock them all (promote to Ready). Clears review-required cards in one pass.",
+      },
+        h(Input, {
+          value: comment,
+          onChange: function (e) { setComment(e.target.value); },
+          onKeyDown: function (e) {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitCommentUnblock(); }
+          },
+          placeholder: tx(t, "bulkCommentPlaceholder", "Review comment…"),
+          className: "h-8 text-sm",
+        }),
+        h(Button, {
+          onClick: submitCommentUnblock,
+          size: "sm",
+          disabled: !comment.trim(),
+          title: "Comment on + unblock all selected",
+        }, tx(t, "commentUnblock", "Comment & unblock")),
+      ),
       h(Button, {
         onClick: function () { props.onApply({ status: "todo" }); },
         size: "sm",

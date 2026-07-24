@@ -104,6 +104,8 @@ Close the listed processes and re-run. If you're sure the concurrent process won
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 
+When the guard lists your **own** dashboard or headless backend (`hermes dashboard` / `hermes serve` — common when you auto-start the dashboard at login), pass `hermes update --stop-services` instead of stopping them by hand. It gracefully stops this install's dashboard/serve processes before the dependency sync, records each one's command line and working directory, and relaunches them (detached, in the background) once the update finishes — including when the update fails or aborts, so your services are never left silently stopped. It never touches Desktop-app-managed backends (close the app instead) or processes from other installs, and anything it could not stop is still caught by the guard above.
+
 Expected output looks like:
 
 ```

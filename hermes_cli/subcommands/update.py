@@ -73,4 +73,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
+    update_parser.add_argument(
+        "--stop-services",
+        action="store_true",
+        default=False,
+        help="Stop hermes dashboard / hermes serve processes running from this install before the dependency sync, then relaunch them with their original command line and working directory once the update finishes — including when it fails or is aborted (not if the updater itself is force-killed). Desktop-app-managed backends are never touched (close the app instead), and processes from other installs still trigger the venv guard (see --force-venv).",
+    )
     update_parser.set_defaults(func=cmd_update)

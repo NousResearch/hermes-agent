@@ -6,6 +6,7 @@ import {
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
+  shouldExitOnIdleCtrlC,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
 
@@ -56,6 +57,17 @@ describe('shouldAllowIdleHotkeyExit', () => {
 
   it('disables idle exit hotkeys in dashboard chat', () => {
     expect(shouldAllowIdleHotkeyExit(true)).toBe(false)
+  })
+})
+
+describe('shouldExitOnIdleCtrlC', () => {
+  it('keeps the legacy idle Ctrl+C exit when the toggle is unset or true', () => {
+    expect(shouldExitOnIdleCtrlC()).toBe(true)
+    expect(shouldExitOnIdleCtrlC(true)).toBe(true)
+  })
+
+  it('suppresses idle Ctrl+C exit when display.exit_on_ctrl_c is false', () => {
+    expect(shouldExitOnIdleCtrlC(false)).toBe(false)
   })
 })
 

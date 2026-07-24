@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { NewSessionHeader } from './new-session-header'
+import { isFreshSessionDraft, NewSessionHeader } from './new-session-header'
 
 afterEach(cleanup)
 
@@ -58,5 +58,37 @@ describe('NewSessionHeader', () => {
     render(<NewSessionHeader cwd="/repos/hermes" profile="work" projectName="Hermes" showProfileTag />)
 
     expect(screen.getByTestId('profile-tag').textContent).toBe('work')
+  })
+})
+
+describe('isFreshSessionDraft', () => {
+  it('uses the workspace header before a session has started', () => {
+    expect(
+      isFreshSessionDraft({
+        activeSessionId: null,
+        isRoutedSessionView: false,
+        selectedSessionId: null
+      })
+    ).toBe(true)
+  })
+
+  it('returns to the session header as soon as the first session starts', () => {
+    expect(
+      isFreshSessionDraft({
+        activeSessionId: 'runtime-session',
+        isRoutedSessionView: false,
+        selectedSessionId: null
+      })
+    ).toBe(false)
+  })
+
+  it('keeps routed and stored sessions on the session header', () => {
+    expect(
+      isFreshSessionDraft({
+        activeSessionId: null,
+        isRoutedSessionView: true,
+        selectedSessionId: 'stored-session'
+      })
+    ).toBe(false)
   })
 })

@@ -13,6 +13,20 @@ interface NewSessionHeaderProps {
   showProfileTag: boolean
 }
 
+interface FreshSessionDraftState {
+  activeSessionId: null | string
+  isRoutedSessionView: boolean
+  selectedSessionId: null | string
+}
+
+export function isFreshSessionDraft({
+  activeSessionId,
+  isRoutedSessionView,
+  selectedSessionId
+}: FreshSessionDraftState): boolean {
+  return !selectedSessionId && !activeSessionId && !isRoutedSessionView
+}
+
 function workspaceLeaf(cwd: string): string {
   const normalized = cwd.trim().replace(/[\\/]+$/, '')
 

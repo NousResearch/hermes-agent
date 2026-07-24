@@ -10,6 +10,8 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeLoading,
+  $projectTreeProfile,
   $removedSessionIds,
   $sessionMutationsInFlight,
   $worktreeRefreshToken,
@@ -425,6 +427,36 @@ describe('project tree profile isolation', () => {
     await pendingA
 
     expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTreeProfile.get()).toBe('profile-b')
+  })
+
+  it('does not publish a response after the profile changes on the same gateway', async () => {
+    let resolveTree: ((value: unknown) => void) | undefined
+
+    const response = new Promise(resolve => {
+      resolveTree = resolve
+    })
+
+    const gateway = { connectionState: 'open', request: vi.fn(() => response) }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('profile-a')
+    $projectTree.set([])
+    $projectTreeProfile.set(null)
+
+    const pending = refreshProjectTree()
+    $activeGatewayProfile.set('profile-b')
+    resolveTree?.({
+      active_id: null,
+      projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
+      scoped_session_ids: []
+    })
+    await pending
+
+    expect($projectTree.get()).toEqual([])
+    expect($projectTreeLoading.get()).toBe(false)
+    expect($projectTreeProfile.get()).toBeNull()
   })
 })
 

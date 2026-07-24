@@ -112,6 +112,27 @@ _API_CALL_MODULES = frozenset({
 })
 
 
+def _is_local_processing_error(error: BaseException) -> bool:
+    """Return whether ``error`` came from a known local-processing helper.
+
+    The outer loop handles both provider calls and local response processing,
+    so the exception type/message alone cannot identify a deterministic local
+    failure.  A traceback is local only when it reaches an allowlisted local
+    helper and no API-call helper.  The latter boundary matters because
+    ``chat_completion_helpers`` is used by both phases.
+    """
+    tb_module_names: set[str] = set()
+    tb = error.__traceback__
+    while tb is not None:
+        filename = os.path.splitext(os.path.basename(tb.tb_frame.f_code.co_filename))[0]
+        tb_module_names.add(filename)
+        tb = tb.tb_next
+
+    hit_local = bool(tb_module_names & _LOCAL_PROCESSING_MODULES)
+    hit_api = bool(tb_module_names & _API_CALL_MODULES)
+    return hit_local and not hit_api
+
+
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn.
 
@@ -6406,19 +6427,9 @@ def run_conversation(
             # local post-processing helpers and never entered the interruptible
             # API-call helpers, it is almost certainly a local processing bug.
             # (#66267)
-            tb_module_names: set[str] = set()
-            _tb = e.__traceback__
-            while _tb is not None:
-                _fname = os.path.splitext(os.path.basename(_tb.tb_frame.f_code.co_filename))[0]
-                tb_module_names.add(_fname)
-                _tb = _tb.tb_next
+            _local_processing_error = _is_local_processing_error(e)
 
-            _hit_local = bool(tb_module_names & _LOCAL_PROCESSING_MODULES)
-            _hit_api = bool(tb_module_names & _API_CALL_MODULES)
-
-            _is_local_processing_error = _hit_local and not _hit_api
-
-            if _is_local_processing_error:
+            if _local_processing_error:
                 error_msg = (
                     f"Error during local message processing after "
                     f"OpenAI-compatible API call #{api_call_count}: {str(e)}"
@@ -6475,10 +6486,10 @@ def run_conversation(
             # Local processing errors are deterministic — stop immediately
             # rather than retrying until the budget is exhausted.
             if (
-                _is_local_processing_error
+                _local_processing_error
                 or api_call_count >= agent.max_iterations - 1
             ):
-                if _is_local_processing_error:
+                if _local_processing_error:
                     _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
                 else:

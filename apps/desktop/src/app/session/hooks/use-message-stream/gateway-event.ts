@@ -461,6 +461,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
           })
         }
+      } else if (event.type === 'session.usage') {
+        // Live usage tick emitted while a turn is mid-flight (see tui_gateway
+        // _start_usage_ticker) so the status-bar context window tracks growth
+        // during the turn instead of only jumping at message.complete.
+        if (payload?.usage && sessionId) {
+          // Per-session twin first: a focused secondary tile reads this cache,
+          // while the primary-only global mirrors the active session.
+          updateSessionState(sessionId, state => ({
+            ...state,
+            usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+          }))
+
+          if (isActiveEvent) {
+            setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          }
+        }
       } else if (event.type === 'message.start') {
         if (!sessionId) {
           return

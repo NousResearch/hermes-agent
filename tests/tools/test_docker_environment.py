@@ -54,6 +54,24 @@ def _make_dummy_env(**kwargs):
     )
 
 
+def _docker_run_args(calls):
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    return run_calls[0][0]
+
+
+def _docker_volume_specs(run_args):
+    specs = []
+    index = 0
+    while index < len(run_args):
+        if run_args[index] == "-v" and index + 1 < len(run_args):
+            specs.append(run_args[index + 1])
+            index += 2
+            continue
+        index += 1
+    return specs
+
+
 def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, caplog):
     """When docker cannot be found, raise a clear error before container setup."""
 
@@ -185,6 +203,28 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
     assert run_args_str.count(":/workspace") == 1
 
 
+def test_auto_mount_not_skipped_for_workspace_submount(monkeypatch, tmp_path):
+    """Submounts under /workspace should not suppress the main /workspace mount."""
+    project_dir = tmp_path / "my-project"
+    project_dir.mkdir()
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        host_cwd=str(project_dir),
+        auto_mount_cwd=True,
+        volumes=[f"{other_dir}:/workspace/code"],
+    )
+
+    volume_specs = _docker_volume_specs(_docker_run_args(calls))
+    assert f"{project_dir}:/workspace" in volume_specs
+    assert f"{other_dir}:/workspace/code" in volume_specs
+
+
 def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     """Persistent mode should still prefer the configured host cwd at /workspace."""
     project_dir = tmp_path / "my-project"
@@ -206,6 +246,29 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
+
+
+def test_workspace_submount_keeps_persistent_workspace_bind(monkeypatch, tmp_path):
+    """Persistent workspace bind should remain when only a /workspace subpath is mounted."""
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        cwd="/workspace",
+        persistent_filesystem=True,
+        task_id="test-persistent-submount",
+        volumes=[f"{other_dir}:/workspace/notes"],
+    )
+
+    volume_specs = _docker_volume_specs(_docker_run_args(calls))
+    assert any(
+        spec.endswith("/sandboxes/docker/test-persistent-submount/workspace:/workspace")
+        for spec in volume_specs
+    )
+    assert f"{other_dir}:/workspace/notes" in volume_specs
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):

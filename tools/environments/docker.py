@@ -93,6 +93,22 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+def _docker_volume_destination(spec: str) -> str:
+    """Return the container destination path from a docker ``-v`` spec."""
+    parts = spec.strip().rsplit(":", 2)
+    if len(parts) < 2:
+        return ""
+
+    destination = parts[-1]
+    if not destination.startswith("/"):
+        if len(parts) < 3 or not parts[-2].startswith("/"):
+            return ""
+        destination = parts[-2]
+
+    destination = destination.rstrip("/")
+    return destination or "/"
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -659,7 +675,7 @@ class DockerEnvironment(BaseEnvironment):
                 continue
             if ":" in vol:
                 volume_args.extend(["-v", vol])
-                if ":/workspace" in vol:
+                if _docker_volume_destination(vol) == "/workspace":
                     workspace_explicitly_mounted = True
             else:
                 logger.warning(f"Docker volume '{vol}' missing colon, skipping")

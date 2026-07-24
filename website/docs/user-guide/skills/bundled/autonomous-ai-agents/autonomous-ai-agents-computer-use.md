@@ -19,7 +19,7 @@ whenever the `computer_use` tool is available.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/computer-use` |
+| Path | `skills/autonomous-ai-agents/computer-use` |
 | Version | `2.0.0` |
 | Platforms | macos, windows, linux |
 | Tags | `computer-use`, `desktop`, `automation`, `gui`, `cross-platform` |

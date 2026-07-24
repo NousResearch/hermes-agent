@@ -1,5 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
+import asyncio
 import logging
 import sys
 import types
@@ -658,6 +659,44 @@ class TestPluginHooks:
         )
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
+
+    @pytest.mark.asyncio
+    async def test_async_hook_runs_on_callers_event_loop(self):
+        """Async hooks retain access to loop-bound gateway resources."""
+        mgr = PluginManager()
+        caller_loop = asyncio.get_running_loop()
+
+        async def async_hook(**kwargs):
+            assert asyncio.get_running_loop() is caller_loop
+            return {"action": "skip", "reason": kwargs["reason"]}
+
+        mgr._hooks.setdefault("pre_gateway_dispatch", []).append(async_hook)
+
+        results = await mgr.invoke_hook_async(
+            "pre_gateway_dispatch",
+            reason="handled",
+        )
+
+        assert results == [{"action": "skip", "reason": "handled"}]
+
+    @pytest.mark.asyncio
+    async def test_async_hook_isolates_callback_failures(self):
+        """One failing callback does not prevent later hooks from running."""
+        mgr = PluginManager()
+
+        async def broken_hook(**kwargs):
+            raise RuntimeError("boom")
+
+        async def healthy_hook(**kwargs):
+            return {"action": "allow"}
+
+        mgr._hooks.setdefault("pre_gateway_dispatch", []).extend(
+            [broken_hook, healthy_hook]
+        )
+
+        results = await mgr.invoke_hook_async("pre_gateway_dispatch")
+
+        assert results == [{"action": "allow"}]
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""

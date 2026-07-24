@@ -402,13 +402,22 @@ class HolographicMemoryProvider(MemoryProvider):
             return pre or None
 
         _PREF_PATTERNS = [
+            # English
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            # Chinese
+            re.compile(r'我(?:喜欢|偏好|要用|用|需要|想要|希望)\s*(.+)', re.UNICODE),
+            re.compile(r'我的(?:首选|偏好|默认|常用|常用|固定)\s*[是:：]?\s*(.+)', re.UNICODE),
+            re.compile(r'我(?:总是|永远|一般|通常|一直|从来都?不)\s*(.+)', re.UNICODE),
         ]
         _DECISION_PATTERNS = [
+            # English
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            # Chinese
+            re.compile(r'(?:我们|咱们)\s*(?:决定|同意|选(?:择|定)了?|商量好了?)\s*(?:[去]?要)?\s*(.+)', re.UNICODE),
+            re.compile(r'(?:这个项目|该项目)\s*(?:用|需要|依赖|要求)\s*(.+)', re.UNICODE),
         ]
 
         extracted = 0

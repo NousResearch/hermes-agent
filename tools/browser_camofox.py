@@ -946,4 +946,205 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     })
 
 
+# ---------------------------------------------------------------------------
+# Cookie import
+# ---------------------------------------------------------------------------
 
+_COOKIE_MAX_BYTES = 5 * 1024 * 1024
+_COOKIE_MAX_COUNT = 500
+_COOKIE_ALLOWED_FIELDS = (
+    "name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite",
+)
+
+
+def _netscape_parse(text: str) -> list:
+    """Parse Netscape-format cookie file text into Playwright cookie dicts.
+
+    Mirrors camofox-browser's ``parseNetscapeCookieFile`` (lib/cookies.js).
+    Supports ``#HttpOnly_`` prefix, BOM stripping, CRLF line endings, and
+    tab-containing values (joined from fields 7+).
+    """
+    cookies = []
+    cleaned = text.lstrip("\ufeff")
+
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            continue
+
+        http_only = False
+        working = line
+        if working.startswith("#HttpOnly_"):
+            http_only = True
+            working = working[len("#HttpOnly_"):]
+
+        parts = working.split("\t")
+        if len(parts) < 7:
+            continue
+
+        domain = parts[0]
+        cookie_path = parts[2]
+        secure = parts[3].upper() == "TRUE"
+        try:
+            expires = int(parts[4])
+        except ValueError:
+            continue
+        name = parts[5]
+        value = "\t".join(parts[6:])
+
+        cookies.append({
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": cookie_path,
+            "expires": expires,
+            "httpOnly": http_only,
+            "secure": secure,
+        })
+
+    return cookies
+
+
+def _resolve_cookies_dir() -> str:
+    """Return ``browser.camofox.cookies_dir`` with ``~`` expanded."""
+    raw = str(_get_camofox_config().get("cookies_dir") or "").strip()
+    if not raw:
+        raw = "~/.camofox/cookies"
+    return os.path.expanduser(raw)
+
+
+def _read_cookie_file(
+    cookies_path: str,
+    domain_suffix: Optional[str] = None,
+    max_bytes: int = _COOKIE_MAX_BYTES,
+) -> list:
+    """Read + parse a Netscape cookie file with path/size/domain guards.
+
+    Raises:
+        ValueError: when path escapes cookies_dir, or file exceeds max_bytes.
+        FileNotFoundError: when the resolved file is missing.
+    """
+    import os.path as _p
+    cookies_dir = _resolve_cookies_dir()
+    cookies_dir_abs = _p.realpath(cookies_dir)
+
+    if _p.isabs(cookies_path):
+        raise ValueError("cookiesPath must be a relative path within the cookies directory")
+
+    resolved = _p.realpath(_p.join(cookies_dir_abs, cookies_path))
+    if not (resolved == cookies_dir_abs or resolved.startswith(cookies_dir_abs + os.sep)):
+        raise ValueError("cookiesPath must be a relative path within the cookies directory")
+
+    if not _p.exists(resolved):
+        raise FileNotFoundError(f"Cookie file not found: {cookies_path}")
+
+    size = _p.getsize(resolved)
+    if size > max_bytes:
+        raise ValueError(f"Cookie file too large (max {max_bytes} bytes, got {size})")
+
+    with open(resolved, "r", encoding="utf-8") as fp:
+        text = fp.read()
+
+    cookies = _netscape_parse(text)
+    if domain_suffix:
+        cookies = [c for c in cookies if c["domain"].endswith(domain_suffix)]
+
+    sanitized = []
+    for c in cookies:
+        clean = {k: c[k] for k in _COOKIE_ALLOWED_FIELDS if k in c}
+        sanitized.append(clean)
+    return sanitized
+
+
+def camofox_import_cookies(
+    cookies_path: str,
+    domain_suffix: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Import Netscape-format cookies into the Camofox user session.
+
+    Reads ``cookies_path`` relative to ``browser.camofox.cookies_dir``
+    (default ``~/.camofox/cookies``), optionally filters by domain suffix,
+    sanitizes to Playwright cookie fields, then POSTs to
+    ``/sessions/{userId}/cookies`` with a Bearer token from
+    ``CAMOFOX_API_KEY``.
+    """
+    try:
+        api_key = os.getenv("CAMOFOX_API_KEY", "").strip()
+        if not api_key:
+            return tool_error(
+                "CAMOFOX_API_KEY is not set. Cookie import is disabled unless "
+                "you set CAMOFOX_API_KEY on both the camofox server and the "
+                "Hermes environment (see ~/.hermes/.env).",
+                success=False,
+            )
+
+        try:
+            cookies = _read_cookie_file(cookies_path, domain_suffix=domain_suffix)
+        except ValueError as e:
+            return tool_error(str(e), success=False)
+        except FileNotFoundError as e:
+            return tool_error(str(e), success=False)
+
+        if not cookies:
+            return tool_error(
+                "No cookies found in file (after optional domain filter).",
+                success=False,
+            )
+
+        if len(cookies) > _COOKIE_MAX_COUNT:
+            return tool_error(
+                f"Too many cookies ({len(cookies)}). Maximum is {_COOKIE_MAX_COUNT} per request.",
+                success=False,
+            )
+
+        session = _get_session(task_id)
+        base = get_camofox_url()
+        url = f"{base}/sessions/{session['user_id']}/cookies"
+
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"cookies": cookies},
+            timeout=_get_command_timeout(),
+        )
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            err_msg = ""
+            if e.response is not None:
+                try:
+                    err_msg = (e.response.json() or {}).get("error", "")
+                except ValueError:
+                    err_msg = ""
+            detail = err_msg or str(e)
+            return tool_error(
+                f"Camofox cookie import failed (HTTP {status}): {detail}",
+                success=False,
+            )
+
+        try:
+            data = resp.json() or {}
+        except ValueError:
+            data = {}
+        count = data.get("count", len(cookies)) if isinstance(data, dict) else len(cookies)
+
+        logger.info(
+            "camofox cookies imported task=%s user=%s count=%d",
+            task_id, session["user_id"], count,
+        )
+        return json.dumps({
+            "success": True,
+            "imported": count,
+            "user_id": session["user_id"],
+        })
+    except requests.ConnectionError:
+        return tool_error(
+            f"Cannot connect to Camofox at {get_camofox_url()}. Is the server running?",
+            success=False,
+        )
+    except Exception as e:
+        return tool_error(str(e), success=False)

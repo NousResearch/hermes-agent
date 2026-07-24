@@ -3,7 +3,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
+import { DEFAULT_LOCALE, localeConfigValue, resolveInitialLocale } from './languages'
 import { setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
 
@@ -33,6 +33,24 @@ const defaultConfigClient: I18nConfigClient = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+// The operating-system UI languages in priority order. In the Electron renderer
+// `navigator.languages` follows Chromium's locale, which is seeded from
+// `app.getLocale()` (the same OS locale the main process uses for the
+// spellchecker). Reading it here keeps the detection in the renderer with no
+// extra IPC plumbing. Guarded so non-browser environments (SSR/tests without a
+// navigator) fall back to an empty list.
+function getSystemPreferredLocales(): readonly string[] {
+  if (typeof navigator === 'undefined') {
+    return []
+  }
+
+  if (Array.isArray(navigator.languages) && navigator.languages.length > 0) {
+    return navigator.languages
+  }
+
+  return typeof navigator.language === 'string' && navigator.language ? [navigator.language] : []
 }
 
 export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
@@ -82,7 +100,9 @@ export interface I18nProviderProps {
 }
 
 export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
-  const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
+  const [locale, setLocaleState] = useState<Locale>(() =>
+    resolveInitialLocale(initialLocale, getSystemPreferredLocales())
+  )
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
@@ -108,7 +128,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       .getConfig()
       .then(config => {
         if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+          setLocaleState(resolveInitialLocale(getConfigDisplayLanguage(config), getSystemPreferredLocales()))
         }
       })
       .catch(error => {

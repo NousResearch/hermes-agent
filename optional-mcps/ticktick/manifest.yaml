@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ticktick
+description: Find, create, and update TickTick tasks, projects, and habits.
+source: https://help.ticktick.com/articles/7438129581631995904
+
+# TickTick ships a remote MCP server with native OAuth 2.1 (authorization
+# code + PKCE, code_challenge_method S256) and Dynamic Client Registration
+# over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager handle
+# discovery, dynamic registration, PKCE, and token exchange, so there is
+# nothing to install locally. The endpoint is the bare host (POST /), which
+# answers an unauthenticated probe with a 401 + WWW-Authenticate Bearer
+# challenge pointing at its protected-resource metadata.
+transport:
+  type: http
+  url: https://mcp.ticktick.com
+
+auth:
+  type: oauth
+  # No `provider:` here. This is native MCP OAuth (case 1), not a third-party
+  # provider like Google, so the MCP client triggers the browser flow on the
+  # first probe / first connect. TickTick also accepts a Bearer token from
+  # Settings > Account > API Token. Set it on the server entry by hand if you
+  # would rather skip the browser flow.
+
+# Tool selection at install time:
+# TickTick's MCP server exposes a task-management surface (find/get/list plus
+# create/update across tasks, projects, and habits). We leave `default_enabled`
+# unset, like the linear entry, so the install-time checklist starts with
+# everything pre-checked and users prune what they don't want.
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with
+  TickTick. After auth, restart your Hermes session so the TickTick tools
+  are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure ticktick

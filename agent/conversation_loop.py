@@ -5970,10 +5970,11 @@ def run_conversation(
                         and not _has_inline_thinking  # thinking model still working — let prefill handle
                     ):
                         agent._post_tool_empty_retried = True
-                        # Clear stale narration so it doesn't resurface
-                        # on a later empty response after the nudge.
-                        agent._last_content_with_tools = None
-                        agent._last_content_tools_all_housekeeping = False
+                        # Preserve _last_content_with_tools as a last-resort
+                        # fallback.  If the nudge fails to wake the model and
+                        # all retries exhaust, we surface the captured content
+                        # instead of returning "(empty)" — a partial visible
+                        # answer is better than silence.
                         logger.info(
                             "Empty response after tool calls — nudging model "
                             "to continue processing"
@@ -6103,6 +6104,27 @@ def run_conversation(
                     # Surface the buffered retry/fallback trace so the
                     # user can see what was attempted before "(empty)".
                     agent._flush_status_buffer()
+
+                    # ── Last-resort fallback: prior-turn content ──
+                    # If the model delivered visible text alongside
+                    # tool calls in a prior turn (e.g. "Let me check
+                    # the config...") but then went silent, surface
+                    # that text as the final response.  A partial
+                    # visible answer is better than "(empty)".
+                    _last_resort = getattr(agent, '_last_content_with_tools', None)
+                    if _last_resort:
+                        logger.info(
+                            "Empty response exhausted — using prior-turn "
+                            "content as last-resort fallback"
+                        )
+                        agent._emit_status(
+                            "↻ Model went silent — using earlier content as final answer"
+                        )
+                        agent._last_content_with_tools = None
+                        agent._last_content_tools_all_housekeeping = False
+                        final_response = agent._strip_think_blocks(_last_resort).strip()
+                        agent._response_was_previewed = True
+                        break
                     _turn_exit_reason = "empty_response_exhausted"
                     reasoning_text = agent._extract_reasoning(assistant_message)
                     agent._drop_trailing_empty_response_scaffolding(messages)

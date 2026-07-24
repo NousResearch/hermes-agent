@@ -49,16 +49,15 @@ def test_feishu_load_settings_allow_bots_defaults_to_none(monkeypatch):
     assert settings.allow_bots == "none"
 
 
-def test_feishu_load_settings_ignores_extra_allow_bots(monkeypatch):
-    # extra is ignored — env is single source of truth (yaml is bridged to env).
+def test_feishu_load_settings_prefers_extra_allow_bots(monkeypatch):
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
-    monkeypatch.delenv("FEISHU_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("FEISHU_ALLOW_BOTS", "none")
 
     settings = FeishuAdapter._load_settings(extra={"allow_bots": "all"})
-    assert settings.allow_bots == "none"
+    assert settings.allow_bots == "all"
 
 
 def test_feishu_load_settings_falls_back_to_env_when_extra_missing(monkeypatch):

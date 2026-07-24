@@ -1308,14 +1308,189 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+class _ThreadLocalLoopProxy:
+    """Thread-routing stand-in for ``lark_oapi.ws.client.loop``.
+
+    Why this exists: the upstream SDK stores its asyncio event loop in a
+    module-level global and reads it inside ``Client.start()`` /
+    ``_connect()`` / ``_receive_message_loop()`` via module-globals lookup.
+    That global is process-wide, so when the gateway multiplexes two or
+    more feishu websocket adapters (one per profile) the second worker
+    thread overwrites the loop the first one registered, and the first
+    adapter's receive loop crashes with::
+
+        Task ... got Future ... attached to a different loop
+
+    This proxy takes the place of that module global *once* (see
+    ``_install_thread_local_ws_loop_proxy``). Each feishu worker thread
+    then registers its own loop via ``set_thread_loop``; every attribute
+    access on the proxy is forwarded to the calling thread's loop, so
+    ``loop.run_until_complete(...)`` and ``loop.create_task(...)`` inside
+    the SDK always reach the loop that is actually running in *this*
+    thread — never the one another worker thread installed.
+    """
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def set_thread_loop(self, loop: Any) -> None:
+        self._local.loop = loop
+
+    def get_thread_loop(self) -> Any:
+        return getattr(self._local, "loop", None)
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for attributes Python doesn't find normally — i.e. all
+        # asyncio loop methods (run_until_complete, create_task, is_closed,
+        # …). Forward to the thread's registered loop.
+        loop = getattr(self._local, "loop", None)
+        if loop is None:
+            raise RuntimeError(
+                f"_ThreadLocalLoopProxy.{name} accessed from a thread that "
+                f"never called set_thread_loop(). Each feishu websocket "
+                f"worker thread must register its loop before invoking the "
+                f"Lark SDK."
+            )
+        return getattr(loop, name)
+
+
+_WS_LOOP_PROXY_LOCK = threading.Lock()
+
+
+def _install_thread_local_ws_loop_proxy() -> None:
+    """Replace ``lark_oapi.ws.client.loop`` with a thread-local proxy.
+
+    Idempotent (checks the current module attribute each call) and safe
+    to call from any thread. After the first call the SDK's
+    module-global ``loop`` is a :class:`_ThreadLocalLoopProxy`; each
+    feishu worker thread is then expected to register its own loop via
+    ``ws_client_module.loop.set_thread_loop(loop)`` before invoking the
+    SDK.
+    """
+    with _WS_LOOP_PROXY_LOCK:
+        import lark_oapi.ws.client as ws_client_module
+        if not isinstance(ws_client_module.loop, _ThreadLocalLoopProxy):
+            ws_client_module.loop = _ThreadLocalLoopProxy()
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
-    """Run the official Lark WS client in its own thread-local event loop."""
+    """Run the official Lark WS client in its own thread-local event loop.
+
+    The lark_oapi SDK's ws/client.py references a module-level ``loop`` global
+    for ``loop.create_task(...)`` calls inside ``_connect`` and
+    ``_receive_message_loop``. In multiplex mode several adapter threads start
+    near-simultaneously and each overwrites that global with its own loop, so a
+    later reconnect on an earlier client schedules coroutines on the wrong loop
+    ("Task got Future attached to a different loop"). We stash the per-thread
+    loop on the instance and patch the three methods that use the global so
+    they always reach for ``self._hermes_loop`` instead.
+    """
+    import types as _types
+    from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+
     import lark_oapi.ws.client as ws_client_module
+
+    from lark_oapi.ws.exception import (
+        ClientException as _LarkClientException,
+        ConnectionClosedException as _LarkConnectionClosedException,
+    )
+
+    _install_thread_local_ws_loop_proxy()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    ws_client_module.loop = loop
+    ws_client_module.loop.set_thread_loop(loop)
     adapter._ws_thread_loop = loop
+
+    ws_client._hermes_loop = loop
+
+    async def _patched_connect(self: Any) -> None:
+        _loop = self._hermes_loop
+        await self._lock.acquire()
+        if self._conn is not None:
+            self._lock.release()
+            return
+        try:
+            conn_url = self._get_conn_url()
+            u = _urlparse(conn_url)
+            q = _parse_qs(u.query)
+            conn_id = q["device_id"][0]
+            service_id = q["service_id"][0]
+            conn = await ws_client_module.websockets.connect(conn_url)
+            self._conn = conn
+            self._conn_url = conn_url
+            self._conn_id = conn_id
+            self._service_id = service_id
+            ws_client_module.logger.info(self._fmt_log("connected to {}", conn_url))
+            _loop.create_task(self._receive_message_loop())
+        except ws_client_module.websockets.InvalidStatusCode as e:
+            ws_client_module._parse_ws_conn_exception(e)
+        finally:
+            self._lock.release()
+
+    async def _patched_receive_message_loop(self: Any) -> None:
+        _loop = self._hermes_loop
+        try:
+            while True:
+                if self._conn is None:
+                    raise _LarkConnectionClosedException("connection is closed")
+                msg = await self._conn.recv()
+                _loop.create_task(self._handle_message(msg))
+        except Exception as e:
+            # ponytail: ConnectionClosedOK (code 1000) is a normal WS close —
+            # keepalive timeout or server-side rotation. The SDK's _auto_reconnect
+            # flag is unreliable here (adapter shutdown sets it to False, but
+            # mid-flight closes see whatever value was last set). The patched
+            # loop is the adapter's reconnect authority since we monkey-patched
+            # the SDK's loop out, so ALWAYS attempt reconnect here. Without this,
+            # the task silently dies (asyncio "Task exception was never retrieved")
+            # and the gateway serves 0 inbound feishu messages until restarted.
+            is_clean_close = "ConnectionClosed" in type(e).__name__
+            log_fn = (
+                ws_client_module.logger.info if is_clean_close
+                else ws_client_module.logger.error
+            )
+            log_fn(self._fmt_log("receive message loop exit, err: {}", e))
+            try:
+                await self._disconnect()
+            except Exception as disconnect_err:
+                ws_client_module.logger.warning(
+                    self._fmt_log("disconnect after receive loop exit failed: {}", disconnect_err),
+                )
+            try:
+                await self._reconnect()
+            except Exception as reconnect_err:
+                # Don't raise into the asyncio void — log loudly instead.
+                # Permanent failure surfaces via "0 inbound feishu messages"
+                # which a watchdog can detect.
+                ws_client_module.logger.error(
+                    self._fmt_log(
+                        "reconnect failed after receive loop exit: {} "
+                        "(feishu adapter for this profile is OFFLINE until gateway restart)",
+                        reconnect_err,
+                    ),
+                )
+
+    def _patched_start(self: Any) -> None:
+        _loop = self._hermes_loop
+        try:
+            _loop.run_until_complete(self._connect())
+        except _LarkClientException as e:
+            ws_client_module.logger.error(self._fmt_log("connect failed, err: {}", e))
+            raise e
+        except Exception as e:
+            ws_client_module.logger.error(self._fmt_log("connect failed, err: {}", e))
+            _loop.run_until_complete(self._disconnect())
+            if self._auto_reconnect:
+                _loop.run_until_complete(self._reconnect())
+            else:
+                raise e
+        _loop.create_task(self._ping_loop())
+        _loop.run_until_complete(ws_client_module._select())
+
+    ws_client.start = _types.MethodType(_patched_start, ws_client)
+    ws_client._connect = _types.MethodType(_patched_connect, ws_client)
+    ws_client._receive_message_loop = _types.MethodType(_patched_receive_message_loop, ws_client)
 
     original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
@@ -1543,7 +1718,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Env-only so adapter and gateway auth bypass share one source; yaml
         # feishu.allow_bots is bridged to this env var at config load.
-        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        allow_bots = str(extra.get("allow_bots") or os.getenv("FEISHU_ALLOW_BOTS", "none")).strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -5697,9 +5872,27 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
     Env vars take precedence over YAML. Returns None — flows through env.
     """
+    seeded = {}
+    raw_extra = feishu_cfg.get("extra")
+    if isinstance(raw_extra, dict):
+        seeded.update(raw_extra)
+    for key in (
+        "app_id",
+        "app_secret",
+        "domain",
+        "connection_mode",
+        "encrypt_key",
+        "verification_token",
+    ):
+        value = feishu_cfg.get(key)
+        if value:
+            seeded[key] = value
+
+    if "allow_bots" in feishu_cfg:
+        seeded["allow_bots"] = str(feishu_cfg["allow_bots"]).lower()
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

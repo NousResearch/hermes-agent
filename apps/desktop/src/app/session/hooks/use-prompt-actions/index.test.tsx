@@ -1402,7 +1402,7 @@ describe('usePromptActions redirectPrompt', () => {
     expect(await handle!.redirectPrompt('reconnect nudge')).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID, text: 'reconnect nudge' })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'reconnect nudge' })
     expect(handle!.activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
   })
@@ -1832,7 +1832,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     // First submit (stale id) → session.resume (stored id) → retry submit (fresh id).
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
   })
 
@@ -1876,7 +1876,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     )
 
     expect(await handle!.submitText('message after wake')).toBe(true)
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'work' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true,
+      profile: 'work'
+    })
 
     setSessions(() => [])
   })
@@ -1923,7 +1928,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
     )
 
     expect(await handle!.submitText('message after wake')).toBe(true)
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', profile: 'work' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true,
+      profile: 'work'
+    })
 
     vi.mocked(getSession).mockReset()
     setSessions(() => [])
@@ -1976,7 +1986,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
       session_id: 'rt-background-stale',
       text: 'queued background message after wake'
     })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'queued background message after wake'
@@ -2023,7 +2037,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
   })
 
@@ -2155,7 +2173,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[1]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
@@ -2198,7 +2220,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(calls.map(c => c.method)).toEqual(['session.resume', 'prompt.submit'])
-    expect(calls[0]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
+    expect(calls[0]?.params).toEqual({
+      session_id: STORED_SESSION_ID,
+      source: 'desktop',
+      omit_messages: true
+    })
     expect(calls[1]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
   })
 
@@ -2508,7 +2534,8 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
     expect(calls.find(c => c.method === 'session.resume')?.params).toEqual({
       session_id: STORED_SESSION_A,
-      source: 'desktop'
+      source: 'desktop',
+      omit_messages: true
     })
   })
 

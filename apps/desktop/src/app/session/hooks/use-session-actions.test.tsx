@@ -889,7 +889,7 @@ describe('resumeSession failure recovery', () => {
 
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
-    expect(resumeParams).toMatchObject({ source: 'desktop' })
+    expect(resumeParams).toMatchObject({ source: 'desktop', omit_messages: true })
   })
 
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
@@ -1238,6 +1238,10 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).toContain('session.activate')
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.activate',
+      expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
+    )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 

@@ -79,6 +79,7 @@ export function useSessionTileDelegate({
           requestGateway<SessionResumeResponse>('session.resume', {
             session_id: storedSessionId,
             cols: 96,
+            omit_messages: true,
             ...(profile ? { profile } : {})
           })
         ])

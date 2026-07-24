@@ -1155,7 +1155,30 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
 
-    merged = dict(os.environ | env)
+    explicit_home = next(
+        (
+            (key, value)
+            for key, value in env.items()
+            if value == ""
+            and (key == "HOME" or (_IS_WINDOWS and key.upper() == "HOME"))
+        ),
+        None,
+    )
+
+    if _IS_WINDOWS:
+        # Python mappings are case-sensitive even though the Windows process
+        # environment is not. Apply caller overrides with Windows semantics so
+        # `home=""` replaces inherited `HOME` instead of creating two keys whose
+        # winner depends on the later subprocess implementation.
+        merged = dict(os.environ)
+        for key, value in env.items():
+            folded_key = key.upper()
+            for existing_key in list(merged):
+                if existing_key.upper() == folded_key:
+                    merged.pop(existing_key)
+            merged[key] = value
+    else:
+        merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
@@ -1186,6 +1209,14 @@ def _make_run_env(env: dict) -> dict:
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
+    if explicit_home is not None:
+        home_key, home_value = explicit_home
+        for existing_key in list(run_env):
+            if existing_key == "HOME" or (
+                _IS_WINDOWS and existing_key.upper() == "HOME"
+            ):
+                run_env.pop(existing_key)
+        run_env[home_key] = home_value
 
     # Bridge ContextVar-based session vars into the subprocess env (with the
     # cross-session leak guard — strips _UNSET vars when a concurrent host is
@@ -1222,7 +1253,7 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
         return [], True
 
 
-def _resolve_shell_init_files() -> list[str]:
+def _resolve_shell_init_files(effective_env: dict[str, str] | None = None) -> list[str]:
     """Resolve the list of files to source before the login-shell snapshot.
 
     Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
@@ -1231,6 +1262,16 @@ def _resolve_shell_init_files() -> list[str]:
     an explicit list — once they have, Hermes trusts them.
     """
     explicit, auto_bashrc = _read_terminal_shell_init_config()
+    env = os.environ if effective_env is None else effective_env
+    casefolded_env = {key.upper(): value for key, value in env.items()} if _IS_WINDOWS else {}
+
+    def env_value(key: str, fallback: str) -> str:
+        value = env.get(key)
+        if value is not None:
+            return value
+        if _IS_WINDOWS:
+            return casefolded_env.get(key.upper(), fallback)
+        return fallback
 
     candidates: list[str] = []
     if explicit:
@@ -1256,7 +1297,34 @@ def _resolve_shell_init_files() -> list[str]:
     resolved: list[str] = []
     for raw in candidates:
         try:
-            path = os.path.expandvars(os.path.expanduser(raw))
+            path = re.sub(
+                r"\$(?:\{([^}]+)\}|([A-Za-z_][A-Za-z0-9_]*))",
+                lambda match: env_value(
+                    match.group(1) or match.group(2) or "",
+                    match.group(0),
+                ),
+                raw,
+            )
+            if _IS_WINDOWS:
+                path = re.sub(
+                    r"%([^%]+)%",
+                    lambda match: env_value(match.group(1), match.group(0)),
+                    path,
+                )
+            # A missing HOME may fall back to the process account, but an
+            # explicitly empty HOME belongs to the effective subprocess
+            # environment and must not source the process user's profile.
+            home = env_value("HOME", os.path.expanduser("~"))
+            if path == "~":
+                if not home:
+                    continue
+                path = home
+            elif path.startswith("~/") or (_IS_WINDOWS and path.startswith("~\\")):
+                if not home:
+                    continue
+                path = (ntpath if _IS_WINDOWS else os.path).join(home, path[2:])
+            else:
+                path = os.path.expanduser(path)
         except Exception:
             continue
         if path and os.path.isfile(path):
@@ -1359,6 +1427,7 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        run_env = _make_run_env(self.env)
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -1366,11 +1435,10 @@ class LocalEnvironment(BaseEnvironment):
         # Non-login invocations are already sourcing the snapshot and
         # don't need this.
         if login:
-            init_files = _resolve_shell_init_files()
+            init_files = _resolve_shell_init_files(run_env)
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
-        run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

@@ -13,12 +13,90 @@ import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
+    _make_run_env,
     _prepend_shell_init,
     _resolve_shell_init_files,
 )
 
 
 class TestResolveShellInitFiles:
+    def test_uses_effective_subprocess_home_instead_of_process_home(
+        self, tmp_path, monkeypatch
+    ):
+        process_home = tmp_path / "process-home"
+        subprocess_home = tmp_path / "subprocess-home"
+        process_home.mkdir()
+        subprocess_home.mkdir()
+        (process_home / ".profile").write_text("export WRONG_PROFILE=1\n")
+        expected = subprocess_home / ".profile"
+        expected.write_text("export EXPECTED_PROFILE=1\n")
+        monkeypatch.setenv("HOME", str(process_home))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            resolved = _resolve_shell_init_files({"HOME": str(subprocess_home)})
+
+        assert resolved == [str(expected)]
+
+    def test_explicit_empty_effective_home_never_falls_back_to_process_home(
+        self, tmp_path, monkeypatch
+    ):
+        process_home = tmp_path / "process-home"
+        process_home.mkdir()
+        (process_home / ".profile").write_text("export WRONG_PROFILE=1\n")
+        monkeypatch.setenv("HOME", str(process_home))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            resolved = _resolve_shell_init_files({"HOME": ""})
+
+        assert resolved == []
+
+    def test_windows_expansion_uses_effective_home_and_case_insensitive_env(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        monkeypatch.setattr(
+            "tools.environments.local._read_terminal_shell_init_config",
+            lambda: ([r"~\rc.sh", r"%INITDIR%\profile.sh"], False),
+        )
+        monkeypatch.setattr(os.path, "isfile", lambda _path: True)
+
+        effective_env = {
+            "HOME": r"C:\effective-home",
+            "InitDir": r"C:\effective-init",
+        }
+
+        assert _resolve_shell_init_files(effective_env) == [
+            r"C:\effective-home\rc.sh",
+            r"C:\effective-init\profile.sh",
+        ]
+
+    def test_windows_mixed_case_empty_home_override_wins_real_env_merge(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("tools.environments.local._IS_WINDOWS", True)
+        monkeypatch.setenv("HOME", r"C:\inherited-home")
+        monkeypatch.setenv("HERMES_REAL_HOME", r"C:\inherited-home")
+        monkeypatch.setattr(
+            "hermes_constants.apply_subprocess_home_env",
+            lambda effective_env: effective_env.__setitem__("HOME", r"C:\profile-home"),
+        )
+        monkeypatch.setattr(
+            "tools.environments.local._read_terminal_shell_init_config",
+            lambda: ([r"~\profile.sh"], False),
+        )
+        monkeypatch.setattr(os.path, "isfile", lambda _path: True)
+
+        effective_env = _make_run_env({"home": ""})
+
+        assert [key for key in effective_env if key.upper() == "HOME"] == ["home"]
+        assert _resolve_shell_init_files(effective_env) == []
+
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"
         bashrc.write_text('export MARKER=seen\n')
@@ -255,6 +333,76 @@ class TestSnapshotEndToEnd:
         output = result.get("output", "")
         assert "PROBE=probe-ok" in output
         assert "/opt/shell-init-probe/bin" in output
+
+    def test_snapshot_sources_effective_profile_home_and_preserves_run_identity(
+        self, tmp_path, monkeypatch
+    ):
+        outer_home = tmp_path / "outer-home"
+        hermes_home = tmp_path / "profile"
+        profile_home = hermes_home / "home"
+        outer_home.mkdir()
+        profile_home.mkdir(parents=True)
+        (outer_home / ".profile").write_text(
+            "export WRONG_OUTER_PROFILE=1\n"
+            "export PAPERCLIP_API_KEY=wrong-parent-key\n"
+        )
+        (profile_home / ".profile").write_text(
+            "export EXPECTED_PROFILE=1\n"
+        )
+        monkeypatch.setenv("HOME", str(outer_home))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(
+                cwd=str(tmp_path),
+                timeout=15,
+                env={
+                    "HOME": str(outer_home),
+                    "HERMES_HOME": str(hermes_home),
+                    "TERMINAL_HOME_MODE": "profile",
+                    "PAPERCLIP_API_KEY": "scoped-run-key",
+                },
+            )
+            try:
+                result = env.execute(
+                    'printf "EXPECTED=%s\\nWRONG=%s\\nKEY=%s\\n" '
+                    '"$EXPECTED_PROFILE" "$WRONG_OUTER_PROFILE" "$PAPERCLIP_API_KEY"'
+                )
+            finally:
+                env.cleanup()
+
+        output = result.get("output", "")
+        assert "EXPECTED=1" in output
+        assert "WRONG=" in output
+        assert "WRONG=1" not in output
+        assert "KEY=scoped-run-key" in output
+
+    def test_snapshot_respects_explicit_empty_home_without_outer_profile_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        outer_home = tmp_path / "outer-home"
+        outer_home.mkdir()
+        (outer_home / ".profile").write_text("export WRONG_OUTER_PROFILE=1\n")
+        monkeypatch.setenv("HOME", str(outer_home))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], True),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15, env={"HOME": ""})
+            try:
+                result = env.execute(
+                    'printf "HOME=%s\\nWRONG=%s\\n" "$HOME" "$WRONG_OUTER_PROFILE"'
+                )
+            finally:
+                env.cleanup()
+
+        output = result.get("output", "")
+        assert "HOME=\n" in output
+        assert "WRONG=\n" in output
+        assert "WRONG=1" not in output
 
     def test_profile_path_export_survives_bashrc_interactive_guard(
         self, tmp_path, monkeypatch

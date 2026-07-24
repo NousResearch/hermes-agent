@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.environments.local import (
     LocalEnvironment,
     _prepend_shell_init,
@@ -310,3 +311,33 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+    def test_reused_local_environment_reasserts_profile_hermes_home(self, tmp_path):
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+
+        token_a = set_hermes_home_override(str(profile_a))
+        env = None
+        token_b = None
+        try:
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            first = env.execute(
+                'export SNAPSHOT_PIN="sticky"; echo "first=$HERMES_HOME"'
+            )
+            token_b = set_hermes_home_override(str(profile_b))
+            second = env.execute(
+                'echo "second=$HERMES_HOME SNAPSHOT_PIN=$SNAPSHOT_PIN"'
+            )
+            assert first["returncode"] == 0
+            assert second["returncode"] == 0
+            assert f"first={profile_a}" in first.get("output", "")
+            assert f"second={profile_b}" in second.get("output", "")
+            assert "SNAPSHOT_PIN=sticky" in second.get("output", "")
+        finally:
+            if token_b is not None:
+                reset_hermes_home_override(token_b)
+            reset_hermes_home_override(token_a)
+            if env is not None:
+                env.cleanup()

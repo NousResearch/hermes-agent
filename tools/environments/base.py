@@ -21,7 +21,7 @@ from collections import deque
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_hermes_home_override
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
@@ -398,6 +398,9 @@ class BaseEnvironment(ABC):
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
 
+    # Local subprocesses receive the task-local host profile in their env.
+    _reassert_context_hermes_home: bool = False
+
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
@@ -624,6 +627,12 @@ class BaseEnvironment(ABC):
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
+            # A reused snapshot may belong to another profile. The current
+            # task's explicit profile remains authoritative.
+            if self._reassert_context_hermes_home and (
+                _hermes_home := get_hermes_home_override()
+            ):
+                parts.append(f"export HERMES_HOME={shlex.quote(_hermes_home)}")
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.

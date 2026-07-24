@@ -10,7 +10,7 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: True))
+        monkeypatch.setattr(gateway.Path, "exists", lambda _path: True)
 
         calls = []
         monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
@@ -25,7 +25,7 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        monkeypatch.setattr(gateway.Path, "exists", lambda _path: False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (True, ""))
 
         calls = []
@@ -41,7 +41,7 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        monkeypatch.setattr(gateway.Path, "exists", lambda _path: False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
 
@@ -64,7 +64,7 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        monkeypatch.setattr(gateway.Path, "exists", lambda _path: False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (None, "loginctl not found"))
         monkeypatch.setattr("shutil.which", lambda name: None)
 
@@ -82,7 +82,7 @@ class TestEnsureLingerEnabled:
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
+        monkeypatch.setattr(gateway.Path, "exists", lambda _path: False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
         monkeypatch.setattr(

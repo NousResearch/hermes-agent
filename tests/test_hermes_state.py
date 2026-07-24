@@ -6700,6 +6700,138 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     ) is None
 
 
+def test_gateway_session_recovery_skips_superseded_open_rows(db):
+    """A dangling open row must not be recovered once a newer session exists.
+
+    A session_reset that interrupts a mid-run agent can leave the old row
+    open (ended_at IS NULL) with a trailing unanswered user message. Weeks
+    later, startup recovery would resurrect it and silently splice that stale
+    turn onto the next inbound message. Any newer session for the same peer
+    (other than known-bug agent_close/ws_orphan_reap rows) supersedes it.
+    """
+    db.create_session(
+        "dangling-open-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("dangling-open-session", "user", "orphaned question")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (time.time() - 15 * 86400, "dangling-open-session"),
+    )
+    db._conn.commit()
+
+    # The user moved on: a newer session for the same peer was created and
+    # explicitly reset. The old open row is now superseded.
+    db.create_session(
+        "newer-reset-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("newer-reset-session", "user", "hello again")
+    db.end_session("newer-reset-session", "session_reset")
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None
+
+
+def test_gateway_session_recovery_ignores_bug_ended_newer_rows(db):
+    """Newer agent_close/ws_orphan_reap rows must not mask a live older row.
+
+    Those two end reasons are known-bug artifacts, not deliberate
+    conversation boundaries, so their existence says nothing about the user
+    having moved on (#63207 kept them recoverable for the same reason).
+    """
+    db.create_session(
+        "live-open-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("live-open-session", "user", "hello")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (time.time() - 3600, "live-open-session"),
+    )
+    db._conn.commit()
+
+    db.create_session(
+        "newer-reaped-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("newer-reaped-session", "user", "reaped")
+    db.end_session("newer-reaped-session", "ws_orphan_reap")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    # The newer bug-ended row itself is the best candidate; the point is
+    # recovery still returns a row instead of None.
+    assert recovered is not None
+    assert recovered["id"] == "newer-reaped-session"
+
+
+def test_gateway_session_recovery_peer_fallback_skips_superseded_rows(db):
+    """The peer-tuple fallback applies the same superseded guard.
+
+    Legacy rows without session_key are only reachable via the fallback
+    query; they must not be resurrected once the peer has any newer
+    deliberately-ended or live session.
+    """
+    db.create_session(
+        "legacy-open-session",
+        "telegram",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("legacy-open-session", "user", "orphaned question")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (time.time() - 15 * 86400, "legacy-open-session"),
+    )
+    db._conn.commit()
+
+    db.create_session(
+        "legacy-newer-session",
+        "telegram",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("legacy-newer-session", "user", "hello again")
+    db.end_session("legacy-newer-session", "session_reset")
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None
+
+
 def test_gateway_metadata_display_name_origin_round_trip(db):
     """record_gateway_session_peer persists display_name/origin_json (#9006)."""
     db.create_session("gw-meta", "telegram", user_id="u1")

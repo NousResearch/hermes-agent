@@ -132,6 +132,12 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     ref = ref.strip()
     lower = ref.lower()
     if lower.startswith(("http://", "https://")):
+        from tools.url_safety import is_safe_url
+
+        if not is_safe_url(ref):
+            raise ValueError(
+                f"Refusing to fetch image from unsafe URL: {ref}"
+            )
         import requests
 
         resp = requests.get(ref, timeout=60)

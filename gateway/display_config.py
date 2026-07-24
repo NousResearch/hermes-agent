@@ -127,9 +127,11 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # explicitly per platform.
     "telegram":    {
         **_TIER_HIGH,
+        "streaming": False,
         "tool_progress": "off",
         "interim_assistant_messages": False,
         "long_running_notifications": False,
+        "cleanup_progress": True,
         "busy_ack_detail": False,
     },
     # Discord has a native "subtext" primitive (-# small grey text) that reads

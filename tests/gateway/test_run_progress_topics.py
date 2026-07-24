@@ -1083,7 +1083,11 @@ async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
         CommentaryAgent,
         session_id="sess-commentary-streaming",
         config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+                "platforms": {"telegram": {"streaming": True}},
+            },
             "streaming": {"enabled": True},
         },
     )

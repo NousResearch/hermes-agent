@@ -1040,6 +1040,15 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Transport-failure fallback threshold: number of consecutive
+        # transport-layer failures (connection drops, timeouts, provider
+        # overloaded) before the agent switches to the fallback model.
+        # Default 2 = legacy behaviour (fail fast on unreachable providers).
+        # Raise to tolerate longer network hiccups on flaky primaries
+        # (e.g. 6 for providers with intermittent connectivity issues).
+        # Only effective when >= api_max_retries; otherwise the retry-loop
+        # ceiling kicks in first via the generic "max retries exhausted" path.
+        "transport_fallback_threshold": 2,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -2393,23 +2402,22 @@ DEFAULT_CONFIG = {
         # to pick provider:model, with automatic fallback on trigger conditions.
         "model_routes": {
             "search_fetch": {
-                "primary": {"provider": "custom:Local vLLM", "model": "qwen3.6-27b"},
+                "primary": {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
                 "fallbacks": [
                     {"provider": "custom:OpenCode Zen", "model": "mimo-v2.5-free"},
                     {"provider": "openrouter", "model": "tencent/hy3:free"},
                 ],
             },
             "log_analysis": {
-                "primary": {"provider": "custom:Local vLLM", "model": "qwen3.6-27b"},
+                "primary": {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
                 "fallbacks": [
                     {"provider": "custom:OpenCode Zen", "model": "mimo-v2.5-free"},
                     {"provider": "openrouter", "model": "tencent/hy3:free"},
                 ],
             },
             "code_exec": {
-                "primary": {"provider": "custom:Local vLLM", "model": "qwen3.6-27b"},
+                "primary": {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
                 "fallbacks": [
-                    {"provider": "custom:MiniMax Token Plan", "model": "MiniMax-M3"},
                     {"provider": "custom:LongCat", "model": "LongCat-2.0"},
                     {"provider": "openrouter", "model": "tencent/hy3:free"},
                 ],

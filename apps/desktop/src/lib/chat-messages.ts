@@ -307,15 +307,33 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
   return displayKind === 'hidden' ? null : content
 }
 
+/** Defensive: display_metadata may arrive as a JSON string from the backend. */
+function normalizeDisplayMetadata(
+  meta: unknown
+): Record<string, unknown> | null {
+  if (!meta) return null
+  if (typeof meta === 'object') return meta as Record<string, unknown>
+  if (typeof meta === 'string') {
+    try {
+      const parsed = JSON.parse(meta)
+      return typeof parsed === 'object' && parsed !== null ? parsed : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
+    const meta = normalizeDisplayMetadata(message.display_metadata)
     const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
+      meta && 'task_count' in meta
+        ? meta.task_count
         : undefined
 
     return count === undefined

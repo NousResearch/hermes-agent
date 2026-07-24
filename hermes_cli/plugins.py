@@ -212,6 +212,22 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Gateway streaming observer hooks. Fired by the gateway stream consumer
+    # (gateway/stream_consumer.py) as a turn streams to a chat platform, so a
+    # plugin can observe the live token stream — mirror it to an external
+    # side-channel/SSE, drive metrics, etc. — without patching core streaming.
+    # Observers only: return values are ignored. Callbacks run SYNCHRONOUSLY on
+    # the stream worker thread and MUST be non-blocking (enqueue and return);
+    # a slow callback throttles delivery to the user. The per-token path is
+    # gated on has_hook(), so it costs nothing when no plugin is listening.
+    #
+    # Common kwargs: chat_id: str, metadata: dict | None (platform/session
+    #   routing), message_id: str | None (the platform message id once sent).
+    #   on_stream_delta adds: delta: str (the token text just streamed).
+    #   on_stream_end adds:   reason: str ("done").
+    "on_stream_delta",
+    "on_stream_segment",
+    "on_stream_end",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

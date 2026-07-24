@@ -112,12 +112,17 @@ def _ensure_uv_path() -> Optional[str]:
     # Verify
     result = resolve_uv()
     if result:
-        version = subprocess.run(
-            [result, "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout.strip()
+        try:
+            version = subprocess.run(
+                [result, "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+        except OSError as exc:
+            logger.warning("Managed uv installed but not executable: %s", exc)
+            print(f"  ✗ Managed uv installed but not executable on this platform: {exc}")
+            return None
         print(f"  ✓ Managed uv installed ({version})")
     else:
         print("  ✗ Managed uv install appeared to succeed but binary not found")
@@ -167,19 +172,28 @@ def update_managed_uv() -> Optional[str]:
         # Not installed yet — ensure_uv() will handle that elsewhere.
         return None
 
-    result = subprocess.run(
-        [existing, "self", "update"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        version = subprocess.run(
-            [existing, "--version"],
+    try:
+        result = subprocess.run(
+            [existing, "self", "update"],
             capture_output=True,
             text=True,
             check=False,
-        ).stdout.strip()
+        )
+    except OSError as exc:
+        # ENOEXEC — binary is not native to the host platform (e.g.
+        # x86-64 Linux ELF on macOS ARM).  Non-fatal: old uv still works.
+        logger.warning("Managed uv not executable on this platform: %s", exc)
+        return None
+    if result.returncode == 0:
+        try:
+            version = subprocess.run(
+                [existing, "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+        except OSError:
+            version = "unknown"
         print(f"  ✓ Managed uv updated ({version})")
     else:
         # Non-fatal — old uv still works fine.

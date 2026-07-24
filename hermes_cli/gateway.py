@@ -4988,8 +4988,24 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     success = False
     try:
-        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
-        _exit_diag("asyncio.run.returned", success=success)
+        # Set up a keepalive timer to prevent event loop freeze when no other pending callbacks
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Setup the keepalive timer: a callback that reschedules itself every 5 seconds.
+            def _keepalive_callback():
+                loop.call_later(5.0, _keepalive_callback)
+            loop.call_later(5.0, _keepalive_callback)
+
+            # Run the startup coroutine and wait for it to complete.
+            task = loop.create_task(start_gateway(replace=replace, verbosity=verbosity))
+            loop.run_until_complete(task)
+            success = task.result()
+            _exit_diag("asyncio.run.returned", success=success)
+        finally:
+            # Cancel any remaining tasks and shutdown async generators.
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
     except KeyboardInterrupt:
         # On Windows-detached runs this shouldn't fire (we absorb SIGINT above),
         # but keep the handler for console runs.

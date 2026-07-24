@@ -322,3 +322,88 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression tests added per PR #57113 (teknium1 review)
+# ---------------------------------------------------------------------------
+
+def test_normalize_usage_chat_completions_reads_cache_creation_tokens_fallback():
+    """When cache_write_tokens is 0 in prompt_tokens_details but
+    cache_creation_tokens is set, fall back to cache_creation_tokens.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=500,
+            cache_write_tokens=0,
+            cache_creation_tokens=400,
+        ),
+    )
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+    assert normalized.cache_write_tokens == 400
+
+
+def test_normalize_usage_chat_completions_prefers_cache_write_tokens_over_cache_creation_tokens():
+    """When both cache_write_tokens and cache_creation_tokens are set in
+    prompt_tokens_details, prefer cache_write_tokens.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(
+            cached_tokens=500,
+            cache_write_tokens=100,
+            cache_creation_tokens=999,
+        ),
+    )
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+    assert normalized.cache_write_tokens == 100
+
+
+def test_normalize_usage_chat_completions_reads_cache_creation_input_tokens_fallback():
+    """When neither cache_write_tokens nor cache_creation_tokens is set in
+    prompt_tokens_details, fall back to top-level cache_creation_input_tokens.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=500),
+        cache_creation_input_tokens=400,
+    )
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+    assert normalized.cache_write_tokens == 400
+
+
+def test_deepseek_v4_flash_pricing_entry_exists():
+    """Regression test: deepseek-v4-flash must have a pricing entry."""
+    entry = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+    assert entry is not None
+
+
+def test_stepfun_step_3_7_flash_pricing_resolves():
+    """Vendor-prefixed stepfun/step-3.7-flash must resolve to the bare
+    pricing-table key via _normalize_stepfun_model_name.
+    """
+    from agent.usage_pricing import BillingRoute
+
+    entry = get_pricing_entry("stepfun/step-3.7-flash", provider="stepfun")
+    assert entry is not None
+    route = BillingRoute(
+        provider="stepfun",
+        model="stepfun/step-3.7-flash",
+        base_url="",
+        billing_mode="official_docs_snapshot",
+    )
+    assert route.provider == "stepfun"
+
+
+def test_resolve_billing_route_stepfun_vendor_prefix():
+    """resolve_billing_route must detect the stepfun/ vendor prefix and set
+    provider to 'stepfun'.
+    """
+    from agent.usage_pricing import resolve_billing_route
+
+    route = resolve_billing_route("stepfun/step-3.7-flash")
+    assert route.provider == "stepfun"

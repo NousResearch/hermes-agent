@@ -711,6 +711,14 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+    # StepFun vendor-prefixed ids (stepfun/step-3.7-flash) must strip the
+    # prefix so they match the bare pricing-table key.
+    if route.provider == "stepfun":
+        normalized = _normalize_stepfun_model_name(model)
+        if normalized != model:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
     return None
 
 

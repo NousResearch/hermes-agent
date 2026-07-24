@@ -25,6 +25,7 @@ import re
 import shlex
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -1557,6 +1558,9 @@ class GatewaySlashCommandsMixin:
                 "platform": event.source.platform.value if event.source.platform else None,
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
+                # Distinguish a replacement marker even when the same source
+                # immediately requests another restart with identical routing.
+                "request_id": uuid.uuid4().hex,
             }
             if event.source.delivered_via_upstream_relay is True:
                 notify_data["delivered_via_upstream_relay"] = True

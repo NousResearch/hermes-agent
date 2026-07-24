@@ -23,9 +23,21 @@ from agent.image_gen_provider import (
 DEFAULT_AZURE_IMAGE_API_VERSION = "2024-10-21"
 DEFAULT_API_VERSION = DEFAULT_AZURE_IMAGE_API_VERSION
 
-_IMAGE_PROVIDER_SETUP_ACTION = (
-    "Run hermes tools, open Image Generation, then configure credentials "
+_AZURE_IMAGE_KEY_SETUP_ACTION = (
+    "Configure AZURE_OPENAI_IMAGE_KEY in Image Generation via hermes tools, "
     "or select another provider."
+)
+_AZURE_ENDPOINT_SETUP_ACTION = (
+    "Configure image_gen.azure_openai.endpoint in Image Generation via "
+    "hermes tools, or select another provider."
+)
+_AZURE_DEPLOYMENT_SETUP_ACTION = (
+    "Configure image_gen.azure_openai.deployment_name in Image Generation "
+    "via hermes tools, or select another provider."
+)
+_FOUNDRY_KEYLESS_SETUP_ACTION = (
+    "Configure AZURE_OPENAI_IMAGE_KEY, or install the optional azure-identity "
+    "package to use Foundry Entra ID authentication."
 )
 _AZURE_ENDPOINT_CORRECTION = (
     "Use https://<resource>.services.ai.azure.com/openai/v1 for Foundry, "
@@ -150,7 +162,7 @@ def resolve_azure_image_settings(
             error_type="configuration_error",
             message="Azure OpenAI image endpoint is not configured.",
             canonical_key=_ENDPOINT_CONFIG_KEY,
-            setup_action=_IMAGE_PROVIDER_SETUP_ACTION,
+            setup_action=_AZURE_ENDPOINT_SETUP_ACTION,
         )
     if deployment_name is None:
         return AzureImageConfigurationError(
@@ -158,7 +170,7 @@ def resolve_azure_image_settings(
             error_type="configuration_error",
             message="Azure OpenAI image deployment is not configured.",
             canonical_key=_DEPLOYMENT_CONFIG_KEY,
-            setup_action=_IMAGE_PROVIDER_SETUP_ACTION,
+            setup_action=_AZURE_DEPLOYMENT_SETUP_ACTION,
         )
 
     endpoint_info = normalize_azure_image_endpoint(endpoint)
@@ -171,7 +183,7 @@ def resolve_azure_image_settings(
                 "v1 endpoint or a direct Azure OpenAI resource endpoint."
             ),
             canonical_key=_ENDPOINT_CONFIG_KEY,
-            setup_action=_IMAGE_PROVIDER_SETUP_ACTION,
+            setup_action=_AZURE_ENDPOINT_SETUP_ACTION,
         )
 
     normalized_endpoint, endpoint_family = endpoint_info
@@ -183,7 +195,7 @@ def resolve_azure_image_settings(
                 "Authentication is required for the configured image provider "
                 "(Azure OpenAI)."
             ),
-            setup_action=_IMAGE_PROVIDER_SETUP_ACTION,
+            setup_action=_AZURE_IMAGE_KEY_SETUP_ACTION,
         )
 
     api_version = None
@@ -399,7 +411,7 @@ class AzureOpenAIImageGenProvider(ImageGenProvider):
                     error=(
                         "Authentication is required for the configured image "
                         "provider (Azure OpenAI). "
-                        f"{_IMAGE_PROVIDER_SETUP_ACTION}"
+                        f"{_FOUNDRY_KEYLESS_SETUP_ACTION}"
                     ),
                     error_type="auth_required",
                     provider=self.name,
@@ -407,7 +419,7 @@ class AzureOpenAIImageGenProvider(ImageGenProvider):
                     prompt=normalized_prompt,
                     aspect_ratio=aspect,
                 )
-                payload["setup_action"] = _IMAGE_PROVIDER_SETUP_ACTION
+                payload["setup_action"] = _FOUNDRY_KEYLESS_SETUP_ACTION
                 return payload
 
         try:

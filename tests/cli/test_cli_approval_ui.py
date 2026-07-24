@@ -25,6 +25,9 @@ def _make_cli_stub():
     cli._approval_lock = threading.Lock()
     cli._sudo_state = None
     cli._sudo_deadline = 0
+    cli._sudo_lock = threading.Lock()
+    cli._sudo_state_lock = threading.Lock()
+    cli._sudo_interrupt_generation = 0
     cli._modal_input_snapshot = None
     cli._invalidate = MagicMock()
     cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
@@ -67,6 +70,147 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
+    def test_concurrent_sudo_prompts_are_serialized_and_each_can_be_cancelled(self):
+        cli = _make_cli_stub()
+        results = {}
+        contended = threading.Event()
+
+        class _TrackingLock:
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                if not self._lock.acquire(blocking=False):
+                    contended.set()
+                    self._lock.acquire()
+                return self
+
+            def __exit__(self, *_args):
+                self._lock.release()
+
+        cli._sudo_lock = _TrackingLock()
+
+        def _run_callback(name):
+            results[name] = cli._sudo_password_callback()
+
+        with patch.object(cli_module, "_cprint"), patch.object(cli, "_paint_now"):
+            first_thread = threading.Thread(
+                target=_run_callback, args=("first",), daemon=True
+            )
+            first_thread.start()
+
+            deadline = time.time() + 2
+            while cli._sudo_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            first_state = cli._sudo_state
+            assert first_state is not None
+
+            second_thread = threading.Thread(
+                target=_run_callback, args=("second",), daemon=True
+            )
+            second_thread.start()
+            assert contended.wait(timeout=2), "second prompt did not serialize"
+            assert cli._sudo_state is first_state
+
+            assert cli._resolve_sudo_prompt(first_state, None)
+            first_thread.join(timeout=2)
+            assert not first_thread.is_alive()
+
+            deadline = time.time() + 2
+            while (
+                (cli._sudo_state is None or cli._sudo_state is first_state)
+                and time.time() < deadline
+            ):
+                time.sleep(0.01)
+            second_state = cli._sudo_state
+            assert second_state is not None
+            assert second_state is not first_state
+            assert not cli._resolve_sudo_prompt(first_state, "late submission")
+            assert cli._sudo_state is second_state
+
+            assert cli._resolve_sudo_prompt(second_state, None)
+            second_thread.join(timeout=2)
+            assert not second_thread.is_alive()
+
+        assert results == {"first": None, "second": None}
+
+    def test_sudo_cancel_after_final_queue_timeout_wins_atomically(self):
+        cli = _make_cli_stub()
+        after_final_get = threading.Event()
+        cancellation_done = threading.Event()
+        monotonic_calls = 0
+        result = {}
+
+        class _DeadlineQueue(queue.Queue):
+            def __init__(self):
+                super().__init__()
+                self._first_get = True
+
+            def get(self, block=True, timeout=None):
+                if self._first_get:
+                    self._first_get = False
+                    raise queue.Empty
+                return super().get(block=block, timeout=timeout)
+
+        def _monotonic():
+            nonlocal monotonic_calls
+            monotonic_calls += 1
+            if monotonic_calls == 1:
+                return 0
+            if monotonic_calls == 2:
+                after_final_get.set()
+                assert cancellation_done.wait(timeout=2)
+            return 46
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        with (
+            patch.object(cli_module.queue, "Queue", _DeadlineQueue),
+            patch.object(cli_module.time, "monotonic", side_effect=_monotonic),
+            patch.object(cli_module, "_cprint"),
+            patch.object(cli, "_paint_now"),
+        ):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            assert after_final_get.wait(timeout=2)
+
+            state = cli._sudo_state
+            assert state is not None
+            assert cli._resolve_sudo_prompt(state, None)
+            cancellation_done.set()
+
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+        assert result["value"] is None
+        assert not cli._resolve_sudo_prompt(state, "late submission")
+
+    def test_sudo_prompt_distinguishes_cancel_from_empty_submission(self):
+        cli = _make_cli_stub()
+        results = []
+
+        def _run_callback():
+            results.append(cli._sudo_password_callback())
+
+        with patch.object(cli_module, "_cprint"):
+            for response in (None, ""):
+                thread = threading.Thread(target=_run_callback, daemon=True)
+                thread.start()
+
+                deadline = time.time() + 2
+                while cli._sudo_state is None and time.time() < deadline:
+                    time.sleep(0.01)
+
+                state = cli._sudo_state
+                assert state is not None
+                assert cli._resolve_sudo_prompt(state, response)
+                thread.join(timeout=2)
+                assert not thread.is_alive()
+                assert not cli._resolve_sudo_prompt(state, None)
+
+        assert results == [None, ""]
+
     def test_smart_denied_callback_offers_only_once_and_deny(self):
         cli = _make_cli_stub()
         result = {}
@@ -412,6 +556,9 @@ def _make_real_paint_cli_stub():
     cli._approval_lock = threading.Lock()
     cli._sudo_state = None
     cli._sudo_deadline = 0
+    cli._sudo_lock = threading.Lock()
+    cli._sudo_state_lock = threading.Lock()
+    cli._sudo_interrupt_generation = 0
     cli._clarify_state = None
     cli._clarify_freetext = False
     cli._clarify_deadline = 0
@@ -469,10 +616,14 @@ class TestModalPaintNow:
             # Reset so we can prove the response-received teardown also repaints
             # (the panel must clear at once, not be held by the throttle).
             cli._app.invalidate.reset_mock()
-            getattr(cli, state_attr)["response_queue"].put(
+            response = (
                 "deny" if state_attr == "_approval_state" else
                 ("a" if state_attr == "_clarify_state" else "pw")
             )
+            if state_attr == "_sudo_state":
+                cli._resolve_sudo_prompt(cli._sudo_state, response)
+            else:
+                getattr(cli, state_attr)["response_queue"].put(response)
             thread.join(timeout=2)
             # clarify returns immediately on a response (no teardown repaint);
             # approval and sudo repaint to tear the panel down.
@@ -702,7 +853,8 @@ class TestClearOverlaysForInterrupt:
         cli._approval_state = {"response_queue": approval_q}
         cli._clarify_state = {"response_queue": clarify_q}
         cli._clarify_freetext = True
-        cli._sudo_state = {"response_queue": sudo_q, "timeout": 60}
+        sudo_state = {"response_queue": sudo_q, "timeout": 60}
+        cli._sudo_state = sudo_state
         cli._sudo_deadline = 99999.0
         cli._secret_state = {"response_queue": secret_q, "var_name": "X"}
 
@@ -719,8 +871,81 @@ class TestClearOverlaysForInterrupt:
         # Each blocked thread would have received a terminal value.
         assert approval_q.get_nowait() == "deny"
         assert clarify_q.get_nowait()  # cancellation sentinel string
-        assert sudo_q.get_nowait() == ""
+        assert sudo_q.get_nowait() is None
+        assert not cli._resolve_sudo_prompt(sudo_state, "late submission")
+        assert sudo_q.empty()
         assert secret_q.get_nowait() == ""
+
+    def test_interrupt_cancels_active_and_waiting_sudo_prompts_but_not_later_one(self):
+        cli = self._make_cli()
+        results = {}
+        contended = threading.Event()
+
+        class _TrackingLock:
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                if not self._lock.acquire(blocking=False):
+                    contended.set()
+                    self._lock.acquire()
+                return self
+
+            def __exit__(self, *_args):
+                self._lock.release()
+
+        cli._sudo_lock = _TrackingLock()
+
+        def _run_callback(name):
+            results[name] = cli._sudo_password_callback()
+
+        with patch.object(cli_module, "_cprint"):
+            first_thread = threading.Thread(
+                target=_run_callback, args=("first",), daemon=True
+            )
+            first_thread.start()
+
+            deadline = time.time() + 2
+            while cli._sudo_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert cli._sudo_state is not None
+
+            second_thread = threading.Thread(
+                target=_run_callback, args=("second",), daemon=True
+            )
+            second_thread.start()
+            assert contended.wait(timeout=2), "second prompt did not serialize"
+
+            cli._clear_active_overlays_for_interrupt()
+            first_thread.join(timeout=2)
+            second_thread.join(timeout=2)
+
+            both_cancelled = not first_thread.is_alive() and not second_thread.is_alive()
+            modal_remaining = cli._sudo_state
+            if modal_remaining is not None:
+                cli._resolve_sudo_prompt(modal_remaining, None)
+                second_thread.join(timeout=2)
+
+            assert both_cancelled
+            assert results == {"first": None, "second": None}
+            assert modal_remaining is None
+            assert cli._sudo_state is None
+
+            later_thread = threading.Thread(
+                target=_run_callback, args=("later",), daemon=True
+            )
+            later_thread.start()
+            deadline = time.time() + 2
+            while cli._sudo_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            later_state = cli._sudo_state
+            assert later_state is not None
+            assert cli._resolve_sudo_prompt(later_state, "fresh-password")
+            later_thread.join(timeout=2)
+
+        assert not later_thread.is_alive()
+        assert results["later"] == "fresh-password"
+        assert cli._sudo_state is None
 
     def test_noop_when_no_overlays_active(self):
         cli = self._make_cli()
@@ -768,4 +993,3 @@ class TestClearOverlaysForInterrupt:
 
         assert not t.is_alive(), "worker thread never unblocked"
         assert result["value"] == "deny"
-

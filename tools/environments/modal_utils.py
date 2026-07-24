@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.interrupt import is_interrupted, start_if_not_interrupted
 
 
 @dataclass(frozen=True)
@@ -100,10 +100,20 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         )
 
         try:
-            start = self._start_modal_exec(prepared)
+            transport_started, start = start_if_not_interrupted(
+                lambda: self._start_modal_exec(prepared)
+            )
         except Exception as exc:
             return self._error_result(f"{self._unexpected_error_prefix}: {exc}")
 
+        if not transport_started:
+            return {
+                "output": "",
+                "returncode": 130,
+                "_process_start_cancelled": True,
+            }
+
+        assert start is not None
         if start.immediate_result is not None:
             return start.immediate_result
 

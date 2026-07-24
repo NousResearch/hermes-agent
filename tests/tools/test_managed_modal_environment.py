@@ -63,9 +63,15 @@ def _install_fake_tools_package(*, credential_mounts=None):
     sys.modules["tools.environments"] = env_package
 
     interrupt_event = threading.Event()
+    def start_if_not_interrupted(start):
+        if interrupt_event.is_set():
+            return False, None
+        return True, start()
+
     sys.modules["tools.interrupt"] = types.SimpleNamespace(
         set_interrupt=lambda value=True: interrupt_event.set() if value else interrupt_event.clear(),
         is_interrupted=lambda: interrupt_event.is_set(),
+        start_if_not_interrupted=start_if_not_interrupted,
         _interrupt_event=interrupt_event,
     )
 
@@ -209,6 +215,36 @@ def test_managed_modal_execute_cancels_on_interrupt(monkeypatch):
     cancel_calls = [call for call in calls if call[0] == "POST" and call[1].endswith("/cancel")]
     assert poll_calls[0][3] == (1.0, 5.0)
     assert cancel_calls[0][3] == (1.0, 5.0)
+
+
+def test_managed_modal_pre_start_interrupt_does_not_start_transport(monkeypatch):
+    interrupt_event = _install_fake_tools_package()
+    managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
+
+    calls = []
+
+    def fake_request(method, url, headers=None, json=None, timeout=None):
+        calls.append((method, url, json, timeout))
+        if method == "POST" and url.endswith("/v1/sandboxes"):
+            return _FakeResponse(200, {"id": "sandbox-1"})
+        if method == "POST" and url.endswith("/terminate"):
+            return _FakeResponse(200, {"status": "terminated"})
+        raise AssertionError(f"Unexpected transport start: {method} {url}")
+
+    monkeypatch.setattr(managed_modal.requests, "request", fake_request)
+
+    env = managed_modal.ManagedModalEnvironment(image="python:3.11")
+    interrupt_event.set()
+    result = env.execute("echo never-started")
+    interrupt_event.clear()
+    env.cleanup()
+
+    assert result == {
+        "output": "",
+        "returncode": 130,
+        "_process_start_cancelled": True,
+    }
+    assert not any(call[1].endswith("/execs") for call in calls)
 
 
 def test_managed_modal_execute_returns_descriptive_error_on_missing_exec(monkeypatch):

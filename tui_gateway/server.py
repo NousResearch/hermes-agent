@@ -130,7 +130,14 @@ _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
-_answers: dict[str, str] = {}
+
+
+class _SudoEmptySubmission(str):
+    """Identity-bearing empty string used only across the blocking bridge."""
+
+
+_SUDO_EMPTY_SUBMISSION = _SudoEmptySubmission()
+_answers: dict[str, str | None] = {}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -2480,7 +2487,10 @@ def _clear_pending(sid: str | None = None) -> None:
     with _prompt_lock:
         for rid, (owner_sid, ev) in list(_pending.items()):
             if sid is None or owner_sid == sid:
-                _answers[rid] = ""
+                prompt = _pending_prompt_payloads.get(rid)
+                _answers[rid] = (
+                    None if prompt and prompt[0] == "sudo.request" else ""
+                )
                 ev.set()
 
 
@@ -4757,12 +4767,24 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
 
 
+def _gateway_sudo_password_callback(sid: str) -> str | None:
+    answer = _block(
+        "sudo.request",
+        sid,
+        {},
+        timeout=120,
+    )
+    if answer is _SUDO_EMPTY_SUBMISSION:
+        return ""
+    return answer or None
+
+
 def _wire_callbacks(sid: str):
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback
 
-    set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+    set_sudo_password_callback(lambda: _gateway_sudo_password_callback(sid))
     set_project_workspace_callback(_apply_project_workspace)
 
     def secret_cb(env_var, prompt, metadata=None):
@@ -12020,7 +12042,33 @@ def _(rid, params: dict) -> dict:
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password", allow_expired=True)
+    # Before ``sudo.cancel`` existed, clients used an empty password for both
+    # dismissal and intentional empty submission. Treat that unmarked legacy
+    # value as cancellation so an old UI cannot wake a new backend into
+    # starting the pending command. New clients mark submissions explicitly,
+    # preserving Enter-on-empty as the legacy "try without a password" action.
+    response_params = params
+    if params.get("password", "") == "":
+        response_params = {
+            **params,
+            "password": (
+                _SUDO_EMPTY_SUBMISSION
+                if params.get("intent") == "submit"
+                else None
+            ),
+        }
+    return _respond(rid, response_params, "password", allow_expired=True)
+
+
+@method("sudo.cancel")
+def _(rid, params: dict) -> dict:
+    """Probeable, intent-specific cancellation for version-skewed UIs."""
+    return _respond(
+        rid,
+        {**params, "password": None},
+        "password",
+        allow_expired=True,
+    )
 
 
 @method("secret.respond")

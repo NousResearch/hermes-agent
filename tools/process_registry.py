@@ -47,8 +47,38 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.interrupt import start_if_not_interrupted
 
 logger = logging.getLogger(__name__)
+
+_ENV_TERMINATED_MARKER = "__HERMES_PROCESS_TERMINATED__"
+
+
+class ProcessStartCancelled(RuntimeError):
+    """Raised when an environment interrupt wins before background start."""
+
+    def __init__(
+        self,
+        output: str = "[Command interrupted]",
+        *,
+        before_start: bool = True,
+    ):
+        super().__init__(output)
+        self.output = output
+        self.before_start = before_start
+
+
+def _is_marker_bearing_interrupt_result(result: dict) -> bool:
+    """Recognize executor-owned interrupt results, not natural child rc=130."""
+    try:
+        returncode = int(result.get("returncode", -1))
+    except (TypeError, ValueError):
+        return False
+    output = str(result.get("output", ""))
+    return returncode == 130 and (
+        "[Command interrupted]" in output
+        or "[Command interrupted -" in output
+    )
 
 
 # Checkpoint file for crash recovery (gateway only)
@@ -107,7 +137,9 @@ class ProcessSession:
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
-    pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    pid_scope: str = "host"                     # host|sandbox|sandbox_group
+    start_interrupted: bool = False              # Bootstrap was interrupted after producing a PID
+    start_interrupt_output: str = ""             # Executor marker retained for the immediate caller
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -724,12 +756,16 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
-                    cwd=session.cwd,
-                    env=pty_env,
-                    dimensions=(30, 120),
+                process_started, pty_proc = start_if_not_interrupted(
+                    lambda: _PtyProcessCls.spawn(
+                        [user_shell, "-lic", f"set +m; {command}"],
+                        cwd=session.cwd,
+                        env=pty_env,
+                        dimensions=(30, 120),
+                    )
                 )
+                if not process_started:
+                    raise ProcessStartCancelled
                 session.pid = pty_proc.pid
                 session.host_start_time = self._safe_host_start_time(session.pid)
                 # Store the pty handle on the session for read/write
@@ -752,6 +788,8 @@ class ProcessRegistry:
                 self._write_checkpoint()
                 return session
 
+            except ProcessStartCancelled:
+                raise
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
@@ -768,19 +806,23 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
-            text=True,
-            cwd=session.cwd,
-            env=bg_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            **_popen_kwargs,
+        process_started, proc = start_if_not_interrupted(
+            lambda: subprocess.Popen(
+                [user_shell, "-lic", f"set +m; {command}"],
+                text=True,
+                cwd=session.cwd,
+                env=bg_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                **_popen_kwargs,
+            )
         )
+        if not process_started:
+            raise ProcessStartCancelled
 
         session.process = proc
         session.pid = proc.pid
@@ -853,7 +895,7 @@ class ProcessRegistry:
             cwd=cwd,
             started_at=time.time(),
             env_ref=env,
-            pid_scope="sandbox",
+            pid_scope="sandbox_group",
         )
 
         # Run the command in the sandbox with output capture
@@ -866,11 +908,27 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
+        # Run a supervisor as a new process-group leader. The
+        # supervisor waits for the requested login shell and records its exit
+        # status, while the recorded PID is also the process-group ID. This
+        # lets kill_process() terminate the supervisor and its descendants
+        # together instead of killing only an outer nohup wrapper and
+        # orphaning the requested command. ``set -m`` asks the already-required
+        # bash to assign a dedicated group to the background job, avoiding a
+        # dependency on the optional external ``setsid`` utility.
+        supervisor_script = (
+            'printf \'%s\\n\' "$$" > "$2"; '
+            'bash -lc "$1"; rc=$?; printf \'%s\\n\' "$rc" > "$3"'
+        )
+        quoted_supervisor_script = shlex.quote(supervisor_script)
         bg_command = (
-            f"mkdir -p {quoted_temp_dir} && "
-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
-            f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
+            f"mkdir -p {quoted_temp_dir} && {{ "
+            f"set -m; nohup bash -c {quoted_supervisor_script} "
+            f"hermes-bg {quoted_command} {quoted_pid_path} {quoted_exit_path} "
+            f"> {quoted_log_path} 2>&1 < /dev/null & "
+            f"for _hermes_wait in {{1..100}}; do "
+            f"test -s {quoted_pid_path} && break; sleep 0.01; done; "
+            f"cat {quoted_pid_path}; }}"
         )
 
         try:
@@ -886,6 +944,21 @@ class ProcessRegistry:
                 if line.isdigit():
                     session.pid = int(line)
                     break
+            pre_start_cancelled = bool(result.get("_process_start_cancelled"))
+            marker_bearing_interrupt = _is_marker_bearing_interrupt_result(result)
+            if session.pid is None and pre_start_cancelled:
+                raise ProcessStartCancelled
+            if session.pid is None and marker_bearing_interrupt:
+                raise ProcessStartCancelled(output, before_start=False)
+            if session.pid is not None and (
+                pre_start_cancelled or marker_bearing_interrupt
+            ):
+                # The detached child may have outlived the interrupted outer
+                # executor (notably for SSH). Keep it observable and killable
+                # instead of reporting clean cancellation and discarding its PID.
+                session.start_interrupted = True
+                session.start_interrupt_output = output
+                session.output_buffer = output
             # If the wrapper couldn't produce a PID (for example, syntax
             # error or broken redirect), treat it as a failed launch instead
             # of exposing a fake running session.
@@ -897,7 +970,16 @@ class ProcessRegistry:
                 session.completion_reason = "failed_start"
                 session.termination_source = "failed_start"
                 session.output_buffer = result.get("output", "").strip()
+        except ProcessStartCancelled:
+            raise
         except Exception as e:
+            # The terminal layer owns the user-facing cancellation payload.
+            # Preserve explicit sudo dismissal instead of converting it into a
+            # fake failed background session.
+            from tools.terminal_tool import SudoPasswordPromptCancelled
+
+            if isinstance(e, SudoPasswordPromptCancelled):
+                raise
             session.exited = True
             session.exit_code = -1
             session.completion_reason = "failed_start"
@@ -924,6 +1006,25 @@ class ProcessRegistry:
             self._write_checkpoint()
 
         return session
+
+    @staticmethod
+    def _env_termination_command(pid: int, *, process_group: bool) -> str:
+        """Build a bounded, self-verifying sandbox termination command."""
+        target = f"-{pid}" if process_group else str(pid)
+        return (
+            f"_hermes_target={target}; "
+            f"kill -TERM -- \"$_hermes_target\" 2>/dev/null || true; "
+            f"for _hermes_probe in {{1..20}}; do "
+            f"kill -0 -- \"$_hermes_target\" 2>/dev/null || {{ "
+            f"printf '%s\\n' {_ENV_TERMINATED_MARKER}; exit 0; }}; "
+            f"sleep 0.05; done; "
+            f"kill -KILL -- \"$_hermes_target\" 2>/dev/null || true; "
+            f"for _hermes_probe in {{1..20}}; do "
+            f"kill -0 -- \"$_hermes_target\" 2>/dev/null || {{ "
+            f"printf '%s\\n' {_ENV_TERMINATED_MARKER}; exit 0; }}; "
+            f"sleep 0.05; done; "
+            f"printf '%s\\n' __HERMES_PROCESS_STILL_RUNNING__; exit 1"
+        )
 
     # ----- Reader / Poller Threads -----
 
@@ -1548,8 +1649,36 @@ class ProcessRegistry:
                 # shell wrapper and leaves Git Bash descendants behind.
                 self._terminate_host_pid(session.process.pid, session.host_start_time)
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                # Non-local -- new sessions track a dedicated sandbox process
+                # group so the requested shell and all ordinary descendants
+                # are terminated with their supervisor. Verify the target is
+                # gone (with bounded SIGKILL escalation) before dropping the
+                # session from tracking or reporting success. Keep the
+                # single-PID path for legacy/injected sessions.
+                termination_command = self._env_termination_command(
+                    session.pid,
+                    process_group=session.pid_scope == "sandbox_group",
+                )
+                termination = session.env_ref.execute(
+                    termination_command,
+                    timeout=5,
+                )
+                termination_output = str(termination.get("output", ""))
+                try:
+                    termination_rc = int(termination.get("returncode", -1))
+                except (TypeError, ValueError):
+                    termination_rc = -1
+                if (
+                    termination_rc != 0
+                    or _ENV_TERMINATED_MARKER not in termination_output
+                ):
+                    return {
+                        "status": "error",
+                        "error": (
+                            "Sandbox process termination could not be confirmed; "
+                            "the process remains tracked"
+                        ),
+                    }
             elif session.detached and session.pid_scope == "host" and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as

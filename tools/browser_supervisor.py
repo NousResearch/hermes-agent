@@ -72,6 +72,8 @@ _VALID_POLICIES = frozenset(
 
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
+DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
+RECONNECT_STABLE_RESET_SECONDS = 30.0
 
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
@@ -306,6 +308,7 @@ class CDPSupervisor:
         *,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
+        max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
     ) -> None:
         if dialog_policy not in _VALID_POLICIES:
             raise ValueError(
@@ -316,6 +319,9 @@ class CDPSupervisor:
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
+        if int(max_reconnect_attempts) < 1:
+            raise ValueError("max_reconnect_attempts must be at least 1")
+        self.max_reconnect_attempts = int(max_reconnect_attempts)
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -618,7 +624,11 @@ class CDPSupervisor:
                 self._start_error = e
                 self._ready_event.set()
             else:
-                logger.warning("CDP supervisor %s crashed: %s", self.task_id, e)
+                logger.warning(
+                    "CDP supervisor %s crashed: %s",
+                    self.task_id,
+                    _redact_cdp_error_text(e),
+                )
         finally:
             # Flush any remaining tasks before closing the loop so we don't
             # emit "Task was destroyed but it is pending" warnings.
@@ -646,8 +656,7 @@ class CDPSupervisor:
         CDP client) disconnects.  We drop our state snapshot keys that
         depend on specific CDP session ids, re-attach, and keep going.
         """
-        attempt = 0
-        last_success_at = 0.0
+        consecutive_failures = 0
         backoff = 0.5
         while not self._stop_requested:
             try:
@@ -656,21 +665,37 @@ class CDPSupervisor:
                     timeout=10.0,
                 )
             except Exception as e:
-                attempt += 1
                 if not self._ready_event.is_set():
                     # Never connected once — fatal for start().
                     self._start_error = e
                     self._ready_event.set()
                     return
+                consecutive_failures += 1
+                safe_error = _redact_cdp_error_text(e)
+                if consecutive_failures >= self.max_reconnect_attempts:
+                    logger.error(
+                        "CDP supervisor %s: reconnect budget exhausted "
+                        "(%s/%s) after connect failure: %s",
+                        self.task_id,
+                        consecutive_failures,
+                        self.max_reconnect_attempts,
+                        safe_error,
+                    )
+                    return
                 logger.warning(
-                    "CDP supervisor %s: connect failed (attempt %s): %s",
-                    self.task_id, attempt, _redact_cdp_error_text(e),
+                    "CDP supervisor %s: connect failed (attempt %s/%s): %s",
+                    self.task_id,
+                    consecutive_failures,
+                    self.max_reconnect_attempts,
+                    safe_error,
                 )
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
                 continue
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
+            attached_at: Optional[float] = None
+            drop_error: Optional[BaseException] = None
             try:
                 # Reset per-connection session state so stale ids don't hang
                 # around after a reconnect.
@@ -685,24 +710,20 @@ class CDPSupervisor:
                 await self._attach_initial_page()
                 with self._state_lock:
                     self._active = True
-                last_success_at = time.time()
-                backoff = 0.5  # reset after a successful attach
+                attached_at = time.monotonic()
                 if not self._ready_event.is_set():
                     self._ready_event.set()
                 # Run until the reader returns.
                 await reader_task
+                if not self._stop_requested:
+                    drop_error = RuntimeError("CDP reader exited")
             except BaseException as e:
                 if not self._ready_event.is_set():
                     # Never got to ready — propagate to start().
                     self._start_error = e
                     self._ready_event.set()
                     raise
-                logger.warning(
-                    "CDP supervisor %s: session dropped after %.1fs: %s",
-                    self.task_id,
-                    time.time() - last_success_at,
-                    _redact_cdp_error_text(e),
-                )
+                drop_error = e
             finally:
                 with self._state_lock:
                     self._active = False
@@ -725,6 +746,44 @@ class CDPSupervisor:
 
             if self._stop_requested:
                 return
+
+            # A successful TCP/WebSocket connect is not enough to reset the
+            # budget: attach can fail, or the remote can flap immediately after
+            # attach. Only a session that remained attached for a meaningful
+            # window proves recovery. The subsequent drop itself is failure #1
+            # of the new streak.
+            session_age = (
+                time.monotonic() - attached_at
+                if attached_at is not None
+                else 0.0
+            )
+            if attached_at is not None and session_age >= RECONNECT_STABLE_RESET_SECONDS:
+                consecutive_failures = 0
+                backoff = 0.5
+            consecutive_failures += 1
+            safe_error = _redact_cdp_error_text(
+                drop_error or RuntimeError("CDP session ended")
+            )
+            if consecutive_failures >= self.max_reconnect_attempts:
+                logger.error(
+                    "CDP supervisor %s: reconnect budget exhausted (%s/%s) "
+                    "after session failure (attached %.1fs): %s",
+                    self.task_id,
+                    consecutive_failures,
+                    self.max_reconnect_attempts,
+                    session_age,
+                    safe_error,
+                )
+                return
+            logger.warning(
+                "CDP supervisor %s: session dropped after %.1fs "
+                "(attempt %s/%s): %s",
+                self.task_id,
+                session_age,
+                consecutive_failures,
+                self.max_reconnect_attempts,
+                safe_error,
+            )
 
             # Reconnect: brief backoff, then reattach.
             logger.debug(

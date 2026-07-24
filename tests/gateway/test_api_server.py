@@ -46,17 +46,18 @@ async def test_run_tool_preview_is_force_redacted_when_global_redaction_is_disab
     adapter._set_run_status(run_id, "running")
     callback = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
 
+    raw_preview = "curl -H 'Authorization: Bearer unit-test-token-0123456789' https://example.com"
     with patch("agent.redact._REDACT_ENABLED", False):
         callback(
             "tool.started",
             tool_name="terminal",
-            preview="curl -H 'Authorization: Bearer sk-supersecret1234567890' https://example.com",
+            preview=raw_preview,
         )
 
     event = await asyncio.wait_for(queue.get(), timeout=1)
     assert event["event"] == "tool.started"
-    assert "sk-supersecret1234567890" not in event["preview"]
-    assert event["preview"] != "curl -H 'Authorization: Bearer sk-supersecret1234567890' https://example.com"
+    assert "0123456789" not in event["preview"]
+    assert event["preview"] != raw_preview
 
 
 # ---------------------------------------------------------------------------

@@ -20884,38 +20884,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
                 return
-            _status_generation = _status_rewrite_generations.next()
+            if _user_friendly_status.enabled:
+                _status_generation = _status_rewrite_generations.next()
 
-            async def _filtered_status_send():
-                # Keep rewrite and delivery in one ordered critical section.
-                # Otherwise an older network send can finish after a newer one
-                # and overwrite the newer status bubble.
-                async with _status_rewrite_lock:
-                    if not _status_rewrite_generations.is_current(
-                        _status_generation
-                    ):
-                        return None
-                    rendered = await _user_friendly_status.rewrite(
-                        kind=event_type, text=prepared_message
-                    )
-                    if (
-                        rendered is None
-                        or not _run_still_current()
-                        or not _status_rewrite_generations.is_current(
+                async def _filtered_status_send():
+                    # Keep rewrite and delivery in one ordered critical section.
+                    # Otherwise an older network send can finish after a newer one
+                    # and overwrite the newer status bubble.
+                    async with _status_rewrite_lock:
+                        if not _status_rewrite_generations.is_current(
                             _status_generation
+                        ):
+                            return None
+                        rendered = await _user_friendly_status.rewrite(
+                            kind=event_type, text=prepared_message
                         )
-                    ):
+                        if (
+                            rendered is None
+                            or not _run_still_current()
+                            or not _status_rewrite_generations.is_current(
+                                _status_generation
+                            )
+                        ):
+                            return None
+                        return await _send_or_update_status_coro(
+                            _status_adapter,
+                            _status_chat_id,
+                            event_type,
+                            rendered,
+                            _status_thread_metadata,
+                        )
+
+                _status_send_coro = _filtered_status_send()
+            else:
+                async def _direct_status_send():
+                    # Preserve upstream delivery semantics when LLM rewriting is off:
+                    # every accepted status is sent; no latest-wins supersession.
+                    if not _run_still_current():
                         return None
                     return await _send_or_update_status_coro(
                         _status_adapter,
                         _status_chat_id,
                         event_type,
-                        rendered,
+                        prepared_message,
                         _status_thread_metadata,
                     )
 
+                _status_send_coro = _direct_status_send()
+
             _fut = safe_schedule_threadsafe(
-                _filtered_status_send(),
+                _status_send_coro,
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",

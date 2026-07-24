@@ -1945,17 +1945,11 @@ class TestWebServerEndpoints:
         ws._last_auto_archive_check.clear()
 
         # The helper imports load_config lazily from hermes_cli.config; patch there.
-        import hermes_cli.config as _config_mod
-
-        def _cfg():
-            return {"sessions": {"auto_archive": True, "auto_archive_days": 3, "min_interval_hours": 0}}
-
-        prev = _config_mod.load_config
-        _config_mod.load_config = _cfg  # type: ignore[assignment]
+        cfg = {"sessions": {"auto_archive": True, "auto_archive_days": 3, "min_interval_hours": 0}}
         try:
-            listed = self.client.get("/api/sessions").json()["sessions"]
+            with patch("hermes_cli.config.load_config", return_value=cfg):
+                listed = self.client.get("/api/sessions").json()["sessions"]
         finally:
-            _config_mod.load_config = prev  # type: ignore[assignment]
             ws._last_auto_archive_check.clear()
 
         assert all(s["id"] != "stale-serve" for s in listed)

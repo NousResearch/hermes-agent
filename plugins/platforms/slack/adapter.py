@@ -1314,6 +1314,25 @@ class SlackAdapter(BasePlatformAdapter):
                     await self._restart_socket_mode("socket task stopped")
                     continue
 
+                # slack_sdk's SocketModeClient keeps a single aiohttp
+                # ClientSession for its own entire lifetime and retries
+                # forever inside its own connect() loop. If that session
+                # ever gets closed from inside that loop (not just the
+                # WebSocket), is_connected() can keep reporting an
+                # ambiguous/stale value while every retry fails forever with
+                # RuntimeError("Session is closed") -- this is a separate,
+                # more specific signal than a generic transport blip, so it
+                # gets its own reason string for observability.
+                client = getattr(self._handler, "client", None)
+                session = (
+                    getattr(client, "aiohttp_client_session", None)
+                    if client is not None
+                    else None
+                )
+                if session is not None and getattr(session, "closed", False):
+                    await self._restart_socket_mode("aiohttp session closed")
+                    continue
+
                 connected = await self._socket_transport_connected()
                 if connected is False:
                     await self._restart_socket_mode("transport disconnected")

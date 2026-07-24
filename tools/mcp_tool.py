@@ -4118,6 +4118,126 @@ _orphan_stdio_pid_servers: Dict[int, str] = {}
 # (``os.getpgid`` is POSIX-only).
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 
+# ---------------------------------------------------------------------------
+# Cross-process MCP discovery guard
+# ---------------------------------------------------------------------------
+# Advisory file lock that prevents N concurrent Hermes processes (e.g.
+# gateway + CLI + TUI) from all running MCP discovery simultaneously.
+# See issue #62771.
+_LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
+_MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
+
+# Retry constants for the bounded wait when another process holds the lock.
+_MCP_DISCOVERY_LOCK_MAX_RETRIES: int = 10
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S: float = 0.2
+
+
+class _LockCookie:
+    """Holds a cross-process file lock; release() drops it.
+
+    On Windows the underlying file handle MUST stay alive while the lock is
+    held (portalocker keeps the kernel lock on the fd).  On POSIX the fcntl
+    lockdown is similarly tied to the file-descriptor lifetime.  We keep the
+    file object in ``_fh`` and close it on release.
+    """
+
+    def __init__(self, fh: Any) -> None:
+        self._fh = fh
+
+    def release(self) -> None:
+        if self._fh is not None:
+            try:
+                fd = self._fh.fileno()
+                if os.name == "posix":
+                    import fcntl
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                else:
+                    import portalocker
+                    try:
+                        portalocker.unlock(self._fh)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+
+def _acquire_lock_on_fh(fh: Any) -> bool:
+    """Acquire a non-blocking exclusive lock on an open file handle.
+
+    Uses ``fcntl.flock`` on POSIX and ``portalocker.lock`` on Windows.
+
+    Returns ``True`` if the lock was acquired, ``False`` if another process
+    holds it (non-blocking refusal).  Raises ``RuntimeError`` on unexpected
+    errors so the caller can treat lock acquisition as unavailable.
+    """
+    fd = fh.fileno()
+    if os.name == "posix":
+        import fcntl
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                return False
+            raise
+    else:
+        import portalocker
+        try:
+            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            return True
+        except portalocker.LockException:
+            return False
+
+
+def _try_acquire_mcp_discovery_lock() -> Any:
+    """Try to acquire an exclusive cross-process lock for MCP discovery.
+
+    Returns
+    -------
+    _LockCookie
+        Lock acquired successfully.
+    None
+        Another process holds the lock (non-blocking refusal).
+    _LOCK_UNAVAILABLE
+        Locking mechanism is broken or unavailable -- caller should run
+        discovery unguarded.
+    """
+    global _MCP_DISCOVERY_LOCK_PATH
+    try:
+        from hermes_constants import get_hermes_home
+        if _MCP_DISCOVERY_LOCK_PATH is None:
+            _MCP_DISCOVERY_LOCK_PATH = str(
+                get_hermes_home() / ".mcp-discovery.lock"
+            )
+        lock_path = _MCP_DISCOVERY_LOCK_PATH
+    except Exception:
+        return _LOCK_UNAVAILABLE
+
+    try:
+        fh = open(lock_path, "w", encoding="utf-8")
+    except Exception:
+        return _LOCK_UNAVAILABLE
+
+    try:
+        acquired = _acquire_lock_on_fh(fh)
+    except Exception:
+        fh.close()
+        return _LOCK_UNAVAILABLE
+
+    if acquired:
+        return _LockCookie(fh)
+    else:
+        fh.close()
+        return None
+
 
 def _snapshot_child_pids() -> set:
     """Return a set of current child process PIDs.
@@ -5755,32 +5875,57 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
-    with _lock:
-        new_server_names = [
-            name
-            for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
-        ]
-
-    tool_names = register_mcp_servers(servers)
-    if not new_server_names:
-        return tool_names
-
-    with _lock:
-        connected_server_names = [name for name in new_server_names if name in _servers]
-        new_tool_count = sum(
-            len(getattr(_servers[name], "_registered_tool_names", []))
-            for name in connected_server_names
+    # Cross-process discovery guard (#62771) -- bounded wait, never returns
+    # early with a stale local registry.
+    cookie = _try_acquire_mcp_discovery_lock()
+    if cookie is None:
+        logger.debug(
+            "Another process holds MCP discovery lock -- retrying with backoff"
         )
+        for _ in range(_MCP_DISCOVERY_LOCK_MAX_RETRIES):
+            time.sleep(_MCP_DISCOVERY_LOCK_RETRY_DELAY_S)
+            cookie = _try_acquire_mcp_discovery_lock()
+            if cookie is not None:
+                break
+        if cookie is None:
+            logger.warning(
+                "MCP discovery lock still held after %d retries -- "
+                "running discovery unguarded",
+                _MCP_DISCOVERY_LOCK_MAX_RETRIES,
+            )
+        elif cookie is not _LOCK_UNAVAILABLE:
+            logger.debug("Retry succeeded -- acquired MCP discovery lock")
 
-    failed_count = len(new_server_names) - len(connected_server_names)
-    if new_tool_count or failed_count:
-        summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
-        if failed_count:
-            summary += f" ({failed_count} failed)"
-        logger.info(summary)
+    try:
+        with _lock:
+            new_server_names = [
+                name
+                for name, cfg in servers.items()
+                if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+            ]
 
-    return tool_names
+        tool_names = register_mcp_servers(servers)
+        if not new_server_names:
+            return tool_names
+
+        with _lock:
+            connected_server_names = [name for name in new_server_names if name in _servers]
+            new_tool_count = sum(
+                len(getattr(_servers[name], "_registered_tool_names", []))
+                for name in connected_server_names
+            )
+
+        failed_count = len(new_server_names) - len(connected_server_names)
+        if new_tool_count or failed_count:
+            summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
+            if failed_count:
+                summary += f" ({failed_count} failed)"
+            logger.info(summary)
+
+        return tool_names
+    finally:
+        if cookie not in (None, _LOCK_UNAVAILABLE):
+            cookie.release()
 
 
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:

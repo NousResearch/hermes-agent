@@ -383,4 +383,64 @@ import {
   console.log('  ✓ captioned failed download keeps caption and appends note');
 }
 
+// -- inbound mention detection -------------------------------------------
+{
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'mention-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 456,
+      message: {
+        extendedTextMessage: {
+          text: 'Hey @bot test',
+          contextInfo: { mentionedJid: ['15559999999@s.whatsapp.net'] },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    botIds: ['15559999999@s.whatsapp.net'],
+  });
+  assert.equal(event.mentioned, true);
+  assert.deepEqual(event.mentionedIds, ['15559999999@s.whatsapp.net']);
+  console.log('  ✓ extractBridgeEvent sets mentioned=true when bot is mentioned');
+}
+
+{
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'no-mention-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 456,
+      message: { conversation: 'Just a regular message' },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15551234567@s.whatsapp.net',
+    senderNumber: '15551234567',
+    botIds: ['15559999999@s.whatsapp.net'],
+  });
+  assert.equal(event.mentioned, false);
+  assert.deepEqual(event.mentionedIds, []);
+  console.log('  ✓ extractBridgeEvent sets mentioned=false when bot is not mentioned');
+}
+
+// -- outbound mentions payload -------------------------------------------
+{
+  const { content, options } = buildTextSendPayload('Hello @user', {
+    chatId: '15551234567@s.whatsapp.net',
+    mentions: ['15551111111@s.whatsapp.net', '15552222222'],
+  });
+  assert.deepEqual(content, { text: 'Hello @user' });
+  assert.deepEqual(options.mentions, ['15551111111@s.whatsapp.net', '15552222222@s.whatsapp.net']);
+  console.log('  ✓ buildTextSendPayload normalizes and includes mentions');
+}
+
+{
+  const { content, options } = buildTextSendPayload('plain text', {
+    chatId: '15551234567@s.whatsapp.net',
+  });
+  assert.deepEqual(content, { text: 'plain text' });
+  assert.equal(options.mentions, undefined);
+  console.log('  ✓ buildTextSendPayload omits mentions when none provided');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

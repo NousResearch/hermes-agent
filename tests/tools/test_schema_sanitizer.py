@@ -759,3 +759,71 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Bounded-repetition keywords. llama.cpp expands maxLength/maxItems literally
+# into GBNF; a large bound (an MCP tool's "maxLength": 2000 on array items)
+# produces a grammar the parser rejects outright — HTTP 400 "failed to parse
+# grammar". Observed against LM Studio with apple-notes' batch-delete-notes.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_strip_removes_max_length_on_array_items():
+    """The real-world trigger: large maxLength nested in array items."""
+    tools = [_tool("batch_delete", {
+        "type": "object",
+        "properties": {
+            "ids": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 2000},
+                "maxItems": 500,
+            },
+        },
+        "required": ["ids"],
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 2, "both items.maxLength and the array's maxItems are hostile"
+    ids = tools[0]["function"]["parameters"]["properties"]["ids"]
+    assert "maxItems" not in ids
+    assert "maxLength" not in ids["items"]
+    # Structure the model still needs must survive.
+    assert ids["type"] == "array"
+    assert ids["items"]["type"] == "string"
+    assert tools[0]["function"]["parameters"]["required"] == ["ids"]
+
+
+def test_strip_removes_min_bounds():
+    """minLength/minItems are expanded the same way and are equally hostile."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 3},
+            "tags": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        },
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 2
+    props = tools[0]["function"]["parameters"]["properties"]
+    assert "minLength" not in props["name"]
+    assert "minItems" not in props["tags"]
+
+
+def test_strip_preserves_property_named_max_length():
+    """A property *named* maxLength is data, not a schema keyword — keep it.
+
+    Schema keywords are siblings of ``type``; property names live inside
+    ``properties`` and must survive, exactly as for the ``pattern`` case.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "maxLength": {"type": "integer"},
+            "maxItems": {"type": "integer"},
+        },
+    })]
+    _, stripped = strip_pattern_and_format(tools)
+    assert stripped == 0
+    props = tools[0]["function"]["parameters"]["properties"]
+    assert props["maxLength"] == {"type": "integer"}
+    assert props["maxItems"] == {"type": "integer"}

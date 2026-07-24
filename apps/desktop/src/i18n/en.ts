@@ -2513,6 +2513,7 @@ export const en: Translations = {
       sendFailed: 'Could not send approval response',
       run: 'Run',
       command: 'Command',
+      rule: 'Rule',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',

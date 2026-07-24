@@ -430,6 +430,8 @@ class TestGatewayApprovalAllowPermanent:
         payload = self._capture_gateway_payload("rm -rf /important", "gw-allow-perm")
         assert payload["command"] == "rm -rf /important"
         assert payload["allow_permanent"] is True
+        assert payload["allowlist_key"] == payload["pattern_key"]
+        assert payload["pattern_key"] in payload["pattern_keys"]
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",
@@ -443,6 +445,8 @@ class TestGatewayApprovalAllowPermanent:
         # Session scope stays available — pure-tirith prompts are session-max,
         # not once-max (salvaged from PR #67312).
         assert payload["allow_session"] is True
+        assert payload["allowlist_key"] == payload["pattern_key"]
+        assert payload["pattern_key"] in payload["pattern_keys"]
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",

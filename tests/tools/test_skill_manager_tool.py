@@ -275,14 +275,11 @@ class TestCreateSkill:
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
 
-    def test_create_long_desc_includes_prompt_preview(self, tmp_path):
+    def test_create_long_desc_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _create_skill("long-desc", LONG_DESC_CONTENT)
-        assert result["success"] is True
-        assert "system_prompt_preview" in result
-        assert "System prompt will show" in result["system_prompt_preview"]
-        fm, _ = parse_frontmatter(LONG_DESC_CONTENT)
-        assert extract_skill_description(fm) in result["system_prompt_preview"]
+        assert result["success"] is False
+        assert "system-prompt budget" in result["error"]
 
     def test_create_short_desc_no_prompt_preview(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -290,7 +287,7 @@ class TestCreateSkill:
         assert result["success"] is True
         assert "system_prompt_preview" not in result
 
-    def test_create_boundary_at_limit_no_preview(self, tmp_path):
+    def test_create_boundary_at_limit_accepted_no_preview(self, tmp_path):
         desc = "U" * SKILL_PROMPT_DESC_LIMIT
         content = f"---\nname: boundary-at\ndescription: {desc}\n---\n\n# Boundary\n\nStep 1.\n"
         with _skill_dir(tmp_path):
@@ -298,13 +295,25 @@ class TestCreateSkill:
         assert result["success"] is True
         assert "system_prompt_preview" not in result
 
-    def test_create_boundary_over_limit_has_preview(self, tmp_path):
+    def test_create_boundary_over_limit_rejected(self, tmp_path):
         desc = "U" * (SKILL_PROMPT_DESC_LIMIT + 1)
         content = f"---\nname: boundary-over\ndescription: {desc}\n---\n\n# Boundary\n\nStep 1.\n"
         with _skill_dir(tmp_path):
             result = _create_skill("boundary-over", content)
+        assert result["success"] is False
+        assert "system-prompt budget" in result["error"]
+
+    def test_edit_long_desc_still_allowed_with_preview(self, tmp_path):
+        """Edit/patch paths stay permissive so existing over-limit skills
+        remain maintainable — they warn via system_prompt_preview instead."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", LONG_DESC_CONTENT)
         assert result["success"] is True
         assert "system_prompt_preview" in result
+        assert "System prompt will show" in result["system_prompt_preview"]
+        fm, _ = parse_frontmatter(LONG_DESC_CONTENT)
+        assert extract_skill_description(fm) in result["system_prompt_preview"]
 
 
 class TestEditSkill:

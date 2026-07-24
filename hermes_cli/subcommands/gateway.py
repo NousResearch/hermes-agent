@@ -127,6 +127,17 @@ def build_gateway_parser(
         help="Stop ALL gateway processes across all profiles",
     )
 
+    gateway_stop_helper = gateway_subparsers.add_parser(
+        "planned-stop-helper",
+        help=argparse.SUPPRESS,
+    )
+    gateway_stop_helper.add_argument(
+        "--pid",
+        type=int,
+        required=True,
+        help=argparse.SUPPRESS,
+    )
+
     # gateway restart
     gateway_restart = gateway_subparsers.add_parser(
         "restart", help="Restart gateway service"

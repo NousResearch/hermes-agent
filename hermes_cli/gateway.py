@@ -2802,6 +2802,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # _stable_service_working_dir() for the full rationale.
         working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        python_path = _remap_path_for_user(python_path, home_dir)
+        planned_stop_exec = (
+            f"{shlex.quote(python_path)} -m hermes_cli.main "
+            "gateway planned-stop-helper --pid $MAINPID"
+        )
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(_build_wsl_interop_paths(path_entries))
@@ -2831,6 +2836,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
+ExecStop={planned_stop_exec}
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
@@ -2846,6 +2852,10 @@ WantedBy=multi-user.target
         hermes_home
     )
     profile_arg = _profile_arg(hermes_home)
+    planned_stop_exec = (
+        f"{shlex.quote(python_path)} -m hermes_cli.main "
+        "gateway planned-stop-helper --pid $MAINPID"
+    )
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
@@ -2869,6 +2879,7 @@ RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
+ExecStop={planned_stop_exec}
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
@@ -3353,6 +3364,16 @@ def systemd_stop(system: bool = False):
         )
         return
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
+
+
+def gateway_planned_stop_helper(pid: int) -> bool:
+    """Write the planned-stop marker for ``pid`` and return success."""
+    try:
+        from gateway.status import write_planned_stop_marker
+
+        return bool(write_planned_stop_marker(pid))
+    except Exception:
+        return False
 
 
 def systemd_restart(system: bool = False):
@@ -7040,6 +7061,17 @@ def _gateway_command_inner(args):
                     print("✗ No gateway running for this profile")
             else:
                 print(f"✓ Stopped {get_service_name()} service")
+
+    elif subcmd == "planned-stop-helper":
+        pid = int(getattr(args, "pid", 0) or 0)
+        if pid <= 0:
+            print("✗ --pid must be a positive integer")
+            sys.exit(1)
+        ok = gateway_planned_stop_helper(pid)
+        if not ok:
+            print("✗ Failed to write planned-stop marker")
+            sys.exit(1)
+        return
 
     elif subcmd == "restart":
         # Defense: refuse self-targeting gateway restart from inside the gateway.

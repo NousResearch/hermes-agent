@@ -433,7 +433,9 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         assert "ExecStart=" in unit
-        assert "ExecStop=" not in unit
+        assert "ExecStop=" in unit
+        assert "gateway planned-stop-helper --pid $MAINPID" in unit
+        assert "gateway stop" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
@@ -551,7 +553,9 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=True)
 
         assert "ExecStart=" in unit
-        assert "ExecStop=" not in unit
+        assert "ExecStop=" in unit
+        assert "gateway planned-stop-helper --pid $MAINPID" in unit
+        assert "gateway stop" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
@@ -567,6 +571,30 @@ class TestGeneratedSystemdUnits:
         # KillMode=mixed is preserved so the gateway still reaps its own
         # tool-call children before systemd SIGKILLs the cgroup — #8202.
         assert "KillMode=mixed" in unit
+
+    def test_planned_stop_helper_writes_marker_for_target_pid(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "gateway_planned_stop_helper",
+            lambda pid: calls.append(pid) or True,
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="planned-stop-helper", pid=321))
+
+        assert calls == [321]
+
+    def test_planned_stop_helper_exits_nonzero_on_marker_failure(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_cli, "gateway_planned_stop_helper", lambda pid: False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="planned-stop-helper", pid=321)
+            )
+
+        assert exc_info.value.code == 1
+        assert "Failed to write planned-stop marker" in capsys.readouterr().out
 
 
 class TestGatewayStopCleanup:

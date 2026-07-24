@@ -2459,9 +2459,17 @@ def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
     Mirror the Bedrock Converse adapter, which unconditionally prepends a
     minimal user turn when the first message is not user
     (convert_messages_to_converse).
+
+    The placeholder text must be NON-whitespace. A bare " " here is itself a
+    blank text block, which Anthropic rejects with HTTP 400 "text content
+    blocks must contain non-whitespace text" — so the guard for #52160 would
+    trip the very error class it sits next to, wedging every request for a
+    history whose first message is not a user turn (e.g. after compaction
+    emits an assistant summary first). Bedrock already uses the shared
+    placeholder here; match it.
     """
     if result and result[0].get("role") != "user":
-        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]})
 
 
 def convert_messages_to_anthropic(
@@ -2526,7 +2534,44 @@ def convert_messages_to_anthropic(
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
 
+    # Final backstop: coerce any blank/whitespace-only text block that survived
+    # to this point, on the fully-assembled request. The per-message converters
+    # (_convert_assistant_message etc.) already coerce blanks they produce, but
+    # a blank text block can also be *synthesized after* those run — by context
+    # compression's summary message, role merges, or an upstream message whose
+    # content arrived pre-shaped as blocks — and any one blank block makes
+    # Anthropic reject the WHOLE request with HTTP 400 "text content blocks must
+    # contain non-whitespace text", wedging the session on every retry. Coercing
+    # here guarantees no path can leak a blank block onto the wire regardless of
+    # which layer created it. (#69512 follow-up)
+    _coerce_blank_text_blocks(system, result)
+
     return system, result
+
+
+def _coerce_blank_text_blocks(system: Any, messages: List[Dict[str, Any]]) -> None:
+    """In-place: replace every empty/whitespace-only text block with a
+    non-whitespace placeholder, across the system prompt and all messages.
+
+    A single blank text block anywhere in the request triggers Anthropic's
+    HTTP 400 ``text content blocks must contain non-whitespace text``. This is
+    the last line of defense for that error class — it runs on the final,
+    fully-assembled request so no upstream synthesis path (compression, merges,
+    pre-shaped block content) can slip a blank block past it. Only ``text``
+    blocks are touched; thinking / tool_use / image blocks obey different schema
+    rules and are left intact.
+    """
+    def _walk(blocks: Any) -> None:
+        if not isinstance(blocks, list):
+            return
+        for blk in blocks:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                blk["text"] = _safe_text(blk.get("text", ""))
+
+    _walk(system)  # system may be a list of content blocks (cache_control path)
+    for m in messages:
+        if isinstance(m, dict):
+            _walk(m.get("content"))
 
 
 def build_anthropic_kwargs(

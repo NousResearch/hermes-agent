@@ -1281,7 +1281,15 @@ class CLICommandsMixin:
                     i += 1
             return opts
 
-        tokens = shlex.split(cmd)
+        try:
+            tokens = shlex.split(cmd)
+        except ValueError:
+            # Unbalanced quote in the typed command (e.g. /cron add "do x).
+            # Fall back to a naive split so the command degrades gracefully
+            # instead of raising ValueError out of process_command — the REPL
+            # dispatch only catches KeyboardInterrupt, so an escaping
+            # ValueError kills the whole session. Mirrors the /tools handler.
+            tokens = cmd.split()
 
         if len(tokens) == 1:
             print()
@@ -1513,7 +1521,12 @@ class CLICommandsMixin:
         """
         import shlex
 
-        tokens = shlex.split(cmd)[1:] if cmd else []
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            # Unbalanced quote — degrade to a naive split rather than letting
+            # ValueError escape process_command and kill the REPL session.
+            tokens = cmd.split()[1:] if cmd else []
         if not tokens:
             tokens = ["status"]
 

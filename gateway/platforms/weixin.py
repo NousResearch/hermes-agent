@@ -1857,7 +1857,7 @@ class WeixinAdapter(BasePlatformAdapter):
         local_files, final_content = self.extract_local_files(image_cleaned)
         local_files = self.filter_local_delivery_paths(local_files)
 
-        _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+        _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".silk"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
         _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
@@ -2068,9 +2068,35 @@ class WeixinAdapter(BasePlatformAdapter):
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
 
-        # Native outbound Weixin voice bubbles are not proven-working in the
-        # upstream reference implementation. Prefer a reliable file attachment
-        # fallback so users at least receive playable audio, even for .silk.
+        # If the audio is already in SILK format, send as native voice bubble.
+        if audio_path.endswith(".silk"):
+            try:
+                message_id = await self._send_file(
+                    chat_id,
+                    audio_path,
+                    caption="",
+                    force_file_attachment=False,
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception as exc:
+                logger.error("[%s] send_voice (silk) failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+                return SendResult(success=False, error=str(exc))
+
+        # Non-SILK audio: try to convert to SILK and send as voice bubble.
+        try:
+            silk_path = await self._convert_audio_to_silk(audio_path)
+            if silk_path:
+                message_id = await self._send_file(
+                    chat_id,
+                    silk_path,
+                    caption="",
+                    force_file_attachment=False,
+                )
+                return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.warning("[%s] SILK conversion failed, falling back to file: %s", self.name, exc)
+
+        # Fallback: send as file attachment
         fallback_caption = caption or "[voice message as attachment]"
         try:
             message_id = await self._send_file(
@@ -2083,6 +2109,46 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] send_voice failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _convert_audio_to_silk(self, audio_path: str) -> Optional[str]:
+        """Convert an audio file to SILK format for native WeChat voice bubbles.
+
+        Uses ffmpeg to decode source audio to raw 16-bit PCM, then pilk to
+        encode to SILK with Tencent-compatible header (``\\x02#!SILK_V3``).
+        """
+        import subprocess
+        tmp_pcm = audio_path.rsplit(".", 1)[0] + "_pcm.raw"
+        tmp_silk = audio_path.rsplit(".", 1)[0] + ".silk"
+        try:
+            # Decode to 16kHz 16-bit mono raw PCM (no WAV header)
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", audio_path,
+                 "-ar", "16000", "-ac", "1", "-f", "s16le", tmp_pcm],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning("ffmpeg decode failed: %s", result.stderr[:200])
+                return None
+            if not os.path.isfile(tmp_pcm) or os.path.getsize(tmp_pcm) < 100:
+                return None
+
+            # Encode raw PCM to SILK with Tencent-compatible header
+            from pilk import _pilk
+            _pilk.encode(tmp_pcm, tmp_silk, 16000, 16000, True, 24000, 2, 20, 0, False, False)
+            if os.path.isfile(tmp_silk) and os.path.getsize(tmp_silk) > 100:
+                return tmp_silk
+        except ImportError:
+            logger.debug("pilk not installed, cannot convert to SILK")
+        except Exception as exc:
+            logger.warning("SILK conversion error: %s", exc)
+        finally:
+            # Clean up temp PCM file
+            try:
+                if os.path.isfile(tmp_pcm):
+                    os.unlink(tmp_pcm)
+            except Exception:
+                pass
+        return None
 
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url
@@ -2102,6 +2168,29 @@ class WeixinAdapter(BasePlatformAdapter):
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
             handle.write(data)
             return handle.name
+
+    @staticmethod
+    def _get_audio_duration(path: Path) -> int:
+        """Return playtime in seconds for an audio file (MP3/SILK)."""
+        # SILK can't be probed by ffprobe, so for SILK try the corresponding
+        # MP3 first, then fall back to ffprobe on whatever we have.
+        if path.suffix.lower() == ".silk":
+            mp3_path = path.with_suffix(".mp3")
+            if mp3_path.is_file():
+                path = mp3_path
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                duration = float(result.stdout.strip())
+                return max(1, round(duration))
+        except Exception:
+            pass
+        return 0
 
     async def _send_file(
         self,
@@ -2162,9 +2251,10 @@ class WeixinAdapter(BasePlatformAdapter):
             "rawfilemd5": rawfilemd5,
         }
         if media_type == MEDIA_VOICE and path.endswith(".silk"):
-            item_kwargs["encode_type"] = 6
-            item_kwargs["sample_rate"] = 24000
+            item_kwargs["encode_type"] = 0
+            item_kwargs["sample_rate"] = 16000
             item_kwargs["bits_per_sample"] = 16
+            item_kwargs["playtime"] = self._get_audio_duration(Path(path))
         media_item = item_builder(**item_kwargs)
 
         last_message_id = None
@@ -2322,6 +2412,8 @@ async def send_weixin_direct(
             ext = Path(media_path).suffix.lower()
             if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
                 last_result = await live_adapter.send_image_file(chat_id, media_path)
+            elif ext in {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".silk"} or _is_voice:
+                last_result = await live_adapter.send_voice(chat_id, media_path)
             else:
                 last_result = await live_adapter.send_document(chat_id, media_path)
             if not last_result.success:
@@ -2367,6 +2459,8 @@ async def send_weixin_direct(
             ext = Path(media_path).suffix.lower()
             if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
                 last_result = await adapter.send_image_file(chat_id, media_path)
+            elif ext in {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".silk"} or _is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path)
             else:
                 last_result = await adapter.send_document(chat_id, media_path)
             if not last_result.success:

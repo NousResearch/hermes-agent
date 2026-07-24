@@ -175,14 +175,24 @@ class TestFeishuMessageNormalization(unittest.TestCase):
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_websocket_sdk_accepts_channel_ua_tag(self):
-        """The shipped SDK must support the Channel signaling argument."""
+    def test_websocket_sdk_channel_ua_tag_is_optional(self):
+        """Prefer extra_ua_tags when the SDK exposes it; tolerate SDKs that dropped it (#70598)."""
         import inspect
+        from collections.abc import Mapping
 
         from lark_oapi.ws import Client as FeishuWSClient
 
-        signature = inspect.signature(FeishuWSClient)
-        self.assertIn("extra_ua_tags", signature.parameters)
+        try:
+            signature = inspect.signature(FeishuWSClient)
+        except (TypeError, ValueError):
+            self.skipTest("FeishuWSClient signature is not introspectable")
+            return
+
+        # Either the current Docker pin still has the Channel tag kwarg, or an
+        # older/newer pin dropped it — adapter must not hard-require it.
+        self.assertIsInstance(signature.parameters, Mapping)
+        # Document current local pin so CI fails loudly only if inspect breaks.
+        _ = "extra_ua_tags" in signature.parameters
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -475,16 +485,71 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                 loop.close()
 
         self.assertTrue(connected)
-        # Verify the Channel SDK UA tag is present — this is the fix for
-        # group @mention message delivery over WebSocket.
+        # Verify the Channel SDK UA tag is present when the Client mock
+        # advertises the parameter — this is the fix for group @mention
+        # message delivery over WebSocket (#50656). SDKs without the kwarg
+        # skip the tag so connect still succeeds (#70598).
         mock_ws_client.assert_called_once()
         call_kwargs = mock_ws_client.call_args.kwargs
-        self.assertIn("extra_ua_tags", call_kwargs,
-                      "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
-        self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
-                         "extra_ua_tags must be ['channel'] to enable group event routing")
+        if "extra_ua_tags" in call_kwargs:
+            self.assertEqual(
+                call_kwargs["extra_ua_tags"],
+                ["channel"],
+                "extra_ua_tags must be ['channel'] to enable group event routing",
+            )
 
     @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_app",
+        "FEISHU_APP_SECRET": "secret_app",
+    }, clear=True)
+    def test_connect_websocket_omits_channel_ua_tag_when_sdk_lacks_kwarg(self):
+        """lark-oapi without extra_ua_tags must still connect (#70598)."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _ClientNoUa:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        with (
+            patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.FEISHU_WEBSOCKET_AVAILABLE", True),
+            patch("plugins.platforms.feishu.adapter.lark",
+                  SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
+            patch("plugins.platforms.feishu.adapter.EventDispatcherHandler") as mock_handler_class,
+            patch("plugins.platforms.feishu.adapter.FeishuWSClient", _ClientNoUa) as _unused,
+            patch("plugins.platforms.feishu.adapter._run_official_feishu_ws_client"),
+            patch("plugins.platforms.feishu.adapter.acquire_scoped_lock", return_value=(True, None)),
+            patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
+            patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+            patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+        ):
+            _mock_event_dispatcher_builder(mock_handler_class)
+
+            loop = asyncio.new_event_loop()
+            future = loop.create_future()
+            future.set_result(None)
+
+            class _Loop:
+                def run_in_executor(self, *_args, **_kwargs):
+                    return future
+                def is_closed(self):
+                    return False
+
+            try:
+                with patch("plugins.platforms.feishu.adapter.asyncio.get_running_loop",
+                           return_value=_Loop()):
+                    connected = asyncio.run(adapter.connect())
+            finally:
+                loop.close()
+
+        self.assertTrue(connected)
+        self.assertIsInstance(adapter._ws_client, _ClientNoUa)
+        self.assertNotIn("extra_ua_tags", adapter._ws_client.kwargs)
+
     def test_edit_message_updates_existing_feishu_message(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

@@ -4786,19 +4786,27 @@ class FeishuAdapter(BasePlatformAdapter):
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
         await self._hydrate_bot_identity()
-        self._ws_client = FeishuWSClient(
-            app_id=self._app_id,
-            app_secret=self._app_secret,
-            log_level=lark.LogLevel.INFO,
-            event_handler=self._event_handler,
-            domain=domain,
-            # Channel SDK signaling tag: without this UA tag the Feishu
-            # server does not push group @mention events over the WebSocket
-            # transport.  The tag tells the server to use the Channel protocol
-            # which enables group-message routing in addition to P2P DM.
-            # See https://github.com/NousResearch/hermes-agent/issues/50656
-            extra_ua_tags=["channel"],
-        )
+        # Channel SDK signaling tag: without this UA tag the Feishu server
+        # does not push group @mention events over the WebSocket transport.
+        # See https://github.com/NousResearch/hermes-agent/issues/50656
+        # Some lark-oapi versions dropped `extra_ua_tags` (#70598); only pass
+        # it when the installed Client accepts the kwarg so connect still works.
+        ws_kwargs = {
+            "app_id": self._app_id,
+            "app_secret": self._app_secret,
+            "log_level": lark.LogLevel.INFO,
+            "event_handler": self._event_handler,
+            "domain": domain,
+        }
+        try:
+            import inspect
+
+            if "extra_ua_tags" in inspect.signature(FeishuWSClient).parameters:
+                ws_kwargs["extra_ua_tags"] = ["channel"]
+        except (TypeError, ValueError):
+            # Builtins/C-extension callables without introspectable signatures.
+            pass
+        self._ws_client = FeishuWSClient(**ws_kwargs)
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,

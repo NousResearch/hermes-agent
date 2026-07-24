@@ -11005,6 +11005,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=False,
                 )
 
+            # "No new commits" does not mean the managed interpreter is safe.
+            # uv can retain the same CPython patch while python-build-standalone
+            # refreshes the embedded SQLite underneath it. Keep the existing
+            # update-boundary hook active on this retry path too.
+            from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+            runtime_repairs = []
+            update_managed_uv(repair_observer=runtime_repairs.append)
+            ensure_uv(repair_observer=runtime_repairs.append)
+            runtime_repaired = next(
+                (result for result in runtime_repairs if result.repaired),
+                None,
+            )
+
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
             # where a running gateway/desktop backend keeps .pyd files locked
@@ -11055,6 +11069,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
                 print("✓ Already up to date!")
+            if runtime_repaired is not None and not _is_windows():
+                print()
+                print(
+                    "⚠ Restart required to finish the managed Python runtime repair."
+                )
+                print(
+                    "  Any running Hermes gateways, Desktop backends, or other "
+                    "long-lived processes still use the previous runtime."
+                )
+                print(
+                    "  Restart each of them before removing the parked venv"
+                    + (
+                        f": {runtime_repaired.backup_venv}"
+                        if runtime_repaired.backup_venv is not None
+                        else "."
+                    )
+                )
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 

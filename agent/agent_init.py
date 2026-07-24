@@ -1630,6 +1630,12 @@ def init_agent(
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
+                elif _mp is not None:
+                    logger.warning(
+                        "memory.provider '%s' loaded but not available — "
+                        "check the provider name and its dependencies",
+                        _mem_provider_name,
+                    )
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,

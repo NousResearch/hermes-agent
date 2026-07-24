@@ -249,3 +249,28 @@ describe('ModelMenuPanel provider collapse', () => {
     expect($collapsedProviders.get()).toContain('deepseek')
   })
 })
+
+describe('ModelMenuPanel current model fallback', () => {
+  it('keeps the current OpenRouter model visible when the catalog omits it', async () => {
+    $currentProvider.set('openrouter')
+    $currentModel.set('qwen/qwen-2.5-72b-instruct')
+    getGlobalModelOptions.mockResolvedValueOnce({
+      model: 'qwen/qwen-2.5-72b-instruct',
+      provider: 'openrouter',
+      providers: [
+        {
+          models: ['openai/gpt-4o-mini'],
+          name: 'OpenRouter',
+          slug: 'openrouter'
+        }
+      ]
+    })
+
+    renderPanel()
+
+    const row = await findByText(document.body, 'Qwen 2.5 72b Instruct')
+    const item = row.closest('[role="menuitem"]') ?? row.parentElement
+
+    expect(item?.querySelector('.codicon-check')).not.toBeNull()
+  })
+})

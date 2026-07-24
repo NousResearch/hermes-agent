@@ -845,6 +845,88 @@ def test_server_strips_client_auth_header():
     asyncio.run(run())
 
 
+def test_server_closes_session_when_prepare_fails(monkeypatch):
+    """Regression: if web.StreamResponse.prepare() raises (e.g. the client
+    disconnects before headers are flushed), the upstream aiohttp
+    ClientSession and ClientResponse MUST still be closed. Previously
+    StreamResponse construction + prepare() lived outside the try/finally
+    that closed the upstream — a socket leak on every interrupted request."""
+    from aiohttp.client_reqrep import ClientResponse
+    from hermes_cli.proxy import server as proxy_server
+
+    opened_sessions: list = []
+    closed_sessions: list = []
+    released_responses: list = []
+
+    real_session_init = aiohttp.ClientSession.__init__
+    real_session_close = aiohttp.ClientSession.close
+    real_release = ClientResponse.release
+
+    def tracking_init(self, *a, **kw):
+        opened_sessions.append(self)
+        return real_session_init(self, *a, **kw)
+
+    async def tracking_close(self):
+        closed_sessions.append(self)
+        return await real_session_close(self)
+
+    def tracking_release(self):
+        released_responses.append(self)
+        return real_release(self)
+
+    class BoomStreamResponse(web.StreamResponse):
+        async def prepare(self, request):  # type: ignore[override]
+            raise aiohttp.ClientConnectionError("simulated client disconnect")
+
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(
+            _build_fake_upstream(captured)
+        )
+        adapter = FakeAdapter(f"{upstream_base}/v1", bearer="ours")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        # Only start tracking AFTER the proxy/upstream runners are up, so
+        # we don't count any sessions they own internally. We patch the
+        # StreamResponse symbol the proxy module resolves; the fake upstream
+        # doesn't use StreamResponse on the chat endpoint.
+        monkeypatch.setattr(proxy_server.web, "StreamResponse", BoomStreamResponse)
+        monkeypatch.setattr(aiohttp.ClientSession, "__init__", tracking_init)
+        monkeypatch.setattr(aiohttp.ClientSession, "close", tracking_close)
+        monkeypatch.setattr(ClientResponse, "release", tracking_release)
+
+        try:
+            async with aiohttp.ClientSession() as client:
+                # The proxy's own ClientSession should be the next opened one.
+                proxy_session_count_before = len(opened_sessions)
+                try:
+                    async with client.post(
+                        f"{proxy_base}/v1/chat/completions", json={}
+                    ) as resp:
+                        await resp.read()
+                except aiohttp.ClientError:
+                    pass  # proxy handler re-raised; client may see reset
+
+                # Sessions opened by the proxy during this request must be
+                # closed BEFORE we tear down the runners — that's the
+                # whole point of the fix.
+                proxy_sessions = opened_sessions[proxy_session_count_before:]
+                assert proxy_sessions, "proxy did not open an upstream session"
+                assert all(s in closed_sessions for s in proxy_sessions), (
+                    "upstream ClientSession was not closed after prepare() "
+                    "failure — this is the socket-leak regression"
+                )
+                assert released_responses, (
+                    "upstream ClientResponse.release() was not called "
+                    "after prepare() failure"
+                )
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # CLI handlers
 # ---------------------------------------------------------------------------

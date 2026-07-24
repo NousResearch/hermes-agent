@@ -233,7 +233,11 @@ def _count_occurrences(text: str, pattern: str) -> int:
         if pos == -1:
             break
         count += 1
-        start = pos + 1
+        # Advance past the whole match so self-overlapping patterns (e.g.
+        # "\n\n", repeated indentation) are counted non-overlapping, as the
+        # docstring promises. max(1, ...) guards against an empty pattern,
+        # which would otherwise never advance and loop forever.
+        start = pos + max(1, len(pattern))
     return count
 
 

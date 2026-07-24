@@ -254,6 +254,26 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 
 Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
+When a controllable run needs an image, `input` may instead be a compact
+OpenAI-style content-part array:
+
+```json
+{
+  "input": [
+    {"type": "input_text", "text": "Describe this screenshot."},
+    {"type": "input_image", "image_url": "data:image/png;base64,..."}
+  ]
+}
+```
+
+Runs accepts up to four inline PNG, JPEG, GIF, or WebP images, each up to 5
+MiB. It deliberately accepts only `data:image/...;base64` values—no web URLs,
+file uploads, or local paths—so this controllable endpoint cannot fetch a
+private network URL or inspect the Hermes host. The same Run keeps its usual
+status, events, approval, and stop controls. Discover the exact version and
+limits through `features.run_inline_images` and `endpoints.run_inline_images`
+in `/v1/capabilities` before sending images.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.

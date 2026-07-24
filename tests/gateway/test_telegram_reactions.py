@@ -274,6 +274,121 @@ async def test_clear_reactions_returns_false_without_bot(monkeypatch):
     assert result is False
 
 
+# ── configurable reaction emojis ───────────────────────────────────────
+
+
+def _make_adapter_with_extra(extra: dict, monkeypatch):
+    """Create an adapter with reactions enabled and the given config.extra."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    adapter.config.extra = extra
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_on_processing_start_custom_emoji(monkeypatch):
+    """A custom reactions_on_receive emoji should be used."""
+    adapter = _make_adapter_with_extra({"reactions_on_receive": "🤔"}, monkeypatch)
+    event = _make_event()
+
+    await adapter.on_processing_start(event)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="🤔",
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_start_suppressed_with_clear(monkeypatch):
+    """Setting reactions_on_receive to 'clear' should suppress the reaction."""
+    adapter = _make_adapter_with_extra({"reactions_on_receive": "clear"}, monkeypatch)
+    event = _make_event()
+
+    await adapter.on_processing_start(event)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_success_custom_emoji(monkeypatch):
+    """A custom reactions_on_success emoji should be used."""
+    adapter = _make_adapter_with_extra({"reactions_on_success": "✅"}, monkeypatch)
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="✅",
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_success_clear_clears(monkeypatch):
+    """Setting reactions_on_success to 'clear' should remove the in-progress reaction."""
+    adapter = _make_adapter_with_extra({"reactions_on_success": "clear"}, monkeypatch)
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_failure_custom_emoji(monkeypatch):
+    """A custom reactions_on_failure emoji should be used."""
+    adapter = _make_adapter_with_extra({"reactions_on_failure": "❌"}, monkeypatch)
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction="❌",
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_failure_empty_clears(monkeypatch):
+    """Setting reactions_on_failure to '' should remove the in-progress reaction."""
+    adapter = _make_adapter_with_extra({"reactions_on_failure": ""}, monkeypatch)
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    adapter._bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=123,
+        message_id=456,
+        reaction=None,
+    )
+
+
+@pytest.mark.parametrize("sentinel", ["clear", "none", ""])
+def test_reaction_emoji_sentinel_returns_none(monkeypatch, sentinel):
+    """Sentinel values for a reaction should suppress it."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    adapter.config.extra = {"reactions_on_receive": sentinel}
+
+    assert adapter._reaction_emoji("reactions_on_receive", "👀") is None
+
+
+def test_reaction_emoji_default_without_extra(monkeypatch):
+    """Missing config.extra should fall back to the default emoji."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+
+    assert adapter._reaction_emoji("reactions_on_receive", "👀") == "👀"
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 

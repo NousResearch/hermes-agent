@@ -7461,6 +7461,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.delivery_ledger import (
                 RECOVERED_MARKER,
                 ledger_enabled,
+                mark_attempting,
                 mark_delivered,
                 mark_failed,
                 sweep_recoverable,
@@ -7504,6 +7505,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata = (
                 {"thread_id": row["thread_id"]} if row.get("thread_id") else None
             )
+            # Mirror the producer path: claim already stamps attempting, but
+            # stamp again immediately before await so any crash mid-send
+            # leaves an unambiguous ledger state for the next boot.
+            try:
+                mark_attempting(row["obligation_id"])
+            except Exception:
+                logger.debug(
+                    "delivery ledger mark_attempting failed", exc_info=True
+                )
             try:
                 result = await adapter.send(
                     chat_id=row["chat_id"],

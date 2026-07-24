@@ -31,7 +31,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -138,8 +138,8 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
-        self.memory_entries: List[str] = []
-        self.user_entries: List[str] = []
+        self.memory_entries: List[Dict[str, Any]] = []
+        self.user_entries: List[Dict[str, Any]] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
@@ -198,9 +198,9 @@ class MemoryStore:
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        # Deduplicate entries — keep first occurrence (by content, ignoring tier)
+        self.memory_entries = self._deduplicate_by_content(self.memory_entries)
+        self.user_entries = self._deduplicate_by_content(self.user_entries)
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -215,37 +215,40 @@ class MemoryStore:
         }
 
     @staticmethod
-    def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
+    def _sanitize_entries_for_snapshot(entries: List[Dict[str, Any]], filename: str) -> List[Dict[str, Any]]:
         """Return ``entries`` with any threat-matching entry replaced by a placeholder.
 
         Each entry is scanned with the shared threat-pattern library at the
-        ``"strict"`` scope (same as memory writes).  On match, the entry is
-        replaced in the returned list with ``"[BLOCKED: <filename> entry
-        contained threat pattern: <ids>. Removed from system prompt.]"`` —
-        the placeholder enters the snapshot, the original entry stays in
-        live state for the user to inspect and delete.
+        ``"strict"`` scope (same as memory writes).  On match, the entry's
+        content is replaced in the returned list with a placeholder —
+        the original dict stays in live state for the user to inspect and
+        delete.
 
         Empty or already-block-marker entries pass through unchanged.
         """
         from tools.threat_patterns import scan_for_threats
 
-        sanitized: List[str] = []
+        sanitized: List[Dict[str, Any]] = []
         for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
+            content = entry.get("content", "")
+            if not content or content.startswith("[BLOCKED:"):
                 sanitized.append(entry)
                 continue
-            findings = scan_for_threats(entry, scope="strict")
+            findings = scan_for_threats(content, scope="strict")
             if findings:
                 logger.warning(
                     "Memory entry from %s blocked at load time: %s",
                     filename, ", ".join(findings),
                 )
-                sanitized.append(
-                    f"[BLOCKED: {filename} entry contained threat pattern(s): "
-                    f"{', '.join(findings)}. Removed from system prompt; "
-                    f"use memory(action=remove) "
-                    f"to delete the original.]"
-                )
+                sanitized.append({
+                    "content": (
+                        f"[BLOCKED: {filename} entry contained threat pattern(s): "
+                        f"{', '.join(findings)}. Removed from system prompt; "
+                        f"use memory(action=remove) "
+                        f"to delete the original.]"
+                    ),
+                    "tier": entry.get("tier", 1),
+                })
             else:
                 sanitized.append(entry)
         return sanitized
@@ -312,7 +315,7 @@ class MemoryStore:
         path = self._path_for(target)
         bak = None if skip_drift else self._detect_external_drift(target)
         fresh = self._read_file(path)
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+        fresh = self._deduplicate_by_content(fresh)  # deduplicate
         self._set_entries(target, fresh)
         return bak
 
@@ -321,33 +324,57 @@ class MemoryStore:
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
-    def _entries_for(self, target: str) -> List[str]:
+    def _entries_for(self, target: str) -> List[Dict[str, Any]]:
         if target == "user":
             return self.user_entries
         return self.memory_entries
 
-    def _set_entries(self, target: str, entries: List[str]):
+    def _set_entries(self, target: str, entries: List[Dict[str, Any]]):
         if target == "user":
             self.user_entries = entries
         else:
             self.memory_entries = entries
 
+    @staticmethod
+    def _deduplicate_by_content(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Deduplicate entries by content, preserving order and keeping first occurrence.
+
+        When two entries have the same content but different tiers, the first
+        occurrence's tier is kept.
+        """
+        seen: set = set()
+        result: List[Dict[str, Any]] = []
+        for entry in entries:
+            content = entry.get("content", "")
+            if content not in seen:
+                seen.add(content)
+                result.append(entry)
+        return result
+
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
         if not entries:
             return 0
-        return len(ENTRY_DELIMITER.join(entries))
+        # Count only the content portions (tier metadata doesn't count toward limit)
+        contents = [e.get("content", "") for e in entries]
+        return len(ENTRY_DELIMITER.join(contents))
 
     def _char_limit(self, target: str) -> int:
         if target == "user":
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+    def add(self, target: str, content: str, tier: int = 1) -> Dict[str, Any]:
+        """Append a new entry. Returns error if it would exceed the char limit.
+
+        ``tier`` (default 1): 1=always-injected, 2=search-based, 3=archival.
+        """
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
+
+        if tier not in (1, 2, 3):
+            return {"success": False, "error": "Tier must be 1 (always-injected), 2 (search-based), or 3 (archival)."}
 
         # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
@@ -366,13 +393,16 @@ class MemoryStore:
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
-            if content in entries:
+            # Reject exact duplicates (same content regardless of tier)
+            existing_contents = {e.get("content") for e in entries}
+            if content in existing_contents:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
             # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+            new_entry = {"content": content, "tier": tier}
+            new_entries = entries + [new_entry]
+            count_contents = [e.get("content", "") for e in new_entries]
+            new_total = len(ENTRY_DELIMITER.join(count_contents))
 
             if new_total > limit:
                 current = self._char_count(target)
@@ -389,7 +419,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries.append(content)
+            entries.append({"content": content, "tier": tier})
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
@@ -415,20 +445,20 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            matches = [(i, e) for i, e in enumerate(entries) if old_text in e.get("content", "")]
 
             if not matches:
                 return self._consolidation_failure({
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
-                    "current_entries": entries,
+                    "current_entries": [e.get("content", "") for e in entries],
                 })
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = {e for _, e in matches}
+                unique_texts = {e.get("content", "") for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = self._previews([e for _, e in matches])
+                    previews = self._previews([e.get("content", "") for _, e in matches])
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -437,12 +467,14 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
+            original_tier = entries[idx].get("tier", 1)
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
+            test_entries[idx] = {"content": new_content, "tier": original_tier}
+            test_contents = [e.get("content", "") for e in test_entries]
+            new_total = len(ENTRY_DELIMITER.join(test_contents))
 
             if new_total > limit:
                 current = self._char_count(target)
@@ -454,11 +486,11 @@ class MemoryStore:
                         f"entries to make room (see current_entries below), then retry — all "
                         f"in this turn."
                     ),
-                    "current_entries": entries,
+                    "current_entries": [e.get("content", "") for e in entries],
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
+            entries[idx] = {"content": new_content, "tier": original_tier}
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
@@ -476,20 +508,20 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            matches = [(i, e) for i, e in enumerate(entries) if old_text in e.get("content", "")]
 
             if not matches:
                 return self._consolidation_failure({
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
-                    "current_entries": entries,
+                    "current_entries": [e.get("content", "") for e in entries],
                 })
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = {e for _, e in matches}
+                unique_texts = {e.get("content", "") for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = self._previews([e for _, e in matches])
+                    previews = self._previews([e.get("content", "") for _, e in matches])
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -536,7 +568,7 @@ class MemoryStore:
                 return _drift_error(self._path_for(target), bak)
 
             # Work on a copy; only commit if the whole batch validates.
-            working: List[str] = list(self._entries_for(target))
+            working: List[Dict[str, Any]] = list(self._entries_for(target))
             limit = self._char_limit(target)
 
             for i, op in enumerate(operations):
@@ -544,14 +576,18 @@ class MemoryStore:
                 act = op.get("action")
                 content = (op.get("content") or "").strip()
                 old_text = (op.get("old_text") or "").strip()
+                tier = int(op.get("tier", 1))
                 pos = f"Operation {i + 1} ({act or 'unknown'})"
 
                 if act == "add":
                     if not content:
                         return self._batch_error(target, f"{pos}: content is required.")
-                    if content in working:
+                    existing_contents = {e.get("content") for e in working}
+                    if content in existing_contents:
                         continue  # idempotent -- skip duplicate, don't fail the batch
-                    working.append(content)
+                    if tier not in (1, 2, 3):
+                        return self._batch_error(target, f"{pos}: tier must be 1, 2, or 3.")
+                    working.append({"content": content, "tier": tier})
 
                 elif act == "replace":
                     if not old_text:
@@ -561,23 +597,26 @@ class MemoryStore:
                             target,
                             f"{pos}: content is required (use action='remove' to delete).",
                         )
-                    matches = [j for j, e in enumerate(working) if old_text in e]
+                    matches = [j for j, e in enumerate(working) if old_text in e.get("content", "")]
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
-                    if len({working[j] for j in matches}) > 1:
+                    unique_texts = {working[j].get("content") for j in matches}
+                    if len(unique_texts) > 1:
                         return self._batch_error(
                             target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
-                    working[matches[0]] = content
+                    original_tier = working[matches[0]].get("tier", 1)
+                    working[matches[0]] = {"content": content, "tier": original_tier}
 
                 elif act == "remove":
                     if not old_text:
                         return self._batch_error(target, f"{pos}: old_text is required.")
-                    matches = [j for j, e in enumerate(working) if old_text in e]
+                    matches = [j for j, e in enumerate(working) if old_text in e.get("content", "")]
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
-                    if len({working[j] for j in matches}) > 1:
+                    unique_texts = {working[j].get("content") for j in matches}
+                    if len(unique_texts) > 1:
                         return self._batch_error(
                             target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
@@ -591,7 +630,8 @@ class MemoryStore:
                     )
 
             # Budget check against the FINAL state only.
-            new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
+            all_contents = [e.get("content", "") for e in working]
+            new_total = len(ENTRY_DELIMITER.join(all_contents)) if working else 0
             if new_total > limit:
                 current = self._char_count(target)
                 return self._consolidation_failure({
@@ -601,7 +641,7 @@ class MemoryStore:
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                         f"entries in the same batch (see current_entries below), then retry."
                     ),
-                    "current_entries": self._entries_for(target),
+                    "current_entries": [e.get("content", "") for e in self._entries_for(target)],
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -618,7 +658,7 @@ class MemoryStore:
         return self._consolidation_failure({
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
-            "current_entries": self._entries_for(target),
+            "current_entries": [e.get("content", "") for e in self._entries_for(target)],
             "usage": f"{current:,}/{limit:,}",
         })
 
@@ -659,25 +699,42 @@ class MemoryStore:
         # call 1, then 5 redundant repeats). Entries are only shown on the
         # error/over-budget paths, where the model genuinely needs them to
         # decide what to consolidate.
+        # Count entries by tier for diagnostic info.
+        tier_counts = {}
+        for e in entries:
+            t = e.get("tier", 1)
+            tier_counts[t] = tier_counts.get(t, 0) + 1
+        tier_summary = ", ".join(f"tier {k}: {v}" for k, v in sorted(tier_counts.items()))
         resp = {
             "success": True,
             "done": True,
             "target": target,
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
             "entry_count": len(entries),
+            "tiers": tier_summary,
         }
         if message:
             resp["message"] = message
         resp["note"] = "Write saved. This update is complete — do not repeat it."
         return resp
 
-    def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+    def _render_block(self, target: str, entries: List[Dict[str, Any]]) -> str:
+        """Render a system prompt block with header and usage indicator.
+
+        Only tier 1 entries (always-injected) are included in the system prompt.
+        Tier 2 (search-based) and tier 3 (archival) entries are excluded from
+        the frozen snapshot — they are retrieved on demand via search.
+        """
         if not entries:
             return ""
 
         limit = self._char_limit(target)
-        content = ENTRY_DELIMITER.join(entries)
+        # Filter to tier 1 only (always-injected into system prompt)
+        tier1_entries = [e.get("content", "") for e in entries if e.get("tier", 1) == 1]
+        if not tier1_entries:
+            return self._render_empty_block(target)
+
+        content = ENTRY_DELIMITER.join(tier1_entries)
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
@@ -690,8 +747,24 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
-    def _read_file(path: Path) -> List[str]:
+    def _render_empty_block(target: str) -> str:
+        """Render an empty tier-1 state block when only tier 2/3 entries exist."""
+        if target == "user":
+            header = "USER PROFILE (who the user is) [empty — tier 2/3 entries not auto-injected]"
+        else:
+            header = "MEMORY (your personal notes) [empty — tier 2 entries not auto-injected]"
+        separator = "═" * 46
+        return f"{separator}\n{header}\n{separator}\n(No always-injected entries.)"
+
+    @staticmethod
+    def _read_file(path: Path) -> List[Dict[str, Any]]:
         """Read a memory file and split into entries.
+
+        Each entry is parsed as a dict with ``content`` and ``tier`` keys.
+
+        Backward-compatible: existing entries stored as plain text (no JSON
+        wrapper) are assigned tier 1. Entries in the new JSON format
+        ``{"c": "...", "t": N}`` preserve their tier.
 
         No file locking needed: _write_file uses atomic rename, so readers
         always see either the previous complete file or the new complete file.
@@ -706,10 +779,25 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
-        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
+        # Parse §-delimited entries; try JSON decode for structured format
+        raw_entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
+        result: List[Dict[str, Any]] = []
+        for e in raw_entries:
+            if not e:
+                continue
+            if e.startswith("{") and e.endswith("}"):
+                try:
+                    obj = json.loads(e)
+                    if isinstance(obj, dict) and "c" in obj:
+                        content = obj["c"]
+                        tier = int(obj.get("t", 1))
+                        result.append({"content": content, "tier": max(1, min(3, tier))})
+                        continue
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+            # Backward compatible: plain text = tier 1
+            result.append({"content": e, "tier": 1})
+        return result
 
     def _detect_external_drift(self, target: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
@@ -746,10 +834,30 @@ class MemoryStore:
             return None
 
         parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-        roundtrip = ENTRY_DELIMITER.join(parsed)
+        # Parse entries as dicts for drift detection (same logic as _read_file)
+        parsed_entries: List[Dict[str, Any]] = []
+        for e in parsed:
+            if e.startswith("{") and e.endswith("}"):
+                try:
+                    obj = json.loads(e)
+                    if isinstance(obj, dict) and "c" in obj:
+                        parsed_entries.append({"content": obj["c"], "tier": int(obj.get("t", 1))})
+                        continue
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+            parsed_entries.append({"content": e, "tier": 1})
+        roundtrip_parts: List[str] = []
+        for e in parsed_entries:
+            tier = e.get("tier", 1)
+            content = e.get("content", "")
+            if tier == 1:
+                roundtrip_parts.append(content)
+            else:
+                roundtrip_parts.append(json.dumps({"c": content, "t": tier}, ensure_ascii=False))
+        roundtrip = ENTRY_DELIMITER.join(roundtrip_parts)
 
         char_limit = self._char_limit(target)
-        max_entry_len = max((len(e) for e in parsed), default=0)
+        max_entry_len = max((len(e.get("content", "")) for e in parsed_entries), default=0)
 
         drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
         if not drift_detected:
@@ -767,15 +875,27 @@ class MemoryStore:
         return str(bak_path)
 
     @staticmethod
-    def _write_file(path: Path, entries: List[str]):
+    def _write_file(path: Path, entries: List[Dict[str, Any]]):
         """Write entries to a memory file using atomic temp-file + rename.
+
+        Tier 1 entries are stored as plain text (backward-compatible).
+        Tier 2 and 3 entries are stored as JSON ``{"c": "content", "t": N}``
+        to preserve their tier metadata across sessions.
 
         Previous implementation used open("w") + flock, but "w" truncates the
         file *before* the lock is acquired, creating a race window where
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
         """
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
+        parts: List[str] = []
+        for entry in entries:
+            content = entry.get("content", "")
+            tier = entry.get("tier", 1)
+            if tier == 1:
+                parts.append(content)
+            else:
+                parts.append(json.dumps({"c": content, "t": tier}, ensure_ascii=False))
+        content = ENTRY_DELIMITER.join(parts)
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
@@ -959,7 +1079,7 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
                 f"to {action}. None was provided. Reissue the {action} with old_text "
                 f"set to part of one of the current_entries below."
             ),
-            "current_entries": entries,
+            "current_entries": [e.get("content", "") for e in entries],
             "usage": f"{current:,}/{limit:,}",
         },
         ensure_ascii=False,
@@ -971,6 +1091,7 @@ def memory_tool(
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    tier: int = 1,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
@@ -1030,7 +1151,7 @@ def memory_tool(
         return gate_result
 
     if action == "add":
-        result = store.add(target, content)
+        result = store.add(target, content, tier=tier)
 
     elif action == "replace":
         result = store.replace(target, old_text, content)
@@ -1077,12 +1198,17 @@ MEMORY_SCHEMA = {
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "{action, content?, old_text?, tier?}). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
+        "TIERS (default 1): entries have a 'tier' field that controls how eagerly they are seen:\n"
+        "  - tier 1 (always-injected): injected into every system prompt — use sparingly, keep short\n"
+        "  - tier 2 (search-based): excluded from the system prompt; retrieved when search matches\n"
+        "  - tier 3 (archival): excluded from both prompt and search; kept for record-keeping only\n"
+        "Only tier 1 entries enter the system prompt by default; this keeps the prefix small.\n\n"
         "WHEN: save proactively when the user states a preference, correction, or personal "
         "detail, or you learn a stable fact about their environment, conventions, or workflow. "
         "Priority: user preferences & corrections > environment facts > procedures. The best "
@@ -1116,12 +1242,17 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
             },
+            "tier": {
+                "type": "integer",
+                "enum": [1, 2, 3],
+                "description": "Memory tier (default 1): 1=always-injected into system prompt, 2=search-based (excluded from prompt), 3=archival (record-keeping only). Only relevant for 'add'."
+            },
             "operations": {
                 "type": "array",
                 "description": (
                     "Batch shape: a list of operations applied atomically in one call "
                     "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item is {action, content?, old_text?}."
+                    "or consolidating to make room. Each item is {action, content?, old_text?, tier?}."
                 ),
                 "items": {
                     "type": "object",
@@ -1129,6 +1260,7 @@ MEMORY_SCHEMA = {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
                         "content": {"type": "string", "description": "Entry content for add/replace."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
+                        "tier": {"type": "integer", "enum": [1, 2, 3], "description": "Tier for add (default 1): 1=always-injected, 2=search-based, 3=archival."},
                     },
                     "required": ["action"],
                 },
@@ -1151,6 +1283,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        tier=int(args.get("tier", 1)),
         operations=args.get("operations"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,

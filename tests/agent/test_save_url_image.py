@@ -73,6 +73,21 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+@pytest.fixture(autouse=True)
+def _allow_localhost_urls(monkeypatch):
+    """The SSRF guard in save_url_image blocks 127.0.0.1 by default.
+
+    These tests exercise the *download* logic against a local HTTP server,
+    not the SSRF guard (that is tested separately in
+    test_image_gen_ssrf_guard.py).  Bypass the guard so the existing tests
+    keep working.
+    """
+    from unittest.mock import patch as _patch
+
+    with _patch("tools.url_safety.is_safe_url", return_value=True):
+        yield
+
+
 @pytest.fixture
 def http_server(tmp_path, monkeypatch):
     """Spin up a localhost HTTP server and isolate HERMES_HOME under tmp_path."""

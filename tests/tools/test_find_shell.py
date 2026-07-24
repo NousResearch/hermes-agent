@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -116,6 +117,112 @@ class TestFindBashUnchanged:
         assert len(result) > 0
 
 
+def _run_with_retained_stdin(cmd, *, env, cwd, timeout=10):
+    """Run *cmd* while keeping the stdin writer open (ACP JSON-RPC-like).
+
+    Unlike ``subprocess.run(input="")``, this does not close the pipe writer
+    until the child exits — so a nested probe that inherits stdin and reads
+    from it will hang unless it was spawned with ``stdin=DEVNULL``.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+    )
+    try:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise AssertionError(
+                f"helper hung under retained stdin writer (stderr={stderr!r})"
+            )
+        stdout = proc.stdout.read() if proc.stdout else ""
+        stderr = proc.stderr.read() if proc.stderr else ""
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    finally:
+        if proc.stdin:
+            proc.stdin.close()
+
+
+class TestBashStartsBoundedProbe:
+    """Windows tool startup hangs if ``_bash_starts`` uses unbounded run()."""
+
+    def test_bash_starts_uses_bounded_captured_run(self, tmp_path, monkeypatch):
+        import tools.environments.local as local_mod
+
+        bash = tmp_path / "bash"
+        bash.write_text("", encoding="utf-8")
+        bash.chmod(0o755)
+        local_mod._bash_starts_cache.clear()
+        captured: dict = {}
+
+        def _fake_bounded(argv, *, timeout, env=None):
+            captured["argv"] = list(argv)
+            captured["timeout"] = timeout
+            captured["env"] = env
+            return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+        monkeypatch.setattr(local_mod, "bounded_captured_run", _fake_bounded)
+        assert local_mod._bash_starts(str(bash)) is True
+        assert captured["timeout"] == 15
+        assert captured["argv"][:3] == [str(bash), "--noprofile", "--norc"]
+        assert "-c" in captured["argv"]
+
+    def test_bash_starts_timeout_fails_open(self, tmp_path, monkeypatch):
+        import tools.environments.local as local_mod
+
+        bash = tmp_path / "bash"
+        bash.write_text("", encoding="utf-8")
+        bash.chmod(0o755)
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+
+        def _fake_bounded(argv, *, timeout, env=None):
+            return subprocess.CompletedProcess(list(argv), -1, "", "")
+
+        monkeypatch.setattr(local_mod, "bounded_captured_run", _fake_bounded)
+        assert local_mod._bash_starts(str(bash)) is False
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="shebang fake-bash is not CreateProcess-executable on Windows",
+    )
+    def test_bash_starts_returns_under_retained_stdin(self, tmp_path):
+        """Regression: retained open stdin must not stall the bash probe."""
+        fake_bash = tmp_path / "bash"
+        fake_bash.write_text(
+            "#!{}\n"
+            "import sys\n"
+            "# Block if stdin is an open pipe with no EOF (inherited ACP stdin).\n"
+            "sys.stdin.buffer.read(1)\n"
+            "sys.exit(0)\n".format(sys.executable),
+            encoding="utf-8",
+        )
+        fake_bash.chmod(0o755)
+
+        helper = (
+            "from tools.environments.local import _bash_starts, _bash_starts_cache\n"
+            "_bash_starts_cache.clear()\n"
+            f"print(_bash_starts({str(fake_bash)!r}))\n"
+        )
+        repo_root = str(Path(__file__).resolve().parents[2])
+        proc = _run_with_retained_stdin(
+            [sys.executable, "-c", helper],
+            env={**os.environ, "PYTHONPATH": repo_root},
+            cwd=repo_root,
+            timeout=10,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "True"
+
+
 class TestFindBashSkipsBrokenCustomPath:
     """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
 
@@ -153,15 +260,16 @@ class TestGitBashExternalProgramProbe:
         local_mod._bash_probe_details_cache.clear()
         calls = []
 
-        def fake_run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        def fake_bounded(argv, *, timeout, env=None):
+            calls.append((list(argv), timeout, env))
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
 
-        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(local_mod, "bounded_captured_run", fake_bounded)
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
 
         assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
         assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+        assert calls[0][1] == 15
 
     def test_aslr_failure_surfaces_targeted_windows_command(
         self, tmp_path, monkeypatch

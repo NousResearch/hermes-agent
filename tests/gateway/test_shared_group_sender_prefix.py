@@ -99,7 +99,7 @@ async def test_preprocess_includes_slack_author_mention_for_shared_thread():
         history=[],
     )
 
-    assert result == "[Alice | Slack user <@U123>] mention me again"
+    assert result == "[Verified sender: Alice | Slack user <@U123>] mention me again"
 
 
 @pytest.mark.asyncio

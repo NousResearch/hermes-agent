@@ -21,6 +21,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1162,6 +1163,112 @@ def test_start_spawns_subprocess_and_writes_active_pointer(tmp_path):
     assert active["duration"] == "15m"
 
 
+def _capture_start_env_for_profile(profile_home, config_text):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli import config as config_mod
+    from plugins.google_meet import process_manager as pm
+
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "config.yaml").write_text(config_text, encoding="utf-8")
+    config_mod._LOAD_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 99996
+
+    def _fake_popen(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["env"] = dict(kwargs["env"])
+        return _FakeProc()
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+             patch.object(pm, "_pid_alive", return_value=False):
+            result = pm.start("https://meet.google.com/abc-defg-hij")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert result["ok"] is True
+    return captured
+
+
+def test_start_bridges_profile_meet_config_without_ambient_leak(tmp_path, monkeypatch):
+    ambient = {
+        "HERMES_MEET_DEBUG_STATUS": "ambient-debug",
+        "HERMES_MEET_PROXY_SERVER": "http://ambient.invalid:8080",
+        "HERMES_MEET_PROXY_BYPASS": "ambient-bypass",
+        "HERMES_MEET_REALTIME_READY_TIMEOUT": "999",
+        "HERMES_MEET_STALL_AFTER": "999",
+        "HERMES_MEET_XVFB": "force",
+    }
+    for key, value in ambient.items():
+        monkeypatch.setenv(key, value)
+
+    profile_a = _capture_start_env_for_profile(
+        tmp_path / "profile-a",
+        """
+google_meet:
+  debug_status: true
+  xvfb: disabled
+  proxy:
+    server: http://profile-a.example:8080
+    bypass: ""
+  realtime_ready_timeout: 23
+  stall_after: 47
+""",
+    )
+    profile_b = _capture_start_env_for_profile(
+        tmp_path / "profile-b",
+        "google_meet: {}\n",
+    )
+
+    assert profile_a["env"]["HERMES_MEET_DEBUG_STATUS"] == "1"
+    assert profile_a["env"]["HERMES_MEET_PROXY_SERVER"] == "http://profile-a.example:8080"
+    assert profile_a["env"]["HERMES_MEET_PROXY_BYPASS"] == ""
+    assert profile_a["env"]["HERMES_MEET_REALTIME_READY_TIMEOUT"] == "23"
+    assert profile_a["env"]["HERMES_MEET_STALL_AFTER"] == "47"
+    assert "HERMES_MEET_XVFB" not in profile_a["env"]
+
+    assert "HERMES_MEET_DEBUG_STATUS" not in profile_b["env"]
+    assert "HERMES_MEET_PROXY_SERVER" not in profile_b["env"]
+    assert "HERMES_MEET_PROXY_BYPASS" not in profile_b["env"]
+    assert profile_b["env"]["HERMES_MEET_REALTIME_READY_TIMEOUT"] == "15"
+    assert profile_b["env"]["HERMES_MEET_STALL_AFTER"] == "90"
+    assert "HERMES_MEET_XVFB" not in profile_b["env"]
+
+
+@pytest.mark.parametrize(
+    ("profile_name", "bypass_yaml", "expected"),
+    [
+        ("default", "null", None),
+        ("disabled", '\"\"', ""),
+        ("custom", '\"custom.internal\"', "custom.internal"),
+    ],
+)
+def test_start_preserves_profile_proxy_bypass_tristate(
+    tmp_path, monkeypatch, profile_name, bypass_yaml, expected
+):
+    monkeypatch.setenv("HERMES_MEET_PROXY_SERVER", "http://ambient.invalid:8080")
+    monkeypatch.setenv("HERMES_MEET_PROXY_BYPASS", "ambient-bypass")
+    captured = _capture_start_env_for_profile(
+        tmp_path / profile_name,
+        (
+            "google_meet:\n"
+            "  proxy:\n"
+            "    server: http://proxy.example:8080\n"
+            f"    bypass: {bypass_yaml}\n"
+        ),
+    )
+
+    assert captured["env"]["HERMES_MEET_PROXY_SERVER"] == "http://proxy.example:8080"
+    if expected is None:
+        assert "HERMES_MEET_PROXY_BYPASS" not in captured["env"]
+    else:
+        assert captured["env"]["HERMES_MEET_PROXY_BYPASS"] == expected
+
+
 def test_start_headed_uses_xvfb_when_display_is_missing(monkeypatch):
     """A service-mode headed launch must be wrapped with xvfb-run."""
     from plugins.google_meet import process_manager as pm
@@ -1177,8 +1284,9 @@ def test_start_headed_uses_xvfb_when_display_is_missing(monkeypatch):
         captured_env.update(kwargs.get("env") or {})
         return _FakeProc()
 
+    monkeypatch.setattr(pm.sys, "platform", "linux")
     monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.setenv("HERMES_MEET_XVFB", "auto")
+    monkeypatch.setenv("HERMES_MEET_XVFB", "disabled")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
     with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
@@ -1212,8 +1320,9 @@ def test_start_headed_rejects_without_display_or_xvfb(monkeypatch):
             pid = 99997
         return _FakeProc()
 
+    monkeypatch.setattr(pm.sys, "platform", "linux")
     monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.setenv("HERMES_MEET_XVFB", "auto")
+    monkeypatch.setenv("HERMES_MEET_XVFB", "force")
     monkeypatch.setenv("PATH", "/definitely-no-xvfb-here")
 
     with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
@@ -1225,6 +1334,40 @@ def test_start_headed_rejects_without_display_or_xvfb(monkeypatch):
     assert "xvfb-run" in res["error"]
     assert popen_called is False
     assert pm._read_active() is None
+
+
+def test_start_headed_uses_native_browser_on_darwin(monkeypatch):
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        pid = 99995
+
+    captured_argv = []
+
+    def _fake_popen(argv, **_kwargs):
+        captured_argv.extend(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(pm.sys, "platform", "darwin")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("HERMES_MEET_XVFB", "force")
+
+    with patch.object(pm.shutil, "which", return_value=None) as which, \
+         patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        result = pm.start(
+            "https://meet.google.com/abc-defg-hij",
+            headed=True,
+        )
+
+    assert result["ok"] is True
+    assert result["xvfb"] is False
+    assert captured_argv[:3] == [
+        sys.executable,
+        "-m",
+        "plugins.google_meet.meet_bot",
+    ]
+    which.assert_not_called()
 
 
 def test_status_clears_stale_active_pointer_when_bot_exited(tmp_path):

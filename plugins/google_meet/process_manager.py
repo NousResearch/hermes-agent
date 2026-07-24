@@ -141,22 +141,73 @@ def _record_stop_reason(active: Dict[str, Any], reason: str) -> None:
     tmp.replace(status_path)
 
 
-def _headed_launch_prefix() -> tuple[list[str], bool, Optional[str]]:
+_MEET_CONFIG_ENV_VARS = (
+    "HERMES_MEET_DEBUG_STATUS",
+    "HERMES_MEET_PROXY_SERVER",
+    "HERMES_MEET_PROXY_BYPASS",
+    "HERMES_MEET_REALTIME_READY_TIMEOUT",
+    "HERMES_MEET_STALL_AFTER",
+    "HERMES_MEET_XVFB",
+)
+
+
+def _resolve_meet_config() -> Dict[str, Any]:
+    from hermes_cli.config import load_config_readonly
+
+    root = load_config_readonly()
+    config = root.get("google_meet", {}) if isinstance(root, dict) else {}
+    if not isinstance(config, dict):
+        config = {}
+    proxy = config.get("proxy", {})
+    if not isinstance(proxy, dict):
+        proxy = {}
+    return {
+        "debug_status": config.get("debug_status", False) is True,
+        "xvfb": config.get("xvfb", "auto"),
+        "proxy_server": str(proxy.get("server") or "").strip(),
+        "proxy_bypass": proxy.get("bypass"),
+        "realtime_ready_timeout": config.get("realtime_ready_timeout", 15),
+        "stall_after": config.get("stall_after", 90),
+    }
+
+
+def _apply_meet_config_to_env(env: Dict[str, str], config: Dict[str, Any]) -> None:
+    for name in _MEET_CONFIG_ENV_VARS:
+        env.pop(name, None)
+
+    if config["debug_status"]:
+        env["HERMES_MEET_DEBUG_STATUS"] = "1"
+
+    if config["proxy_server"]:
+        env["HERMES_MEET_PROXY_SERVER"] = config["proxy_server"]
+        if config["proxy_bypass"] is not None:
+            env["HERMES_MEET_PROXY_BYPASS"] = str(config["proxy_bypass"]).strip()
+
+    env["HERMES_MEET_REALTIME_READY_TIMEOUT"] = str(
+        config["realtime_ready_timeout"]
+    )
+    env["HERMES_MEET_STALL_AFTER"] = str(config["stall_after"])
+
+
+def _headed_launch_prefix(policy: Any) -> tuple[list[str], bool, Optional[str]]:
     """Return an argv prefix for headed browser runs in service contexts."""
-    policy = os.environ.get("HERMES_MEET_XVFB", "auto").strip().lower()
+    if not sys.platform.startswith("linux"):
+        return [], False, None
+
+    normalized = str(policy if policy is not None else "auto").strip().lower()
     display = os.environ.get("DISPLAY", "").strip()
     disabled = {"0", "false", "no", "off", "disable", "disabled"}
     forced = {"1", "true", "yes", "on", "force", "forced"}
 
-    if policy in disabled:
+    if normalized in disabled:
         if display:
             return [], False, None
         return [], False, (
             "headed Meet launch requested, but DISPLAY is unset and "
-            "HERMES_MEET_XVFB disables xvfb-run"
+            "google_meet.xvfb disables xvfb-run"
         )
 
-    if display and policy not in forced:
+    if display and normalized not in forced:
         return [], False, None
 
     xvfb_run = shutil.which("xvfb-run")
@@ -228,7 +279,9 @@ def start(
             except OSError:
                 pass
 
+    meet_config = _resolve_meet_config()
     env = os.environ.copy()
+    _apply_meet_config_to_env(env, meet_config)
     env["HERMES_MEET_URL"] = url
     env["HERMES_MEET_OUT_DIR"] = str(out)
     env["HERMES_MEET_GUEST_NAME"] = guest_name
@@ -254,7 +307,7 @@ def start(
     xvfb = False
     cmd = [sys.executable, "-m", "plugins.google_meet.meet_bot"]
     if headed:
-        prefix, xvfb, error = _headed_launch_prefix()
+        prefix, xvfb, error = _headed_launch_prefix(meet_config["xvfb"])
         if error:
             return {"ok": False, "error": error}
         cmd = [*prefix, *cmd]

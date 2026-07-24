@@ -75,6 +75,27 @@ hermes meet join https://meet.google.com/abc-defg-hij    # transcribe as guest
 hermes meet join --use-auth-state https://meet.google.com/abc-defg-hij
 ```
 
+## Configuration
+
+Google Meet behavior is profile-aware and belongs in `config.yaml` on the
+machine that runs the bot (the gateway for local calls, or the node host for
+remote calls):
+
+```yaml
+google_meet:
+  debug_status: false
+  xvfb: auto                 # Linux only: auto | force | disabled
+  proxy:
+    server: ""
+    bypass: null             # null = pinned media default; "" = no bypass
+  realtime_ready_timeout: 15
+  stall_after: 90
+```
+
+The proxy's WebRTC policy always disables direct UDP when a proxy is set so
+media cannot silently bypass it. Keep credentials such as `OPENAI_API_KEY` in
+`.env`; the internal `HERMES_MEET_*` child variables are not user settings.
+
 ## Realtime mode
 
 Linux (preferred, most automated):

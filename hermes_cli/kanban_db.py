@@ -3089,9 +3089,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        goal_mode, goal_max_turns, session_id,
-                        block_kind, block_recurrences
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3116,8 +3115,6 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
-                        "needs_input" if task_status == "blocked" else None,
-                        1 if task_status == "blocked" else 0,
                     ),
                 )
                 for pid in parents:
@@ -3156,8 +3153,11 @@ def create_task(
                         "blocked",
                         {
                             "reason": "created with initial_status=blocked",
-                            "kind": "needs_input",
-                            "recurrences": 1,
+                            # An initial human-ops hold is not a worker
+                            # failure and must not consume the unblock-loop
+                            # recurrence budget.
+                            "kind": None,
+                            "recurrences": 0,
                         },
                     )
             return task_id

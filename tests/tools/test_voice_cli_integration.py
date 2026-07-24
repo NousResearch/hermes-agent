@@ -178,39 +178,39 @@ class TestVoiceStateLock:
 # ============================================================================
 
 class TestStreamingTTSActivation:
-    """The CLI streaming gate: sounddevice + a working provider, ANY provider.
+    """The CLI streaming gate requires sounddevice and a chunked provider.
 
-    Mirrors cli.py's gate exactly — streaming engages whenever audio output
-    exists and check_tts_requirements() passes, regardless of which provider
-    is configured (non-streamers get the per-sentence sync path downstream).
+    Synchronous providers use the existing batch TTS path so playback remains
+    continuous instead of pausing between sentence-level synthesis requests.
     """
 
     @staticmethod
     def _gate() -> bool:
         """The cli.py streaming-TTS gate, verbatim."""
         try:
-            from tools.tts_tool import _import_sounddevice, check_tts_requirements
+            from tools.tts_tool import (
+                _import_sounddevice,
+                supports_realtime_streaming_tts,
+            )
             _import_sounddevice()
-            return check_tts_requirements()
+            return supports_realtime_streaming_tts()
         except Exception:
             return False
 
-    def test_activates_for_any_working_provider(self):
-        """Any provider that passes check_tts_requirements engages streaming."""
+    def test_activates_for_chunked_provider(self):
         with patch("tools.tts_tool._import_sounddevice", return_value=MagicMock()), \
-             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+             patch("tools.tts_tool.supports_realtime_streaming_tts", return_value=True):
             assert self._gate() is True
 
-    def test_does_not_activate_when_provider_unavailable(self):
-        """No working TTS provider → no streaming pipeline."""
+    def test_does_not_activate_for_synchronous_provider(self):
         with patch("tools.tts_tool._import_sounddevice", return_value=MagicMock()), \
-             patch("tools.tts_tool.check_tts_requirements", return_value=False):
+             patch("tools.tts_tool.supports_realtime_streaming_tts", return_value=False):
             assert self._gate() is False
 
     def test_does_not_activate_when_sounddevice_missing(self):
         """No audio output device → no streaming pipeline, even with a provider."""
         with patch("tools.tts_tool._import_sounddevice", side_effect=OSError("no PortAudio")), \
-             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+             patch("tools.tts_tool.supports_realtime_streaming_tts", return_value=True):
             assert self._gate() is False
 
     def test_stale_boolean_imports_no_longer_exist(self):
@@ -220,6 +220,21 @@ class TestStreamingTTSActivation:
             "_HAS_ELEVENLABS should not exist -- lazy imports replaced it"
         assert not hasattr(tts_mod, "_HAS_AUDIO"), \
             "_HAS_AUDIO should not exist -- lazy imports replaced it"
+
+    def test_requires_a_registered_chunked_provider(self):
+        from tools.tts_tool import supports_realtime_streaming_tts
+
+        with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+            assert supports_realtime_streaming_tts() is False
+
+    def test_accepts_an_available_chunked_provider(self):
+        from tools.tts_tool import supports_realtime_streaming_tts
+
+        with patch(
+            "tools.tts_streaming.resolve_streaming_provider",
+            return_value=MagicMock(),
+        ):
+            assert supports_realtime_streaming_tts() is True
 
 
 # ============================================================================

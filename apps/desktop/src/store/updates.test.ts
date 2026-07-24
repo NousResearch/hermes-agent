@@ -51,7 +51,10 @@ const {
   applyUpdates,
   $updateApply,
   $updateOverlayOpen,
+  $updateOverlayTarget,
+  openUpdatesWindow,
   resetUpdateApplyState,
+  startActiveUpdate,
   startUpdatePoller,
   stopUpdatePoller,
   $updateStatus
@@ -67,7 +70,23 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
   ...over
 })
 
-const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { onDismiss: () => void }
+const setConnectionMode = (mode: 'local' | 'remote') =>
+  setConnection({
+    baseUrl: 'http://box:9119',
+    isFullscreen: false,
+    mode,
+    nativeOverlayWidth: 0,
+    token: 't',
+    wsUrl: 'ws://box:9119',
+    logs: [],
+    windowButtonPosition: null
+  })
+
+const lastToast = () =>
+  notifySpy.mock.calls.at(-1)?.[0] as {
+    action: { onClick: () => void }
+    onDismiss: () => void
+  }
 
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
@@ -108,6 +127,72 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('does nothing when already up to date', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('opens the explicitly requested backend target from a backend update toast', async () => {
+    setConnectionMode('remote')
+    $updateOverlayTarget.set('client')
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 2,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    maybeNotifyUpdateAvailable(status(), 'backend')
+    lastToast().action.onClick()
+
+    expect($updateOverlayTarget.get()).toBe('backend')
+    await vi.waitFor(() => expect(checkHermesUpdateSpy).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('Desktop update entry points', () => {
+  const applyMock = vi.fn()
+  const checkMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    checkHermesUpdateSpy.mockReset()
+    updateHermesSpy.mockReset()
+    applyMock.mockReset()
+    checkMock.mockReset()
+    applyMock.mockResolvedValue({ ok: false, error: 'test-stop' })
+    checkMock.mockResolvedValue(status({ behind: 0, targetSha: undefined }))
+    resetUpdateApplyState()
+    $updateOverlayOpen.set(false)
+    $updateOverlayTarget.set('backend')
+    setConnectionMode('remote')
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock, check: checkMock } }
+    }
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+    setConnectionMode('local')
+  })
+
+  it('opens the Desktop client updater while connected to a remote backend', async () => {
+    openUpdatesWindow()
+
+    await vi.waitFor(() => expect(checkMock).toHaveBeenCalledTimes(1))
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+
+  it('applies the Desktop client update while connected to a remote backend', async () => {
+    startActiveUpdate()
+
+    expect($updateOverlayTarget.get()).toBe('client')
+    expect(applyMock).toHaveBeenCalledTimes(1)
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect($updateApply.get().applying).toBe(false))
   })
 })
 
@@ -175,20 +260,8 @@ describe('checkBackendUpdates', () => {
     vi.useRealTimers()
   })
 
-  const setRemote = (on: boolean) =>
-    setConnection({
-      baseUrl: 'http://box:9119',
-      isFullscreen: false,
-      mode: on ? 'remote' : 'local',
-      nativeOverlayWidth: 0,
-      token: 't',
-      wsUrl: 'ws://box:9119',
-      logs: [],
-      windowButtonPosition: null
-    })
-
   it('maps the backend /update/check onto the backend status, including commits', async () => {
-    setRemote(true)
+    setConnectionMode('remote')
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
       current_version: '0.16.0',
@@ -211,7 +284,7 @@ describe('checkBackendUpdates', () => {
   })
 
   it('preserves backend update_available when the backend cannot count commits', async () => {
-    setRemote(true)
+    setConnectionMode('remote')
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'nixos',
       current_version: '0.16.0',
@@ -230,7 +303,7 @@ describe('checkBackendUpdates', () => {
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
-    setRemote(true)
+    setConnectionMode('remote')
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'docker',
       current_version: '0.16.0',
@@ -248,7 +321,7 @@ describe('checkBackendUpdates', () => {
   })
 
   it('is a no-op in local mode (backend check only runs when remote)', async () => {
-    setRemote(false)
+    setConnectionMode('local')
     await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
   })

@@ -97,8 +97,30 @@ def _provider_base_url(provider: str) -> str:
         if cp_config:
             return str(cp_config.get("base_url") or "").strip()
         return ""
+
     pconfig = PROVIDER_REGISTRY.get(provider)
-    return pconfig.inference_base_url if pconfig else ""
+    registry_base_url = pconfig.inference_base_url if pconfig else ""
+
+    # Manual credentials should follow the active model endpoint.  Some
+    # providers expose multiple OpenAI-compatible hosts for the same API-key
+    # shape (for example Xiaomi MiMo's standard API endpoint vs Token Plan
+    # endpoint).  If `hermes auth add <provider>` persists the registry default
+    # into the credential pool, runtime resolution can override a deliberate
+    # `model.base_url` setting and send a valid key to the wrong host.
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        model_cfg = config.get("model") if isinstance(config, dict) else None
+        if isinstance(model_cfg, dict):
+            configured_provider = _normalize_provider(str(model_cfg.get("provider") or ""))
+            configured_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if configured_provider == provider and configured_base_url:
+                return configured_base_url
+    except Exception:
+        pass
+
+    return registry_base_url
 
 
 def _oauth_default_label(provider: str, count: int) -> str:

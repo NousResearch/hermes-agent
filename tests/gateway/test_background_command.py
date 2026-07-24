@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import EphemeralReply, MessageEvent
 from gateway.session import SessionSource
 
 
@@ -183,6 +183,79 @@ class TestHandleBackgroundCommand:
                 )
                 result = await runner._handle_background_command(event)
                 assert "Background task started" in result
+
+
+
+
+class TestBackgroundAckEphemeralReply:
+    """#64661: /background ack must be wrapped in EphemeralReply with
+    ttl_seconds=0 so the deletion-capable platforms' auto-delete does
+    not newly fire (the previous None value would inherit the user's
+    configured display.ephemeral_system_ttl).
+
+    Also asserts the slash-command alias /btw and /bg route through the
+    same handler and pick up the same wrapper.
+    """
+
+    @pytest.mark.asyncio
+    async def test_background_ack_is_ephemeral_reply_with_zero_ttl(self):
+        """Path-bearing prompt: ack is EphemeralReply with ttl_seconds=0
+        so a user-configured positive display.ephemeral_system_ttl does
+        NOT delete the acknowledgement on platforms that honor TTL.
+        """
+        runner = _make_runner()
+        with patch("gateway.run.asyncio.create_task") as mock_create:
+            mock_task = MagicMock()
+            mock_create.return_value = mock_task
+            event = _make_event(
+                text="/background Send /tmp/quarterly-report.pdf to legal",
+            )
+            result = await runner._handle_background_command(event)
+
+        from gateway.platforms.base import EphemeralReply
+        assert isinstance(result, EphemeralReply), (
+            f"/background ack must be EphemeralReply (suppresses "
+            f"extract_local_files via the isinstance gate in "
+            f"gateway/platforms/base.py:4608), got {type(result).__name__}"
+        )
+        assert result.ttl_seconds == 0, (
+            f"/background ack must use ttl_seconds=0 so deletion-capable "
+            f"platforms do NOT auto-delete the ack via a user-configured "
+            f"positive display.ephemeral_system_ttl, got "
+            f"ttl_seconds={result.ttl_seconds!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bg_alias_also_uses_ephemeral_reply_with_zero_ttl(self):
+        """/bg (the short alias resolved in hermes_cli/commands.py:102-103
+        and dispatched in gateway/run.py:10097-10098) routes through
+        the same handler — must pick up the same EphemeralReply wrapper.
+        """
+        runner = _make_runner()
+        with patch("gateway.run.asyncio.create_task") as mock_create:
+            mock_task = MagicMock()
+            mock_create.return_value = mock_task
+            event = _make_event(text="/bg urgent task with /tmp/data.csv")
+            result = await runner._handle_background_command(event)
+
+        from gateway.platforms.base import EphemeralReply
+        assert isinstance(result, EphemeralReply)
+        assert result.ttl_seconds == 0
+
+    @pytest.mark.asyncio
+    async def test_no_prompt_still_returns_plain_string(self):
+        """The usage-text path (`/background` with no args) is not
+        opt-in ephemeral — it returns a plain string so the user
+        sees the help text without it auto-deleting.
+        """
+        runner = _make_runner()
+        event = _make_event(text="/background")
+        result = await runner._handle_background_command(event)
+        assert isinstance(result, str)
+        assert not isinstance(result, EphemeralReply), (
+            "Usage-text ack must remain a plain str so the help "
+            "message is not auto-deleted on deletion-capable platforms"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -1371,6 +1371,9 @@ def skill_manage(
     if gate_result is not None:
         return gate_result
 
+    if not name:
+        return tool_error("name is required. Provide a skill name.", success=False)
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)

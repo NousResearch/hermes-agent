@@ -373,6 +373,7 @@ def start_continuous(
     silence_threshold: int = 200,
     silence_duration: float = 3.0,
     auto_restart: bool = True,
+    max_recording_seconds: float = 0.0,
 ) -> bool:
     """Start a VAD-driven continuous recording loop.
 
@@ -390,6 +391,10 @@ def start_continuous(
 
     ``on_status`` is called with ``"listening"`` / ``"transcribing"`` /
     ``"idle"`` so the UI can show a live indicator.
+
+    ``max_recording_seconds`` is the hard cap on a single recording's length
+    (``voice.max_recording_seconds``); any non-positive or non-numeric value
+    disables the cap, preserving the previous unbounded behaviour.
     """
     global _continuous_active, _continuous_recorder, _continuous_auto_restart
     global _continuous_on_transcript, _continuous_on_status, _continuous_on_silent_limit
@@ -415,6 +420,15 @@ def start_continuous(
 
         _continuous_recorder._silence_threshold = silence_threshold
         _continuous_recorder._silence_duration = silence_duration
+        # Same numeric-with-bool-excluded guard as the CLI wiring in
+        # cli.py:_voice_start_recording — <= 0 (or garbage) disables the cap.
+        _continuous_recorder._max_recording_seconds = (
+            max_recording_seconds
+            if isinstance(max_recording_seconds, (int, float))
+            and not isinstance(max_recording_seconds, bool)
+            and max_recording_seconds > 0
+            else 0.0
+        )
         rec = _continuous_recorder
 
     _debug(

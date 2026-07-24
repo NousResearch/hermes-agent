@@ -3389,7 +3389,7 @@ def systemd_restart(system: bool = False):
                 timeout=30,
             )
             _run_systemctl(
-                ["restart", svc],
+                ["--no-block", "restart", svc],
                 system=system,
                 check=False,
                 timeout=90,
@@ -3410,7 +3410,7 @@ def systemd_restart(system: bool = False):
             timeout=30,
         )
         try:
-            _run_systemctl(["restart", svc], system=system, check=True, timeout=90)
+            _run_systemctl(["--no-block", "restart", svc], system=system, check=True, timeout=90)
         except subprocess.CalledProcessError as exc:
             if _systemd_error_indicates_start_limit(
                 exc
@@ -3439,7 +3439,10 @@ def systemd_restart(system: bool = False):
     )
     try:
         _run_systemctl(
-            ["restart", get_service_name()], system=system, check=True, timeout=90
+            ["--no-block", "restart", get_service_name()],
+            system=system,
+            check=True,
+            timeout=90,
         )
     except subprocess.CalledProcessError as exc:
         if _systemd_error_indicates_start_limit(

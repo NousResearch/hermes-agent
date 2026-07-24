@@ -414,3 +414,80 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+# --- _clean_bot_mention_text: strip configured wake word from body (#47493) ---
+
+def test_mention_pattern_wake_word_stripped_from_body():
+    adapter = _make_adapter(
+        require_mention=True, mention_patterns=[r"(?i)@andy\b"], group_policy="open"
+    )
+    clean = adapter._clean_bot_mention_text
+    # Leading wake word, trailing punctuation, and mid-string occurrences.
+    # botIds empty so admission is pattern-only (not a JID mention).
+    assert clean("@andy show photos of Runi", _group_message("@andy show photos of Runi", botIds=[])) == (
+        "show photos of Runi"
+    )
+    assert clean(
+        "@andy, book a table at Andy's Diner",
+        _group_message("@andy, book a table at Andy's Diner", botIds=[]),
+    ) == "book a table at Andy's Diner"
+    assert clean("hey @andy what's up", _group_message("hey @andy what's up", botIds=[])) == (
+        "hey what's up"
+    )
+
+
+def test_mention_pattern_only_body_is_preserved():
+    adapter = _make_adapter(
+        require_mention=True, mention_patterns=[r"(?i)@andy\b"], group_policy="open"
+    )
+    # A message that is only the wake word must not be blanked out.
+    assert adapter._clean_bot_mention_text("@andy", _group_message("@andy", botIds=[])) == "@andy"
+
+
+def test_clean_bot_mention_noop_without_patterns():
+    adapter = _make_adapter(require_mention=True, group_policy="open")
+    assert adapter._clean_bot_mention_text(
+        "@andy hi", _group_message("@andy hi", botIds=[])
+    ) == "@andy hi"
+
+
+def test_jid_mention_admission_keeps_ordinary_wake_word_text():
+    """JID-admitted messages must not strip configured pattern text as content."""
+    adapter = _make_adapter(
+        require_mention=True, mention_patterns=[r"(?i)@andy\b"], group_policy="open"
+    )
+    data = _group_message(
+        "@12345 tell @andy the photos are ready",
+        botIds=["12345@s.whatsapp.net"],
+    )
+    assert adapter._clean_bot_mention_text(
+        "@12345 tell @andy the photos are ready", data
+    ) == "tell @andy the photos are ready"
+
+
+def test_jid_mention_still_stripped_when_pattern_also_present():
+    adapter = _make_adapter(
+        require_mention=True, mention_patterns=[r"(?i)@andy\b"], group_policy="open"
+    )
+    data = _group_message("@12345 @andy ping", botIds=["12345@s.whatsapp.net"])
+    # Admitted via JID — strip @12345 only; leave @andy alone.
+    assert adapter._clean_bot_mention_text("@12345 @andy ping", data) == "@andy ping"
+
+
+def test_only_admitting_pattern_stripped_when_multiple_configured():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)@andy\b", r"(?i)@bot\b"],
+        group_policy="open",
+    )
+    # @andy admits; @bot later in the message is ordinary content.
+    assert adapter._clean_bot_mention_text(
+        "@andy ping @bot later",
+        _group_message("@andy ping @bot later", botIds=[]),
+    ) == "ping @bot later"
+    # @bot alone admits — strip only that pattern.
+    assert adapter._clean_bot_mention_text(
+        "@bot status",
+        _group_message("@bot status", botIds=[]),
+    ) == "status"

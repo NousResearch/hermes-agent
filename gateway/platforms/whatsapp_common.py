@@ -326,11 +326,53 @@ class WhatsAppBehaviorMixin:
                 return True
         return False
 
+    def _first_matching_mention_pattern(self, text: str):
+        """Return the first configured mention_patterns match, or None."""
+        if not text or not self._mention_patterns:
+            return None
+        for pattern in self._mention_patterns:
+            if pattern.search(text):
+                return pattern
+        return None
+
     def _message_matches_mention_patterns(self, data: Dict[str, Any]) -> bool:
-        if not self._mention_patterns:
-            return False
-        body = str(data.get("body") or "")
-        return any(pattern.search(body) for pattern in self._mention_patterns)
+        return self._first_matching_mention_pattern(str(data.get("body") or "")) is not None
+
+    def _admission_mention_pattern(self, data: Dict[str, Any]):
+        """Return the mention_patterns entry that admitted this group message.
+
+        Mirrors ``_should_process_message`` short-circuits: pattern cleanup is
+        only appropriate when the gate fell through to mention_patterns. A
+        JID/reply/command/free-response admission must leave ordinary text that
+        merely *looks* like a wake word alone.
+        """
+        if not data.get("isGroup"):
+            return None
+        chat_id = str(data.get("chatId") or "")
+        if chat_id in self._whatsapp_free_response_chats():
+            return None
+        if not self._whatsapp_require_mention():
+            return None
+        body = str(data.get("body") or "").strip()
+        if body.startswith("/"):
+            return None
+        if self._message_is_reply_to_bot(data):
+            return None
+        if self._message_mentions_bot(data):
+            return None
+        return self._first_matching_mention_pattern(body)
+
+    @staticmethod
+    def _strip_pattern_match(text: str, pattern) -> str:
+        """Remove the first match of ``pattern`` plus trailing separators."""
+        m = pattern.search(text)
+        if not m:
+            return text
+        end = m.end()
+        trailing = re.match(r"[,:\-]*\s*", text[end:])
+        if trailing:
+            end += trailing.end()
+        return text[: m.start()] + text[end:]
 
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
@@ -343,6 +385,14 @@ class WhatsAppBehaviorMixin:
                 cleaned = re.sub(
                     rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned
                 )
+        # Only strip a wake word when mention_patterns was the admission
+        # cause. Evaluate against the original body (not post-JID-clean
+        # text) so a JID-admitted message that happens to contain a
+        # configured pattern as ordinary content keeps that content.
+        admission_data = {**data, "body": text}
+        admission_pattern = self._admission_mention_pattern(admission_data)
+        if admission_pattern is not None:
+            cleaned = self._strip_pattern_match(cleaned, admission_pattern)
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:

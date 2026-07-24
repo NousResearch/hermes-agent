@@ -78,6 +78,51 @@ class TestNvidiaProfileWiring:
         )
         assert kwargs["messages"] == msgs
 
+    def test_nvidia_tool_messages_drop_name_fields(self, transport):
+        profile = get_provider_profile("nvidia")
+        msgs = [
+            {"role": "user", "content": "run a command"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_name": "terminal",
+                "tool_call_id": "call_1",
+                "content": "ok",
+            },
+        ]
+        kwargs = transport.build_kwargs(
+            model="mistralai/mistral-large-3-675b-instruct-2512",
+            messages=msgs,
+            tools=None,
+            provider_profile=profile,
+            max_tokens=None,
+            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
+            timeout=300,
+            reasoning_config=None,
+            request_overrides=None,
+            session_id="test",
+            ollama_num_ctx=None,
+        )
+
+        assert kwargs["messages"][2] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "ok",
+        }
+        assert msgs[2]["name"] == "terminal"
+        assert msgs[2]["tool_name"] == "terminal"
+
 
 class TestDeepSeekProfileWiring:
     def test_deepseek_no_forced_max_tokens(self, transport):

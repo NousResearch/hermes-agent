@@ -45,6 +45,47 @@ class TestNvidiaProfile:
         p = get_provider_profile("nvidia")
         assert p.default_headers == {}
 
+    def test_prepare_messages_strips_tool_result_names(self):
+        p = get_provider_profile("nvidia")
+        msgs = [
+            {"role": "user", "content": "run a command"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_name": "terminal",
+                "tool_call_id": "call_1",
+                "content": "ok",
+            },
+        ]
+
+        result = p.prepare_messages(msgs)
+
+        assert "name" not in result[2]
+        assert "tool_name" not in result[2]
+        assert result[2] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "ok",
+        }
+        assert msgs[2]["name"] == "terminal"
+        assert msgs[2]["tool_name"] == "terminal"
+
+    def test_prepare_messages_passthrough_without_tool_result_names(self):
+        p = get_provider_profile("nvidia")
+        msgs = [{"role": "tool", "tool_call_id": "call_1", "content": "ok"}]
+        assert p.prepare_messages(msgs) is msgs
+
 
 class TestKimiProfile:
     def test_temperature_omit(self):

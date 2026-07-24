@@ -64,7 +64,36 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
         ("default", "Default"),
         ("accept_edits", "Accept Edits"),
         ("dont_ask", "Don't Ask"),
+        ("yolo", "YOLO"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_yolo_mode_enables_terminal_yolo_and_switching_away_disables(agent):
+    from tools.approval import clear_session, is_session_yolo_enabled
+
+    resp = await agent.new_session(cwd="/tmp")
+    try:
+        update = await agent.set_session_mode(
+            mode_id="yolo",
+            session_id=resp.session_id,
+        )
+        state = agent.session_manager.get_session(resp.session_id)
+
+        assert isinstance(update, SetSessionModeResponse)
+        assert getattr(state, "mode", None) == "yolo"
+        assert is_session_yolo_enabled(resp.session_id)
+        assert agent._edit_approval_policy_for_state(state) == ("session", "/tmp")
+
+        await agent.set_session_mode(
+            mode_id="dont_ask",
+            session_id=resp.session_id,
+        )
+
+        assert getattr(state, "mode", None) == "dont_ask"
+        assert not is_session_yolo_enabled(resp.session_id)
+    finally:
+        clear_session(resp.session_id)
 
 
 @pytest.mark.asyncio

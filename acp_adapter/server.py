@@ -513,13 +513,17 @@ class HermesACPAgent(acp.Agent):
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
     _MODE_DONT_ASK = "dont_ask"
+    _MODE_YOLO = "yolo"
     _MODE_TO_EDIT_APPROVAL_POLICY = {
         _MODE_DEFAULT: "ask",
         _MODE_ACCEPT_EDITS: "workspace_session",
         _MODE_DONT_ASK: "session",
+        _MODE_YOLO: "session",
     }
     _EDIT_APPROVAL_POLICY_TO_MODE = {
-        value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
+        "ask": _MODE_DEFAULT,
+        "workspace_session": _MODE_ACCEPT_EDITS,
+        "session": _MODE_DONT_ASK,
     }
 
     def __init__(self, session_manager: SessionManager | None = None):
@@ -565,6 +569,11 @@ class HermesACPAgent(acp.Agent):
                     name="Don't Ask",
                     description="Auto-allow file edits for this session except sensitive paths.",
                 ),
+                SessionMode(
+                    id=self._MODE_YOLO,
+                    name="YOLO",
+                    description="Auto-allow file edits and dangerous terminal commands for this session except hard safety blocks.",
+                ),
             ],
         )
 
@@ -572,6 +581,19 @@ class HermesACPAgent(acp.Agent):
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
+
+    def _sync_terminal_yolo_for_mode(self, session_id: str, mode: str) -> None:
+        """Mirror ACP YOLO mode into Hermes' session-scoped terminal bypass."""
+
+        try:
+            from tools.approval import disable_session_yolo, enable_session_yolo
+
+            if mode == self._MODE_YOLO:
+                enable_session_yolo(session_id)
+            else:
+                disable_session_yolo(session_id)
+        except Exception:
+            logger.debug("Could not sync ACP terminal YOLO mode", exc_info=True)
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -2180,6 +2202,7 @@ class HermesACPAgent(acp.Agent):
         if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
             normalized_mode = self._MODE_DEFAULT
         setattr(state, "mode", normalized_mode)
+        self._sync_terminal_yolo_for_mode(session_id, normalized_mode)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
@@ -2196,6 +2219,7 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+            self._sync_terminal_yolo_for_mode(session_id, mode)
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):

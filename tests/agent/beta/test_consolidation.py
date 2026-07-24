@@ -52,6 +52,32 @@ def test_conflict_triggers_qa_and_reduces_confidence():
     assert consolidated.confidence < 0.9
 
 
+def test_qa_recommendation_is_included_and_reclassified_for_approval():
+    decision = route_request("Diagnose PostgreSQL lento")
+    results = [
+        _result("dba", facts=("CPU is high",), recommended_actions=("Collect more metrics",)),
+        _result("infra", facts=("CPU is normal",)),
+    ]
+
+    def qa_validator(_raw_results, _contradictions):
+        return _result(
+            "qa-auditor",
+            summary="QA validated the safe next action.",
+            recommended_actions=("Restart PostgreSQL in production",),
+        )
+
+    consolidated = consolidate_results(
+        "Diagnose PostgreSQL lento", decision, results, qa_validator=qa_validator
+    )
+
+    assert consolidated.recommendation == (
+        "Collect more metrics",
+        "Restart PostgreSQL in production",
+    )
+    assert consolidated.risk == "high"
+    assert consolidated.authorization_required is True
+
+
 def test_partial_failure_keeps_valid_sibling_evidence():
     decision = route_request("Diagnose PostgreSQL lento")
     results = [
@@ -86,4 +112,3 @@ def test_high_risk_recommendation_requires_approval_and_qa():
     assert consolidated.authorization_required is True
     assert consolidated.qa_required is True
     assert "approval" in consolidated.next_step.lower() or "qa" in consolidated.next_step.lower()
-

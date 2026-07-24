@@ -114,9 +114,9 @@ def consolidate_results(
     results = tuple(specialist_results)
     completed = tuple(result for result in results if result.status == "completed")
     contradictions = _contradictions(completed)
-    recommendations = _unique(action for result in completed for action in result.recommended_actions)
+    initial_recommendations = _unique(action for result in completed for action in result.recommended_actions)
     risk = RiskLevel(decision.initial_risk)
-    if any(classify_risk(action) == RiskLevel.HIGH for action in recommendations):
+    if any(classify_risk(action) == RiskLevel.HIGH for action in initial_recommendations):
         risk = RiskLevel.HIGH
     qa_required = bool(contradictions) or risk == RiskLevel.HIGH
     qa_performed = False
@@ -126,6 +126,10 @@ def consolidate_results(
         if qa_result.status == "completed":
             completed += (qa_result,)
             qa_performed = True
+
+    recommendations = _unique(action for result in completed for action in result.recommended_actions)
+    if any(classify_risk(action) == RiskLevel.HIGH for action in recommendations):
+        risk = RiskLevel.HIGH
 
     evidence = _unique(item for result in completed for item in result.evidence)
     facts = _unique(item for result in completed for item in result.facts)
@@ -179,4 +183,3 @@ def consolidate_results(
         qa_required=qa_required,
         qa_performed=qa_performed,
     )
-

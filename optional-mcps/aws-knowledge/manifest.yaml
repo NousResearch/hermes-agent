@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: aws-knowledge
+description: Authoritative AWS docs, API references, What's New, and Well-Architected guidance.
+source: https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server
+
+# AWS hosts the Knowledge MCP server as a fully managed, public remote service
+# over Streamable HTTP. It is read-only and requires no AWS account, no
+# credentials, and nothing installed locally — just connect. Usage is subject
+# to AWS-side rate limits. Hermes's MCP client connects directly via the URL.
+transport:
+  type: http
+  url: https://knowledge-mcp.global.api.aws
+
+auth:
+  type: none
+  # Public, unauthenticated endpoint. No API key, no AWS account.
+
+# Tool selection at install time:
+# The Knowledge server exposes read-only tools (search_documentation,
+# read_documentation, recommend, plus regional availability lookups). We leave
+# `default_enabled` unset so the install-time checklist starts with everything
+# pre-checked — users prune what they don't want.
+
+post_install: |
+  No authentication is required — the AWS Knowledge MCP server is a public,
+  read-only endpoint. Start a new Hermes session to load the tools.
+
+  Usage is subject to AWS-side rate limits and the AWS Site Terms. For
+  credentialed, write-capable AWS access, use the separate IAM-authenticated
+  AWS MCP server instead.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure aws-knowledge

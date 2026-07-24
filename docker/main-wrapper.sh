@@ -73,7 +73,11 @@ if [ $# -eq 0 ]; then
     drop hermes
 fi
 
-if command -v "$1" >/dev/null 2>&1; then
+# `--` stops option parsing: without it, a hermes global flag as the first arg
+# (e.g. `docker run <image> -p viewer gateway run`) makes `command -v -p` treat
+# `-p` as an option to `command` and report success, mis-routing the args to the
+# bare-executable branch instead of `hermes -p viewer gateway run` (#43295).
+if command -v -- "$1" >/dev/null 2>&1; then
     # Bare executable — pass through directly.
     drop "$@"
 fi

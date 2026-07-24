@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 04:40 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:52 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -61,8 +61,8 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Current HEAD: `f230b8a69c2c`
-- Upstream relation at this verification: 19 commits ahead of `origin/main`
+- Current HEAD: `3b97f1e9da64c`
+- Upstream relation at this verification: 20 commits ahead of `origin/main`
 - `DESIRED.md` is an untracked user file and was left untouched
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
@@ -148,6 +148,15 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 - Secured non-interactive CLI report submission by reading the raw node
   credential only from `HERMES_NODE_CREDENTIAL`; the report command has no raw
   credential argument and does not store or emit the secret.
+- Hardened the two public node-credential POST routes in the production
+  dashboard app with explicit pre-JSON request limits (4 KiB authentication,
+  64 KiB observations), including declared, undeclared, invalid, and
+  misleading-length handling. Unknown-node observations now return the same
+  authentication failure as invalid credentials, while operator routes remain
+  dashboard-auth protected.
+- Verified the review fixes with 36 control-plane tests, production-app
+  OpenAPI/auth/body-stream assertions, repository-wide Ruff, touched-file Ruff
+  formatting checks, and `git diff --check`.
 
 ### Packaging, security, and operations
 

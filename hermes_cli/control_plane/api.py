@@ -169,6 +169,10 @@ ERROR_RESPONSES = {
     404: {"model": ErrorResponse, "description": "Managed node not found"},
     409: {"model": ErrorResponse, "description": "Lifecycle or revision conflict"},
 }
+NODE_CREDENTIAL_RESPONSES = {
+    **ERROR_RESPONSES,
+    413: {"model": ErrorResponse, "description": "Request body too large"},
+}
 
 
 def _registry() -> NodeRegistry:
@@ -201,7 +205,7 @@ async def enroll_node(body: NodeEnrollment):
 @router.post(
     "/nodes/{node_id}/authenticate",
     response_model=AuthenticationResult,
-    responses=ERROR_RESPONSES,
+    responses=NODE_CREDENTIAL_RESPONSES,
 )
 async def authenticate_node(node_id: str, body: NodeAuthentication):
     try:
@@ -216,14 +220,12 @@ async def authenticate_node(node_id: str, body: NodeAuthentication):
 @router.post(
     "/nodes/{node_id}/observations",
     response_model=ObservationView,
-    responses=ERROR_RESPONSES,
+    responses=NODE_CREDENTIAL_RESPONSES,
 )
 async def submit_observation(node_id: str, body: ObservationSubmission):
     try:
         report = _registry().submit_observation(node_id, **body.model_dump())
-    except KeyError:
-        return _error(404, "node_not_found", f"managed node not found: {node_id}")
-    except AuthenticationFailed:
+    except (AuthenticationFailed, KeyError):
         return _error(401, "invalid_node_credential", "node authentication failed")
     except ReportConflict as exc:
         return _error(409, "report_sequence_conflict", str(exc))

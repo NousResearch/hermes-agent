@@ -332,6 +332,11 @@ async def test_observation_and_policy_stable_error_mappings(
     )
     assert wrong.status_code == 401
     assert wrong.json()["error"]["code"] == "invalid_node_credential"
+    unknown = await client.post(
+        "/api/control-plane/v1/nodes/unknown/observations", json=body
+    )
+    assert unknown.status_code == wrong.status_code
+    assert unknown.json() == wrong.json()
 
     accepted = await client.post(
         "/api/control-plane/v1/nodes/node-1/observations", json=body

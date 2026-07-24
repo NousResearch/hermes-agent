@@ -329,6 +329,94 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+_NODE_CREDENTIAL_BODY_LIMITS: dict[str, int] = {
+    "authenticate": 4 * 1024,
+    "observations": 64 * 1024,
+}
+
+
+class _NodeCredentialBodyLimitMiddleware:
+    """Bound public node-credential request bodies before JSON parsing."""
+
+    def __init__(self, asgi_app):
+        self.app = asgi_app
+
+    @staticmethod
+    def _limit(scope) -> int | None:
+        if scope["type"] != "http" or scope["method"].upper() != "POST":
+            return None
+        match = re.fullmatch(
+            r"/api/control-plane/v1/nodes/[^/]+/(authenticate|observations)",
+            scope["path"],
+        )
+        return _NODE_CREDENTIAL_BODY_LIMITS.get(match.group(1)) if match else None
+
+    async def __call__(self, scope, receive, send):
+        limit = self._limit(scope)
+        if limit is None:
+            await self.app(scope, receive, send)
+            return
+
+        content_lengths = [
+            value
+            for name, value in scope["headers"]
+            if name.lower() == b"content-length"
+        ]
+        if content_lengths:
+            if len(content_lengths) != 1:
+                await self._reject(scope, receive, send, 400, "invalid_request")
+                return
+            try:
+                declared_length = int(content_lengths[0].decode("ascii"))
+            except (UnicodeDecodeError, ValueError):
+                await self._reject(scope, receive, send, 400, "invalid_request")
+                return
+            if declared_length < 0:
+                await self._reject(scope, receive, send, 400, "invalid_request")
+                return
+            if declared_length > limit:
+                await self._reject(scope, receive, send, 413, "payload_too_large")
+                return
+
+        received = 0
+        messages = []
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    await self._reject(scope, receive, send, 413, "payload_too_large")
+                    return
+                if not message.get("more_body", False):
+                    break
+            elif message["type"] == "http.disconnect":
+                break
+
+        async def replay_receive():
+            if messages:
+                return messages.pop(0)
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, replay_receive, send)
+
+    @staticmethod
+    async def _reject(scope, receive, send, status_code: int, code: str):
+        message = (
+            "request body exceeds the route limit"
+            if status_code == 413
+            else "invalid Content-Length header"
+        )
+        response = JSONResponse(
+            status_code=status_code,
+            content={"error": {"code": code, "message": message}},
+        )
+        await response(scope, receive, send)
+
+
+app.add_middleware(_NodeCredentialBodyLimitMiddleware)
+
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under
 # /api/ is gated by the auth middleware below.

@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
+INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 
 
 def test_install_script_does_not_autodetect_system_browser_on_path() -> None:
@@ -48,11 +49,56 @@ def test_install_script_strips_stale_snap_browser_override() -> None:
     text = INSTALL_SH.read_text()
 
     assert "strip_snap_browser_override()" in text
-    assert "^AGENT_BROWSER_EXECUTABLE_PATH=/snap/" in text
+    assert "^AGENT_BROWSER_EXECUTABLE_PATH=(['\\\"])?/snap/" in text
     # Both install paths invoke the migration before resolving a browser.
     assert text.count("strip_snap_browser_override") >= 3
     # A snap path is rejected by find_system_browser itself.
     assert "/snap/*) return 1 ;;" in text
+
+
+def test_install_script_quotes_browser_override_for_shell_source(tmp_path: Path) -> None:
+    """Spaced browser overrides written to .env must remain shell-sourceable."""
+    import subprocess
+
+    text = INSTALL_SH.read_text()
+    assert "quote_dotenv_shell_value()" in text
+    assert "AGENT_BROWSER_EXECUTABLE_PATH=%s" in text
+
+    start = text.index("quote_dotenv_shell_value() {")
+    end = text.index("\n}\n", start) + 3
+    helper = text[start:end]
+    browser_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    script = f"""
+set -eu
+{helper}
+env_file="$1"
+printf 'AGENT_BROWSER_EXECUTABLE_PATH=%s\\n' "$(quote_dotenv_shell_value "$2")" > "$env_file"
+set -a
+. "$env_file"
+set +a
+printf '%s' "$AGENT_BROWSER_EXECUTABLE_PATH"
+"""
+    env_file = tmp_path / ".env"
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", script, "bash", str(env_file), browser_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == browser_path
+    finally:
+        env_file.unlink(missing_ok=True)
+
+
+def test_install_ps1_quotes_browser_override_writer() -> None:
+    """Windows installer should not write a divergent bare .env value."""
+    text = INSTALL_PS1.read_text()
+
+    assert "ConvertTo-DotenvShellValue" in text
+    assert "AGENT_BROWSER_EXECUTABLE_PATH=$(ConvertTo-DotenvShellValue $BrowserPath)" in text
+    assert "AGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath" not in text
 
 
 def test_playwright_installs_are_timeout_guarded() -> None:
@@ -289,4 +335,3 @@ def test_override_retry_skipped_on_unsupported_arch() -> None:
     r = _run_install_fn("ubuntu", "26.04", native_fails=True, arch="riscv64")
     assert len(r["runs"]) == 1, r["runs"]
     assert r["final_rc"] == 1
-

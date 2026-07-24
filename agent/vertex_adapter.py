@@ -345,12 +345,17 @@ def discover_vertex_models(
     """Query Vertex AI's ``models.list`` publisher endpoint for models
     available in the given project and region.
 
-    Returns a sorted list of model ID strings (e.g. ``gemini-2.5-flash``,
-    ``gemini-3-pro-preview``).  Only models that support ``generateContent``
-    (chat / text-generation) are returned.
+    **Note:** The ``publishers/google/models`` endpoint is only accessible
+    via OAuth2 / ADC authentication. When using an API key (Express Mode),
+    this endpoint returns 404. The function will return an empty list with
+    API key auth, and the caller should fall back to a curated model list.
 
-    Returns the (sorted) model list on success.
-    Returns an empty list on any error (network, auth, parse).
+    For OAuth2 / ADC auth, returns a sorted list of model ID strings
+    (e.g. ``gemini-2.5-flash``, ``gemini-3-flash-preview``).  Only models
+    that support ``generateContent`` (chat / text-generation) are returned.
+
+    Returns the sorted model list on success.
+    Returns an empty list on any error (network, auth, parse, or API key auth).
     """
     import json
     import urllib.error

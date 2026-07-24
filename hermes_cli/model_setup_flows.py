@@ -2524,9 +2524,11 @@ def _model_flow_vertex(config, current_model=""):
         if discovered:
             print(f"found {len(discovered)} models ✓")
         else:
-            print("failed — using curated list.")
+            print("not available with API keys — using curated list.")
+            print("    (Model listing requires OAuth2/ADC, not API key.)")
     else:
-        print("  (Model discovery requires API key + project ID; using curated list.)")
+        print("  (Using curated model list — set GOOGLE_VERTEX_API_KEY +")
+        print("   GOOGLE_VERTEX_PROJECT for dynamic discovery.)")
 
     if discovered:
         # Prefix with ``google/`` to match Hermes model naming convention

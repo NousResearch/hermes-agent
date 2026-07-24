@@ -16,8 +16,13 @@ Secret (lives in $HERMES_HOME/.env or the environment):
 Behavioral settings (live in $HERMES_HOME/mem0.json, set via `hermes memory
 setup`):
   mode               — Backend mode: "platform" (default) or "oss"
-  host               — Self-hosted Mem0 server URL (alt: MEM0_HOST env var).
-                       When set, routes to the self-hosted HTTP backend.
+  host               — Self-hosted or cloud-hosted Mem0 server URL (alt:
+                       MEM0_HOST env var). When set, routes to the HTTP
+                       backend instead of the cloud API.
+  api_format         — HTTP API format when host is set: "selfhosted"
+                       (default, Docker dashboard: X-API-Key + bare routes)
+                       or "cloud" (managed services like Volcengine:
+                       Token auth + /v1/ routes with trailing slashes).
   user_id            — Canonical user identifier. When set, it is applied
                        uniformly across every gateway (CLI, Telegram, Slack,
                        Discord, …) so the same human gets one merged memory
@@ -282,7 +287,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 return OSSBackend(self._config.get("oss", {}))
             if self._host:
                 from ._backend import SelfHostedBackend
-                return SelfHostedBackend(self._api_key, self._host)
+                api_fmt = self._config.get("api_format", "selfhosted") if self._config else "selfhosted"
+                return SelfHostedBackend(self._api_key, self._host, api_format=api_fmt)
             from ._backend import PlatformBackend
             return PlatformBackend(self._api_key)
         except Exception as e:
@@ -389,7 +395,8 @@ class Mem0MemoryProvider(MemoryProvider):
         if self._mode == "oss":
             mode_label = "OSS (self-hosted)"
         elif self._host:
-            mode_label = "self-hosted (HTTP API)"
+            api_fmt = self._config.get("api_format", "selfhosted") if self._config else "selfhosted"
+            mode_label = "cloud-hosted (HTTP API)" if api_fmt == "cloud" else "self-hosted (HTTP API)"
         else:
             mode_label = "platform (cloud API)"
         # Rerank is a Mem0 Platform feature only.

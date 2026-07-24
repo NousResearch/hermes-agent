@@ -96,6 +96,195 @@ class TestResolveDisplaySetting:
 
 
 # ---------------------------------------------------------------------------
+# Per-chat overrides (display.platforms.<plat>.chats.<chat_id>[:<thread_id>])
+# ---------------------------------------------------------------------------
+
+class TestPerChatOverrides:
+    """``chat_id`` (+ optional ``thread_id``) selects narrower overrides."""
+
+    def test_per_chat_override_wins_over_platform(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "all",
+                        "chats": {
+                            "-100123": {"tool_progress": "off"},
+                        },
+                    }
+                }
+            }
+        }
+        # No chat_id → platform-wide value.
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+        # Matching chat_id → per-chat value.
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress", chat_id="-100123"
+            )
+            == "off"
+        )
+        # Different chat_id → platform-wide value.
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress", chat_id="-100999"
+            )
+            == "all"
+        )
+
+    def test_thread_specific_override_wins_over_chat_wide(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "all",
+                        "chats": {
+                            "-100123": {"tool_progress": "off"},
+                            "-100123:65": {"tool_progress": "verbose"},
+                        },
+                    }
+                }
+            }
+        }
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress",
+                chat_id="-100123", thread_id=65,
+            )
+            == "verbose"
+        )
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress",
+                chat_id="-100123", thread_id=99,
+            )
+            == "off"
+        )
+
+    def test_per_chat_falls_through_to_global_when_no_setting(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "platforms": {
+                    "telegram": {
+                        "chats": {
+                            "-100123": {"show_reasoning": True},
+                        },
+                    }
+                },
+            }
+        }
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress", chat_id="-100123"
+            )
+            == "all"
+        )
+        assert (
+            resolve_display_setting(
+                config, "telegram", "show_reasoning", chat_id="-100123"
+            )
+            is True
+        )
+
+    def test_int_and_str_chat_ids_both_match(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "chats": {"-100123": {"tool_progress": "off"}},
+                    }
+                }
+            }
+        }
+        for cid in ("-100123", -100123):
+            assert (
+                resolve_display_setting(
+                    config, "telegram", "tool_progress", chat_id=cid
+                )
+                == "off"
+            )
+
+    def test_thread_id_zero_matches_explicit_key(self):
+        """thread_id=0 looks up the ``<chat>:0`` key before the chat-wide one."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "new",
+                        "chats": {
+                            "-100123:0": {"tool_progress": "verbose"},
+                            "-100123": {"tool_progress": "off"},
+                        },
+                    }
+                }
+            }
+        }
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress",
+                chat_id="-100123", thread_id=0,
+            )
+            == "verbose"
+        )
+        # thread_id="" is treated as "no thread".
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress",
+                chat_id="-100123", thread_id="",
+            )
+            == "off"
+        )
+
+    def test_per_chat_normalises_yaml_values(self):
+        from gateway.display_config import resolve_display_setting
+
+        # YAML's bare ``off`` parses as False.
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "chats": {"-100123": {"tool_progress": False}},
+                    }
+                }
+            }
+        }
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress", chat_id="-100123"
+            )
+            == "off"
+        )
+
+    def test_no_chats_section_falls_through_silently(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {"tool_progress": "off"},
+                }
+            }
+        }
+        assert (
+            resolve_display_setting(
+                config, "telegram", "tool_progress", chat_id="-100123"
+            )
+            == "off"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
 # ---------------------------------------------------------------------------
 

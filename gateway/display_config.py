@@ -1,22 +1,29 @@
 """Per-platform display/verbosity configuration resolver.
 
 Provides ``resolve_display_setting()`` — the single entry-point for reading
-display settings with platform-specific overrides and sensible defaults.
+display settings with platform-specific (and optional per-chat) overrides
+and sensible defaults.
 
 Resolution order (first non-None wins):
-    1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
-    2. ``display.<key>``                       — global user setting
-    3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
-    4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+    1. ``display.platforms.<platform>.chats.<chat_id>:<thread_id>.<key>``  — most specific
+    2. ``display.platforms.<platform>.chats.<chat_id>.<key>``
+    3. ``display.platforms.<platform>.<key>``  — platform-wide user override
+    4. ``display.<key>``                       — global user setting
+    5. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
+    6. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
 
-Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
-top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
+The per-chat layer (rungs 1–2) is opt-in: callers must pass ``chat_id``
+(and optionally ``thread_id``).  Existing callers that don't pass those
+arguments see identical behaviour — the new lookup is simply skipped.
+
+Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows
+the top-level ``streaming`` config unless ``display.platforms.<platform>``
 sets an explicit per-platform override.
 
-Backward compatibility: ``display.tool_progress_overrides`` is still read as a
-fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
-config migration (version bump) automatically moves the old format into the new
-``display.platforms`` structure.
+Backward compatibility: ``display.tool_progress_overrides`` is still read
+as a fallback for ``tool_progress`` when no ``display.platforms`` entry
+exists.  A config migration (version bump) automatically moves the old
+format into the new ``display.platforms`` structure.
 """
 
 from __future__ import annotations
@@ -189,8 +196,11 @@ def resolve_display_setting(
     platform_key: str,
     setting: str,
     fallback: Any = None,
+    *,
+    chat_id: str | int | None = None,
+    thread_id: str | int | None = None,
 ) -> Any:
-    """Resolve a display setting with per-platform override support.
+    """Resolve a display setting with per-platform and per-chat override support.
 
     Parameters
     ----------
@@ -203,22 +213,53 @@ def resolve_display_setting(
         Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
     fallback : Any
         Fallback value when the setting isn't found anywhere.
+    chat_id : str | int | None
+        Optional chat id for per-chat overrides.  When provided, the
+        resolver also inspects
+        ``display.platforms.<platform>.chats.<chat_id>.<setting>`` and, if
+        ``thread_id`` is also provided,
+        ``display.platforms.<platform>.chats.<chat_id>:<thread_id>.<setting>``
+        before falling back to the platform-wide override.  Pass ``None``
+        (default) when the call site doesn't know the chat — behaviour is
+        then identical to the pre-1.0 resolver.
+    thread_id : str | int | None
+        Optional thread / topic id, used together with ``chat_id`` to look
+        up an override scoped to a specific Telegram forum topic, Discord
+        thread, or Slack thread within a parent chat.
 
     Returns
     -------
     The resolved value, or *fallback* if nothing is configured.
     """
     display_cfg = user_config.get("display") or {}
-
-    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     platforms = display_cfg.get("platforms") or {}
     plat_overrides = platforms.get(platform_key)
-    if isinstance(plat_overrides, dict):
-        val = plat_overrides.get(setting)
+    plat_overrides_dict = plat_overrides if isinstance(plat_overrides, dict) else None
+
+    # 1. Per-chat override under display.platforms.<plat>.chats.<chat_key>.<setting>.
+    # Prefer the most specific key (chat_id:thread_id) over the chat-wide one.
+    if chat_id is not None and plat_overrides_dict is not None:
+        chats_cfg = plat_overrides_dict.get("chats")
+        if isinstance(chats_cfg, dict):
+            chat_id_s = str(chat_id)
+            candidates: list[str] = []
+            if thread_id is not None and thread_id != "":
+                candidates.append(f"{chat_id_s}:{thread_id}")
+            candidates.append(chat_id_s)
+            for key in candidates:
+                entry = chats_cfg.get(key)
+                if isinstance(entry, dict):
+                    val = entry.get(setting)
+                    if val is not None:
+                        return _normalise(setting, val)
+
+    # 2. Platform-wide override (display.platforms.<platform>.<key>)
+    if plat_overrides_dict is not None:
+        val = plat_overrides_dict.get(setting)
         if val is not None:
             return _normalise(setting, val)
 
-    # 1b. Backward compat: display.tool_progress_overrides.<platform>
+    # 2b. Backward compat: display.tool_progress_overrides.<platform>
     if setting == "tool_progress":
         legacy = display_cfg.get("tool_progress_overrides")
         if isinstance(legacy, dict):
@@ -226,7 +267,7 @@ def resolve_display_setting(
             if val is not None:
                 return _normalise(setting, val)
 
-    # 2. Global user setting (display.<key>).  Skip display.streaming because
+    # 3. Global user setting (display.<key>).  Skip display.streaming because
     # that key controls only CLI terminal streaming; gateway token streaming is
     # governed by the top-level streaming config plus per-platform overrides.
     if setting != "streaming":
@@ -234,14 +275,14 @@ def resolve_display_setting(
         if val is not None:
             return _normalise(setting, val)
 
-    # 3. Built-in platform default
+    # 4. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
     if plat_defaults:
         val = plat_defaults.get(setting)
         if val is not None:
             return val
 
-    # 4. Built-in global default
+    # 5. Built-in global default
     val = _GLOBAL_DEFAULTS.get(setting)
     if val is not None:
         return val

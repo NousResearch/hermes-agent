@@ -202,7 +202,15 @@ class TestCapDelegateTaskCalls:
         w1 = make_tc("web_search", '{"q":"x"}')
         tcs = [delegates[0], t1, delegates[1], w1] + delegates[2:]
         out = AIAgent._cap_delegate_task_calls(tcs)
-        expected = [delegates[0], t1, delegates[1], w1] + delegates[2:MAX_CONCURRENT_CHILDREN]
+        expected = []
+        kept_delegates = 0
+        for tc in tcs:
+            if tc.function.name == "delegate_task":
+                if kept_delegates < MAX_CONCURRENT_CHILDREN:
+                    expected.append(tc)
+                    kept_delegates += 1
+            else:
+                expected.append(tc)
         assert len(out) == len(expected)
         for i, (actual, exp) in enumerate(zip(out, expected)):
             assert actual is exp, f"mismatch at index {i}"
@@ -275,6 +283,95 @@ class TestDeduplicateToolCalls:
         original_len = len(tcs)
         AIAgent._deduplicate_tool_calls(tcs)
         assert len(tcs) == original_len
+
+
+# ---------------------------------------------------------------------------
+# Referential delegation guard
+# ---------------------------------------------------------------------------
+
+class TestReferentialDelegationGuard:
+
+    def test_pronoun_only_delegation_commands_are_detected(self):
+        for text in [
+            "delegate it",
+            "Now delegate it.",
+            "assign it",
+            "do it",
+            "hand it off",
+            "hand off that",
+        ]:
+            assert AIAgent._is_pronoun_only_delegation_request(text)
+
+    def test_explicit_delegation_request_is_not_pronoun_only(self):
+        assert not AIAgent._is_pronoun_only_delegation_request(
+            "Delegate the API auth regression test update to a builder."
+        )
+
+    def test_stage_c3_turn3_blocks_delegate_task_without_confirmed_pending_task(self):
+        agent = types.SimpleNamespace(_confirmed_pending_delegation_task=None)
+        messages = [
+            {"role": "user", "content": "Improve Bookforge."},
+            {
+                "role": "assistant",
+                "content": (
+                    "Route: clarification only\n"
+                    "Why: broad scope\n"
+                    "Clarify First: exact task and acceptance criteria"
+                ),
+            },
+            {"role": "user", "content": "Now delegate it."},
+        ]
+        tool_calls = [make_tc("delegate_task", '{"goal":"Improve Bookforge"}')]
+
+        response = AIAgent._ambiguous_referential_delegation_response(
+            agent,
+            messages,
+            tool_calls,
+        )
+
+        assert response is not None
+        assert "clarification only" in response
+        assert "no delegate_task" in response
+
+    def test_stage_c3_guard_covers_todo_plus_delegate_attempt(self):
+        agent = types.SimpleNamespace(_confirmed_pending_delegation_task=None)
+        messages = [{"role": "user", "content": "Now delegate it."}]
+        tool_calls = [make_tc("todo", '{"action":"create"}'), make_tc("delegate_task")]
+
+        response = AIAgent._ambiguous_referential_delegation_response(
+            agent,
+            messages,
+            tool_calls,
+        )
+
+        assert response is not None
+        assert AIAgent._ambiguous_delegation_tool_names(tool_calls) == {"todo", "delegate_task"}
+
+    def test_pronoun_only_delegation_blocks_todo_only_attempt(self):
+        agent = types.SimpleNamespace(_confirmed_pending_delegation_task=None)
+        messages = [{"role": "user", "content": "Do it."}]
+        tool_calls = [make_tc("todo", '{"action":"create"}')]
+
+        response = AIAgent._ambiguous_referential_delegation_response(
+            agent,
+            messages,
+            tool_calls,
+        )
+
+        assert response is not None
+        assert "no todos" in response
+
+    def test_confirmed_pending_task_allows_referential_delegation(self):
+        agent = types.SimpleNamespace(
+            _confirmed_pending_delegation_task={
+                "task": "Run the named API auth regression test update",
+                "scope": "tests/run_agent/test_auth.py",
+            }
+        )
+        messages = [{"role": "user", "content": "Now delegate it."}]
+        tool_calls = [make_tc("delegate_task")]
+
+        assert AIAgent._ambiguous_referential_delegation_response(agent, messages, tool_calls) is None
 
 
 # ---------------------------------------------------------------------------

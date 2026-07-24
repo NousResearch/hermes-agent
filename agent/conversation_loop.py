@@ -5525,6 +5525,23 @@ def run_conversation(
                 agent._invalid_json_retries = 0
 
                 # ── Post-call guardrails ──────────────────────────
+                ambiguous_delegation_response = agent._ambiguous_referential_delegation_response(
+                    messages,
+                    assistant_message.tool_calls,
+                )
+                if ambiguous_delegation_response is not None:
+                    final_response = ambiguous_delegation_response
+                    _turn_exit_reason = "ambiguous_referential_delegation"
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._safe_print(f"\n{final_response}\n")
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    break
+
                 assistant_message.tool_calls = agent._cap_delegate_task_calls(
                     assistant_message.tool_calls
                 )

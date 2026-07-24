@@ -44,3 +44,25 @@ def _fast_retry_backoff(monkeypatch):
         monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0)
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _clear_auxiliary_provider_health_cache():
+    """Keep auxiliary provider health state isolated between tests.
+
+    Several run_agent tests instantiate AIAgent without OpenRouter credentials;
+    tool requirement checks can then mark OpenRouter unhealthy in
+    agent.auxiliary_client's module-level TTL cache.  The cache is useful
+    production state, but it must not leak into later provider-priority tests
+    that intentionally set OPENROUTER_API_KEY and expect a fresh resolver.
+    """
+    try:
+        import agent.auxiliary_client as _aux_mod
+    except ImportError:
+        return
+
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
+    yield
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()

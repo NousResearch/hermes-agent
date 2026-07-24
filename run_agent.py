@@ -4188,6 +4188,101 @@ class AIAgent:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
 
+    @staticmethod
+    def _latest_user_text(messages: list) -> str:
+        """Return the latest plain-text user message from a conversation list."""
+        for msg in reversed(messages or []):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+                return "\n".join(parts)
+        return ""
+
+    @staticmethod
+    def _is_pronoun_only_delegation_request(text: str) -> bool:
+        """Detect ambiguous referential commands like "delegate it".
+
+        These utterances name the routing action but not the task scope. They
+        must not be resolved from broad prior context unless a separate,
+        explicit pending-task mechanism has confirmed exactly one task.
+        """
+        import re
+
+        normalized = re.sub(r"[\s\u00a0]+", " ", (text or "").strip().lower())
+        normalized = re.sub(r"^[,;:!?.\s]+|[,;:!?.\s]+$", "", normalized)
+        if not normalized:
+            return False
+        normalized = re.sub(r"^(?:ok(?:ay)?|please|pls|now|then|next|so|alright|sure)\s+", "", normalized)
+        normalized = re.sub(r"\s+(?:please|pls|now)$", "", normalized)
+        patterns = (
+            r"delegate\s+(?:it|that|this|them|those|these)",
+            r"assign\s+(?:it|that|this|them|those|these)",
+            r"do\s+(?:it|that|this|them|those|these)",
+            r"hand\s+(?:it|that|this|them|those|these)\s+off",
+            r"hand\s+off\s+(?:it|that|this|them|those|these)",
+            r"pass\s+(?:it|that|this|them|those|these)\s+(?:off|on)",
+            r"give\s+(?:it|that|this|them|those|these)\s+to\s+(?:someone|a\s+worker|an\s+agent|another\s+agent)",
+        )
+        return any(re.fullmatch(pattern, normalized) for pattern in patterns)
+
+    @staticmethod
+    def _has_confirmed_pending_delegation_task(agent: Any) -> bool:
+        """Hook for future explicit pending-delegation state.
+
+        Today Hermes has no structured, confirmed pending delegation slot. A
+        truthy dict-like/list-like value may be supplied by profile-specific
+        code in the future, but absent that state referential delegation is
+        ambiguous by design.
+        """
+        pending = getattr(agent, "_confirmed_pending_delegation_task", None)
+        if isinstance(pending, dict):
+            return bool(pending.get("scope") and (pending.get("goal") or pending.get("task")))
+        if isinstance(pending, (list, tuple)):
+            return len(pending) == 1 and bool(pending[0])
+        return bool(pending)
+
+    @staticmethod
+    def _ambiguous_delegation_tool_names(tool_calls: list) -> set[str]:
+        """Tools that must not run for an ambiguous delegation command."""
+        names = {getattr(getattr(tc, "function", None), "name", "") for tc in (tool_calls or [])}
+        blocked = {"delegate_task"} & names
+        if "todo" in names:
+            blocked.add("todo")
+        return blocked
+
+    def _ambiguous_referential_delegation_response(self, messages: list, tool_calls: list) -> str | None:
+        """Return a routing-only clarification if a pronoun-only command tried tools."""
+        latest = AIAgent._latest_user_text(messages)
+        if not AIAgent._is_pronoun_only_delegation_request(latest):
+            return None
+        if AIAgent._has_confirmed_pending_delegation_task(self):
+            return None
+        blocked = AIAgent._ambiguous_delegation_tool_names(tool_calls)
+        if not blocked:
+            return None
+        logger.warning(
+            "Blocked ambiguous referential delegation request before tool execution: %r",
+            latest,
+        )
+        return (
+            "Route: clarification only\n"
+            "Why: \"it\" does not identify a single confirmed delegation task with resolved scope.\n"
+            "Clarify First: name the exact task, scope, implementer/verifier roles, gates, and expected final output.\n"
+            "Implementer: pending explicit task\n"
+            "Verifier: pending explicit task\n"
+            "Gates: no delegate_task, no todos, no child workers until the task is explicit and confirmed\n"
+            "Final Output: confirm the named task before I delegate it."
+        )
+
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
         from agent.agent_runtime_helpers import repair_tool_call

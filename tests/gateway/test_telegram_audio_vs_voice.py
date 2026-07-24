@@ -12,7 +12,7 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -21,11 +21,11 @@ from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
-def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[name-defined]
+def _make_runner(stt_enabled: bool = True, **config_kwargs) -> "GatewayRunner":  # type: ignore[name-defined]
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner.config = GatewayConfig(stt_enabled=stt_enabled)
+    runner.config = GatewayConfig(stt_enabled=stt_enabled, **config_kwargs)
     runner.adapters = {}
     runner._model = "test-model"
     runner._base_url = ""
@@ -207,3 +207,213 @@ def test_telegram_media_type_detection_audio_vs_voice():
     assert MessageType.VOICE.value == "voice"
     # Sanity: they are distinct
     assert MessageType.AUDIO != MessageType.VOICE
+
+
+# ---------------------------------------------------------------------------
+# 5. Voice reply to a PENDING CLARIFY resolves it with the raw transcript
+#    (#50925 — voice answers to clarify prompts were silently dropped)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "event_text"),
+    [
+        (Platform.TELEGRAM, ""),
+        (Platform.MATRIX, "voice_message_123.ogg"),
+    ],
+)
+async def test_voice_reply_resolves_pending_clarify_with_transcript(
+    platform, event_text
+):
+    """A voice answer resolves clarify with the raw transcript, not its filename."""
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True)
+    runner.session_store = None
+
+    source = SessionSource(
+        platform=platform, chat_id="1", chat_type="dm", user_id="user1",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-voice", session_key, "Which option?", choices=None)
+
+    event = MessageEvent(
+        text=event_text,
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "the blue one", "provider": "whisper"},
+    ) as mock_transcribe:
+        result = await GatewayRunner._handle_message(runner, event)
+
+    mock_transcribe.assert_called_once_with("/tmp/voice.ogg")
+    # Acknowledged with an empty string so adapters don't double-post.
+    assert result == ""
+    # Resolves with the RAW transcript — not a wrapped "voice message ..." note.
+    assert cm.wait_for_response("cid-voice", timeout=0.01) == "the blue one"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "event_text"),
+    [
+        (Platform.TELEGRAM, ""),
+        (Platform.MATRIX, "voice_message_456.ogg"),
+    ],
+)
+async def test_voice_reply_failed_transcription_keeps_clarify_pending(
+    platform, event_text
+):
+    """If STT yields no text, clarify stays pending even when text is a filename."""
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True)
+    runner.session_store = None
+
+    source = SessionSource(
+        platform=platform, chat_id="1", chat_type="dm", user_id="user1",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-voice-fail", session_key, "Which option?", choices=None)
+
+    event = MessageEvent(
+        text=event_text,
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    # No usable transcript -> the clarify must NOT resolve with garbage.
+    with patch.object(
+        runner, "_enrich_message_with_transcription",
+        new=AsyncMock(return_value=("", [])),
+    ):
+        result = await GatewayRunner._handle_message(runner, event)
+
+    assert "text" in result.lower()
+    assert cm.get_pending_for_session(session_key) is not None
+
+
+# ---------------------------------------------------------------------------
+# 6. Clarify transcript echo honors stt.echo_transcripts and thread metadata
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_voice_clarify_echo_disabled_still_resolves_without_send():
+    """stt_echo_transcripts=False: clarify resolves, but no 🎙️ echo is sent."""
+    from unittest.mock import MagicMock
+
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True, stt_echo_transcripts=False)
+    runner.session_store = None
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1", chat_type="dm", user_id="user1",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-no-echo", session_key, "Which option?", choices=None)
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "use the local model", "provider": "whisper"},
+    ):
+        result = await GatewayRunner._handle_message(runner, event)
+
+    assert result == ""
+    assert cm.wait_for_response("cid-no-echo", timeout=0.01) == "use the local model"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_voice_clarify_echo_preserves_telegram_dm_topic_metadata():
+    """The 🎙️ echo in a Telegram DM topic keeps topic routing + reply anchor."""
+    from unittest.mock import MagicMock
+
+    from gateway.run import GatewayRunner
+    from gateway.session import build_session_key
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True)
+    runner.session_store = None
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1", chat_type="dm",
+        user_id="user1", thread_id="42",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-topic", session_key, "Which option?", choices=None)
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="777",
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "the blue one", "provider": "whisper"},
+    ):
+        result = await GatewayRunner._handle_message(runner, event)
+
+    assert result == ""
+    assert cm.wait_for_response("cid-topic", timeout=0.01) == "the blue one"
+    adapter.send.assert_awaited_once_with(
+        "1",
+        '🎙️ "the blue one"',
+        metadata={
+            "thread_id": "42",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "42",
+            "telegram_reply_to_message_id": "777",
+        },
+    )

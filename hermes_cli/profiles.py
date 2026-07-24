@@ -237,6 +237,8 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
     "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    # Secret-free dotenv templates document the variables a profile expects.
+    ".env.example", ".env.sample", ".env.template", ".env.dist",
     # User-facing skill, cron, and session artifacts
     "skills", "cron", "scripts", "sessions",
     # Plugin / memory surfaces (per-profile overrides live here)
@@ -1860,10 +1862,293 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Sensitive-file detection (shared by every export path)
+# ---------------------------------------------------------------------------
+#
+# Profile archives are meant to be shared.  They must never carry API keys,
+# OAuth tokens, credential-pool data, or the timestamped *backups* Hermes
+# writes during normal operation:
+#
+#   hermes_cli/setup.py          → config.yaml.bak.<YYYYmmdd_HHMMSS>
+#   hermes_cli/xai_retirement.py → config.yaml.bak-pre-migrate-xai-<ts>
+#   (and other config rewrites)  → config.yaml.bak-<reason>-<ts>, .env.bak-<...>
+#
+# The historical exclusion lists only caught the *exact* names ``.env`` and
+# ``auth.json``, so every ``config.yaml.bak*`` / ``.env.bak*`` slipped into the
+# archive.  ``_is_sensitive_export_name`` is the single source of truth used by
+# both the default-profile and named-profile export paths, matched at ANY
+# directory depth (backups can live in subdirs too).
+
+# Exact file basenames that always hold credentials. This mirrors the
+# canonical Hermes credential guards in ``hermes_cli.web_server``,
+# ``agent.file_safety``, and ``gateway.platforms.base``. ``config.yaml`` is
+# intentionally not included: the active config is part of a portable profile,
+# while its ``config.yaml.bak*`` copies are excluded below.
+_EXPORT_SENSITIVE_BASENAMES = frozenset({
+    ".env",
+    ".envrc",
+    ".claude.json",
+    ".netrc",
+    ".npmrc",
+    ".pgpass",
+    ".pypirc",
+    "auth.json",
+    "auth.lock",
+    ".anthropic_oauth.json",
+    "google_token.json",
+    "google_oauth_pending.json",
+    "google_oauth.json",
+    "webhook_subscriptions.json",
+    "bws_cache.json",
+    "bws_cache.enc.json",
+    "oauth_creds.json",
+    ".git-credentials",
+    # SSH private keys (extensionless) — the per-profile ``home/`` isolates
+    # ssh/gh/git configs and can hold these under ``.ssh/``.
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "credentials",
+})
+
+# Canonical credential-directory trees, expressed relative to a profile root.
+# Root-relative matching avoids deleting unrelated user content such as
+# ``plugins/example/pairing/`` while still covering both legacy ``pairing/``
+# and the newer ``platforms/pairing/`` store. Backup-renamed components are
+# normalized before comparison.
+_EXPORT_SENSITIVE_PROFILE_DIR_PREFIXES = frozenset({
+    ("mcp-tokens",),
+    ("pairing",),
+    ("platforms", "pairing"),
+})
+
+# The ``home/`` directory is a persistent subprocess HOME for profile-backed
+# containers. It can therefore contain the same credential trees Hermes blocks
+# from generic reads and media delivery. Most of ``home/`` remains portable,
+# including ordinary dot-config applications; only credential-bearing prefixes
+# are removed. Nested tuples cover targeted stores beneath ``.config`` without
+# dropping that entire directory.
+_EXPORT_SENSITIVE_PROFILE_HOME_DIR_PREFIXES = frozenset({
+    (".ssh",),
+    (".aws",),
+    (".gnupg",),
+    (".kube",),
+    (".docker",),
+    (".azure",),
+    (".gcloud",),
+    (".config", "gh"),
+    (".config", "gcloud"),
+    (".config", "github-copilot"),
+    ("library", "keychains"),
+})
+
+# dotenv templates are conventionally secret-free, but only these exact names
+# are safe. A credential backup such as ``.env.bak.example`` must not become
+# exportable merely because its final suffix looks like a template.
+_EXPORT_ENV_TEMPLATE_NAMES = frozenset({
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+    ".env.dist",
+})
+
+# Backup, renamed-copy, and stale atomic-temp suffixes for canonical stores and
+# any other name already classified as sensitive. Numeric and trailing-tilde
+# suffixes cover names such as ``auth.json.20260101`` and ``auth.json~``. The
+# base name is reclassified recursively so ``credentials.json.bak`` and
+# ``oauth_creds.json.tmp.<pid>.<uuid>`` are blocked while ``notes.txt.bak``
+# remains safe.
+_EXPORT_BACKUP_NAME_RE = re.compile(
+    r"^(?P<base>.+?)(?:"
+    r"[._-](?:bak|backup|old|copy|tmp)(?:[._-].*)?"
+    r"|[._-]\d{8}(?:[._-]\d{4,6})?"
+    r"|~"
+    r")$",
+    re.IGNORECASE,
+)
+
+# Unambiguously private key / keystore extensions. PEM files are content-checked
+# separately because public CA bundles and certificates are also commonly PEM.
+_EXPORT_SENSITIVE_SUFFIXES = (
+    ".key", ".p12", ".pfx", ".keystore", ".jks",
+)
+
+# Credential-/token-looking names. The keyword must be a whole token bounded by
+# start/end or a separator, so ``tokenizer.json`` and ``token_count.md`` are NOT
+# matched while ``client_secret.json``, ``credentials.json``, ``access_token``,
+# and ``api-key.txt`` are. Restricted to credential-container extensions (or no
+# extension) so ordinary docs/skills like ``secret-santa.md`` still export.
+_EXPORT_CREDENTIAL_KEYWORD_RE = re.compile(
+    r"(?:^|[._-])"
+    r"(?:credentials?|secrets?|api[_-]?keys?|access[_-]?tokens?"
+    r"|refresh[_-]?tokens?|client[_-]?secrets?)"
+    r"(?:$|[._-])",
+    re.IGNORECASE,
+)
+_EXPORT_CREDENTIAL_CONTAINER_SUFFIXES = (
+    ".json", ".txt", ".yaml", ".yml", ".ini", ".cfg", ".conf", ".env", ".secret",
+)
+
+
+def _is_sensitive_export_name(name: str) -> bool:
+    """Return True if *name* is a sensitive export path component.
+
+    This covers credential files and their backup or temporary derivatives.
+    Matching is case-insensitive, and callers apply it at every directory depth
+    so nested OAuth stores and backup files are caught too. Credential-directory
+    trees are handled separately with root-relative path rules.
+    """
+    lowered = name.lower()
+
+    if lowered in _EXPORT_ENV_TEMPLATE_NAMES:
+        return False
+
+    if lowered in _EXPORT_SENSITIVE_BASENAMES:
+        return True
+
+    # Every non-template dotenv variant is sensitive, including misleading
+    # shapes such as .env.bak.example.
+    if lowered.startswith(".env."):
+        return True
+
+    backup_match = _EXPORT_BACKUP_NAME_RE.fullmatch(lowered)
+    if backup_match:
+        base_name = backup_match.group("base")
+        if base_name in {"config.yaml", "config.yml"}:
+            return True
+        if _is_sensitive_export_name(base_name):
+            return True
+
+    if lowered.endswith(_EXPORT_SENSITIVE_SUFFIXES):
+        return True
+
+    if _EXPORT_CREDENTIAL_KEYWORD_RE.search(lowered):
+        # Only treat as sensitive when it looks like a credential container
+        # (or has no extension, e.g. ``id_rsa`` / ``credentials``).
+        suffix = Path(lowered).suffix
+        if not suffix or lowered.endswith(_EXPORT_CREDENTIAL_CONTAINER_SUFFIXES):
+            return True
+
+    return False
+
+
+def _strip_export_backup_suffixes(name: str) -> str:
+    """Return the underlying lowercase name after known backup suffixes."""
+    underlying_name = name.lower()
+    while backup_match := _EXPORT_BACKUP_NAME_RE.fullmatch(underlying_name):
+        underlying_name = backup_match.group("base")
+    return underlying_name
+
+
+def _normalized_export_relative_parts(
+    directory: str,
+    name: str,
+    profile_root: Optional[Path],
+) -> tuple[str, ...]:
+    """Return normalized, root-relative parts for an export entry."""
+    if profile_root is None:
+        return ()
+    try:
+        relative = (Path(directory) / name).relative_to(profile_root)
+    except ValueError:
+        return ()
+    return tuple(_strip_export_backup_suffixes(part) for part in relative.parts)
+
+
+def _is_sensitive_profile_credential_tree_entry(
+    directory: str,
+    name: str,
+    profile_root: Optional[Path],
+) -> bool:
+    """Return True for canonical credential-directory trees in a profile."""
+    relative_parts = _normalized_export_relative_parts(
+        directory, name, profile_root
+    )
+    return any(
+        relative_parts[: len(prefix)] == prefix
+        for prefix in _EXPORT_SENSITIVE_PROFILE_DIR_PREFIXES
+    )
+
+
+def _is_sensitive_profile_home_entry(
+    directory: str,
+    name: str,
+    profile_root: Optional[Path],
+) -> bool:
+    """Return True for credential trees inside a profile's ``home/``.
+
+    The check is root-relative so an unrelated directory named ``.ssh`` in a
+    skill or workspace is not removed. Backup-renamed path components are
+    normalized so ``home/.config/gh.bak/`` and ``home/.ssh.20260101/`` cannot
+    bypass the directory policy.
+    """
+    relative_parts = _normalized_export_relative_parts(
+        directory, name, profile_root
+    )
+    if len(relative_parts) < 2 or relative_parts[0] != "home":
+        return False
+
+    home_parts = relative_parts[1:]
+    return any(
+        home_parts[: len(prefix)] == prefix
+        for prefix in _EXPORT_SENSITIVE_PROFILE_HOME_DIR_PREFIXES
+    )
+
+
+def _is_sensitive_export_entry(
+    directory: str,
+    name: str,
+    profile_root: Optional[Path] = None,
+) -> bool:
+    """Return True when a copytree entry must be excluded from an export.
+
+    Most decisions are basename-only. Ambiguous ``.pem`` files and their
+    recognized backup variants are stream-scanned for a private-key header so
+    public certificates and CA bundles remain portable while PEM-encoded
+    private keys stay out of shared archives. Profile-local HOME credential
+    trees are matched relative to ``profile_root`` so ordinary same-named
+    project directories remain portable.
+    """
+    if _is_sensitive_export_name(name):
+        return True
+
+    if _is_sensitive_profile_credential_tree_entry(
+        directory, name, profile_root
+    ):
+        return True
+
+    if _is_sensitive_profile_home_entry(directory, name, profile_root):
+        return True
+
+    underlying_name = _strip_export_backup_suffixes(name)
+    if not underlying_name.endswith(".pem"):
+        return False
+
+    path = Path(directory) / name
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        marker = b"PRIVATE KEY-----"
+        overlap = b""
+        with path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                data = overlap + chunk.upper()
+                if marker in data:
+                    return True
+                overlap = data[-(len(marker) - 1):]
+    except OSError:
+        # copytree will surface unreadable entries itself; this helper should
+        # not turn an ordinary I/O error into a silent exclusion.
+        return False
+    return False
+
+
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
 
-    Two-tier filtering:
+    Three-tier filtering:
 
     * **Root-level allow-list** — only entries whose name appears in
       ``_DEFAULT_EXPORT_INCLUDE_ROOT`` survive. Everything else (such as
@@ -1871,10 +2156,13 @@ def _default_export_ignore(root_dir: Path):
       HERMES_HOME equals the cwd) is excluded. Blacklisting was tried
       first and proved unable to anticipate every non-Hermes file the
       user may have lying alongside HERMES_HOME (#58394).
-    * **Universal exclusions at any depth** — ``__pycache__``, sockets,
-      temp files; plus npm lockfiles, which may appear at the root.
+    * **Sensitive components at any depth** — credential files, backups, and
+      credential-directory trees identified by
+      :func:`_is_sensitive_export_entry`.
+    * **Universal exclusions at any depth** — ``__pycache__``, sockets, temp
+      files; plus npm lockfiles, which may appear at the root.
 
-    All other profile artifacts are copied through untouched.
+    All other allow-listed profile artifacts are copied through untouched.
     """
 
     def _ignore(directory: str, contents: list) -> set:
@@ -1886,8 +2174,11 @@ def _default_export_ignore(root_dir: Path):
             # npm lockfiles can appear at root
             elif entry in {"package.json", "package-lock.json"}:
                 ignored.add(entry)
-        # Root-level allow-list: drop everything that isn't a known
-        # Hermes profile artifact.
+            # Credentials, backups, and credential trees (any depth)
+            elif _is_sensitive_export_entry(directory, entry, root_dir):
+                ignored.add(entry)
+        # Root-level allow-list: drop everything that isn't a known Hermes
+        # profile artifact.
         if Path(directory) == root_dir:
             ignored.update(
                 entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT
@@ -1929,15 +2220,27 @@ def export_profile(name: str, output_path: str) -> Path:
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
             return Path(result)
 
-    # Named profiles — stage a filtered copy to exclude credentials
+    # Named profiles — stage a filtered copy that drops credentials,
+    # secrets, and credential backups (config.yaml.bak*, .env.bak*, …).
+    # Uses the same _is_sensitive_export_name() rules as the default path so
+    # the two export modes can't drift apart.
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
-        _CREDENTIAL_FILES = {"auth.json", ".env"}
+
+        def _named_ignore(directory: str, contents: list) -> set:
+            ignored: set = set()
+            for entry in contents:
+                if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+                    ignored.add(entry)
+                elif _is_sensitive_export_entry(directory, entry, profile_dir):
+                    ignored.add(entry)
+            return ignored
+
         shutil.copytree(
             profile_dir,
             staged,
             symlinks=True,
-            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+            ignore=_named_ignore,
         )
         result = shutil.make_archive(base, "gztar", tmpdir, canon)
         return Path(result)

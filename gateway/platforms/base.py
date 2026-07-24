@@ -1932,7 +1932,12 @@ def _new_gateway_session_ipc_event(**kwargs: Any) -> MessageEvent:
 
 
 def is_gateway_session_ipc_task(event: "MessageEvent") -> bool:
-    """Return whether *event* carries the unforgeable in-process IPC type."""
+    """Return whether *event* carries the process-private IPC event type.
+
+    This prevents trust forgery through platform payloads or copied metadata. Loaded
+    Python code already executes inside the trusted gateway process and is outside
+    this owner-local IPC threat boundary.
+    """
     return isinstance(event, _GatewaySessionIPCEvent)
 
 

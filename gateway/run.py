@@ -3655,8 +3655,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # hermes_state.get_last_init_error() for slash-command error strings.
             logger.warning("SQLite session store not available: %s", e)
 
-        # Opportunistic state.db maintenance: prune ended sessions older
-        # than sessions.retention_days + optional VACUUM. Tracks last-run
+        # Opportunistic state.db maintenance: prune ended sessions inactive
+        # for sessions.retention_days + optional VACUUM. Tracks last-run
         # in state_meta so it only actually executes once per
         # sessions.min_interval_hours.  Gateway is long-lived so blocking
         # a few seconds once per day is acceptable; failures are logged

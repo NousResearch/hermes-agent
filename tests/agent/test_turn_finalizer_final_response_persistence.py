@@ -198,6 +198,62 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
 
 
+def test_empty_failure_sentinel_not_reappended_after_drop(monkeypatch):
+    """Marked ``(empty)`` terminal must stay out of durable history.
+
+    ``conversation_loop`` appends assistant("(empty)") with
+    ``_empty_terminal_sentinel`` then sets ``final_response="(empty)"``.
+    The finalizer drops the marked row before persist; the #43849 close
+    block must not re-append an unmarked copy just because final_response
+    is still truthy.
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+
+    def _drop_sentinel(messages):
+        while (
+            messages
+            and isinstance(messages[-1], dict)
+            and (
+                messages[-1].get("_empty_recovery_synthetic")
+                or messages[-1].get("_empty_terminal_sentinel")
+            )
+        ):
+            messages.pop()
+
+    agent._drop_trailing_empty_response_scaffolding = _drop_sentinel
+    messages = [
+        {"role": "user", "content": "do work"},
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_terminal_sentinel": True,
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="(empty)",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do work",
+        original_user_message="do work",
+        _should_review_memory=False,
+        _turn_exit_reason="empty_response_exhausted",
+    )
+
+    persisted = agent.persisted_messages
+    assert persisted is not None
+    assert persisted == [{"role": "user", "content": "do work"}]
+    assert all(m.get("content") != "(empty)" for m in result["messages"])
+    assert all(not m.get("_empty_terminal_sentinel") for m in result["messages"])
+
+
 def test_final_response_fills_pure_tool_call_tail(monkeypatch):
     """A tail assistant row that is a *pure tool-call turn* carries no answer.
 

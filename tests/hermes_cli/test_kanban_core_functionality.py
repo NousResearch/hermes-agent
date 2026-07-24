@@ -3131,8 +3131,20 @@ def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
     )
 
 
+def _install_test_skill(home: Path, name: str) -> None:
+    """Drop a minimal skill into <home>/skills so create-time skill
+    validation (#44072) resolves it."""
+    skill_dir = home / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\n---\n# {name}\n", encoding="utf-8"
+    )
+
+
 def test_cli_create_skill_flag_repeatable(kanban_home):
     """`hermes kanban create --skill a --skill b` persists the list."""
+    _install_test_skill(kanban_home, "translation")
+    _install_test_skill(kanban_home, "github-code-review")
     out = run_slash(
         "create 'multi-skill' --assignee linguist "
         "--skill translation --skill github-code-review --json"
@@ -3155,6 +3167,7 @@ def test_cli_create_without_skill_flag_leaves_none(kanban_home):
 
 def test_cli_show_renders_skills(kanban_home):
     """`hermes kanban show <id>` prints a skills row when present."""
+    _install_test_skill(kanban_home, "translation")
     out = run_slash(
         "create 'show-test' --assignee x "
         "--skill translation --json"

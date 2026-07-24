@@ -1450,6 +1450,24 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _assignee_hermes_home(assignee: Optional[str]) -> Optional[str]:
+    """HERMES_HOME the dispatched worker would run under.
+
+    Mirrors the dispatcher's resolution in ``kanban_db._default_spawn``:
+    profile-scoped home via ``resolve_profile_env``, falling back to the
+    current process home when no assignee is set or the profile dir
+    doesn't exist yet (the dispatcher defers to ``HERMES_PROFILE`` then).
+    """
+    if assignee:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        try:
+            return resolve_profile_env(normalize_profile_name(assignee))
+        except (FileNotFoundError, ValueError):
+            pass
+    return os.environ.get("HERMES_HOME")
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
@@ -1473,6 +1491,25 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    skills = getattr(args, "skills", None) or []
+    if skills:
+        unknown = kb.unresolvable_task_skills(
+            skills, _assignee_hermes_home(args.assignee)
+        )
+        if unknown:
+            scope = (
+                f"profile '{args.assignee}'" if args.assignee
+                else "the worker profile"
+            )
+            print(
+                f"kanban: unknown skill(s) for {scope}: {', '.join(unknown)}\n"
+                "Workers preload --skill values at startup and crash on "
+                "unknown names, burning the task's retry budget (see "
+                "#44072). Check the name with `hermes skills list` or "
+                "install the skill into that profile first.",
+                file=sys.stderr,
+            )
+            return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,

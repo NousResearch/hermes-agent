@@ -64,6 +64,13 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # to bound the leak from non-finalizing turns, not to limit concurrency.
 _MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
+# Guards _LANGFUSE_CLIENT initialization against the TOCTOU race: two
+# concurrent first callers both pass the ``is not None`` guard, both
+# construct a Langfuse(**kwargs) client, and the loser's client leaks an
+# open HTTPS connection + background flush thread.  _STATE_LOCK is not
+# reused here because it guards _TRACE_STATE (hot path) and nesting the
+# two locks would risk deadlock with future callers.
+_LANGFUSE_CLIENT_LOCK = threading.Lock()
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
@@ -154,78 +161,93 @@ def _get_langfuse() -> Optional[Langfuse]:
     + credentials present). The result is cached: on the first call we try
     to construct a client, and every subsequent call returns that client
     (or fast-returns ``None`` if init failed).
+
+    Thread-safe: ``_LANGFUSE_CLIENT_LOCK`` serializes the first build so
+    concurrent callers can't both pass the ``is not None`` guard, both
+    construct a ``Langfuse(**kwargs)`` client, and leak the loser's open
+    HTTP connection and background flush thread (same TOCTOU class fixed
+    for the Honcho and FAL clients in ``plugins/plugin_utils.py``).
     """
     global _LANGFUSE_CLIENT
+    # Fast path — already settled (success or _INIT_FAILED); no lock needed.
     if _LANGFUSE_CLIENT is _INIT_FAILED:
         return None
     if _LANGFUSE_CLIENT is not None:
         return _LANGFUSE_CLIENT
 
-    if Langfuse is None:
-        _LANGFUSE_CLIENT = _INIT_FAILED
-        return None
+    with _LANGFUSE_CLIENT_LOCK:
+        # Re-check inside the lock: a racing thread may have completed init
+        # while we were waiting.
+        if _LANGFUSE_CLIENT is _INIT_FAILED:
+            return None
+        if _LANGFUSE_CLIENT is not None:
+            return _LANGFUSE_CLIENT
 
-    public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
-    secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
-    if not (public_key and secret_key):
-        _LANGFUSE_CLIENT = _INIT_FAILED
-        return None
+        if Langfuse is None:
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
 
-    # Reject placeholder credentials with a one-shot warning so the
-    # operator sees the misconfiguration instead of silently shipping a
-    # broken observability stack (#23823).  The SDK does not validate
-    # keys at construction time — it queues traces in memory and only
-    # discovers the auth failure when the background flush thread tries
-    # to post them, by which point the warning is buried under whatever
-    # else the process is logging.  Catch it here, surface it once, and
-    # short-circuit via the same _INIT_FAILED path as the empty case.
-    placeholder_issues = [
-        msg
-        for msg in (
-            _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
-            _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
-        )
-        if msg
-    ]
-    if placeholder_issues:
-        logger.warning(
-            "Langfuse plugin: credentials look like placeholders, traces will "
-            "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
-            "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
-            "silence this warning.",
-            "; ".join(placeholder_issues),
-        )
-        _LANGFUSE_CLIENT = _INIT_FAILED
-        return None
+        public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
+        secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
+        if not (public_key and secret_key):
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
 
-    base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
-    environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
-    release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
-    sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
+        # Reject placeholder credentials with a one-shot warning so the
+        # operator sees the misconfiguration instead of silently shipping a
+        # broken observability stack (#23823).  The SDK does not validate
+        # keys at construction time — it queues traces in memory and only
+        # discovers the auth failure when the background flush thread tries
+        # to post them, by which point the warning is buried under whatever
+        # else the process is logging.  Catch it here, surface it once, and
+        # short-circuit via the same _INIT_FAILED path as the empty case.
+        placeholder_issues = [
+            msg
+            for msg in (
+                _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
+                _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
+            )
+            if msg
+        ]
+        if placeholder_issues:
+            logger.warning(
+                "Langfuse plugin: credentials look like placeholders, traces will "
+                "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
+                "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
+                "silence this warning.",
+                "; ".join(placeholder_issues),
+            )
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
 
-    kwargs: Dict[str, Any] = {
-        "public_key": public_key,
-        "secret_key": secret_key,
-        "base_url": base_url,
-    }
-    if environment:
-        kwargs["environment"] = environment
-    if release:
-        kwargs["release"] = release
-    if sample_rate:
+        base_url = _env("HERMES_LANGFUSE_BASE_URL") or _env("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+        environment = _env("HERMES_LANGFUSE_ENV") or _env("LANGFUSE_ENV")
+        release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
+        sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
+
+        kwargs: Dict[str, Any] = {
+            "public_key": public_key,
+            "secret_key": secret_key,
+            "base_url": base_url,
+        }
+        if environment:
+            kwargs["environment"] = environment
+        if release:
+            kwargs["release"] = release
+        if sample_rate:
+            try:
+                kwargs["sample_rate"] = float(sample_rate)
+            except ValueError:
+                logger.warning("Invalid HERMES_LANGFUSE_SAMPLE_RATE=%r", sample_rate)
+
         try:
-            kwargs["sample_rate"] = float(sample_rate)
-        except ValueError:
-            logger.warning("Invalid HERMES_LANGFUSE_SAMPLE_RATE=%r", sample_rate)
+            _LANGFUSE_CLIENT = Langfuse(**kwargs)
+        except Exception as exc:  # pragma: no cover - fail-open
+            logger.warning("Could not initialize Langfuse client: %s", exc)
+            _LANGFUSE_CLIENT = _INIT_FAILED
+            return None
 
-    try:
-        _LANGFUSE_CLIENT = Langfuse(**kwargs)
-    except Exception as exc:  # pragma: no cover - fail-open
-        logger.warning("Could not initialize Langfuse client: %s", exc)
-        _LANGFUSE_CLIENT = _INIT_FAILED
-        return None
-
-    return _LANGFUSE_CLIENT
+        return _LANGFUSE_CLIENT
 
 
 def _scope_prefix(task_id: str, session_id: str) -> str:

@@ -1466,6 +1466,7 @@ def _sealed_runtime_artifact_request(
     inputs = _unit_inputs(unit_inputs, revision=revision)
     runtime = _runtime_browser_kwargs(runtime_dependency)
     gateway = inputs["gateway"]
+    projector = inputs["projector"]
     routeback = inputs["routeback"]
     mac_ops = inputs["mac_ops"]
     browser = inputs["browser"]
@@ -1515,7 +1516,9 @@ def _sealed_runtime_artifact_request(
             revision=revision,
             service_identities=inputs["operational_edge_identities"],
             socket_groups=inputs["operational_edge_socket_groups"],
-            read_peer_uids=(gateway["uid"],),
+            read_peer_uids=tuple(
+                sorted({gateway["uid"], projector["uid"]})
+            ),
             mutation_peer_uid=gateway["uid"],
             mutation_peer_gid=gateway["gid"],
             release_owner_uid=verified_assets["expected_uid"],

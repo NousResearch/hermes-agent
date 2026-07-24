@@ -17,16 +17,21 @@ each run.  Provider, gateway, and Discord credentials are deliberately absent.
 from __future__ import annotations
 
 import argparse
+import base64
+import ctypes
 import grp
 import hashlib
 import json
 import os
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +45,9 @@ VOICE_STAGE_SCHEMA = "muncho-voice-context-stage.v1"
 VOICE_DELIVERY_PROOF_SCHEMA = "muncho-voice-context-delivery-proof.v1"
 VOICE_CURSOR_SCHEMA = "muncho-voice-context-cursor.v1"
 EXECUTION_READINESS_SCHEMA = "muncho-trusted-cron-execution-readiness.v1"
+UNIT_NAMESPACE_READINESS_SCHEMA = (
+    "muncho-trusted-cron-unit-namespace-readiness.v1"
+)
 EXECUTION_BOUNDARY_ISOLATED = "isolated_read_only"
 EXECUTION_BOUNDARY_SCOPED = "credential_scoped_ops_edge"
 
@@ -49,17 +57,33 @@ MANIFEST_PATH = Path("/etc/muncho/cron-collectors/manifest.json")
 STATE_ROOT = Path("/var/lib/muncho-cron-collectors")
 PACKET_ROOT = STATE_ROOT / "packets"
 VOICE_ROOT = STATE_ROOT / "voice-context"
-# Reuse the owner-bound, non-login projector identity created by the production
-# host foundation.  A ninth ad-hoc Unix principal would otherwise escape the
-# signed UID/GID authority.  systemd overrides its process group to the
-# existing gateway group solely so 0640 packets are readable by the gateway.
-SERVICE_USER = "muncho-projector"
-READER_GROUP = "hermes-cloud-gateway"
-SERVICE_GROUP = READER_GROUP
+# Credential-scoped jobs use the non-login projector identity and exactly one
+# per-domain socket group.  Isolated filesystem readers use the existing
+# ai-platform-brain identity so legacy 0600/0700 content remains readable, but
+# a strict mount namespace exposes only each job's reviewed roots.
+SCOPED_SERVICE_USER = "muncho-projector"
+SCOPED_SERVICE_GROUP = "muncho-projector"
+ISOLATED_SERVICE_USER = "ai-platform-brain"
+ISOLATED_SERVICE_GROUP = "ai-platform-brain"
+READER_GROUP = "ai-platform-brain"
 
 CANONICAL_ROOT = Path("/opt/adventico-ai-platform/canonical-brain")
 HERMES_HOME = Path("/opt/adventico-ai-platform/hermes-home")
+OPERATIONAL_EDGE_CLIENT_CONFIG = Path(
+    "/etc/muncho/operational-edge-client.json"
+)
+OPERATIONAL_EDGE_TRUST_ROOT = Path("/etc/muncho/operational-edge/trust")
+OPERATIONAL_EDGE_SOCKET_ROOT = Path("/run/muncho-operational-edge")
+NAMESPACE_MASKS: tuple[Path, ...] = (
+    Path("/opt/adventico-ai-platform"),
+    Path("/etc/adventico-ai-platform"),
+    Path("/etc/muncho"),
+    Path("/var/lib"),
+    Path("/run"),
+)
 PYTHON = Path("/usr/bin/python3")
+SYSTEMD_RUN = Path("/usr/bin/systemd-run")
+SETPRIV = Path("/usr/bin/setpriv")
 GH_WRAPPER = HERMES_HOME / "bin/gh-hermes"
 
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
@@ -70,12 +94,18 @@ MAX_JSON_TREE_FILE_BYTES = 128 * 1024
 MAX_VOICE_EVENTS = 30
 MAX_VOICE_EVENT_CHARS = 1_800
 MAX_VOICE_TOTAL_CHARS = 18_000
+MAX_PROBE_PATHS = 20_000
+UNIT_NAMESPACE_READINESS_MAXIMUM_AGE_SECONDS = 120
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _JOB_ID = re.compile(r"^[0-9a-f]{12}$")
 _RAIL_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SNOWFLAKE = re.compile(r"^[0-9]{17,20}$")
+_TRANSIENT_UNIT = re.compile(
+    r"^muncho-cron-readiness-[0-9a-f]{12}-[0-9a-f]{16}\.service$"
+)
 _SECRET_VALUE = re.compile(
     r"(?i)(?:bearer\s+[A-Za-z0-9._~+/=-]{8,}|"
     r"gh[pousr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{8,}|"
@@ -221,6 +251,26 @@ def _now() -> str:
     )
 
 
+def _namespace_boot_id_sha256() -> str:
+    try:
+        raw = _stable_read(BOOT_ID_PATH, maximum=128)
+        boot_id = uuid.UUID(raw.decode("ascii", errors="strict").strip())
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TrustedCronCollectorError,
+    ) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_boot_identity_unavailable"
+        ) from exc
+    if boot_id.int == 0:
+        raise TrustedCronCollectorError(
+            "trusted_cron_boot_identity_invalid"
+        )
+    return _sha256((str(boot_id) + "\n").encode("ascii"))
+
+
 def _catalog() -> dict[str, CollectorSpec]:
     result = {item.source_job_id: item for item in COLLECTOR_SPECS}
     if len(result) != len(COLLECTOR_SPECS) or len(result) != 21:
@@ -284,6 +334,7 @@ def _validate_dependency_facts(value: Any) -> dict[str, str]:
     expected = {
         path for item in COLLECTOR_SPECS for path in item.dependency_paths
     }
+    expected.add(str(SETPRIV))
     if not isinstance(value, Mapping) or set(value) != expected:
         raise TrustedCronCollectorError("trusted_cron_dependency_facts_invalid")
     result: dict[str, str] = {}
@@ -333,6 +384,209 @@ def _unit_names(item: CollectorSpec) -> tuple[str, str]:
     return f"{stem}.service", f"{stem}.timer"
 
 
+def _scoped_operation(item: CollectorSpec) -> tuple[str, str]:
+    if item.execution_boundary != EXECUTION_BOUNDARY_SCOPED:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_mapping_invalid"
+        )
+    try:
+        from gateway.operational_edge_catalog import (
+            operation_catalog,
+            required_cron_operations,
+        )
+
+        operation_id = required_cron_operations()[item.source_job_id]
+        operation = operation_catalog()[operation_id]
+    except (ImportError, KeyError, TypeError, ValueError) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_mapping_invalid"
+        ) from exc
+    return operation_id, operation.domain
+
+
+def _service_identity(item: CollectorSpec) -> tuple[str, str, str]:
+    """Return the exact primary and supplementary identities for one boundary."""
+
+    if item.execution_boundary == EXECUTION_BOUNDARY_ISOLATED:
+        return ISOLATED_SERVICE_USER, ISOLATED_SERVICE_GROUP, ""
+    if item.execution_boundary != EXECUTION_BOUNDARY_SCOPED:
+        raise TrustedCronCollectorError(
+            "trusted_cron_execution_boundary_invalid"
+        )
+    _operation_id, domain = _scoped_operation(item)
+    try:
+        from gateway.operational_edge_units import socket_group_name
+
+        socket_group = socket_group_name(domain)
+    except (ImportError, TypeError, ValueError) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_mapping_invalid"
+        ) from exc
+    return SCOPED_SERVICE_USER, SCOPED_SERVICE_GROUP, socket_group
+
+
+def _identity_exec_wrapper(item: CollectorSpec) -> tuple[str, ...]:
+    """Drop root and every capability before entering release-owned Python."""
+
+    user, group, supplementary = _service_identity(item)
+    group_arguments = (
+        ("--groups", supplementary)
+        if supplementary
+        else ("--clear-groups",)
+    )
+    return (
+        str(SETPRIV),
+        "--reuid",
+        user,
+        "--regid",
+        group,
+        *group_arguments,
+        "--inh-caps=-all",
+        "--ambient-caps=-all",
+        "--bounding-set=-all",
+        "--",
+    )
+
+
+def service_profile_properties(
+    item: CollectorSpec,
+    *,
+    revision: str,
+    manifest_path: Path = MANIFEST_PATH,
+) -> tuple[str, ...]:
+    """Render the one sandbox profile shared by final and transient units."""
+
+    if (
+        _SHA40.fullmatch(revision or "") is None
+        or not manifest_path.is_absolute()
+        or ".." in manifest_path.parts
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_service_profile_invalid"
+        )
+    release = RELEASES_ROOT / f"hermes-agent-{revision[:12]}"
+    def bind_read_only(path: Path) -> str:
+        return f"BindReadOnlyPaths={path}:{path}:norbind"
+
+    bindings = [
+        bind_read_only(release),
+        bind_read_only(manifest_path),
+    ]
+    if item.execution_boundary == EXECUTION_BOUNDARY_ISOLATED:
+        bindings.extend(
+            bind_read_only(Path(root)) for root in item.json_roots
+        )
+    else:
+        _operation_id, domain = _scoped_operation(item)
+        bindings.extend(
+            (
+                bind_read_only(OPERATIONAL_EDGE_CLIENT_CONFIG),
+                bind_read_only(
+                    OPERATIONAL_EDGE_TRUST_ROOT
+                    / f"{domain}-receipt-public.pem"
+                ),
+                bind_read_only(
+                    OPERATIONAL_EDGE_SOCKET_ROOT / domain / "edge.sock"
+                ),
+                bind_read_only(Path("/run/systemd/private")),
+                bind_read_only(Path("/run/systemd/system")),
+                bind_read_only(Path("/run/dbus/system_bus_socket")),
+            )
+        )
+    packet_root = PACKET_ROOT / item.source_job_id
+    bindings.append(f"BindPaths={packet_root}:{packet_root}:norbind")
+    if item.mode == "voice_stage":
+        bindings.append(f"BindPaths={VOICE_ROOT}:{VOICE_ROOT}:norbind")
+    isolated_only = (
+        (
+            "InaccessiblePaths=/proc",
+            (
+                "SystemCallFilter=~kill tkill tgkill pidfd_open "
+                "pidfd_getfd pidfd_send_signal ptrace process_vm_readv "
+                "process_vm_writev kcmp keyctl add_key request_key clone "
+                "clone3 fork vfork"
+            ),
+            "SystemCallErrorNumber=EPERM",
+        )
+        if item.execution_boundary == EXECUTION_BOUNDARY_ISOLATED
+        else ()
+    )
+    properties = (
+        "User=root",
+        "Group=root",
+        "SupplementaryGroups=",
+        "SetLoginEnvironment=no",
+        "WorkingDirectory=/",
+        "Environment=LANG=C.UTF-8",
+        "Environment=LC_ALL=C.UTF-8",
+        "Environment=PATH=/usr/bin:/bin",
+        "Environment=TZ=UTC",
+        "UMask=0027",
+        "NoNewPrivileges=yes",
+        "CapabilityBoundingSet=CAP_SETUID CAP_SETGID",
+        "AmbientCapabilities=",
+        "PrivateDevices=yes",
+        "PrivateIPC=yes",
+        "PrivateNetwork=yes",
+        "PrivateTmp=yes",
+        "KeyringMode=private",
+        "ProtectClock=yes",
+        "ProtectControlGroups=yes",
+        "ProtectHome=yes",
+        "ProtectHostname=yes",
+        "ProtectKernelLogs=yes",
+        "ProtectKernelModules=yes",
+        "ProtectKernelTunables=yes",
+        "ProtectProc=invisible",
+        "ProtectSystem=strict",
+        "InaccessiblePaths=/srv /mnt /media",
+        "RestrictNamespaces=yes",
+        "RestrictRealtime=yes",
+        "RestrictSUIDSGID=yes",
+        "LockPersonality=yes",
+        "MemoryDenyWriteExecute=yes",
+        "RemoveIPC=yes",
+        "SystemCallArchitectures=native",
+        "RestrictAddressFamilies=AF_UNIX",
+        *(f"TemporaryFileSystem={path}:ro" for path in NAMESPACE_MASKS),
+        *isolated_only,
+        *bindings,
+    )
+    if (
+        len(properties) != len(set(properties))
+        or any("InaccessiblePaths=-" in item for item in properties)
+        or any(
+            marker in "\n".join(properties)
+            for marker in (
+                "EnvironmentFile=",
+                "PassEnvironment=",
+                "LoadCredential=",
+            )
+        )
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_service_profile_invalid"
+        )
+    return properties
+
+
+def service_profile_sha256(item: CollectorSpec, *, revision: str) -> str:
+    """Digest the final-unit profile independent of a transient unit name."""
+
+    return _sha256(
+        _canonical(
+            {
+                "properties": list(service_profile_properties(
+                    item,
+                    revision=revision,
+                    manifest_path=MANIFEST_PATH,
+                )),
+                "identity_exec_wrapper": list(_identity_exec_wrapper(item)),
+            }
+        )
+    )
+
+
 def _render_service(
     item: CollectorSpec,
     *,
@@ -343,6 +597,7 @@ def _render_service(
     release = RELEASES_ROOT / f"hermes-agent-{revision[:12]}"
     rail = release / RAIL_RELATIVE
     service, _timer = _unit_names(item)
+    profile = service_profile_properties(item, revision=revision)
     lines = [
         "# Release-addressed trusted cron collector; do not edit.",
         f"# ReleaseRevision={revision}",
@@ -354,18 +609,14 @@ def _render_service(
         "Wants=network-online.target",
         f"AssertPathExists={rail}",
         f"AssertPathExists={MANIFEST_PATH}",
+        f"AssertPathExists={SETPRIV}",
         "",
         "[Service]",
         "Type=oneshot",
-        f"User={SERVICE_USER}",
-        f"Group={SERVICE_GROUP}",
-        "WorkingDirectory=/",
-        "Environment=LANG=C.UTF-8",
-        "Environment=LC_ALL=C.UTF-8",
-        "Environment=PATH=/usr/bin:/bin",
-        "Environment=TZ=UTC",
+        *profile,
         (
-            f"ExecStart={release / '.venv/bin/python'} -I -S -B {rail} run "
+            f"ExecStart={' '.join(_identity_exec_wrapper(item))} "
+            f"{release / '.venv/bin/python'} -I -B {rail} run "
             f"--job-id {item.source_job_id} --revision {revision} "
             f"--rail-sha256 {rail_sha256} --manifest {MANIFEST_PATH} "
             f"--manifest-sha256 {manifest_sha256}"
@@ -373,48 +624,13 @@ def _render_service(
         "TimeoutStartSec=900s",
         "TimeoutStopSec=30s",
         "KillMode=mixed",
-        "UMask=0027",
-        "NoNewPrivileges=yes",
-        "CapabilityBoundingSet=",
-        "AmbientCapabilities=",
-        "PrivateDevices=yes",
-        "PrivateTmp=yes",
-        "ProtectClock=yes",
-        "ProtectControlGroups=yes",
-        "ProtectHome=yes",
-        "ProtectHostname=yes",
-        "ProtectKernelLogs=yes",
-        "ProtectKernelModules=yes",
-        "ProtectKernelTunables=yes",
-        "ProtectProc=invisible",
-        "ProtectSystem=strict",
-        "RestrictNamespaces=yes",
-        "RestrictRealtime=yes",
-        "RestrictSUIDSGID=yes",
-        "SupplementaryGroups=",
-        "LockPersonality=yes",
-        "MemoryDenyWriteExecute=yes",
-        "RemoveIPC=yes",
-        "SystemCallArchitectures=native",
-        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
-        f"ReadOnlyPaths={release}",
-        f"ReadOnlyPaths={CANONICAL_ROOT}",
-        f"ReadOnlyPaths={HERMES_HOME / 'scripts'}",
-        f"ReadOnlyPaths={HERMES_HOME / 'bin'}",
-        f"ReadOnlyPaths={HERMES_HOME / 'skills'}",
-        f"ReadWritePaths={STATE_ROOT}",
-        f"ReadWritePaths={CANONICAL_ROOT / 'state'}",
-        f"InaccessiblePaths=-{HERMES_HOME / '.env'}",
-        f"InaccessiblePaths=-{HERMES_HOME / 'auth.json'}",
-        "InaccessiblePaths=-/run/credentials/hermes-cloud-gateway.service",
-        "InaccessiblePaths=-/etc/muncho/discord-connector-credentials",
-        "InaccessiblePaths=-/etc/muncho/discord-edge-credentials",
         "StandardOutput=null",
         "StandardError=journal",
     ]
     text = "\n".join(lines) + "\n"
     if (
         text.count("ExecStart=") != 1
+        or "ExecStartPre=" in text
         or service not in _unit_names(item)
         or any(
             marker in text
@@ -513,8 +729,10 @@ def build_package_manifest(
         "collector_contract": catalog_public_contract(),
         "dependency_sha256": dependencies,
         "units": units,
-        "service_user": SERVICE_USER,
-        "service_group": SERVICE_GROUP,
+        "isolated_service_user": ISOLATED_SERVICE_USER,
+        "isolated_service_group": ISOLATED_SERVICE_GROUP,
+        "scoped_service_user": SCOPED_SERVICE_USER,
+        "scoped_service_group": SCOPED_SERVICE_GROUP,
         "reader_group": READER_GROUP,
         "packet_root": str(PACKET_ROOT),
         "provider_or_model_dependency": False,
@@ -547,8 +765,10 @@ def validate_package_manifest(
         "collector_contract",
         "dependency_sha256",
         "units",
-        "service_user",
-        "service_group",
+        "isolated_service_user",
+        "isolated_service_group",
+        "scoped_service_user",
+        "scoped_service_group",
         "reader_group",
         "packet_root",
         "provider_or_model_dependency",
@@ -578,8 +798,10 @@ def validate_package_manifest(
         )
         != value.get("manifest_sha256")
         or value.get("collector_contract") != catalog_public_contract()
-        or value.get("service_user") != SERVICE_USER
-        or value.get("service_group") != SERVICE_GROUP
+        or value.get("isolated_service_user") != ISOLATED_SERVICE_USER
+        or value.get("isolated_service_group") != ISOLATED_SERVICE_GROUP
+        or value.get("scoped_service_user") != SCOPED_SERVICE_USER
+        or value.get("scoped_service_group") != SCOPED_SERVICE_GROUP
         or value.get("reader_group") != READER_GROUP
         or value.get("packet_root") != str(PACKET_ROOT)
         or any(
@@ -650,154 +872,482 @@ def validate_package_manifest(
     return dict(value)
 
 
-def _permission_allows(
-    metadata: os.stat_result,
+def _safe_probe_operation_id(item: CollectorSpec) -> str | None:
+    if item.execution_boundary == EXECUTION_BOUNDARY_ISOLATED:
+        return None
+    try:
+        from gateway.operational_edge_catalog import (
+            OperationalAccess,
+            operation_catalog,
+        )
+
+        operation_id, domain = _scoped_operation(item)
+        operation = operation_catalog()[operation_id]
+        probe_id = operation.probe_operation_id or operation_id
+        probe = operation_catalog()[probe_id]
+    except (ImportError, KeyError, TypeError, ValueError) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_probe_invalid"
+        ) from exc
+    if (
+        probe.domain != domain
+        or probe.access is not OperationalAccess.READ
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_probe_invalid"
+        )
+    return probe_id
+
+
+def transient_probe_argv(
+    item: CollectorSpec,
+    manifest_path: Path,
+    manifest: Mapping[str, Any],
     *,
-    uid: int,
-    gid: int,
-    read: bool,
-    execute: bool,
-) -> bool:
-    mode = stat.S_IMODE(metadata.st_mode)
-    shift = 6 if metadata.st_uid == uid else 3 if metadata.st_gid == gid else 0
-    bits = (mode >> shift) & 0o7
-    return (not read or bool(bits & 0o4)) and (
-        not execute or bool(bits & 0o1)
+    unit_name: str | None = None,
+) -> tuple[str, ...]:
+    """Build one transient namespace probe from the final-unit profile."""
+
+    trusted = validate_package_manifest(manifest)
+    if unit_name is None:
+        unit_name = (
+            f"muncho-cron-readiness-{item.source_job_id}-"
+            f"{os.urandom(8).hex()}.service"
+        )
+    if (
+        item.source_job_id not in trusted["units"]
+        or _TRANSIENT_UNIT.fullmatch(unit_name) is None
+        or not manifest_path.is_absolute()
+        or ".." in manifest_path.parts
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_transient_probe_invalid"
+        )
+    release = Path(trusted["release_root"])
+    rail_path = Path(trusted["rail_path"])
+    profile = service_profile_properties(
+        item,
+        revision=trusted["release_revision"],
+        manifest_path=manifest_path,
+    )
+    command = (
+        *_identity_exec_wrapper(item),
+        str(release / ".venv/bin/python"),
+        "-I",
+        "-B",
+        str(rail_path),
+        "probe",
+        "--job-id",
+        item.source_job_id,
+        "--revision",
+        trusted["release_revision"],
+        "--rail-sha256",
+        trusted["rail_sha256"],
+        "--manifest",
+        str(manifest_path),
+        "--manifest-sha256",
+        trusted["package_binding_sha256"],
+    )
+    return (
+        str(SYSTEMD_RUN),
+        "--quiet",
+        "--wait",
+        "--collect",
+        "--pipe",
+        f"--unit={unit_name}",
+        "--service-type=oneshot",
+        "--property=TimeoutStartSec=900s",
+        "--property=TimeoutStopSec=30s",
+        "--property=KillMode=mixed",
+        *(f"--property={property_line}" for property_line in profile),
+        "--",
+        *command,
     )
 
 
-def _path_access_issue(
-    path: Path,
+def _namespace_readiness_receipt(
+    manifest: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
     *,
-    uid: int,
-    gid: int,
-    read: bool,
-    execute: bool,
-    stat_reader: Any,
-) -> str | None:
-    if not path.is_absolute() or ".." in path.parts:
-        return "path_invalid"
-    current = Path("/")
+    collected_at: str | None = None,
+    boot_id_sha256: str | None = None,
+    observed_at_unix: int | None = None,
+    collector_nonce: str | None = None,
+) -> dict[str, Any]:
+    trusted = validate_package_manifest(manifest)
+    boot_id = (
+        _namespace_boot_id_sha256()
+        if boot_id_sha256 is None
+        else boot_id_sha256
+    )
+    observed = (
+        int(time.time())
+        if observed_at_unix is None
+        else observed_at_unix
+    )
+    nonce = str(uuid.uuid4()) if collector_nonce is None else collector_nonce
+    unsigned = {
+        "schema": UNIT_NAMESPACE_READINESS_SCHEMA,
+        "collected_at": collected_at or _now(),
+        "release_revision": trusted["release_revision"],
+        "collector_manifest_sha256": trusted["manifest_sha256"],
+        "boot_id_sha256": boot_id,
+        "observed_at_unix": observed,
+        "maximum_age_seconds": UNIT_NAMESPACE_READINESS_MAXIMUM_AGE_SECONDS,
+        "collector_nonce": nonce,
+        "jobs": [dict(row) for row in rows],
+        "job_count": len(rows),
+        "all_jobs_ready": True,
+        "safe_read_probes_only": True,
+        "job_mutation_executed": False,
+        "permissions_widened": False,
+        "secret_material_recorded": False,
+    }
+    receipt = {
+        **unsigned,
+        "receipt_sha256": _sha256(_canonical(unsigned)),
+    }
+    return validate_unit_namespace_readiness(
+        receipt,
+        manifest=trusted,
+        expected_boot_id_sha256=boot_id,
+        now_unix=observed,
+    )
+
+
+def validate_unit_namespace_readiness(
+    value: Mapping[str, Any],
+    *,
+    manifest: Mapping[str, Any],
+    expected_boot_id_sha256: str | None = None,
+    now_unix: int | None = None,
+) -> dict[str, Any]:
+    """Validate a complete 21-job proof from the real systemd namespace."""
+
+    trusted = validate_package_manifest(manifest)
+    expected_fields = {
+        "schema",
+        "collected_at",
+        "release_revision",
+        "collector_manifest_sha256",
+        "boot_id_sha256",
+        "observed_at_unix",
+        "maximum_age_seconds",
+        "collector_nonce",
+        "jobs",
+        "job_count",
+        "all_jobs_ready",
+        "safe_read_probes_only",
+        "job_mutation_executed",
+        "permissions_widened",
+        "secret_material_recorded",
+        "receipt_sha256",
+    }
+    rows = value.get("jobs") if isinstance(value, Mapping) else None
+    boot_id = (
+        _namespace_boot_id_sha256()
+        if expected_boot_id_sha256 is None
+        else expected_boot_id_sha256
+    )
+    now = int(time.time()) if now_unix is None else now_unix
+    nonce = value.get("collector_nonce") if isinstance(value, Mapping) else None
     try:
-        root_metadata = stat_reader(current)
-    except OSError:
-        return "ancestor_unavailable"
-    if not stat.S_ISDIR(root_metadata.st_mode) or not _permission_allows(
-        root_metadata,
-        uid=uid,
-        gid=gid,
-        read=False,
-        execute=True,
+        parsed_nonce = uuid.UUID(str(nonce))
+    except (AttributeError, TypeError, ValueError):
+        parsed_nonce = None
+    unsigned = (
+        {
+            name: item
+            for name, item in value.items()
+            if name != "receipt_sha256"
+        }
+        if isinstance(value, Mapping)
+        else {}
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != expected_fields
+        or value.get("schema") != UNIT_NAMESPACE_READINESS_SCHEMA
+        or not isinstance(value.get("collected_at"), str)
+        or not 1 <= len(value["collected_at"]) <= 64
+        or value.get("release_revision") != trusted["release_revision"]
+        or value.get("collector_manifest_sha256")
+        != trusted["manifest_sha256"]
+        or _SHA256.fullmatch(str(boot_id or "")) is None
+        or value.get("boot_id_sha256") != boot_id
+        or type(now) is not int
+        or type(value.get("observed_at_unix")) is not int
+        or not 0
+        <= now - value["observed_at_unix"]
+        <= UNIT_NAMESPACE_READINESS_MAXIMUM_AGE_SECONDS
+        or value.get("maximum_age_seconds")
+        != UNIT_NAMESPACE_READINESS_MAXIMUM_AGE_SECONDS
+        or parsed_nonce is None
+        or parsed_nonce.int == 0
+        or str(parsed_nonce) != nonce
+        or not isinstance(rows, list)
+        or type(value.get("job_count")) is not int
+        or value.get("job_count") != len(COLLECTOR_SPECS)
+        or len(rows) != len(COLLECTOR_SPECS)
+        or value.get("all_jobs_ready") is not True
+        or value.get("safe_read_probes_only") is not True
+        or value.get("job_mutation_executed") is not False
+        or value.get("permissions_widened") is not False
+        or value.get("secret_material_recorded") is not False
+        or _SHA256.fullmatch(str(value.get("receipt_sha256") or "")) is None
+        or value.get("receipt_sha256") != _sha256(_canonical(unsigned))
     ):
-        return "ancestor_not_traversable"
-    for part in path.parts[1:-1]:
-        current /= part
-        try:
-            metadata = stat_reader(current)
-        except OSError:
-            return "ancestor_unavailable"
-        if not stat.S_ISDIR(metadata.st_mode) or not _permission_allows(
-            metadata,
-            uid=uid,
-            gid=gid,
-            read=False,
-            execute=True,
+        raise TrustedCronCollectorError(
+            "trusted_cron_unit_namespace_readiness_invalid"
+        )
+    for item, row in zip(COLLECTOR_SPECS, rows, strict=True):
+        safe_probe = _safe_probe_operation_id(item)
+        expected_row = {
+            "source_job_id": item.source_job_id,
+            "execution_boundary": item.execution_boundary,
+            "unit_profile_sha256": service_profile_sha256(
+                item,
+                revision=trusted["release_revision"],
+            ),
+            "safe_probe_operation_id": safe_probe,
+            "return_code": 0,
+            "namespace_probe_succeeded": True,
+            "job_mutation_executed": False,
+            "secret_material_recorded": False,
+        }
+        if not isinstance(row, Mapping) or dict(row) != expected_row:
+            raise TrustedCronCollectorError(
+                "trusted_cron_unit_namespace_readiness_invalid"
+            )
+    return dict(value)
+
+
+def _write_transient_manifest(
+    manifest: Mapping[str, Any],
+) -> tuple[Path, Path]:
+    if os.geteuid() != 0:
+        raise TrustedCronCollectorError(
+            "trusted_cron_unit_namespace_authority_invalid"
+        )
+    directory = Path(
+        tempfile.mkdtemp(prefix="muncho-cron-readiness-", dir="/run")
+    )
+    path = directory / "manifest.json"
+    descriptor = -1
+    try:
+        os.chown(directory, 0, 0)
+        os.chmod(directory, 0o755)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o444,
+        )
+        os.fchown(descriptor, 0, 0)
+        os.fchmod(descriptor, 0o444)
+        payload = _canonical(dict(manifest)) + b"\n"
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written < 1:
+                raise OSError("short write")
+            offset += written
+        os.fsync(descriptor)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    os.close(descriptor)
+    return directory, path
+
+
+def _root_owned_executable_sha256(path: Path, *, maximum: int) -> str:
+    """Hash the same no-follow inode whose privileged metadata is attested."""
+
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != 0
+            or before.st_gid != 0
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o755
+            or not 0 < before.st_size <= maximum
         ):
-            return "ancestor_not_traversable"
+            raise ValueError
+        digest = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+    except (OSError, ValueError) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_setpriv_toolchain_invalid"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    identity = lambda item: (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    if remaining != 0 or identity(before) != identity(after):
+        raise TrustedCronCollectorError(
+            "trusted_cron_setpriv_toolchain_invalid"
+        )
+    return digest.hexdigest()
+
+
+def validate_setpriv_toolchain(manifest: Mapping[str, Any]) -> None:
+    """Require the digest-bound root tool before it executes with set-id caps."""
+
+    trusted = validate_package_manifest(manifest)
+    digest = _root_owned_executable_sha256(
+        SETPRIV,
+        maximum=4 * 1024 * 1024,
+    )
+    if digest != trusted["dependency_sha256"].get(str(SETPRIV)):
+        raise TrustedCronCollectorError(
+            "trusted_cron_setpriv_toolchain_invalid"
+        )
+
+
+def collect_unit_namespace_readiness(
+    manifest: Mapping[str, Any],
+    *,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Execute every read-only probe in the exact final systemd sandbox."""
+
+    trusted = validate_package_manifest(manifest)
+    validate_setpriv_toolchain(trusted)
+    directory: Path | None = None
+    rows: list[dict[str, Any]] = []
     try:
-        metadata = stat_reader(path)
-    except OSError:
-        return "target_unavailable"
-    target_execute = execute or stat.S_ISDIR(metadata.st_mode)
-    if not (
-        stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
-    ):
-        return "target_type_invalid"
-    if not _permission_allows(
-        metadata,
-        uid=uid,
-        gid=gid,
-        read=read,
-        execute=target_execute,
-    ):
-        return "target_permission_denied"
-    return None
+        directory, manifest_path = _write_transient_manifest(trusted)
+        for item in COLLECTOR_SPECS:
+            safe_probe = _safe_probe_operation_id(item)
+            argv = transient_probe_argv(
+                item,
+                manifest_path,
+                trusted,
+            )
+            try:
+                completed = runner(
+                    list(argv),
+                    env={
+                        "PATH": "/usr/bin:/bin",
+                        "LANG": "C",
+                        "LC_ALL": "C",
+                    },
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=960,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise TrustedCronCollectorError(
+                    "trusted_cron_unit_namespace_probe_failed"
+                ) from exc
+            if (
+                completed.returncode != 0
+                or len(completed.stdout or b"") > MAX_COMMAND_CAPTURE
+                or len(completed.stderr or b"") > MAX_COMMAND_CAPTURE
+            ):
+                raise TrustedCronCollectorError(
+                    "trusted_cron_unit_namespace_probe_failed"
+                )
+            rows.append(
+                {
+                    "source_job_id": item.source_job_id,
+                    "execution_boundary": item.execution_boundary,
+                    "unit_profile_sha256": service_profile_sha256(
+                        item,
+                        revision=trusted["release_revision"],
+                    ),
+                    "safe_probe_operation_id": safe_probe,
+                    "return_code": 0,
+                    "namespace_probe_succeeded": True,
+                    "job_mutation_executed": False,
+                    "secret_material_recorded": False,
+                }
+            )
+    finally:
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=False)
+    return _namespace_readiness_receipt(trusted, rows)
 
 
 def collect_execution_readiness(
     manifest: Mapping[str, Any],
     *,
+    unit_namespace_receipt: Mapping[str, Any] | None = None,
     operational_edge_receipt: Mapping[str, Any] | None = None,
     expected_boot_id_sha256: str | None = None,
     now_unix: int | None = None,
     account_lookup: Any = pwd.getpwnam,
     group_lookup: Any = grp.getgrnam,
-    stat_reader: Any = os.stat,
 ) -> dict[str, Any]:
-    """Read-only proof that packaged collectors can run as their exact user.
+    """Bind live namespace and operational-edge proofs into activation state.
 
-    Command-backed jobs require a separately collected, portable operational
-    edge receipt proving one meaningful real-user round trip per exact job.
-    This checker never reads a credential or changes permissions.
+    Static host-mode checks cannot prove the systemd mount namespace or its
+    supplementary groups.  Every job must first pass the transient probe that
+    reuses the final service profile.  Scoped jobs additionally require the
+    portable operational-edge readiness receipt.
     """
 
     trusted = validate_package_manifest(manifest)
     try:
-        account = account_lookup(SERVICE_USER)
-        group = group_lookup(SERVICE_GROUP)
-        uid = int(account.pw_uid)
-        gid = int(group.gr_gid)
+        isolated_account = account_lookup(ISOLATED_SERVICE_USER)
+        isolated_group = group_lookup(ISOLATED_SERVICE_GROUP)
+        scoped_account = account_lookup(SCOPED_SERVICE_USER)
+        scoped_group = group_lookup(SCOPED_SERVICE_GROUP)
+        isolated_uid = int(isolated_account.pw_uid)
+        isolated_gid = int(isolated_group.gr_gid)
+        scoped_uid = int(scoped_account.pw_uid)
+        scoped_gid = int(scoped_group.gr_gid)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise TrustedCronCollectorError(
             "trusted_cron_service_identity_unavailable"
         ) from exc
-    release_root = Path(trusted["release_root"])
-    requirements: dict[Path, tuple[bool, bool]] = {
-        release_root: (True, True),
-        Path(trusted["rail_path"]): (True, False),
-        release_root / ".venv/bin/python": (True, True),
-        PYTHON: (False, True),
-    }
-
-    def require(path: Path, *, read: bool, execute: bool) -> None:
-        previous = requirements.get(path, (False, False))
-        requirements[path] = (
-            previous[0] or read,
-            previous[1] or execute,
+    try:
+        namespace = (
+            validate_unit_namespace_readiness(
+                unit_namespace_receipt,
+                manifest=trusted,
+                expected_boot_id_sha256=expected_boot_id_sha256,
+                now_unix=now_unix,
+            )
+            if unit_namespace_receipt is not None
+            else None
         )
-
-    for path in trusted["dependency_sha256"]:
-        dependency = Path(path)
-        require(
-            dependency,
-            read=True,
-            execute=dependency in {GH_WRAPPER, _SKYVISION_DB},
-        )
-    for row in trusted["collector_contract"]:
-        for root in row["json_roots"]:
-            require(Path(root), read=True, execute=False)
-    blocked_paths: list[dict[str, str]] = []
-    for path, (read, execute) in sorted(
-        requirements.items(), key=lambda item: str(item[0])
-    ):
-        issue = _path_access_issue(
-            path,
-            uid=uid,
-            gid=gid,
-            read=read,
-            execute=execute,
-            stat_reader=stat_reader,
-        )
-        if issue is not None:
-            blocked_paths.append({
-                "path": str(path),
-                "requirement": (
-                    "read_execute" if read and execute
-                    else "execute" if execute
-                    else "read"
-                ),
-                "reason": issue,
-            })
+    except (TypeError, ValueError) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_unit_namespace_readiness_invalid"
+        ) from exc
     scoped_jobs = sorted(
         row["source_job_id"]
         for row in trusted["collector_contract"]
@@ -827,19 +1377,37 @@ def collect_execution_readiness(
         raise TrustedCronCollectorError(
             "trusted_cron_operational_edge_readiness_invalid"
         ) from exc
+    namespace_packaged = namespace is not None
     edge_packaged = operational is not None
     unsigned = {
         "schema": EXECUTION_READINESS_SCHEMA,
         "release_revision": trusted["release_revision"],
         "collector_manifest_sha256": trusted["manifest_sha256"],
-        "service_user": SERVICE_USER,
-        "service_uid": uid,
-        "service_group": SERVICE_GROUP,
-        "service_gid": gid,
-        "checked_path_count": len(requirements),
-        "blocked_paths": blocked_paths,
-        "blocked_path_count": len(blocked_paths),
-        "direct_dependencies_ready": not blocked_paths,
+        "isolated_service_user": ISOLATED_SERVICE_USER,
+        "isolated_service_uid": isolated_uid,
+        "isolated_service_group": ISOLATED_SERVICE_GROUP,
+        "isolated_service_gid": isolated_gid,
+        "scoped_service_user": SCOPED_SERVICE_USER,
+        "scoped_service_uid": scoped_uid,
+        "scoped_service_group": SCOPED_SERVICE_GROUP,
+        "scoped_service_gid": scoped_gid,
+        "unit_namespace_readiness_packaged": namespace_packaged,
+        "unit_namespace_readiness_receipt_sha256": (
+            namespace["receipt_sha256"] if namespace is not None else None
+        ),
+        "unit_namespace_readiness_job_count": (
+            namespace["job_count"] if namespace is not None else 0
+        ),
+        "unit_namespace_readiness_boot_id_sha256": (
+            namespace["boot_id_sha256"] if namespace is not None else None
+        ),
+        "unit_namespace_readiness_observed_at_unix": (
+            namespace["observed_at_unix"] if namespace is not None else None
+        ),
+        "unit_namespace_readiness_maximum_age_seconds": (
+            namespace["maximum_age_seconds"] if namespace is not None else 0
+        ),
+        "direct_dependencies_ready": namespace_packaged,
         "scoped_execution_edge_required_job_ids": scoped_jobs,
         "scoped_execution_edge_required_count": len(scoped_jobs),
         "scoped_execution_edge_packaged": edge_packaged,
@@ -849,7 +1417,7 @@ def collect_execution_readiness(
         "scoped_execution_edge_meaningful_packet_count": (
             operational["job_count"] if operational is not None else 0
         ),
-        "activation_ready": not blocked_paths and edge_packaged,
+        "activation_ready": namespace_packaged and edge_packaged,
         "permissions_widened": False,
         "credential_content_read": False,
         "secret_material_recorded": False,
@@ -864,6 +1432,7 @@ def validate_execution_readiness(
     value: Mapping[str, Any],
     *,
     manifest: Mapping[str, Any],
+    unit_namespace_receipt: Mapping[str, Any] | None = None,
     operational_edge_receipt: Mapping[str, Any] | None = None,
     expected_boot_id_sha256: str | None = None,
     now_unix: int | None = None,
@@ -887,14 +1456,32 @@ def validate_execution_readiness(
             if operational_edge_receipt is not None
             else None
         )
+        namespace = (
+            validate_unit_namespace_readiness(
+                unit_namespace_receipt,
+                manifest=trusted,
+                expected_boot_id_sha256=expected_boot_id_sha256,
+                now_unix=now_unix,
+            )
+            if unit_namespace_receipt is not None
+            else None
+        )
     except (ImportError, TypeError, ValueError) as exc:
         raise TrustedCronCollectorError(
             "trusted_cron_execution_readiness_invalid"
         ) from exc
     expected = {
         "schema", "release_revision", "collector_manifest_sha256",
-        "service_user", "service_uid", "service_group", "service_gid",
-        "checked_path_count", "blocked_paths", "blocked_path_count",
+        "isolated_service_user", "isolated_service_uid",
+        "isolated_service_group", "isolated_service_gid",
+        "scoped_service_user", "scoped_service_uid",
+        "scoped_service_group", "scoped_service_gid",
+        "unit_namespace_readiness_packaged",
+        "unit_namespace_readiness_receipt_sha256",
+        "unit_namespace_readiness_job_count",
+        "unit_namespace_readiness_boot_id_sha256",
+        "unit_namespace_readiness_observed_at_unix",
+        "unit_namespace_readiness_maximum_age_seconds",
         "direct_dependencies_ready",
         "scoped_execution_edge_required_job_ids",
         "scoped_execution_edge_required_count",
@@ -910,39 +1497,38 @@ def validate_execution_readiness(
     scoped = value.get("scoped_execution_edge_required_job_ids") if isinstance(
         value, Mapping
     ) else None
-    paths = value.get("blocked_paths") if isinstance(value, Mapping) else None
     if (
         not isinstance(value, Mapping)
         or set(value) != expected
         or value.get("schema") != EXECUTION_READINESS_SCHEMA
         or value.get("release_revision") != trusted["release_revision"]
         or value.get("collector_manifest_sha256") != trusted["manifest_sha256"]
-        or value.get("service_user") != SERVICE_USER
-        or value.get("service_group") != SERVICE_GROUP
-        or type(value.get("service_uid")) is not int
-        or type(value.get("service_gid")) is not int
-        or type(value.get("checked_path_count")) is not int
-        or not isinstance(paths, list)
-        or type(value.get("blocked_path_count")) is not int
-        or value.get("blocked_path_count") != len(paths)
-        or any(
-            not isinstance(row, Mapping)
-            or set(row) != {"path", "requirement", "reason"}
-            or not isinstance(row["path"], str)
-            or not Path(row["path"]).is_absolute()
-            or row["requirement"] not in {"read", "execute", "read_execute"}
-            or row["reason"] not in {
-                "path_invalid", "ancestor_unavailable",
-                "ancestor_not_traversable", "target_unavailable",
-                "target_type_invalid", "target_permission_denied",
-            }
-            for row in paths
-        )
+        or value.get("isolated_service_user") != ISOLATED_SERVICE_USER
+        or value.get("isolated_service_group") != ISOLATED_SERVICE_GROUP
+        or type(value.get("isolated_service_uid")) is not int
+        or type(value.get("isolated_service_gid")) is not int
+        or value.get("scoped_service_user") != SCOPED_SERVICE_USER
+        or value.get("scoped_service_group") != SCOPED_SERVICE_GROUP
+        or type(value.get("scoped_service_uid")) is not int
+        or type(value.get("scoped_service_gid")) is not int
+        or value.get("unit_namespace_readiness_packaged")
+        != (namespace is not None)
+        or value.get("unit_namespace_readiness_receipt_sha256")
+        != (namespace["receipt_sha256"] if namespace is not None else None)
+        or type(value.get("unit_namespace_readiness_job_count")) is not int
+        or value.get("unit_namespace_readiness_job_count")
+        != (namespace["job_count"] if namespace is not None else 0)
+        or value.get("unit_namespace_readiness_boot_id_sha256")
+        != (namespace["boot_id_sha256"] if namespace is not None else None)
+        or value.get("unit_namespace_readiness_observed_at_unix")
+        != (namespace["observed_at_unix"] if namespace is not None else None)
+        or value.get("unit_namespace_readiness_maximum_age_seconds")
+        != (namespace["maximum_age_seconds"] if namespace is not None else 0)
         or not isinstance(scoped, list)
         or scoped != sorted(required_operations)
         or type(value.get("scoped_execution_edge_required_count")) is not int
         or value.get("scoped_execution_edge_required_count") != len(scoped)
-        or value.get("direct_dependencies_ready") != (not paths)
+        or value.get("direct_dependencies_ready") != (namespace is not None)
         or value.get("scoped_execution_edge_packaged") != (
             operational is not None
         )
@@ -956,7 +1542,7 @@ def validate_execution_readiness(
             operational["job_count"] if operational is not None else 0
         )
         or value.get("activation_ready") != (
-            not paths and operational is not None
+            namespace is not None and operational is not None
         )
         or value.get("permissions_widened") is not False
         or value.get("credential_content_read") is not False
@@ -1044,6 +1630,138 @@ def _stable_read(path: Path, *, maximum: int) -> bytes:
     return value
 
 
+def _tree_stat_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _directory_children(path: Path) -> tuple[Path, ...]:
+    try:
+        with os.scandir(path) as entries:
+            return tuple(
+                sorted((Path(entry.path) for entry in entries), key=str)
+            )
+    except OSError as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_isolated_probe_denied"
+        ) from exc
+
+
+def _isolated_tree_state(
+    root: Path,
+) -> tuple[tuple[Path, tuple[int, ...]], ...]:
+    """Walk one stable exact tree without silently omitting a descendant."""
+
+    try:
+        root_metadata = os.lstat(root)
+    except OSError as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_isolated_probe_unavailable"
+        ) from exc
+    if stat.S_ISLNK(root_metadata.st_mode) or not (
+        stat.S_ISREG(root_metadata.st_mode)
+        or stat.S_ISDIR(root_metadata.st_mode)
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_isolated_probe_invalid"
+        )
+    # Exit frames re-attest both directory metadata and the complete child
+    # name set after descendants have been visited.
+    pending: list[
+        tuple[Path, tuple[int, ...] | None, tuple[Path, ...] | None]
+    ] = [(root, None, None)]
+    observed: list[tuple[Path, tuple[int, ...]]] = []
+    while pending:
+        path, before_identity, before_children = pending.pop()
+        if before_identity is not None:
+            try:
+                after = os.lstat(path)
+            except OSError as exc:
+                raise TrustedCronCollectorError(
+                    "trusted_cron_isolated_probe_changed"
+                ) from exc
+            if (
+                _tree_stat_identity(after) != before_identity
+                or _directory_children(path) != before_children
+            ):
+                raise TrustedCronCollectorError(
+                    "trusted_cron_isolated_probe_changed"
+                )
+            continue
+        try:
+            metadata = os.lstat(path)
+        except OSError as exc:
+            raise TrustedCronCollectorError(
+                "trusted_cron_isolated_probe_changed"
+            ) from exc
+        is_directory = stat.S_ISDIR(metadata.st_mode)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_dev != root_metadata.st_dev
+            or not (is_directory or stat.S_ISREG(metadata.st_mode))
+        ):
+            raise TrustedCronCollectorError(
+                "trusted_cron_isolated_probe_escape"
+            )
+        required = os.R_OK | (os.X_OK if is_directory else 0)
+        try:
+            permitted = os.access(path, required, effective_ids=True)
+        except (NotImplementedError, TypeError):
+            permitted = os.access(path, required)
+        if not permitted:
+            raise TrustedCronCollectorError(
+                "trusted_cron_isolated_probe_denied"
+            )
+        identity = _tree_stat_identity(metadata)
+        observed.append((path, identity))
+        if len(observed) > MAX_PROBE_PATHS:
+            raise TrustedCronCollectorError(
+                "trusted_cron_isolated_probe_oversized"
+            )
+        if not is_directory:
+            continue
+        children = _directory_children(path)
+        pending.append((path, identity, children))
+        pending.extend(
+            (child, None, None) for child in reversed(children)
+        )
+    return tuple(sorted(observed, key=lambda item: str(item[0])))
+
+
+def _isolated_tree_paths(root: Path) -> tuple[Path, ...]:
+    return tuple(path for path, _identity in _isolated_tree_state(root))
+
+
+def _probe_isolated_tree(root: Path) -> int:
+    return len(_isolated_tree_paths(root))
+
+
+def _probe_isolated_access(item: CollectorSpec) -> None:
+    if (
+        item.execution_boundary != EXECUTION_BOUNDARY_ISOLATED
+        or not item.json_roots
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_isolated_probe_invalid"
+        )
+    observed = 0
+    for root in item.json_roots:
+        observed += _probe_isolated_tree(Path(root))
+        if observed > MAX_PROBE_PATHS:
+            raise TrustedCronCollectorError(
+                "trusted_cron_isolated_probe_oversized"
+            )
+
+
 def _redact(value: Any) -> Any:
     """Safety-only redaction; never used for routing or task decisions."""
 
@@ -1068,16 +1786,20 @@ def _json_tree(item: CollectorSpec) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
     for root_text in item.json_roots:
         root = Path(root_text)
-        candidates = [root] if root.is_file() else sorted(root.rglob("*"))
+        before_state = _isolated_tree_state(root)
+        candidates = tuple(path for path, _identity in before_state)
         for path in candidates:
-            if len(records) >= MAX_JSON_TREE_FILES or not path.is_file():
+            metadata = os.lstat(path)
+            if stat.S_ISDIR(metadata.st_mode):
                 continue
-            try:
-                metadata = path.stat()
-                relative = str(path.relative_to(root)) if path != root else path.name
-                raw = _stable_read(path, maximum=MAX_JSON_TREE_FILE_BYTES)
-            except (OSError, ValueError, TrustedCronCollectorError):
-                continue
+            if len(records) >= MAX_JSON_TREE_FILES:
+                raise TrustedCronCollectorError(
+                    "trusted_cron_json_tree_oversized"
+                )
+            relative = (
+                str(path.relative_to(root)) if path != root else path.name
+            )
+            raw = _stable_read(path, maximum=MAX_JSON_TREE_FILE_BYTES)
             record: dict[str, Any] = {
                 "root": str(root),
                 "relative_path": relative,
@@ -1093,115 +1815,16 @@ def _json_tree(item: CollectorSpec) -> dict[str, Any]:
                 else:
                     record["json"] = _redact(parsed)
             records.append(record)
+        if _isolated_tree_state(root) != before_state:
+            raise TrustedCronCollectorError(
+                "trusted_cron_json_tree_changed"
+            )
     return {
         "roots": list(item.json_roots),
         "record_count": len(records),
         "record_limit": MAX_JSON_TREE_FILES,
         "records": records,
     }
-
-
-def _run_command(item: CollectorSpec) -> dict[str, Any]:
-    assert item.command is not None
-    try:
-        completed = subprocess.run(
-            list(item.command),
-            cwd=str(CANONICAL_ROOT) if str(CANONICAL_ROOT) in " ".join(item.command) else "/",
-            env={
-                "HOME": str(STATE_ROOT),
-                "HERMES_HOME": str(HERMES_HOME),
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                "PATH": "/usr/bin:/bin",
-                "TZ": "UTC",
-            },
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=840,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = bytes(exc.stdout or b"")[:MAX_COMMAND_CAPTURE]
-        stderr = bytes(exc.stderr or b"")[:MAX_COMMAND_CAPTURE]
-        return {
-            "timed_out": True,
-            "return_code": None,
-            "stdout_bytes": len(stdout),
-            "stdout_sha256": _sha256(stdout),
-            "stdout_utf8": _SECRET_VALUE.sub(
-                "[REDACTED_SECRET_VALUE]", stdout.decode("utf-8", errors="replace")
-            ),
-            "stderr_bytes": len(stderr),
-            "stderr_sha256": _sha256(stderr),
-            "stderr_utf8": _SECRET_VALUE.sub(
-                "[REDACTED_SECRET_VALUE]", stderr.decode("utf-8", errors="replace")
-            ),
-            "capture_truncated": bool(
-                len(exc.stdout or b"") > MAX_COMMAND_CAPTURE
-                or len(exc.stderr or b"") > MAX_COMMAND_CAPTURE
-            ),
-        }
-    stdout = completed.stdout[:MAX_COMMAND_CAPTURE]
-    stderr = completed.stderr[:MAX_COMMAND_CAPTURE]
-    return {
-        "timed_out": False,
-        "return_code": completed.returncode,
-        "stdout_bytes": len(completed.stdout),
-        "stdout_sha256": _sha256(completed.stdout),
-        "stdout_utf8": _SECRET_VALUE.sub(
-            "[REDACTED_SECRET_VALUE]", stdout.decode("utf-8", errors="replace")
-        ),
-        "stderr_bytes": len(completed.stderr),
-        "stderr_sha256": _sha256(completed.stderr),
-        "stderr_utf8": _SECRET_VALUE.sub(
-            "[REDACTED_SECRET_VALUE]", stderr.decode("utf-8", errors="replace")
-        ),
-        "capture_truncated": bool(
-            len(completed.stdout) > MAX_COMMAND_CAPTURE
-            or len(completed.stderr) > MAX_COMMAND_CAPTURE
-        ),
-    }
-
-
-def _git_refs() -> dict[str, Any]:
-    endpoints = {
-        "fork_ref": "repos/lomliev/hermes-agent/git/ref/heads/main",
-        "upstream_ref": "repos/NousResearch/hermes-agent/git/ref/heads/main",
-        "compare": "repos/NousResearch/hermes-agent/compare/main...lomliev:main",
-    }
-    results: dict[str, Any] = {}
-    for label, endpoint in endpoints.items():
-        completed = subprocess.run(
-            [str(GH_WRAPPER), "api", endpoint],
-            cwd="/",
-            env={
-                "HOME": str(STATE_ROOT),
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                "PATH": "/usr/bin:/bin",
-                "TZ": "UTC",
-            },
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=60,
-        )
-        if len(completed.stdout) > MAX_COMMAND_CAPTURE:
-            raise TrustedCronCollectorError("trusted_cron_capture_oversized")
-        try:
-            payload = json.loads(completed.stdout.decode("utf-8", errors="strict"))
-        except (UnicodeError, json.JSONDecodeError):
-            payload = None
-        results[label] = {
-            "endpoint": endpoint,
-            "return_code": completed.returncode,
-            "response": _redact(payload),
-            "stdout_sha256": _sha256(completed.stdout),
-            "stderr_sha256": _sha256(completed.stderr),
-        }
-    return results
 
 
 def _voice_cursor(path: Path) -> dict[str, Any]:
@@ -1538,6 +2161,7 @@ def _load_manifest(path: Path, expected_binding_sha256: str) -> dict[str, Any]:
 
 def _attest_runtime(
     *,
+    item: CollectorSpec,
     revision: str,
     rail_sha256: str,
     manifest: Mapping[str, Any],
@@ -1554,16 +2178,220 @@ def _attest_runtime(
         raise TrustedCronCollectorError("trusted_cron_not_release_addressed")
     if _sha256(_stable_read(rail, maximum=4 * 1024 * 1024)) != rail_sha256:
         raise TrustedCronCollectorError("trusted_cron_rail_digest_drifted")
-    for path, digest in manifest["dependency_sha256"].items():
+    if (
+        _root_owned_executable_sha256(
+            SETPRIV,
+            maximum=4 * 1024 * 1024,
+        )
+        != manifest["dependency_sha256"][str(SETPRIV)]
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_setpriv_toolchain_invalid"
+        )
+    for path in item.dependency_paths:
+        digest = manifest["dependency_sha256"][path]
+        if item.execution_boundary == EXECUTION_BOUNDARY_SCOPED:
+            continue
         if _sha256(_stable_read(Path(path), maximum=16 * 1024 * 1024)) != digest:
             raise TrustedCronCollectorError("trusted_cron_dependency_drifted")
 
 
-def collect_packet(item: CollectorSpec) -> dict[str, Any] | None:
-    if item.mode == "mechanical_command":
-        evidence = _run_command(item)
-    elif item.mode == "git_refs":
-        evidence = _git_refs()
+class _CapabilityHeader(ctypes.Structure):
+    _fields_ = [
+        ("version", ctypes.c_uint32),
+        ("pid", ctypes.c_int),
+    ]
+
+
+class _CapabilityData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
+
+def _effective_capabilities() -> int:
+    header = _CapabilityHeader(version=0x20080522, pid=0)
+    data = (_CapabilityData * 2)()
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        capget = libc.capget
+        capget.argtypes = [
+            ctypes.POINTER(_CapabilityHeader),
+            ctypes.POINTER(_CapabilityData),
+        ]
+        capget.restype = ctypes.c_int
+        result = capget(ctypes.byref(header), data)
+    except (AttributeError, OSError) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_process_identity_invalid"
+        ) from exc
+    if result != 0:
+        raise TrustedCronCollectorError(
+            "trusted_cron_process_identity_invalid"
+        )
+    return int(data[0].effective) | (int(data[1].effective) << 32)
+
+
+def _attest_process_identity(item: CollectorSpec) -> None:
+    try:
+        user, group, supplementary = _service_identity(item)
+        account = pwd.getpwnam(user)
+        primary = grp.getgrnam(group)
+        expected_groups: set[int] = set()
+        if supplementary:
+            expected_groups.add(grp.getgrnam(supplementary).gr_gid)
+        cap_eff = _effective_capabilities()
+    except (
+        ImportError,
+        KeyError,
+        OSError,
+        TrustedCronCollectorError,
+    ) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_process_identity_invalid"
+        ) from exc
+    observed_groups = set(os.getgroups())
+    observed_groups.discard(primary.gr_gid)
+    if (
+        os.geteuid() != account.pw_uid
+        or os.getegid() != primary.gr_gid
+        or account.pw_gid != primary.gr_gid
+        or observed_groups != expected_groups
+        or cap_eff != 0
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_process_identity_invalid"
+        )
+
+
+def _operational_edge_evidence(
+    item: CollectorSpec,
+    *,
+    revision: str,
+    selected_operation_id: str | None = None,
+    idempotency_prefix: str = "cron",
+) -> dict[str, Any]:
+    try:
+        from gateway.operational_edge_catalog import operation_catalog
+        from gateway.operational_edge_client import (
+            OperationalEdgeClient,
+            OperationalEdgeClientError,
+            SystemctlMainPidProvider,
+            load_operational_edge_client_configs,
+        )
+    except ImportError as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_failed"
+        ) from exc
+    try:
+        operation_id, domain = _scoped_operation(item)
+        if selected_operation_id is not None:
+            operation_id = selected_operation_id
+        operation = operation_catalog()[operation_id]
+        if operation.domain != domain:
+            raise ValueError("operational edge domain mismatch")
+        config = load_operational_edge_client_configs()[domain]
+        provider = SystemctlMainPidProvider()
+        invocation = str(os.environ.get("INVOCATION_ID") or "")
+        if re.fullmatch(r"[0-9a-f]{32}", invocation) is None:
+            invocation = f"minute-{int(datetime.now(timezone.utc).timestamp()) // 60}"
+        verified = OperationalEdgeClient(
+            config,
+            main_pid_provider=provider,
+        ).invoke_verified_evidence(
+            operation_id,
+            {},
+            idempotency_key=(
+                f"{idempotency_prefix}:{item.source_job_id}:{invocation}"
+            ),
+            expected_release_revision=revision,
+            timeout_seconds=min(60, operation.timeout_seconds),
+        )
+        receipt = verified["payload"]
+        stdout = base64.b64decode(
+            str(receipt["stdout_b64"]).encode("ascii"),
+            validate=True,
+        )
+        stderr = base64.b64decode(
+            str(receipt["stderr_b64"]).encode("ascii"),
+            validate=True,
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        OperationalEdgeClientError,
+    ) as exc:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_failed"
+        ) from exc
+    if len(stdout) > MAX_COMMAND_CAPTURE or len(stderr) > MAX_COMMAND_CAPTURE:
+        raise TrustedCronCollectorError("trusted_cron_capture_oversized")
+    return {
+        "execution_boundary": EXECUTION_BOUNDARY_SCOPED,
+        "operation_id": operation_id,
+        "domain": domain,
+        "outcome": receipt["outcome"],
+        "return_code": receipt["return_code"],
+        "service_unit": receipt["service_unit"],
+        "release_revision": receipt["release_revision"],
+        "executable_sha256": receipt["executable_sha256"],
+        "stdout_bytes": len(stdout),
+        "stdout_sha256": _sha256(stdout),
+        "stdout_utf8": _SECRET_VALUE.sub(
+            "[REDACTED_SECRET_VALUE]",
+            stdout.decode("utf-8", errors="replace"),
+        ),
+        "stderr_bytes": len(stderr),
+        "stderr_sha256": _sha256(stderr),
+        "stderr_utf8": _SECRET_VALUE.sub(
+            "[REDACTED_SECRET_VALUE]",
+            stderr.decode("utf-8", errors="replace"),
+        ),
+        "operational_receipt_sha256": _sha256(_canonical(receipt)),
+        "signed_envelope_sha256": verified["signed_envelope_sha256"],
+        "request_sha256": verified["request_sha256"],
+        "peer": dict(verified["peer"]),
+        "credential_content_read_by_collector": False,
+        "mutation_performed": receipt["mutation_performed"],
+        "secret_material_recorded": receipt["secret_material_recorded"],
+    }
+
+
+def _probe_scoped_access(item: CollectorSpec, *, revision: str) -> None:
+    probe_operation_id = _safe_probe_operation_id(item)
+    if probe_operation_id is None:
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_probe_invalid"
+        )
+    evidence = _operational_edge_evidence(
+        item,
+        revision=revision,
+        selected_operation_id=probe_operation_id,
+        idempotency_prefix="cron-probe",
+    )
+    if (
+        evidence["operation_id"] != probe_operation_id
+        or evidence["outcome"] != "succeeded"
+        or evidence["return_code"] != 0
+        or evidence["mutation_performed"] is not False
+        or evidence["secret_material_recorded"] is not False
+    ):
+        raise TrustedCronCollectorError(
+            "trusted_cron_operational_edge_probe_failed"
+        )
+
+
+def collect_packet(
+    item: CollectorSpec,
+    *,
+    revision: str,
+) -> dict[str, Any] | None:
+    if item.execution_boundary == EXECUTION_BOUNDARY_SCOPED:
+        evidence = _operational_edge_evidence(item, revision=revision)
     elif item.mode in {"json_tree", "filesystem_metadata"}:
         evidence = _json_tree(item)
     elif item.mode == "voice_stage":
@@ -1602,16 +2430,40 @@ def run(args: argparse.Namespace) -> int:
         raise TrustedCronCollectorError("trusted_cron_job_not_allowlisted")
     manifest = _load_manifest(args.manifest, args.manifest_sha256)
     _attest_runtime(
+        item=item,
         revision=args.revision,
         rail_sha256=args.rail_sha256,
         manifest=manifest,
     )
-    packet = collect_packet(item)
+    _attest_process_identity(item)
+    if item.execution_boundary == EXECUTION_BOUNDARY_ISOLATED:
+        _probe_isolated_access(item)
+    packet = collect_packet(item, revision=args.revision)
     if packet is None:
         return 0
     root = PACKET_ROOT / item.source_job_id
     _atomic_private(root / f"{packet['packet_sha256']}.json", _canonical(packet) + b"\n")
     _atomic_private(root / "latest.json", _canonical(packet) + b"\n")
+    return 0
+
+
+def probe(args: argparse.Namespace) -> int:
+    catalog = _catalog()
+    item = catalog.get(args.job_id)
+    if item is None:
+        raise TrustedCronCollectorError("trusted_cron_job_not_allowlisted")
+    manifest = _load_manifest(args.manifest, args.manifest_sha256)
+    _attest_runtime(
+        item=item,
+        revision=args.revision,
+        rail_sha256=args.rail_sha256,
+        manifest=manifest,
+    )
+    _attest_process_identity(item)
+    if item.execution_boundary == EXECUTION_BOUNDARY_ISOLATED:
+        _probe_isolated_access(item)
+    else:
+        _probe_scoped_access(item, revision=args.revision)
     return 0
 
 
@@ -1624,6 +2476,12 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--rail-sha256", required=True)
     run_parser.add_argument("--manifest", type=Path, required=True)
     run_parser.add_argument("--manifest-sha256", required=True)
+    probe_parser = sub.add_parser("probe")
+    probe_parser.add_argument("--job-id", required=True)
+    probe_parser.add_argument("--revision", required=True)
+    probe_parser.add_argument("--rail-sha256", required=True)
+    probe_parser.add_argument("--manifest", type=Path, required=True)
+    probe_parser.add_argument("--manifest-sha256", required=True)
     return parser
 
 
@@ -1631,6 +2489,8 @@ def main() -> int:
     args = _parser().parse_args()
     if args.command == "run":
         return run(args)
+    if args.command == "probe":
+        return probe(args)
     raise TrustedCronCollectorError("trusted_cron_command_invalid")
 
 
@@ -1647,6 +2507,7 @@ __all__ = [
     "EXECUTION_BOUNDARY_ISOLATED",
     "EXECUTION_BOUNDARY_SCOPED",
     "EXECUTION_READINESS_SCHEMA",
+    "UNIT_NAMESPACE_READINESS_SCHEMA",
     "PACKAGE_SCHEMA",
     "PACKET_SCHEMA",
     "RAIL_SCHEMA",
@@ -1659,10 +2520,16 @@ __all__ = [
     "catalog_public_contract",
     "collect_packet",
     "collect_execution_readiness",
+    "collect_unit_namespace_readiness",
     "commit_voice_cursor",
     "render_package_unit_files",
+    "service_profile_properties",
+    "service_profile_sha256",
     "stage_voice_packet",
     "validate_package_manifest",
     "validate_execution_readiness",
+    "validate_setpriv_toolchain",
+    "validate_unit_namespace_readiness",
     "validate_voice_stage",
+    "transient_probe_argv",
 ]

@@ -6248,6 +6248,17 @@ def run_conversation(
                         "↻ Model signaled a tool call but sent none — "
                         f"re-prompting ({agent._dropped_toolcall_retries}/3)"
                     )
+                    # Both halves of the re-prompt pair are ephemeral recovery
+                    # scaffolding (mirrors the empty-response nudge pattern):
+                    # the interim narration-only assistant turn exists solely to
+                    # keep role alternation valid for the nudge, and the nudge
+                    # exists solely to drive the retry. Flag both so the
+                    # persistence layer never writes them to the durable
+                    # transcript and the finalization pop below can strip an
+                    # unanswered tail pair. A recovered (answered) pair stays
+                    # buried mid-list in live memory but is skipped by the
+                    # flush regardless of position.
+                    final_msg["_dropped_toolcall_nudge"] = True
                     messages.append(final_msg)
                     messages.append({
                         "role": "user",
@@ -6279,6 +6290,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_dropped_toolcall_nudge")
                     )
                 ):
                     messages.pop()

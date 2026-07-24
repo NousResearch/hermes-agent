@@ -172,3 +172,68 @@ class TestDroppedToolCallRecovery:
             "Consecutive dropped tool calls must be bounded (no infinite loop)."
         )
         assert result is not None
+
+    def test_nudge_pair_is_ephemeral_scaffolding(self, loop_agent):
+        """The re-prompt pair (interim assistant turn + synthetic user nudge)
+        must be flagged as ephemeral scaffolding so persistence never writes
+        it to the durable transcript — a resumed session must not replay the
+        internal "issue the actual tool call now" instruction as user-authored
+        context (#69630 review follow-up)."""
+        from run_agent import _is_ephemeral_scaffolding
+        from tests.run_agent.test_run_agent import _mock_response
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            _dropped_tool_call_response("Let me verify the PR."),
+            _mock_response(content="All checks pass. Approved.", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("review the PR")
+
+        assert result["completed"] is True
+        # The finalization pop strips the answered pair from the live list —
+        # no flagged scaffolding may survive into the returned transcript.
+        leftover = [
+            m for m in result["messages"]
+            if isinstance(m, dict) and m.get("_dropped_toolcall_nudge")
+        ]
+        assert not leftover, (
+            "The re-prompt pair must be stripped at finalization, not kept "
+            "in the returned transcript."
+        )
+        # And the persistence filter must classify the flag as ephemeral so a
+        # mid-turn flush can never write the pair to the durable store either.
+        assert _is_ephemeral_scaffolding(
+            {"role": "user", "content": "nudge", "_dropped_toolcall_nudge": True}
+        ), (
+            "_dropped_toolcall_nudge messages must be classified as "
+            "ephemeral scaffolding so they are never persisted."
+        )
+
+    def test_unanswered_nudge_tail_is_stripped_at_finalization(self, loop_agent):
+        """If the model answers the nudge with a genuine final text turn, the
+        trailing scaffolding must not leave the transcript tail on a synthetic
+        user message (strict role alternation on the next turn)."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            _dropped_tool_call_response("Let me check."),
+            _mock_response(content="Final answer.", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("review the PR")
+
+        tail = result["messages"][-1]
+        assert tail.get("role") == "assistant", (
+            "The turn must end on the real assistant answer, not scaffolding."
+        )
+        assert not tail.get("_dropped_toolcall_nudge")

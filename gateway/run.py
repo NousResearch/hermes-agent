@@ -450,10 +450,12 @@ def _format_exec_approval_fallback(
     allow_permanent: bool = True,
     allow_session: bool = True,
     smart_denied: bool = False,
+    heading: Optional[str] = None,
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
-    heading = "⚠️ **Dangerous command requires approval:**"
+    if heading is None:
+        heading = "⚠️ **Dangerous command requires approval:**"
     if smart_denied:
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
 
@@ -21779,6 +21781,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # can actually type (`!approve`) — typed "/" is blocked in
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
+                # Tool-gate approvals carry kind="tool" + tool_name; render a
+                # tool-flavoured header instead of "Dangerous command" so the
+                # prompt matches what's actually being approved.
+                _tool_heading = None
+                if approval_data.get("kind") == "tool":
+                    _tool_name = approval_data.get("tool_name", "this tool")
+                    _tool_heading = f"⚠️ **Approval required to run `{_tool_name}`:**"
                 msg = _format_exec_approval_fallback(
                     cmd,
                     desc,
@@ -21786,6 +21795,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     allow_permanent=approval_data.get("allow_permanent", True),
                     allow_session=approval_data.get("allow_session", True),
                     smart_denied=approval_data.get("smart_denied", False),
+                    heading=_tool_heading,
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

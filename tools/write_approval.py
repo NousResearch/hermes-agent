@@ -57,7 +57,15 @@ logger = logging.getLogger(__name__)
 # Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
+# ``actions`` is the generic tool-call approval gate's pending store (see
+# tools/tool_gate.py). It reuses the same on-disk pending format and CRUD
+# helpers below, but is NOT governed by the per-subsystem ``write_approval``
+# boolean — its gating lives under ``approvals.tool_gate`` config — so it is
+# intentionally absent from the ``write_approval_enabled`` allowlist while
+# still being a recognised pending subsystem for list/count/discard.
+ACTIONS = "actions"
 _SUBSYSTEMS = (MEMORY, SKILLS)
+_PENDING_SUBSYSTEMS = (MEMORY, SKILLS, ACTIONS)
 
 # Config key (per subsystem). A single boolean: the approval gate is OFF by
 # default (writes flow freely, the pre-gate behaviour), and ON means stage /
@@ -187,6 +195,95 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
+
+
+def update_pending(subsystem: str, pending_id: str,
+                   updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Merge ``updates`` into a pending record's top-level fields and persist.
+
+    Returns the updated record, or ``None`` if it no longer exists. Uses the
+    same atomic write-then-rename as :func:`stage_write` so a concurrent
+    reader never sees a half-written file. Used by the tool-approval gate to
+    link a Kanban card id back into the staged action and to flip the
+    ``status`` field (``pending`` → ``executing`` → ``done``) for the
+    double-execution guard.
+    """
+    rec = get_pending(subsystem, pending_id)
+    if rec is None:
+        return None
+    rec.update(updates)
+    try:
+        d = _pending_dir(subsystem)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{pending_id}.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as e:  # pragma: no cover - disk failure path
+        logger.error("Failed to update pending %s/%s: %s", subsystem, pending_id, e)
+        return None
+    return rec
+
+
+# A claim lock older than this is assumed to belong to a crashed claimant
+# (process killed between acquiring the lock and releasing it) rather than a
+# live race, and is stolen rather than left to block claims forever.
+_CLAIM_LOCK_STALE_SECS = 60
+
+
+def claim_pending(subsystem: str, pending_id: str, *, expected_status: str,
+                  claimed_status: str,
+                  extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Atomically transition a pending record's status, guarding a race.
+
+    :func:`get_pending` + :func:`update_pending` is a plain read-then-write:
+    two concurrent callers (e.g. a button-click handler and a kanban worker
+    both replaying the same approved action) can both read ``status ==
+    expected_status`` before either writes, and both then "win" the update —
+    double-executing the underlying tool call. This wraps the check-and-set
+    in an exclusive lock file (``open(..., O_CREAT | O_EXCL)`` is atomic at
+    the OS level) so only the first caller to acquire it proceeds; the loser
+    gets ``None`` back and must not execute.
+
+    Returns the updated record on a successful claim, or ``None`` if the
+    record is missing, not in ``expected_status``, or another caller holds
+    the claim.
+    """
+    d = _pending_dir(subsystem)
+    d.mkdir(parents=True, exist_ok=True)
+    lock_path = d / f"{pending_id}.lock"
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        try:
+            age = time.time() - lock_path.stat().st_mtime
+        except OSError:
+            return None
+        if age < _CLAIM_LOCK_STALE_SECS:
+            return None
+        # Stale lock from a crashed claimant — steal it. Racing stealers can
+        # both reach here, but only one os.open(O_CREAT|O_EXCL) below wins;
+        # the other retries and, finding the winner's fresh lock, backs off.
+        try:
+            os.remove(lock_path)
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except OSError:
+            return None
+    try:
+        rec = get_pending(subsystem, pending_id)
+        if rec is None or rec.get("status") != expected_status:
+            return None
+        updates = {"status": claimed_status}
+        if extra:
+            updates.update(extra)
+        return update_pending(subsystem, pending_id, updates)
+    finally:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
 
 
 def pending_count(subsystem: str) -> int:

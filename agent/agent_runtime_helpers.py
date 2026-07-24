@@ -2480,6 +2480,26 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    # --- Generic tool-approval gate (config-driven; default OFF) ----------
+    # Single choke point for the concurrent dispatch path. Runs before any
+    # tool-specific branch so every gated tool (incl. registry/MCP via the
+    # ``else`` → handle_function_call branch) is covered. A staged result is
+    # a non-error "defer-success"; a blocked result is a hard error.
+    try:
+        from tools.approval import check_tool_approval
+        _gate = check_tool_approval(function_name, function_args)
+    except Exception as _gate_err:  # never let the gate crash a tool call
+        logger.debug("tool approval gate error: %s", _gate_err)
+        _gate = {"approved": True}
+    if _gate.get("approved") is False:
+        _gate_status = _gate.get("status", "blocked")
+        _gate_key = "error" if _gate_status == "blocked" else "message"
+        _gate_result = json.dumps(
+            {"status": _gate_status, _gate_key: _gate.get("message")},
+            ensure_ascii=False,
+        )
+        return _gate_result
+
     tool_start_time = time.monotonic()
 
     def _finish_agent_tool(result: Any, observed_args: Optional[dict] = None) -> Any:
@@ -2602,6 +2622,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
+                skip_tool_approval_gate=True,
             )
 
     from hermes_cli.middleware import run_tool_execution_middleware

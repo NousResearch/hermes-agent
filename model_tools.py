@@ -1081,6 +1081,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    skip_tool_approval_gate: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1253,6 +1254,45 @@ def handle_function_call(
                     status="blocked",
                     error_type="plugin_block",
                     error_message=block_message,
+                    middleware_trace=list(_tool_middleware_trace),
+                )
+                return result
+
+        # Generic tool-approval gate (config-driven; default OFF). This is
+        # the single choke point every dispatch path funnels through —
+        # sequential/concurrent agent-loop dispatch, the execute_code sandbox
+        # IPC handler, and the MCP tool server all call handle_function_call
+        # to actually run a tool. Callers that already ran the gate at their
+        # own choke point (agent_runtime_helpers.invoke_tool,
+        # tool_executor.execute_tool_calls_sequential) pass
+        # skip_tool_approval_gate=True so a staged/consumed replay token
+        # isn't evaluated twice.
+        if not skip_tool_approval_gate:
+            try:
+                from tools.approval import check_tool_approval
+                _gate = check_tool_approval(function_name, function_args)
+            except Exception as _gate_err:
+                logger.debug("tool approval gate error: %s", _gate_err)
+                _gate = {"approved": True}
+            if _gate.get("approved") is False:
+                _gate_status = _gate.get("status", "blocked")
+                _gate_key = "error" if _gate_status == "blocked" else "message"
+                result = json.dumps(
+                    {"status": _gate_status, _gate_key: _gate.get("message")},
+                    ensure_ascii=False,
+                )
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status=_gate_status,
+                    error_type="tool_gate",
+                    error_message=None,
                     middleware_trace=list(_tool_middleware_trace),
                 )
                 return result

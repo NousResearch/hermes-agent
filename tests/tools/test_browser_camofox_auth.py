@@ -24,9 +24,15 @@ from tools.browser_camofox import (
 def _mock_response(status=200, json_data=None):
     resp = MagicMock()
     resp.status_code = status
-    resp.json.return_value = json_data or {}
+    payload = json.dumps(json_data or {}).encode("utf-8")
+    resp.iter_content.return_value = [payload]
+    resp.encoding = "utf-8"
+    resp.json.side_effect = AssertionError(
+        "Camofox JSON must be read through the bounded stream reader"
+    )
     resp.content = b"\x89PNG\r\n\x1a\nfake"
     resp.raise_for_status = MagicMock()
+    resp.close = MagicMock()
     return resp
 
 

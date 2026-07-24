@@ -1466,6 +1466,53 @@ class TestConvertMessages:
             for b in nxt["content"]
         )
 
+    def test_image_only_user_message_preserves_image(self):
+        """An image-only user turn (no text part) must keep its image block.
+
+        A user message whose content is just an image — the standard OpenAI
+        multimodal shape for "sent an image with no caption", which the API
+        server accepts (``_content_has_visible_payload`` treats an image as a
+        visible payload) — used to be replaced wholesale with the
+        ``(empty message)`` placeholder, silently dropping the image before it
+        reached Claude. Regression for that data loss.
+        """
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        assert isinstance(blocks, list)
+        image_blocks = [b for b in blocks if b.get("type") == "image"]
+        assert len(image_blocks) == 1, f"image block was dropped: {blocks}"
+        assert not any(
+            b.get("type") == "text" and b.get("text") == "(empty message)"
+            for b in blocks
+        )
+
+    def test_blank_text_plus_image_keeps_image_drops_blank_text(self):
+        """A blank caption alongside an image keeps the image and drops the
+        empty text block (Anthropic rejects whitespace-only text blocks)."""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "   "},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        blocks = result[0]["content"]
+        assert [b for b in blocks if b.get("type") == "image"], f"image dropped: {blocks}"
+        assert not any(
+            b.get("type") == "text" and b.get("text", "").strip() == ""
+            for b in blocks
+        ), f"empty text block leaked (Anthropic rejects it): {blocks}"
 
 # ---------------------------------------------------------------------------
 # Build kwargs

@@ -8,6 +8,8 @@ act/
 .act-sandbox-agent.*
 .venv/
 .venv
+.tmp/
+.tools/
 .vscode/
 .env
 .op.env

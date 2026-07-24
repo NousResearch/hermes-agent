@@ -25,8 +25,8 @@ changes.
 
 ## Milestone 1 — Python core
 
-- [ ] Create an isolated project-local development environment.
-- [ ] Install the minimum development dependencies without changing global
+- [x] Create an isolated project-local development environment.
+- [x] Install the minimum development dependencies without changing global
       Python state.
 - [ ] Run focused unit tests for configuration, sessions, model providers, tool
       dispatch, memory, skills, and security boundaries.
@@ -92,3 +92,6 @@ changes.
   Python tests and `npm run check` for Node workspaces. Local Python
   development uses a venv plus editable `.[all,dev]`; JavaScript uses the root
   npm lockfile and workspaces.
+- 2026-07-24: Created repository-local `.venv` with repository-local uv 0.11.32
+  and installed editable `.[dev]` dependencies. Confirmed pytest 9.0.2 can
+  import the checkout. No global Python packages or configuration changed.

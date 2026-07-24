@@ -9503,6 +9503,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Substitute {args} placeholder with user-supplied arguments.
+                        user_args = cmd_original[len(base_cmd):].strip()
+                        exec_cmd = exec_cmd.replace("{args}", user_args)
                         try:
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.

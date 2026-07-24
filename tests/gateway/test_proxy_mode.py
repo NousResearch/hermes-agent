@@ -166,6 +166,20 @@ class TestResolveProxyUrl:
 
         assert resolve_proxy_url() == "http://proxy.example:8080"
 
+    def test_no_proxy_cidr_skips_malformed_before_valid(self, monkeypatch):
+        """#59505: malformed CIDR entry before a valid one must not abort the loop.
+        Gateway's resolve_proxy_url already handles this per-entry; ensure the
+        agent bootstrap path does too.
+        """
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        # malformed (not an IP network) followed by valid /20 covering 149.154.167.220
+        monkeypatch.setenv("NO_PROXY", "not-a-cidr, 149.154.160.0/20")
+
+        assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
+
 
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""

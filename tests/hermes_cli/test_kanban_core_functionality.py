@@ -366,13 +366,16 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
 # Worker aliveness / crash detection
 # ---------------------------------------------------------------------------
 
-def test_pid_alive_helper():
+def test_pid_alive_helper(monkeypatch):
     # Our own pid is alive.
     assert kb._pid_alive(os.getpid())
     # PID 0 / None / negative.
     assert not kb._pid_alive(0)
     assert not kb._pid_alive(None)
-    # A clearly-dead pid (very large, extremely unlikely to exist).
+    # A clearly-dead pid (very large, extremely unlikely to exist). Mock the
+    # gateway helper so the live-system guard does not see a fake external PID.
+    import gateway.status as gateway_status
+    monkeypatch.setattr(gateway_status, "_pid_exists", lambda pid: False)
     assert not kb._pid_alive(2 ** 30)
 
 
@@ -2502,7 +2505,8 @@ def test_build_worker_context_role_history_bounded_to_5(kanban_home):
 
 @pytest.mark.skipif("linux" not in __import__("sys").platform,
                     reason="zombie detection is Linux-specific")
-def test_pid_alive_detects_zombie(kanban_home):
+@pytest.mark.live_system_guard_bypass
+def test_pid_alive_detects_zombie(kanban_home, monkeypatch):
     """_pid_alive must return False for a zombie process.
 
     Without the /proc check, kill(pid, 0) succeeds against zombies
@@ -2511,14 +2515,16 @@ def test_pid_alive_detects_zombie(kanban_home):
     worker that exited normally but whose parent hasn't called wait().
     """
     import subprocess as _sp
+    import gateway.status as gateway_status
     proc = _sp.Popen(
         ["sleep", "3600"],
         stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
     )
     pid = proc.pid
     try:
+        monkeypatch.setattr(gateway_status, "_pid_exists", lambda candidate: int(candidate) == pid)
         assert kb._pid_alive(pid) is True  # live non-zombie
-        os.kill(pid, 9)
+        proc.kill()
         time.sleep(0.3)
         # Verify /proc reports zombie state so the test is actually
         # exercising the zombie path and not some other liveness failure

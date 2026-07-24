@@ -65,24 +65,8 @@ export function useDesktopIntegrations({
     window.hermesDesktop?.setPreviewShortcutActive?.(true)
   }, [])
 
-  // Remember the open chat (session id for notifications/resume) AND the last
-  // non-overlay route (a page like /skills, or a session route) so a relaunch
-  // lands where you were. Overlays (settings/command-center/…) aren't stored —
-  // you don't want to boot into a modal.
-  useEffect(() => {
-    if (routedSessionId) {
-      setRememberedSessionId(
-        routedSessionId,
-        rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
-      )
-    }
-
-    if (!isOverlayView(appViewForPath(locationPathname))) {
-      setRememberedRoute(locationPathname)
-    }
-  }, [locationPathname, routedSessionId])
-
   const restoredRef = useRef(false)
+  const restoringRememberedRouteRef = useRef(false)
 
   // Restore once on cold start — only when the renderer booted at the default
   // route (a hidden-then-shown window keeps its own route). Prefer the full
@@ -97,7 +81,15 @@ export function useDesktopIntegrations({
     restoredRef.current = true
     const route = getRememberedRoute()
 
+    // An explicitly remembered fresh draft outranks the legacy last-session
+    // fallback. Falling through here reopened that older session and painted
+    // its title over every new chat after a relaunch.
+    if (route === NEW_CHAT_ROUTE) {
+      return
+    }
+
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
+      restoringRememberedRouteRef.current = true
       navigate(route, { replace: true })
 
       return
@@ -106,9 +98,39 @@ export function useDesktopIntegrations({
     const last = getRememberedSessionId($activeGatewayProfile.get())
 
     if (last) {
+      restoringRememberedRouteRef.current = true
       navigate(sessionRoute(last), { replace: true })
     }
   }, [locationPathname, navigate])
+
+  // Remember the open chat (session id for notifications/resume) AND the last
+  // non-overlay route (a page like /skills, or a session route) so a relaunch
+  // lands where you were. Overlays (settings/command-center/…) aren't stored —
+  // you don't want to boot into a modal.
+  useEffect(() => {
+    // The app boots at the new-chat route before restore navigation lands. Do
+    // not let that transient render erase the session we are actively restoring.
+    if (restoringRememberedRouteRef.current && locationPathname === NEW_CHAT_ROUTE) {
+      return
+    }
+
+    restoringRememberedRouteRef.current = false
+
+    if (routedSessionId) {
+      setRememberedSessionId(
+        routedSessionId,
+        rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
+      )
+    } else if (locationPathname === NEW_CHAT_ROUTE) {
+      // A deliberate fresh draft is durable intent too. Clear the older chat
+      // identity so neither cold-start restore nor title lookup can revive it.
+      setRememberedSessionId(null, $activeGatewayProfile.get())
+    }
+
+    if (!isOverlayView(appViewForPath(locationPathname))) {
+      setRememberedRoute(locationPathname)
+    }
+  }, [locationPathname, routedSessionId])
 
   useEffect(() => {
     if (!resumeExhaustedSessionId) {

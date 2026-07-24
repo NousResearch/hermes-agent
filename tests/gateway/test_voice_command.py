@@ -433,7 +433,8 @@ class TestSendVoiceReply:
             await runner._send_voice_reply(event, "Hello world")
 
         mock_adapter.send_voice.assert_called_once()
-        assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        assert mock_tts.call_args.kwargs["delivery_platform"] == "telegram"
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
 
@@ -458,6 +459,7 @@ class TestSendVoiceReply:
 
         mock_adapter.send_voice.assert_called_once()
         assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        assert mock_tts.call_args.kwargs["delivery_platform"] == "slack"
 
     @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):

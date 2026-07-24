@@ -296,9 +296,11 @@ class TestTelegramAutoTtsCaptionDelivery:
         with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
             "tools.tts_tool.text_to_speech_tool",
             return_value=json.dumps({"file_path": str(tts_path)}),
-        ):
+        ) as mock_tts:
             await adapter._process_message_background(event, build_session_key(event.source))
 
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        assert mock_tts.call_args.kwargs["delivery_platform"] == "telegram"
         adapter.play_tts.assert_awaited_once()
         assert adapter.play_tts.await_args.kwargs["caption"] == "Short reply"
         assert adapter.sent == []

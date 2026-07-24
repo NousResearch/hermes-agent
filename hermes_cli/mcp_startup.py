@@ -55,8 +55,6 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
             _mcp_discovery_thread = None
 
         _mcp_discovery_started = True
-        if not _has_configured_mcp_servers():
-            return
 
         def _discover() -> None:
             try:

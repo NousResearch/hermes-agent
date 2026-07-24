@@ -264,6 +264,7 @@ class TestCodexBuildKwargs:
         kw = transport.build_kwargs(
             model=model, messages=messages, tools=[],
             session_id="test-session",
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
         )
         assert kw["prompt_cache_retention"] == "24h"
 
@@ -274,20 +275,29 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             session_id="test-session",
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
         )
         assert "prompt_cache_retention" not in kw
 
-    def test_prompt_cache_retention_skipped_for_known_incompatible_backends(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        assert "prompt_cache_retention" not in transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[], is_xai_responses=True
+    @pytest.mark.parametrize("base_url", [
+        "https://api.openai.com/v1",
+        "https://example.openai.azure.com/openai/v1",
+        "https://api.x.ai/v1",
+        "https://models.github.ai/inference",
+        "https://api.githubcopilot.com",
+        "https://chatgpt.com/backend-api/codex",
+        "https://responses.example.com/v1",
+        "https://bedrock-mantle.us-west-2.api.aws.example/v1",
+        "https://example.com/bedrock-mantle.us-west-2.api.aws/v1",
+    ])
+    def test_prompt_cache_retention_omitted_for_non_mantle_endpoints(self, transport, base_url):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url=base_url,
         )
-        assert "prompt_cache_retention" not in transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[], is_github_responses=True
-        )
-        assert "prompt_cache_retention" not in transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[], is_codex_backend=True
-        )
+        assert "prompt_cache_retention" not in kw
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the

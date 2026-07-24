@@ -41,7 +41,13 @@ def _clear_auth_env(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
+def _make_event(
+    platform: Platform,
+    user_id: str,
+    chat_id: str,
+    *,
+    profile: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_id="m1",
@@ -51,6 +57,7 @@ def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
             chat_id=chat_id,
             user_name="tester",
             chat_type="dm",
+            profile=profile,
         ),
     )
 
@@ -721,6 +728,86 @@ async def test_rejection_message_records_rate_limit(monkeypatch):
     runner.pairing_store._record_rate_limit.assert_called_once_with(
         "whatsapp", "15551234567@s.whatsapp.net"
     )
+
+
+@pytest.mark.asyncio
+async def test_multiplex_pairing_uses_routed_profile_store(monkeypatch):
+    """Generation and rate-limit checks must share authz's profile store."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+    )
+    runner, _default_adapter = _make_runner(Platform.WHATSAPP, config)
+    profile_adapter = SimpleNamespace(send=AsyncMock())
+    profile_store = MagicMock(profile="coder")
+    profile_store.is_approved.return_value = False
+    profile_store._is_rate_limited.return_value = False
+    profile_store.generate_code.return_value = "PROFILE1"
+    runner._profile_adapters = {
+        "coder": {Platform.WHATSAPP: profile_adapter},
+    }
+    runner.pairing_stores = {"coder": profile_store}
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+            profile="coder",
+        )
+    )
+
+    assert result is None
+    profile_store._is_rate_limited.assert_called_once_with(
+        "whatsapp", "15551234567@s.whatsapp.net"
+    )
+    profile_store.generate_code.assert_called_once_with(
+        "whatsapp", "15551234567@s.whatsapp.net", "tester"
+    )
+    runner.pairing_store._is_rate_limited.assert_not_called()
+    runner.pairing_store.generate_code.assert_not_called()
+    profile_adapter.send.assert_awaited_once()
+    assert "PROFILE1" in profile_adapter.send.await_args.args[1]
+    assert (
+        "hermes -p coder pairing approve"
+        in profile_adapter.send.await_args.args[1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_multiplex_pairing_rejection_records_profile_rate_limit(monkeypatch):
+    """The exhausted-code path must not write rate limits to the global store."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+    )
+    runner, _default_adapter = _make_runner(Platform.WHATSAPP, config)
+    profile_adapter = SimpleNamespace(send=AsyncMock())
+    profile_store = MagicMock(profile="coder")
+    profile_store.is_approved.return_value = False
+    profile_store._is_rate_limited.return_value = False
+    profile_store.generate_code.return_value = None
+    runner._profile_adapters = {
+        "coder": {Platform.WHATSAPP: profile_adapter},
+    }
+    runner.pairing_stores = {"coder": profile_store}
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+            profile="coder",
+        )
+    )
+
+    assert result is None
+    profile_store._record_rate_limit.assert_called_once_with(
+        "whatsapp", "15551234567@s.whatsapp.net"
+    )
+    runner.pairing_store._record_rate_limit.assert_not_called()
+    profile_adapter.send.assert_awaited_once()
+    assert "Too many" in profile_adapter.send.await_args.args[1]
 
 
 @pytest.mark.asyncio

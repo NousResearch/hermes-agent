@@ -326,6 +326,32 @@ class TestPaginationBounds:
 
 
 class TestSearchContextParsing:
+    def test_search_with_grep_uses_extended_regex(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(
+                exit_code=0,
+                stdout="./first.txt:1:foo\n./second.txt:1:bar\n",
+            )
+            result = ops._search_with_grep(
+                "foo|bar",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        cmd_arg = mock_exec.call_args[0][0]
+        assert cmd_arg.startswith("grep -rnHE ")
+        assert result.error is None
+        assert result.total_count == 2
+        assert [match.content for match in result.matches] == ["foo", "bar"]
+
     def test_parse_search_context_line_prefers_rightmost_numeric_separator(self):
         parsed = _parse_search_context_line("dir/file-12-name.py-8-context here")
 

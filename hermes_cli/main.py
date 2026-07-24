@@ -12051,6 +12051,49 @@ def _set_chat_arg_defaults(args) -> None:
             setattr(args, attr, default)
 
 
+def _try_chat_warm() -> bool:
+    """Run ``hermes chat -q --warm <query>`` through the hot Gateway API Server.
+
+    Common path for all platforms (not Termux-specific).  If the API Server is
+    unavailable or unconfigured, this is a no-op (``False``) and normal
+    startup proceeds.
+    """
+    argv = sys.argv[1:]
+    if "-h" in argv or "--help" in argv:
+        return False
+    if _first_positional_argv() not in {None, "chat"}:
+        return False
+
+    if not any(arg == "--query" or arg.startswith("--query=") for arg in argv):
+        return False
+    if not any(arg == "--warm" or arg.startswith("--warm=") for arg in argv):
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    args = parser.parse_args(_coalesce_session_name_args(argv))
+
+    query = getattr(args, "query", None)
+    warm = getattr(args, "warm", False)
+    if not query or not warm:
+        return False
+
+    from hermes_cli.oneshot import run_oneshot
+
+    sys.exit(
+        run_oneshot(
+            query,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            warm=True,
+        )
+    )
+    return True
+
+
 def _try_termux_fast_cli_launch() -> bool:
     """Run obvious Termux non-TUI chat/oneshot/version paths on a light parser."""
     if not _is_termux_startup_environment():
@@ -12107,21 +12150,6 @@ def _try_termux_fast_cli_launch() -> bool:
         args.command = "chat"
 
     if args.command in {None, "chat"}:
-        # --warm with --query: bypass full CLI init, go straight to
-        # the fast API-Server path.  Check BEFORE _set_chat_arg_defaults
-        # so we skip that initialization entirely.
-        if getattr(args, "query", None) and getattr(args, "warm", False):
-            from hermes_cli.oneshot import run_oneshot
-
-            sys.exit(
-                run_oneshot(
-                    args.query,
-                    model=getattr(args, "model", None),
-                    provider=getattr(args, "provider", None),
-                    toolsets=getattr(args, "toolsets", None),
-                    warm=True,
-                )
-            )
         _set_chat_arg_defaults(args)
         interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
         if interactive_prompt:
@@ -12201,6 +12229,12 @@ def main():
         _cleanup_quarantined_exes()
     except Exception:
         pass
+
+    # --warm / --query fast path: route through the hot Gateway API Server
+    # before any heavy initialization.  Available on all platforms, not just
+    # Termux.  No-op when the API Server is unavailable or unconfigured.
+    if _try_chat_warm():
+        return
 
     if _try_termux_fast_tui_launch():
         return

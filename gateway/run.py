@@ -1533,6 +1533,31 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
+
+def _refresh_aiohttp_ssl_contexts_if_loaded() -> None:
+    """Rebuild aiohttp's cached SSL contexts after CA env setup.
+
+    aiohttp.connector creates module-level default SSLContext objects at import
+    time. On uv Python builds whose compiled-in default trust store is empty on
+    this host, importing aiohttp before we set SSL_CERT_FILE leaves
+    ``_SSL_CONTEXT_VERIFIED`` with zero trusted CAs for the rest of the
+    process. Refresh it here so later ws_connect()/request() calls pick up the
+    configured CA bundle regardless of import order.
+    """
+    aiohttp_connector = sys.modules.get("aiohttp.connector")
+    if aiohttp_connector is None:
+        return
+
+    make_ssl_context = getattr(aiohttp_connector, "_make_ssl_context", None)
+    if not callable(make_ssl_context):
+        return
+
+    try:
+        aiohttp_connector._SSL_CONTEXT_VERIFIED = make_ssl_context(True)
+        aiohttp_connector._SSL_CONTEXT_UNVERIFIED = make_ssl_context(False)
+    except Exception:
+        pass
+
 def _home_target_env_var(platform_name: str) -> str:
     """Return the configured home-target env var for a platform.
 
@@ -1576,6 +1601,7 @@ def _clear_planned_restart_notification() -> None:
 os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
+_refresh_aiohttp_ssl_contexts_if_loaded()
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))

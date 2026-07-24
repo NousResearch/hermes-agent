@@ -836,6 +836,24 @@ class TestGetDueJobs:
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
+    def test_stale_past_due_records_one_catch_up_occurrence(self, tmp_cron_dir, monkeypatch):
+        import cron.jobs as jobs_module
+
+        recorded = []
+        monkeypatch.setattr(
+            jobs_module,
+            "record_catch_up_occurrence",
+            lambda: recorded.append("catch-up"),
+            raising=False,
+        )
+        create_job(prompt="Stale", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        save_jobs(jobs)
+
+        assert len(get_due_jobs()) == 1
+        assert recorded == ["catch-up"]
+
     def test_idless_job_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
         """A job missing its 'id' key must not crash the tick or freeze siblings.
 

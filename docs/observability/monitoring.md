@@ -19,8 +19,8 @@ capture is a separate plane served by the NeMo Relay integration
 | Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
 | Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
-| Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
-| Cron execution lifecycle | `/v1/traces` | Durable `claimed/running/completed/failed/unknown` states, bounded source and error class, opaque hashed job key, elapsed duration when timestamps exist, and delivery outcome when the scheduler knows it; terminal states flush through a bounded fail-open barrier |
+| Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), a monotonic catch-up-occurrence count from the scheduler's stale-window branch, enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
+| Cron execution lifecycle | `/v1/traces` | Durable `claimed/running/completed/failed/unknown` states, bounded source and error class, opaque hashed job key, elapsed duration when timestamps exist, and delivery outcome when the scheduler knows it; terminal states make a fail-open flush attempt that can delay completion by up to one second |
 
 Signals carry `service.name`, version, supervision mode, and a stable one-way
 hash of the install id so an operator can distinguish instances without
@@ -99,7 +99,8 @@ python scripts/observability/gateway_health_export_probe.py \
 
 The `hermes monitoring` CLI intentionally exposes `status` only. This first
 release covers only Hermes Agent-owned service-health and operational-diagnostic
-signals. Team Gateway/shared-connector signals are explicitly out of scope, as
+signals, including Hermes Agent-owned Relay transport health. Team Gateway's
+authoritative shared connector/platform state is explicitly out of scope, as
 are product analytics, audit/quality reporting, and detailed execution traces.
 Shared client usage metrics and enterprise trace telemetry are being designed on
 the NeMo Relay integration with their own consent, policy, and export

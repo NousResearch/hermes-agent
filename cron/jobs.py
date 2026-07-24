@@ -806,6 +806,24 @@ def _atomic_write_epoch(path: Path) -> None:
         raise
 
 
+def _atomic_write_counter(path: Path, value: int) -> None:
+    """Atomically persist a non-negative integer counter."""
+    ensure_dirs()
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".count_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(max(0, value)))
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def record_ticker_heartbeat(success: bool = False) -> None:
     """Record a ticker liveness signal, and optionally a successful-tick signal.
 
@@ -865,6 +883,28 @@ def get_ticker_success_age() -> Optional[float]:
     """
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_last_success")
+
+
+def record_catch_up_occurrence() -> None:
+    """Increment the profile-local stale-schedule catch-up counter, best effort."""
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        try:
+            value = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            value = 0
+        _atomic_write_counter(path, max(0, value) + 1)
+    except Exception:
+        pass
+
+
+def get_catch_up_occurrence_count() -> int:
+    """Return the profile-local stale-schedule catch-up count."""
+    path = _current_cron_store().cron_dir / "catch_up_occurrences"
+    try:
+        return max(0, int(path.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return 0
 
 
 # =============================================================================
@@ -2088,6 +2128,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
+                        record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot

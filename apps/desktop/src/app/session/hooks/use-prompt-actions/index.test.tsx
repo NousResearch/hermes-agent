@@ -1450,7 +1450,8 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
-        truncate_before_user_ordinal: 0
+        truncate_before_user_ordinal: 0,
+        confirm_empty_truncate: true
       },
       1_800_000
     )
@@ -1517,7 +1518,8 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
-        truncate_before_user_ordinal: 0
+        truncate_before_user_ordinal: 0,
+        confirm_empty_truncate: true
       },
       1_800_000
     )
@@ -1562,7 +1564,8 @@ describe('usePromptActions restoreToMessage', () => {
       {
         session_id: RUNTIME_SESSION_ID,
         text: 'first prompt',
-        truncate_before_user_ordinal: 0
+        truncate_before_user_ordinal: 0,
+        confirm_empty_truncate: true
       },
       1_800_000
     )

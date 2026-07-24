@@ -351,6 +351,12 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Force UTF-8 with lossy decoding so child output containing bytes
+            # that are invalid in the system locale (e.g. GBK on Chinese
+            # Windows) can't raise UnicodeDecodeError inside the drain threads
+            # and crash the gateway. See #53137.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             env=env,
@@ -2113,7 +2119,8 @@ def _ensure_session_db_row(session: dict) -> None:
             from hermes_cli.runtime_provider import canonical_custom_identity
 
             healed = canonical_custom_identity(
-                base_url=model_config.get("base_url") or None
+                base_url=model_config.get("base_url") or None,
+                model=model_config.get("model") or row_model or None,
             )
             if healed:
                 model_config["provider"] = healed
@@ -2833,9 +2840,10 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     # the resolved billing class, not a routable identity — restoring it as the
     # session's provider override routes the resume to the OpenRouter default
     # URL with no api_key, surfacing as "No LLM provider configured". Recover
-    # the durable ``custom:<name>`` menu key from the stored base_url, falling
-    # back to the configured provider when the row has no base_url (the
-    # recurring Desktop/TUI regression vector). If neither names a real entry,
+    # the durable ``custom:<name>`` menu key from the stored base_url, then
+    # from the entry that serves the stored model, falling back to the
+    # configured provider when the row has neither (the recurring Desktop/TUI
+    # regression vector). If none names a real entry,
     # drop the bare provider entirely so resume falls back to the configured
     # default rather than the broken OpenRouter route.
     if provider.strip().lower() == "custom":
@@ -2843,7 +2851,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
 
-            healed = canonical_custom_identity(base_url=base_url or None)
+            healed = canonical_custom_identity(
+                base_url=base_url or None, model=model or None
+            )
         except Exception:
             logger.debug(
                 "custom provider identity recovery failed", exc_info=True
@@ -2907,7 +2917,10 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
                 )
 
                 provider = (
-                    canonical_custom_identity(base_url=base_url) or provider
+                    canonical_custom_identity(
+                        base_url=base_url, model=model or None
+                    )
+                    or provider
                 )
             except Exception:
                 logger.debug(
@@ -5443,7 +5456,9 @@ def _make_agent(
             # (the recurring Desktop/TUI regression vector).
             from hermes_cli.runtime_provider import canonical_custom_identity
 
-            recovered = canonical_custom_identity(base_url=override_base_url or None)
+            recovered = canonical_custom_identity(
+                base_url=override_base_url or None, model=model or None
+            )
             if recovered:
                 requested_provider = recovered
             if override_base_url:
@@ -10219,6 +10234,41 @@ def _(rid, params: dict) -> dict:
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
+            # Stale clients can attach truncate_before_user_ordinal=0 to an
+            # ordinary submit. That resolves to history[:0] == [] and
+            # replace_messages() DELETEs every durable row — silent total
+            # transcript loss. Refuse the empty-truncation edge unless the
+            # client explicitly opts in (legitimate restore/regenerate of the
+            # first user turn).
+            if (
+                not truncated
+                and history
+                and not is_truthy_value(params.get("confirm_empty_truncate"))
+            ):
+                logger.warning(
+                    "prompt.submit: REFUSED empty truncation of session %s "
+                    "(%d messages would be wiped; ordinal=%d).",
+                    sid,
+                    len(history),
+                    ordinal,
+                )
+                return _err(
+                    rid,
+                    4028,
+                    "truncation would erase the entire session transcript; "
+                    "resubmit with confirm_empty_truncate=true if this is intended",
+                )
+            # Info for routine rewind/edit cuts; warning only when the client
+            # explicitly opts into wiping the whole transcript.
+            log_fn = logger.warning if not truncated else logger.info
+            log_fn(
+                "prompt.submit: truncating session %s history %d -> %d messages "
+                "(ordinal=%d)",
+                sid,
+                len(history),
+                len(truncated),
+                ordinal,
+            )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:
@@ -11705,6 +11755,9 @@ def _(rid, params: dict) -> dict:
         try:
             res = subprocess.run(
                 argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                # Force UTF-8 + lossy decode so non-UTF-8 child output can't
+                # crash the gateway thread on locale-mismatched Windows (#53137).
+                encoding="utf-8", errors="replace",
                 creationflags=windows_hide_flags(),
             )
         except subprocess.TimeoutExpired:
@@ -14182,6 +14235,10 @@ def _(rid, params: dict) -> dict:
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
+            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
+            # the gateway thread on locale-mismatched Windows. See #53137.
+            encoding="utf-8",
+            errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
@@ -14255,6 +14312,9 @@ def _(rid, params: dict) -> dict:
                 shell=True,
                 capture_output=True,
                 text=True,
+                # Force UTF-8 + lossy decode so non-UTF-8 child output can't
+                # crash the gateway thread on locale-mismatched Windows (#53137).
+                encoding="utf-8", errors="replace",
                 timeout=30,
                 stdin=subprocess.DEVNULL,
                 env=sanitized_env,
@@ -15332,6 +15392,8 @@ def _model_picker_context(agent):
                 canonical_custom_identity(
                     base_url=base_url or None,
                     config_provider=ctx.current_provider,
+                    model=(getattr(agent, "model", "") if agent else "")
+                    or None,
                 )
                 or provider
             )
@@ -15352,7 +15414,7 @@ def _model_picker_context(agent):
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.inventory import build_models_payload
+        from hermes_cli.inventory import build_model_options_payload
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
@@ -15361,25 +15423,11 @@ def _(rid, params: dict) -> dict:
         # agent attributes must NOT clobber disk config (with_overrides
         # is truthy-only).
         ctx = _model_picker_context(agent)
-        # picker_hints + canonical_order produce the TUI/desktop picker shape:
-        # `authenticated`/`auth_type`/`key_env`/`warning` per row, in
-        # CANONICAL_PROVIDERS declaration order. Desktop pickers default to the
-        # configured subset; callers that need setup affordances can pass
-        # include_unconfigured=true explicitly.
-        # Curated model lists are preserved — list_authenticated_providers
-        # populates `models` from the curated catalog, not provider_model_ids
-        # (which would pull non-agentic models like TTS/embeddings/etc.).
-        payload = build_models_payload(
+        payload = build_model_options_payload(
             ctx,
             explicit_only=bool(params.get("explicit_only")),
             include_unconfigured=bool(params.get("include_unconfigured")),
-            picker_hints=True,
-            canonical_order=True,
-            pricing=True,
-            capabilities=True,
             refresh=bool(params.get("refresh")),
-            probe_custom_providers=bool(params.get("refresh")),
-            probe_current_custom_provider=not bool(params.get("refresh")),
         )
         return _ok(rid, payload)
     except Exception as e:
@@ -17348,6 +17396,9 @@ def _(rid, params: dict) -> dict:
 
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
+            # the gateway thread on locale-mismatched Windows (#53137).
+            encoding="utf-8", errors="replace",
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )

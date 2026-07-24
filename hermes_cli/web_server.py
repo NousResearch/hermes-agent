@@ -823,6 +823,25 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Modal sandbox mode",
         "options": ["sandbox", "function"],
     },
+    "proxy.enabled": {
+        "type": "boolean",
+        "description": (
+            "Docker-only egress credential firewall. Requires `hermes egress setup` "
+            "and `hermes egress start`; Modal/SSH/Daytona are not wired yet."
+        ),
+        "category": "security",
+    },
+    "proxy.credential_source": {
+        "type": "select",
+        "description": "Where iron-proxy loads real upstream secrets at start time",
+        "options": ["env", "bitwarden"],
+        "category": "security",
+    },
+    "proxy.enforce_on_docker": {
+        "type": "boolean",
+        "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
+        "category": "security",
+    },
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
@@ -4158,6 +4177,12 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
             ],
             capture_output=True,
             text=True,
+            # git log emits UTF-8 (commit subjects can carry emoji/CJK). On
+            # Windows text=True defaults to the ANSI code page — a byte like
+            # 0x90 (3rd byte of 🐛) is undefined in cp1252 and crashed the
+            # stdlib _readerthread, killing the desktop backend (#52649).
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if out.returncode != 0:
@@ -5780,6 +5805,10 @@ def _run_setup_command(
         env=_memory_provider_setup_env(),
         capture_output=True,
         text=True,
+        # Lossy UTF-8 decode — setup tools emit UTF-8; never let a
+        # locale-mismatched byte raise in the reader thread (#52649).
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=False,
     )
@@ -6495,6 +6524,14 @@ async def get_schema(profile: Optional[str] = None):
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
+@app.get("/api/egress/status")
+async def get_egress_status():
+    """Dashboard/Desktop-readable egress proxy status and remediation text."""
+    from hermes_cli.proxy_cli import format_status_text
+
+    return {"text": format_status_text()}
+
+
 _EMPTY_MODEL_INFO: dict = {
     "model": "",
     "provider": "",
@@ -6611,7 +6648,7 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options(
+async def get_model_options(
     profile: Optional[str] = None,
     refresh: bool = False,
     include_unconfigured: bool = False,
@@ -6633,25 +6670,21 @@ def get_model_options(
     Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
-        # Most desktop surfaces should only list providers the user has already
-        # configured. Onboarding opts into the full provider universe via
-        # include_unconfigured=1 so it can still render setup affordances for
-        # providers that are not yet authenticated.
-        with _profile_scope(profile):
-            return build_models_payload(
-                load_picker_context(),
-                explicit_only=bool(explicit_only),
-                include_unconfigured=bool(include_unconfigured),
-                picker_hints=True,
-                canonical_order=True,
-                pricing=True,
-                capabilities=True,
-                refresh=bool(refresh),
-                probe_custom_providers=bool(refresh),
-                probe_current_custom_provider=not bool(refresh),
-            )
+        def _build_payload_scoped() -> dict:
+            # Keep the profile override inside the worker thread so the full
+            # sync picker build (config load, pricing, refresh probes) runs
+            # off the event loop under the requested profile.
+            with _profile_scope(profile):
+                return build_model_options_payload(
+                    load_picker_context(),
+                    explicit_only=bool(explicit_only),
+                    include_unconfigured=bool(include_unconfigured),
+                    refresh=bool(refresh),
+                )
+
+        return await run_in_threadpool(_build_payload_scoped)
     except HTTPException:
         raise
     except Exception:
@@ -8711,6 +8744,10 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
             cwd=str(bridge_dir),
             capture_output=True,
             text=True,
+            # npm output is UTF-8; guard the Windows ANSI-code-page default
+            # against undefined bytes crashing the reader thread (#52649).
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=with_hermes_node_path(),
             creationflags=windows_hide_flags(),
@@ -16199,6 +16236,8 @@ def _probe_docker_backend() -> tuple:
             ["docker", "info", "--format", "{{.ServerVersion}}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
         )
         if proc.returncode == 0:

@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -1181,6 +1181,64 @@ export interface Translations {
     platformIntro: Record<string, string>
   }
 
+  webhooks: {
+    search: string
+    loading: string
+    loadFailed: string
+    subscriptions: (count: number) => string
+    hint: string
+    empty: string
+    disabledTitle: string
+    disabledBody: string
+    enable: string
+    enabling: string
+    enabled: (name: string) => string
+    disabled: (name: string) => string
+    enableRow: string
+    disableRow: string
+    delete: string
+    deleting: string
+    deleted: string
+    deleteTitle: string
+    deleteDescPrefix: string
+    deleteDescSuffix: string
+    deleteFailed: (name: string) => string
+    toggleFailed: (name: string) => string
+    newSubscription: string
+    restarting: string
+    restartNeeded: string
+    restartGateway: string
+    restartingGateway: string
+    restartFailed: (detail: string) => string
+    enabledRestarting: string
+    all: string
+    deliverOnly: string
+    createdTitle: string
+    createdSecretHint: string
+    webhookUrl: string
+    secretOnce: string
+    done: string
+    fieldName: string
+    fieldNamePlaceholder: string
+    fieldDescription: string
+    fieldDescriptionPlaceholder: string
+    fieldEvents: string
+    fieldEventsPlaceholder: string
+    fieldSkills: string
+    fieldSkillsPlaceholder: string
+    fieldDeliver: string
+    fieldDeliverOnly: string
+    fieldPrompt: string
+    fieldPromptPlaceholder: string
+    nameRequired: string
+    create: string
+    creating: string
+    created: string
+    createFailed: (detail: string) => string
+    copy: string
+    deliverOptions: Record<string, string>
+  }
+
   profiles: {
     close: string
     nameHint: string
@@ -1322,6 +1380,7 @@ export interface Translations {
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
+    deliverNeedsHomeChannel: string
     modelLabel: string
     modelDefault: string
     customScheduleLabel: string
@@ -1334,6 +1393,22 @@ export interface Translations {
     scriptOnlyEditHint: string
     saveChanges: string
     createAction: string
+    tabs: {
+      jobs: string
+      blueprints: string
+    }
+    blueprints: {
+      tab: string
+      subtitle: string
+      dialogDesc: string
+      scheduleIt: string
+      scheduling: string
+      scheduled: string
+      loading: string
+      failedLoad: string
+      emptyTitle: string
+      emptyDesc: string
+    }
   }
 
   artifacts: {
@@ -1695,6 +1770,39 @@ export interface Translations {
     viewDocs: string
     installTo: string
     retryAfterRun: string
+    setupChoiceTitle: string
+    setupChoiceDesc: string
+    connectExistingTitle: string
+    connectExistingShort: string
+    connectExistingDesc: string
+    installLocalTitle: string
+    installLocalDesc: string
+    localStartUnavailable: string
+    remoteSetupTitle: string
+    remoteSetupDesc: string
+    remoteUrlTitle: string
+    remoteUrlDesc: string
+    remoteUrlPlaceholder: string
+    probing: string
+    probeError: string
+    identityProvider: string
+    authTitle: string
+    authNeedsOauth: (provider: string) => string
+    authSignedIn: string
+    connected: string
+    signIn: string
+    signInWith: (provider: string) => string
+    enterUrlFirst: string
+    signInIncomplete: string
+    tokenTitle: string
+    tokenDesc: string
+    pasteSessionToken: string
+    incompleteSignInTest: string
+    incompleteTokenTest: string
+    testConnection: string
+    testSucceeded: (baseUrl: string, version?: string) => string
+    applyRemote: string
+    backToSetup: string
     failedTitle: string
     settingUpTitle: string
     finishingTitle: string
@@ -1886,6 +1994,8 @@ export interface Translations {
       running: (count: number) => string
       cron: string
       openCron: string
+      webhooks: string
+      openWebhooks: string
       starmap: string
       openStarmap: string
       turnRunning: string

@@ -44,6 +44,8 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 # This dict is kept only so existing history keeps resolving; the effective
 # AUTHOR_MAP below merges it with the directory (directory wins).
 LEGACY_AUTHOR_MAP = {
+    "declanbatesmith@outlook.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option)
+    "drbs2004@me.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option; historical merge email)
     "122438640+ragingbulld@users.noreply.github.com": "ragingbulld",  # PR #65606 salvage (non-finite API wait deadlines; #65746)
     "zzpigpinggai@users.noreply.github.com": "zzpigpinggai",  # PR #66017 salvage of #63617 (OpenRouter explicit-provider picker visibility)
     "stellarisw@users.noreply.github.com": "StellarisW",  # PR #66222 salvage (Discord WebSocket liveness + systemd watchdog; #26656 follow-up)
@@ -1175,6 +1177,7 @@ LEGACY_AUTHOR_MAP = {
     "jan@mg5.org": "mijanx",
     "incharge.automation@gmail.com": "inchargeautomation-lab",
     "danielrpike9@gmail.com": "Bartok9",
+    "kuangmi@deeparchi.com": "kuangmi-bit",
     "96944678+ymylive@users.noreply.github.com": "sweetcornna",
     "laflamme@illinoisalumni.org": "briancl2",
     "skozyuk@cruxexperts.com": "CruxExperts",

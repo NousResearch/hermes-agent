@@ -850,6 +850,25 @@ def strip_think_blocks(agent, content: str) -> str:
 
 
 
+def sync_credential_pool_entry_id(agent) -> None:
+    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key.
+
+    OAuth refreshes can replace the runtime token before a failed request is
+    recovered, so the mutable API-key value alone cannot reliably attribute
+    the failure to its source entry.  This resolves the stable pool-entry ID
+    for the agent's current ``api_key`` and clears it when no pool is bound.
+    """
+    pool = getattr(agent, "_credential_pool", None)
+    try:
+        agent._credential_pool_entry_id = (
+            pool.entry_id_for_api_key(getattr(agent, "api_key", None))
+            if pool is not None
+            else None
+        )
+    except Exception:
+        agent._credential_pool_entry_id = None
+
+
 def recover_with_credential_pool(
     agent,
     *,
@@ -934,10 +953,30 @@ def recover_with_credential_pool(
     # failing entry exactly; fall back to current()'s key only when the agent
     # carries no key at all.
     _api_key_hint = getattr(agent, "api_key", None) or None
+    _raw_credential_id = getattr(agent, "_credential_pool_entry_id", None)
+    _credential_id = (
+        _raw_credential_id
+        if isinstance(_raw_credential_id, str) and _raw_credential_id
+        else None
+    )
     if not _api_key_hint:
         _cur = pool.current()
         if _cur:
             _api_key_hint = getattr(_cur, "runtime_api_key", None)
+            if not _credential_id:
+                _current_id = getattr(_cur, "id", None)
+                if isinstance(_current_id, str) and _current_id:
+                    _credential_id = _current_id
+
+    def _rotate_failed_credential(rotate_status: int):
+        kwargs = {
+            "status_code": rotate_status,
+            "error_context": error_context,
+            "api_key_hint": _api_key_hint,
+        }
+        if _credential_id:
+            kwargs["credential_id"] = _credential_id
+        return pool.mark_exhausted_and_rotate(**kwargs)
 
     effective_reason = classified_reason
     if effective_reason is None:
@@ -972,11 +1011,7 @@ def recover_with_credential_pool(
         # Runtime credentials can be resolved by a separate pool instance,
         # leaving this recovery pool without ``current_id``. Match the key
         # that actually failed instead of quarantining a different account.
-        next_entry = pool.mark_exhausted_and_rotate(
-            status_code=rotate_status,
-            error_context=error_context,
-            api_key_hint=_api_key_hint,
-        )
+        next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -995,8 +1030,13 @@ def recover_with_credential_pool(
         # Prefer the entry matching the failing key over the shared current()
         # pointer, for the same attribution reason as above.
         current_entry = None
-        if _api_key_hint:
+        if _credential_id:
             current_entry = next(
+                (e for e in pool.entries() if e.id == _credential_id),
+                None,
+            )
+        if _api_key_hint:
+            current_entry = current_entry or next(
                 (e for e in pool.entries() if e.runtime_api_key == _api_key_hint),
                 None,
             )
@@ -1009,11 +1049,7 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(
-                status_code=rotate_status,
-                error_context=error_context,
-                api_key_hint=_api_key_hint,
-            )
+            next_entry = _rotate_failed_credential(rotate_status)
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -1037,11 +1073,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(
-            status_code=rotate_status,
-            error_context=error_context,
-            api_key_hint=_api_key_hint,
-        )
+        next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -1113,7 +1145,10 @@ def recover_with_credential_pool(
         # the shared pointer can reference a different, healthy entry, and
         # refreshing it would consume that entry's single-use refresh token
         # (or mark it exhausted on failure) for a failure it never had.
-        refreshed = pool.try_refresh_matching(api_key_hint=_api_key_hint)
+        refresh_kwargs = {"api_key_hint": _api_key_hint}
+        if _credential_id:
+            refresh_kwargs["credential_id"] = _credential_id
+        refreshed = pool.try_refresh_matching(**refresh_kwargs)
         if refreshed is not None:
             # ``try_refresh_matching()`` re-mints a fresh OAuth token and reports
             # success even when the upstream keeps rejecting it — a single-entry
@@ -1145,11 +1180,7 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by the refresh attempt.
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(
-            status_code=rotate_status,
-            error_context=error_context,
-            api_key_hint=_api_key_hint,
-        )
+        next_entry = _rotate_failed_credential(rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
@@ -1460,6 +1491,7 @@ def restore_primary_runtime(agent) -> bool:
                 pool_matches_primary = False
         if pool is not None and pool_provider and not pool_matches_primary:
             agent._credential_pool = None
+            agent._credential_pool_entry_id = None
             try:
                 from agent.credential_pool import load_pool
 
@@ -1479,6 +1511,7 @@ def restore_primary_runtime(agent) -> bool:
         # the pool for its current best entry and swap the live credential in.
         # When the pool is absent, empty, or the entry has no usable key, we
         # keep the snapshot key (the existing behavior).  Fixes #25205.
+        agent._credential_pool_entry_id = None
         pool = getattr(agent, "_credential_pool", None)
         if pool is not None and pool.has_available():
             entry = pool.select()
@@ -2075,6 +2108,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
     _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
+    _snapshot["_credential_pool_entry_id"] = getattr(
+        agent, "_credential_pool_entry_id", _MISSING
+    )
 
     try:
         # Clear the per-config context_length override so the new model's
@@ -2131,6 +2167,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             # A pool bound to the old provider is worse than no pool: the
             # recovery guard rejects it and every later 401/429 skips rotation.
             agent._credential_pool = None
+            agent._credential_pool_entry_id = None
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
@@ -2140,7 +2177,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                     "continuing without pool rotation this turn",
                     new_provider, _pool_exc,
                 )
-
         # ── Build new client ──
         if (new_provider or "").strip().lower() == "moa":
             from agent.moa_loop import build_moa_facade
@@ -2236,6 +2272,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 reason="switch_model",
                 shared=True,
             )
+
+        sync_credential_pool_entry_id(agent)
     except Exception:
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the

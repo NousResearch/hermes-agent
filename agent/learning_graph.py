@@ -98,6 +98,10 @@ def _to_int_ts(value: Any) -> Optional[int]:
     try:
         if value is None:
             return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.timestamp())
         if isinstance(value, (int, float)):
             return int(value)
         s = str(value).strip()
@@ -220,6 +224,52 @@ def _memory_cards() -> list[dict[str, Any]]:
     return cards
 
 
+def _provider_memory_cards(limit: int = 1000) -> list[dict[str, Any]]:
+    """Durable entries from the active external memory provider, as cards.
+
+    Providers opt in by implementing ``MemoryProvider.journey_cards()``.
+    Best-effort by contract: no active provider, provider unavailable, hook
+    missing (older provider), backend down, or any error → ``[]``. The
+    journey must render regardless of external-backend health.
+
+    Cards are appended AFTER the file-based cards in the combined list, so
+    ``memory:<source>:<index>`` ids for ``MEMORY.md``/``USER.md`` chunks are
+    unchanged by a provider's presence (mutation index math stays valid).
+    """
+    try:
+        from plugins.memory import _get_active_memory_provider, load_memory_provider
+
+        name = _get_active_memory_provider()
+        if not name:
+            return []
+        provider = load_memory_provider(name)
+        if provider is None or not hasattr(provider, "journey_cards"):
+            return []
+        raw = provider.journey_cards(limit=limit) or []
+    except Exception:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    for entry in raw[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        body = str(entry.get("body") or "").strip()
+        if not body:
+            continue
+        title = str(entry.get("title") or "").strip()
+        if not title:
+            title = body.splitlines()[0].strip()
+        cards.append(
+            {
+                "source": name,
+                "timestamp": _to_int_ts(entry.get("timestamp")),
+                "title": (title[:80] + "…") if len(title) > 80 else title,
+                "body": body[:1200],
+            }
+        )
+    return cards
+
+
 def _tokenize(text: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if len(t) >= 3}
 
@@ -257,7 +307,9 @@ def build_learning_graph() -> dict[str, Any]:
     Focus on what is profile-learned and actionable:
     - skills that are NOT base-installed and show real learning signal
       (agent-created or used),
-    - memory chunks as first-class graph nodes connected to those learned skills.
+    - memory chunks as first-class graph nodes connected to those learned skills:
+      built-in ``MEMORY.md``/``USER.md`` cards first, then durable entries from
+      the active external memory provider (``journey_cards()``), when any.
     """
     all_skills = build_skill_nodes(_skill_roots())
     learned_skills = {
@@ -266,7 +318,7 @@ def build_learning_graph() -> dict[str, Any]:
         if node.source != "base" and (node.created_by == "agent" or node.use_count > 0)
     }
     skill_edges = build_edges(learned_skills)
-    memory_cards = _memory_cards()
+    memory_cards = _memory_cards() + _provider_memory_cards()
     memory_edges = _memory_skill_edges(memory_cards, list(learned_skills.values()))
 
     edges = skill_edges + memory_edges

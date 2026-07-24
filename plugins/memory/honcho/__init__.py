@@ -250,6 +250,63 @@ class HonchoMemoryProvider(MemoryProvider):
             pass
         return paths
 
+    def journey_cards(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Conclusions about the user peer, for the learning-journey graph.
+
+        Conclusions are Honcho's durable derived facts — the closest analog
+        to a MEMORY.md entry — each carrying a server ``created_at``, which
+        is exactly what the journey timeline buckets on.
+
+        Session-independent by contract: resolves config and builds the SDK
+        client directly (``get_honcho_client`` handles OAuth refresh, local
+        placeholder keys, and the configured request timeout), never touching
+        the session manager. Both observer scopes are read — the user's
+        self-conclusions and the AI peer's conclusions about the user — since
+        ``observation_mode`` routing (see ``_conclusions_scope``) means either
+        may hold the facts. Any failure → ``[]``, per the ABC contract.
+        """
+        try:
+            from .client import HonchoClientConfig, get_honcho_client
+
+            cfg = HonchoClientConfig.from_global_config()
+            if not cfg.enabled or not cfg.peer_name:
+                return []
+            client = get_honcho_client(cfg)
+            user_id = cfg.peer_name
+            cards: List[Dict[str, Any]] = []
+            seen: set = set()
+            for observer_id in dict.fromkeys((user_id, cfg.ai_peer)):
+                if len(cards) >= limit:
+                    break
+                try:
+                    scope = client.peer(observer_id).conclusions_of(user_id)
+                    # Iterating the page object auto-paginates (SyncPage) —
+                    # .items alone would silently cap the scope at one page
+                    # and hide older conclusions (e.g. a bulk history import)
+                    # from the timeline. The early break stops lazy fetches.
+                    page_iter = scope.list(size=100)
+                except Exception:
+                    continue  # one scope failing must not hide the other
+                try:
+                    for c in page_iter:
+                        content = str(getattr(c, "content", "") or "").strip()
+                        cid = getattr(c, "id", None)
+                        if not content or (cid and cid in seen):
+                            continue
+                        if cid:
+                            seen.add(cid)
+                        cards.append({
+                            "body": content,
+                            "timestamp": getattr(c, "created_at", None),
+                        })
+                        if len(cards) >= limit:
+                            break
+                except Exception:
+                    continue  # mid-pagination failure keeps what we have
+            return cards
+        except Exception:
+            return []
+
     def __init__(self, query_rewriter: Optional[Callable[[str], str]] = None):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig

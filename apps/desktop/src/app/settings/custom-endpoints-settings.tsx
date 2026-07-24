@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
-import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -164,7 +164,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
         notify({
           kind: 'success',
-          message: response.models.length ? copy.reachableModels(response.models.length) : copy.reachable
+          message: response.models.length
+            ? copy.reachableModels(response.models.length)
+            : copy.reachable
         })
       } else {
         notify({
@@ -219,7 +221,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   if (loading) {
-    return <LoadingState label={copy.loading} />
+    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
   }
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))

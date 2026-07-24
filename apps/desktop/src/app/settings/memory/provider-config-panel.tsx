@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
@@ -8,7 +9,7 @@ import { SlidersHorizontal } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
-import { ListRow, LoadingState, Pill } from '../primitives'
+import { ListRow, Pill } from '../primitives'
 
 import { FieldControl, FieldTitle } from './field-control'
 import { ProviderConfigModal } from './provider-config-modal'
@@ -98,7 +99,7 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
       )
     }
 
-    return <LoadingState label={copy.loading} />
+    return <PageLoader className="min-h-24" label={copy.loading} />
   }
 
   const inlineFields = config.fields.filter(field => field.inline)

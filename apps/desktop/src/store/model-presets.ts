@@ -4,6 +4,7 @@ import { persistString, storedString } from '@/lib/storage'
 
 import { notifyError } from './notifications'
 import { setCurrentFastMode, setCurrentReasoningEffort } from './session'
+import { sessionTileDelegate } from './session-states'
 
 const STORAGE_KEY = 'hermes.desktop.model-presets'
 
@@ -55,17 +56,28 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
  *  `undefined` skips that dimension; values are capability-gated upstream.
  *  Without a session the local draft still needs the preset, but must not call
  *  `config.set`: that falls back to persistent profile config when no session
- *  matches and would rewrite the user's defaults. */
+ *  matches and would rewrite the user's defaults.
+ *
+ *  `primary: false` scopes the optimistic write to the tile's session slice —
+ *  a tile's picker must not clobber the primary composer's effort/fast. */
 export async function applyModelPreset(
   { effort, fast }: ModelPreset,
-  ctx: { failMessage: string; request: RequestGateway; sessionId: null | string }
+  ctx: { failMessage: string; primary?: boolean; request: RequestGateway; sessionId: null | string }
 ): Promise<void> {
-  if (effort !== undefined) {
-    setCurrentReasoningEffort(effort)
-  }
+  if (ctx.primary ?? true) {
+    if (effort !== undefined) {
+      setCurrentReasoningEffort(effort)
+    }
 
-  if (fast !== undefined) {
-    setCurrentFastMode(fast)
+    if (fast !== undefined) {
+      setCurrentFastMode(fast)
+    }
+  } else if (ctx.sessionId) {
+    sessionTileDelegate()?.updateSession(ctx.sessionId, state => ({
+      ...state,
+      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+      ...(fast !== undefined ? { fast } : {})
+    }))
   }
 
   if (!ctx.sessionId) {

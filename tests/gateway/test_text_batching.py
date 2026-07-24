@@ -278,9 +278,9 @@ class TestMatrixTextBatching:
 
     @pytest.mark.asyncio
     async def test_adaptive_delay_for_near_limit_chunk(self):
-        """Chunks near the 4000-char limit should trigger longer delay."""
+        """Chunks near the outbound limit should trigger longer delay."""
         adapter = _make_matrix_adapter()
-        long_text = "x" * 3950
+        long_text = "x" * (adapter._split_threshold + 50)
         adapter._enqueue_text_event(_make_event(long_text, Platform.MATRIX))
 
         await asyncio.sleep(0.15)

@@ -12,7 +12,7 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
-import { translateNow } from '@/i18n'
+import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -77,6 +77,7 @@ export interface DesktopOnboardingState {
 
 export interface OnboardingContext {
   onCompleted?: () => void
+  profile?: string
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -185,23 +186,26 @@ async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string):
 }
 
 function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
-  // A fallback result means both runtime probes were non-authoritative
-  // (transport timeout/disconnect). Keep a previously verified configured
-  // state instead of forcing the blocking onboarding overlay.
+  // Non-authoritative transport fallback only — keep a previously verified
+  // configured state instead of forcing the blocking onboarding overlay.
   return runtime.source === 'fallback' && state.configured === true && !state.requested
 }
 
 function notifyReady(provider: string) {
-  notify({
-    kind: 'success',
-    title: translateNow('onboarding.readyTitle'),
-    message: translateNow('onboarding.providerConnected', provider)
-  })
+  notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
 }
 
 // Human-friendly labels for tools auto-routed through the Nous Tool Gateway,
 // mirroring hermes_cli/nous_subscription._GATEWAY_TOOL_LABELS so the GUI and
 // CLI describe the same thing.
+const GATEWAY_TOOL_LABELS: Record<string, string> = {
+  browser: 'browser automation',
+  image_gen: 'image generation',
+  tts: 'text-to-speech',
+  video_gen: 'video generation',
+  web: 'web search & extract'
+}
+
 // When switching to Nous auto-routes unconfigured tools through the Tool
 // Gateway, tell the user which ones — same information the CLI prints. Silent
 // when nothing changed (subscriber already configured, has own keys, etc.).
@@ -210,18 +214,14 @@ function notifyGatewayTools(tools: string[] | undefined) {
     return
   }
 
-  const labels = tools.map(tool => {
-    const key = `onboarding.gatewayToolLabels.${tool}`
-    const label = translateNow(key)
-
-    return label === key ? tool : label
-  })
+  const labels = tools.map(t => GATEWAY_TOOL_LABELS[t] ?? t)
+  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
 
   notify({
     durationMs: 8000,
     kind: 'info',
-    message: translateNow('onboarding.gatewayToolsMessage', labels),
-    title: translateNow('onboarding.gatewayToolsTitle')
+    message: `${list} now run through your Nous subscription — no separate API keys needed.`,
+    title: 'Tool Gateway enabled'
   })
 }
 
@@ -390,6 +390,16 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
 }
 
+export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
+  const warning = reason?.trim()
+
+  if (!warning || !isProviderSetupErrorMessage(warning)) {
+    return
+  }
+
+  requestDesktopOnboarding(warning)
+}
+
 // Open the onboarding provider selector on demand from an already-configured
 // app — e.g. the model picker's "Add provider" button. Reuses the entire
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
@@ -525,8 +535,9 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
     notify({
       id: 'runtime-not-ready',
       kind: 'error',
-      title: translateNow('onboarding.runtimeNotReadyTitle'),
-      message: translateNow('onboarding.runtimeNotReadyMessage')
+      title: 'Runtime not ready',
+      message:
+        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
     })
 
     return false
@@ -746,7 +757,7 @@ export async function saveOnboardingApiKey(
   const trimmed = value.trim()
 
   if (!trimmed) {
-    return { ok: false, message: translateNow('onboarding.enterValueFirst') }
+    return { ok: false, message: 'Enter a value first.' }
   }
 
   // The "Local / custom endpoint" option carries a base URL (in `value`) plus
@@ -776,7 +787,7 @@ export async function saveOnboardingApiKey(
 
     return { ok: true }
   } catch (error) {
-    notifyError(error, translateNow('onboarding.saveProviderFailed', label))
+    notifyError(error, `Could not save ${label}`)
 
     return { ok: false, message: errMessage(error) }
   }
@@ -803,7 +814,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   const key = apiKey.trim()
 
   if (!url) {
-    return { ok: false, message: translateNow('onboarding.enterEndpointFirst') }
+    return { ok: false, message: 'Enter the endpoint URL first.' }
   }
 
   // Probe connectivity + discover the served models. Any HTTP response proves
@@ -815,22 +826,22 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
 
     if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || translateNow('onboarding.endpointUnreachable', url) }
+      return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
     }
 
     if (!probe.reachable) {
-      return { ok: false, message: probe.message || translateNow('onboarding.endpointUnreachable', url) }
+      return { ok: false, message: probe.message || `Could not reach ${url}.` }
     }
 
     model = (probe.models?.[0] ?? '').trim()
   } catch {
-    return { ok: false, message: translateNow('onboarding.endpointUnreachable', url) }
+    return { ok: false, message: `Could not reach ${url}.` }
   }
 
   if (!model) {
     return {
       ok: false,
-      message: translateNow('onboarding.endpointNoModels', url)
+      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
     }
   }
 
@@ -843,16 +854,16 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
 
-      return { ok: false, message: detail || translateNow('onboarding.endpointSavedUnreachable', url) }
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
     }
 
-    notifyReady(translateNow('onboarding.localEndpoint'))
+    notifyReady('Local / custom endpoint')
     completeDesktopOnboarding()
     ctx.onCompleted?.()
 
     return { ok: true }
   } catch (error) {
-    notifyError(error, translateNow('onboarding.saveLocalEndpointFailed'))
+    notifyError(error, 'Could not save local endpoint')
 
     return { ok: false, message: errMessage(error) }
   }
@@ -883,7 +894,7 @@ export async function setOnboardingModel(model: string) {
       setFlow({ ...current, currentModel: model, saving: false })
     }
   } catch (error) {
-    notifyError(error, translateNow('onboarding.changeModelFailed'))
+    notifyError(error, 'Could not change model')
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {

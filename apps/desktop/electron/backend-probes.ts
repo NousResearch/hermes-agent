@@ -104,6 +104,16 @@ function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, str
  *   in resolveHermesBackend.
  * @returns {boolean}
  */
+/**
+ * An explicit desktop backend command is a deployment contract, not a PATH
+ * discovery candidate. In particular, the Nix desktop wrapper points this at
+ * its immutable, matching Hermes package; it must never fall through to the
+ * mutable install-script bootstrap path if a best-effort probe is slow.
+ */
+function shouldTrustHermesOverride(hermesOverride?: string) {
+  return typeof hermesOverride === 'string' && hermesOverride.trim().length > 0
+}
+
 function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   if (!hermesCommand) {
     return false
@@ -123,4 +133,4 @@ function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   }
 }
 
-export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, verifyHermesCli }
+export { canImportHermesCli, hermesRuntimeImportProbe, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli }

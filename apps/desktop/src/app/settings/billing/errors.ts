@@ -136,7 +136,9 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
     case 'endpoint_unavailable':
       return {
         action: { type: 'retry' },
-        message: refusal.message || translateNow('settings.billing.errors.endpointUnavailableMessage'),
+        message:
+          refusal.message ||
+          translateNow('settings.billing.errors.endpointUnavailableMessage'),
         title: translateNow('settings.billing.errors.endpointUnavailableTitle')
       }
 

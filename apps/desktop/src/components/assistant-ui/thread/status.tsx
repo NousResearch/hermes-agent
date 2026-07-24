@@ -72,6 +72,7 @@ export const ResponseLoadingIndicator: FC = () => {
 
   return (
     <StatusRow
+      className="text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height)"
       data-slot="aui_response-loading"
       label={compacting ? t.assistant.thread.summarizing : t.assistant.thread.loadingResponse}
     >

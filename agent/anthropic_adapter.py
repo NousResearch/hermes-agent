@@ -127,6 +127,8 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
     "claude-fable":      128_000,
+    # Claude Sonnet 5
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8":   128_000,
     # Claude 4.7
@@ -455,7 +457,8 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
 
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
-# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``
+# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
+#   and the bare Coding Plan slug ``k3`` (plus ``k3.x``/``k3-...`` variants)
 # Matched case-insensitively against the post-``normalize_model_name`` form,
 # so a caller's ``provider/vendor/model`` slug is handled the same as a
 # bare name.
@@ -465,7 +468,13 @@ _KIMI_FAMILY_MODEL_PREFIXES = (
     "k1.", "k1-",
     "k2.", "k2-",
     "k25", "k2.5",
+    "k3.", "k3-",
 )
+
+# Bare release slugs with no separator suffix (Kimi Coding Plan serves K3
+# as the exact slug ``k3``). Kept exact-match so unrelated model names that
+# merely start with the same characters don't get misclassified.
+_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
 
 
 def _model_name_is_kimi_family(model: str | None) -> bool:
@@ -477,6 +486,8 @@ def _model_name_is_kimi_family(model: str | None) -> bool:
     # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
     if "/" in m:
         m = m.rsplit("/", 1)[-1]
+    if m in _KIMI_FAMILY_EXACT_SLUGS:
+        return True
     return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
 
 
@@ -1580,7 +1591,10 @@ def _is_bedrock_model_id(model: str) -> bool:
     """
     lower = model.lower()
     # Regional inference-profile prefixes
-    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+    if any(lower.startswith(p) for p in (
+        "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.",
+        "ca.", "sa.", "me.", "af.",
+    )):
         return True
     # Bare Bedrock model IDs: provider.model-family
     if lower.startswith("anthropic."):
@@ -1867,6 +1881,28 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     return out
 
 
+_EMPTY_TEXT_PLACEHOLDER = "(empty)"
+
+
+def _safe_text(text: Any) -> str:
+    """Return ``text`` if it's non-whitespace, else a non-whitespace placeholder.
+
+    The Anthropic Messages API rejects requests where a text content block is
+    empty or whitespace-only (HTTP 400 "text content blocks must contain
+    non-whitespace text"). When such a block gets stored in session history —
+    e.g. produced by context compression — it is replayed verbatim on every
+    subsequent turn, permanently wedging the session. Coercing to a
+    non-whitespace placeholder is self-healing: the next API call recovers.
+
+    Mirrors ``bedrock_adapter._safe_text`` (#9486); ref #69512.
+    """
+    if text is None:
+        return _EMPTY_TEXT_PLACEHOLDER
+    if not isinstance(text, str):
+        text = str(text)
+    return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
+
+
 def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Strip output-only fields from a stored Anthropic content block so it is
     valid as REQUEST input on replay.
@@ -1884,7 +1920,10 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     btype = b.get("type")
     if btype == "text":
-        out: Dict[str, Any] = {"type": "text", "text": b.get("text", "")}
+        # Coerce empty/whitespace-only text to a non-whitespace placeholder;
+        # the Messages input schema rejects blank text blocks (#69512), and a
+        # blank block stored in history replays on every turn → permanent 400.
+        out: Dict[str, Any] = {"type": "text", "text": _safe_text(b.get("text", ""))}
         # citations is input-valid ONLY when it's a non-empty list; the SDK
         # emits citations=None on responses, which the input schema rejects.
         cits = b.get("citations")
@@ -2044,7 +2083,16 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # Anthropic rejects empty assistant content
     effective = blocks or content
     if not effective or effective == "":
-        effective = [{"type": "text", "text": "(empty)"}]
+        effective = [{"type": "text", "text": _EMPTY_TEXT_PLACEHOLDER}]
+    elif isinstance(effective, list):
+        # The all-empty guard above misses a list that still contains a
+        # whitespace-only text block (e.g. from a content array of blank parts,
+        # or compression). Those also trip "text content blocks must contain
+        # non-whitespace text" (#69512). Coerce text blocks in place; other
+        # block types (thinking/tool_use/image) are left untouched.
+        for blk in effective:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                blk["text"] = _safe_text(blk.get("text", ""))
     return {"role": "assistant", "content": effective}
 
 
@@ -2398,6 +2446,24 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
                 ]
 
 
+def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:
+    """Anthropic requires messages[0] to have role=user.
+
+    After a second context compaction on the auto path the summary can be
+    emitted as role=assistant with nothing in front of it (the system prompt
+    lives outside messages[] or is extracted into the separate ``system``
+    param), so messages[0] ends up assistant and the Messages API rejects
+    the request with HTTP 400 — often masked by a misleading
+    "tool_use ids were found without tool_result blocks" error (#52160).
+
+    Mirror the Bedrock Converse adapter, which unconditionally prepends a
+    minimal user turn when the first message is not user
+    (convert_messages_to_converse).
+    """
+    if result and result[0].get("role") != "user":
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -2456,6 +2522,7 @@ def convert_messages_to_anthropic(
 
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
+    _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
 

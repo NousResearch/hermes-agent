@@ -36,12 +36,16 @@ export const zh: Translations = {
     replace: '替换',
     retry: '重试',
     run: '运行',
+    search: '搜索',
     send: '发送',
     set: '设置',
     skip: '跳过',
     stop: '停止',
     update: '更新',
     view: '查看',
+    exitCode: code => `退出 ${code}`,
+    imagePreviewFailed: '图片预览加载失败',
+    openImage: '打开图片',
     tryHint: term => `试试“${term}”`,
     on: '开',
     off: '关'
@@ -131,6 +135,7 @@ export const zh: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
+      gatewayAuthFailed: '网关认证失败 — 请检查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
@@ -166,12 +171,22 @@ export const zh: Translations = {
       turnDoneBody: '回复已就绪。',
       turnErrorTitle: '本轮失败',
       backgroundDoneTitle: '后台任务已完成',
-      backgroundFailedTitle: '后台任务失败'
+      backgroundFailedTitle: '后台任务失败',
+      creditsTitle: '额度'
     }
   },
 
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous 额度已用尽',
+    titleProvider: provider => `额度已用尽 — ${provider}`,
+    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
+    openBilling: '打开账单',
+    addCredits: '添加额度',
+    dismiss: '忽略'
   },
 
   titlebar: {
@@ -222,7 +237,7 @@ export const zh: Translations = {
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
       'session.newTab': '新建会话标签',
-      'session.newWindow': '在新窗口中新建会话',
+      'session.newWindow': '新建窗口',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',
@@ -276,6 +291,7 @@ export const zh: Translations = {
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
+      'composer.queue': '消息排队',
       'composer.sendQueued': '发送下一条排队消息',
       'composer.mention': '引用文件、文件夹、网址',
       'composer.slash': '斜杠命令面板',
@@ -359,7 +375,23 @@ export const zh: Translations = {
       newEndpoint: '新建端点'
     },
     billing: {
+      tryAgain: '重试',
       title: '账单',
+      checkingPlanChange: '正在检查此变更…',
+      planChangeBlocked: '此处无法执行该变更。',
+      alreadyOnPlan: tier => `你当前已经在 ${tier} 套餐中，无需变更。`,
+      scheduledPlanChange: (tier, date, credits) =>
+        `将变更为 ${tier}，于 ${date} 生效。现在不会收费；在此之前你将继续使用当前套餐。${credits ? `每月额度变化：${credits}。` : ''}`,
+      planChangeUnavailable: '此处无法安排该变更。',
+      scheduling: '正在安排…',
+      confirmDowngrade: '确认降级',
+      currentPlan: '当前套餐',
+      scheduled: '已安排',
+      downgrade: '降级',
+      backToBilling: '返回账单',
+      plans: '套餐',
+      plansUnavailable: '当前没有可变更到的套餐。',
+      perMonth: '/月',
       account: '账户',
       usage: '用量',
       invoices: '发票',
@@ -467,16 +499,16 @@ export const zh: Translations = {
         stripeTrouble: 'Stripe 暂时异常，请稍后重试',
         confirmCard: '请在门户中确认此卡可用于终端充值',
         cardConfirmationNeeded: '需要确认银行卡',
-        terminalBillingApprovalMessage: '需要启用终端账单。请先充值以启用，然后重试。',
-        terminalBillingApprovalTitle: '终端账单需要批准',
-        adminDisabledTerminalBilling: '管理员已关闭此终端的终端账单。',
-        youDisabledTerminalBilling: '你已关闭此终端的终端账单。',
+        terminalBillingApprovalMessage: '需要允许远程消费。请先发起充值以授权，然后重试。',
+        terminalBillingApprovalTitle: '远程消费需要批准',
+        adminDisabledTerminalBilling: '管理员已停止此终端的远程消费。',
+        youDisabledTerminalBilling: '你已停止此终端的远程消费。',
         reauthorizeDevice: message => `${message} 请从“设置 → 网关”重新连接并授权此设备。`,
-        terminalBillingOffTitle: '终端账单已关闭',
+        terminalBillingOffTitle: '远程消费已停止',
         sessionLoggedOutMessage: '会话已退出登录，请从“设置 → 网关”重新登录。',
         sessionLoggedOutTitle: '会话已退出',
-        terminalBillingDisabledMessage: '此账户的终端账单已关闭，需要管理员在门户中启用。',
-        terminalBillingDisabledTitle: '终端账单已关闭',
+        terminalBillingDisabledMessage: '此账户的远程消费已关闭，需要账单管理员在门户的 Hermes Agent 页面中启用。',
+        terminalBillingDisabledTitle: '远程消费已关闭',
         adminRoleMessage: '充值需要组织管理员或所有者权限，请联系管理员或在门户中管理。',
         adminRoleTitle: '需要管理员权限',
         idempotencyMessage: '🔴 此充值标识已用于另一金额，请重新发起充值。',
@@ -545,6 +577,10 @@ export const zh: Translations = {
         backgroundDone: {
           label: '后台任务完成',
           description: '后台终端命令已完成。'
+        },
+        credits: {
+          label: '额度提醒',
+          description: '额度访问被暂停或恢复。'
         }
       },
       test: '发送测试通知',
@@ -703,6 +739,11 @@ export const zh: Translations = {
         personality: '人格',
         showReasoning: '推理过程块'
       },
+      desktop: {
+        repoScanEnabled: '自动发现代码仓库',
+        repoScanRoots: '代码仓库扫描根目录',
+        repoScanExcludePaths: '排除的代码仓库路径'
+      },
       agent: {
         maxTurns: '最大智能体步数',
         imageInputMode: '图片附件',
@@ -858,6 +899,11 @@ export const zh: Translations = {
         personality: '新会话的默认助手风格。',
         showReasoning: '当后端提供推理内容时予以显示。'
       },
+      desktop: {
+        repoScanEnabled: '扫描本地文件夹，并在“项目”中显示 Git 代码仓库。',
+        repoScanRoots: '要扫描的文件夹。留空时扫描主目录。',
+        repoScanExcludePaths: '发现代码仓库时跳过这些文件夹及其子目录。'
+      },
       timezone: '当 Hermes 需要本地时间上下文时使用。留空则使用系统时区。',
       agent: {
         imageInputMode: '控制图片附件如何发送给模型。',
@@ -945,7 +991,9 @@ export const zh: Translations = {
       failedLoad: '设置加载失败',
       autosaveFailed: '自动保存失败',
       imported: '配置已导入',
-      invalidJson: '配置 JSON 无效'
+      invalidJson: '配置 JSON 无效',
+      keepAwakeTitle: '保持电脑唤醒',
+      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。'
     },
     credentials: {
       pasteKey: '粘贴密钥',
@@ -1062,7 +1110,42 @@ export const zh: Translations = {
       signOutFailed: '退出登录失败',
       testFailed: '远程网关测试失败',
       applyFailed: '无法应用网关设置',
-      saveFailed: '无法保存网关设置'
+      saveFailed: '无法保存网关设置',
+      sshTitle: '通过 SSH 连接',
+      sshDesc:
+        'Hermes 会通过 SSH 在远程启动并以隧道连接到本应用——无需自行启动或暴露任何服务。前提：已具备到该主机的密钥 SSH 访问。',
+      sshTrustHint: '首次提供的主机密钥会被信任并固定；后续变更将被拒绝。',
+      sshHostTitle: '主机',
+      sshHostDesc: 'user@host，或 ~/.ssh/config 中的 Host 别名。',
+      sshHostPick: '选择主机…',
+      sshHostPickTitle: '主机',
+      sshHostPickDesc: '~/.ssh/config 中的 Host 别名，或选择"自定义"手动输入。',
+      sshHostCustom: '自定义（手动输入）…',
+      sshUserTitle: '用户',
+      sshUserDesc: '留空 = ~/.ssh/config 或当前用户。',
+      sshUserPlaceholder: '来自 ~/.ssh/config',
+      sshPortTitle: '端口',
+      sshPortDesc: '留空 = 22 或 ~/.ssh/config 中的端口。',
+      sshKeyTitle: '密钥文件',
+      sshKeyDesc: '私钥路径。留空 = ssh-agent 或 ~/.ssh/config。',
+      sshHermesPathTitle: 'Hermes 路径（可选）',
+      sshHermesPathDesc: '远程 hermes 可执行文件的完整路径。留空 = 自动检测。',
+      sshHermesPathPlaceholder: '自动检测',
+      sshTestConnection: '测试 SSH',
+      sshConnect: '连接',
+      sshButtonsHint: '“保存”将在下次启动时生效，“连接”则立即重新连接。',
+      sshReachable: (host, platform) => `可连接：${host}（${platform}）——已找到 Hermes`,
+      sshIncompleteHost: '连接前请输入 SSH 主机。',
+      sshErrUnreachable: '无法通过 SSH 连接到该主机。请检查主机、端口和网络。',
+      sshErrAuth:
+        'SSH 认证失败。请将密钥加载到 ssh-agent（ssh-add），或在 ~/.ssh/config 中设置 IdentityFile——Hermes 以非交互方式运行 ssh。',
+      sshErrHostKey: '自上次连接以来主机密钥已更改。请确认这是预期的，然后运行 ssh-keygen -R <host> 并重新连接。',
+      sshErrNotInstalled:
+        '远程主机上未安装 Hermes。请在远程安装（curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh）或设置 Hermes 路径。',
+      sshErrPlatform: '不支持的远程平台。Hermes Desktop 的 SSH 模式支持 Linux、macOS 和 Windows 远程主机。',
+      sshErrTimeout: 'SSH 连接超时。主机可能无法访问或处于休眠状态。',
+      sshErrUpdateRequired: '使用 Desktop SSH 连接前，请更新远程主机上的 Hermes。',
+      sshErrUnknown: 'SSH 连接失败。'
     },
     keys: {
       loading: '正在加载 API 密钥和凭据...',
@@ -1568,6 +1651,7 @@ export const zh: Translations = {
     ageSeconds: seconds => `${seconds} 秒前`,
     ageMinutes: minutes => `${minutes} 分钟前`,
     ageHours: hours => `${hours} 小时前`,
+    ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 词元`
@@ -2359,6 +2443,7 @@ export const zh: Translations = {
     urlHintPre: '请包含完整 URL，例如 ',
     attach: '附加',
     queued: count => `${count} 条排队`,
+    queuedPaused: count => `${count} 条排队 — 已暂停`,
     attachmentOnly: '仅附件回合',
     emptyTurn: '空回合',
     attachments: count => `${count} 个附件`,
@@ -2368,6 +2453,8 @@ export const zh: Translations = {
     queueSendNext: '下一个',
     queueSend: '发送',
     queueDelete: '删除',
+    queueResume: '继续',
+    queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     previewUnavailable: '预览不可用',
@@ -2676,7 +2763,8 @@ export const zh: Translations = {
     proNeedsSubscription: 'Pro 模型需要付费 Nous 订阅。',
     free: '免费',
     freeTier: '免费层',
-    priceTitle: '每百万 token 的输入/输出价格'
+    priceTitle: '每百万 token 的输入/输出价格',
+    wasPrice: '原价'
   },
 
   modelVisibility: {
@@ -2748,6 +2836,12 @@ export const zh: Translations = {
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,
+      connectionSsh: host => `SSH: ${host}`,
+      connectionRemote: host => `远程: ${host}`,
+      connectionCloud: host => `云端: ${host}`,
+      connectionCloudTooltip: host => `已连接到 Hermes Cloud ${host} · 点击管理`,
+      connectionSshTooltip: host => `已通过 SSH 连接到 ${host} · 点击管理`,
+      connectionRemoteTooltip: host => `已连接到远程后端 ${host} · 点击管理`,
       backendLabel: version => `后端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
@@ -2948,6 +3042,7 @@ export const zh: Translations = {
     closeOthers: '关闭其他',
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',
+    newSessionTab: '新建会话标签',
     split: dir => `向${dir}拆分`,
     move: dir => `向${dir}移动`,
     dirUp: '上',
@@ -3052,7 +3147,10 @@ export const zh: Translations = {
       placeholder: '输入你的答案…',
       skip: '跳过',
       skipped: '已跳过',
-      continueLabel: '继续'
+      continueLabel: '继续',
+      lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
+      lateAnswerTip: '将此回答起草为后续消息',
+      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     tool: {
       code: '代码',

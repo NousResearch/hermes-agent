@@ -9,6 +9,8 @@
 
 import { PixelEggSprite } from '@/components/pet/pixel-egg-sprite'
 import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import { useI18n } from '@/i18n'
 
 interface PetEggHatchProps {
   subtitle?: string
@@ -22,23 +24,19 @@ interface PetEggHatchProps {
  * return together, so a count would just snap 0→100).
  */
 export function PetProgress({ done, total }: { done?: number; total?: number }) {
+  const { t } = useI18n()
   const determinate = typeof done === 'number' && typeof total === 'number' && total > 0
-  const pct = determinate ? Math.min(100, Math.round((done / total) * 100)) : 0
 
   return (
-    <div
-      aria-valuemax={100}
-      aria-valuemin={0}
-      aria-valuenow={determinate ? pct : undefined}
-      className="pet-progress"
-      role="progressbar"
-    >
-      {determinate ? (
-        <div className="pet-progress__fill" style={{ width: `${pct}%` }} />
-      ) : (
-        <div className="pet-progress__indeterminate" />
-      )}
-    </div>
+    <Progress
+      animated
+      aria-label={t.commandCenter.generatePet.hatching}
+      className="bg-[color-mix(in_srgb,var(--ui-accent)_15%,transparent)]"
+      fillClassName="bg-(--ui-accent)"
+      indeterminate={!determinate}
+      size="sm"
+      value={determinate ? done / total : 0}
+    />
   )
 }
 

@@ -46,6 +46,41 @@ def _auto_config() -> dict:
     }
 
 
+def test_pre_turn_named_custom_provider_identity_selects_vision_override(monkeypatch):
+    """Gateway preprocessing must use the name retained by runtime resolution."""
+    runner = _make_runner()
+    cfg = {
+        "agent": {"image_input_mode": "auto"},
+        "model": {"provider": "default-proxy", "default": "shared-model"},
+        "custom_providers": [
+            {
+                "name": "default-proxy",
+                "models": {"shared-model": {"supports_vision": False}},
+            },
+            {
+                "name": "vision-provider",
+                "models": {"shared-model": {"supports_vision": True}},
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        runner,
+        "_resolve_session_agent_runtime",
+        lambda **_: (
+            "shared-model",
+            {
+                "provider": "custom",
+                "requested_provider": "vision-provider",
+            },
+        ),
+    )
+
+    assert runner._decide_image_input_mode(
+        source=_source(),
+        user_config=cfg,
+    ) == "native"
+
+
 @pytest.mark.asyncio
 async def test_prepare_image_routing_uses_session_vision_model_override(monkeypatch):
     """Telegram /model overrides must affect native-vs-text image routing.

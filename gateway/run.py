@@ -2305,6 +2305,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        # Per-provider request_overrides (e.g. a custom_providers ``extra_body``
+        # carrying ``chat_template_kwargs``) resolved by resolve_runtime_provider().
+        # Must flow through to the per-turn route or the provider's configured
+        # request body never reaches the model on the gateway path.
+        "request_overrides": runtime.get("request_overrides"),
     }
 
 
@@ -2388,6 +2393,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
+                    "request_overrides": runtime.get("request_overrides"),
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -4368,6 +4374,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
+                "request_overrides": override.get("request_overrides"),
                 "credential_pool": override.get("credential_pool"),
             }
             if override_runtime.get("api_key"):
@@ -4491,6 +4498,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled and the model supports Priority Processing / Anthropic fast
         mode, attach `request_overrides` so the API call is marked
         accordingly.
+
+        Per-provider ``request_overrides`` resolved by
+        ``resolve_runtime_provider`` (e.g. a ``custom_providers`` ``extra_body``
+        carrying ``chat_template_kwargs``) are preserved here and merged *under*
+        the fast-mode overrides, so a provider's configured request body still
+        reaches the model on the gateway turn path.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -4519,16 +4532,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ),
         }
 
+        # Provider-level request_overrides (e.g. a custom_providers extra_body)
+        # resolved upstream by resolve_runtime_provider().  These were being
+        # dropped by the runtime whitelist above, so a custom provider's
+        # configured extra_body (chat_template_kwargs, etc.) never reached the
+        # model on the gateway path -- only /fast service-tier overrides did.
+        provider_overrides = runtime_kwargs.get("request_overrides") or {}
+
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = dict(provider_overrides)
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        # Fast-mode overrides (service_tier / speed) are top-level keys and do
+        # not collide with extra_body; layer them over the provider overrides.
+        route["request_overrides"] = {**provider_overrides, **(overrides or {})}
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -18532,6 +18554,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        # request_overrides reflects the switched-to provider; apply it even
+        # when None so switching to a provider without one clears a stale value.
+        if "request_overrides" in override:
+            runtime_kwargs["request_overrides"] = override.get("request_overrides")
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None

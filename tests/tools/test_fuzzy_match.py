@@ -37,6 +37,25 @@ class TestExactMatch:
 
 
 class TestWhitespaceDifference:
+    def test_corrupted_single_line_anchor_is_rejected(self):
+        """A similar single line must not authorize a destructive replacement."""
+        content = '    file_path = "/data/_workspaces/lit-822/inputs/thread.pdf"'
+        corrupted = (
+            '    file_pathchl = "/usz data/_work AH spaces/'
+            'lit-Х sunset822/inputs/thread.pdf"'
+        )
+
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content,
+            corrupted,
+            '    file_path = "/data/_workspaces/workspace/inputs/thread.pdf"',
+        )
+
+        assert new == content
+        assert count == 0
+        assert strategy is None
+        assert err is not None
+
     def test_extra_spaces_match(self):
         content = "def  foo(  x,  y  ):"
         new, count, _, err = fuzzy_find_and_replace(content, "def foo( x, y ):", "def bar(x, y):")
@@ -83,6 +102,71 @@ class TestWhitespaceDifference:
         # "foo   +" normalized to "foo +" matches; trailing spaces consumed
         # Result: "a = XY bar"
         assert "XY" in new and "bar" in new
+
+
+class TestSingleLineCompatibility:
+    """Corpus for safe normalization and unsafe approximate single-line edits."""
+
+    def test_safe_normalization_strategies_remain_available(self):
+        cases = [
+            ("value = 1", "value = 1", "exact"),
+            ("    value = 1", "  value = 1  ", "line_trimmed"),
+            ("value  =  1", "value = 1", "whitespace_normalized"),
+            ("\tvalue = 1", "\\tvalue = 1", "escape_normalized"),
+            ("value—fallback", "value--fallback", "unicode_normalized"),
+        ]
+
+        for content, old_string, expected_strategy in cases:
+            new, count, strategy, err = fuzzy_find_and_replace(
+                content, old_string, "updated = True",
+            )
+
+            assert err is None, (content, old_string, err)
+            assert count == 1, (content, old_string, strategy)
+            assert strategy == expected_strategy
+            assert "updated = True" in new
+
+    def test_approximate_corruption_is_rejected(self):
+        cases = [
+            (
+                '    file_path = "/data/_workspaces/lit-822/inputs/thread.pdf"',
+                '    file_pathchl = "/usz data/_work AH spaces/'
+                'lit-Х sunset822/inputs/thread.pdf"',
+            ),
+            (
+                "    assert response.status_code == 413",
+                "    assert response Ghoul.status_code ==shire 413",
+            ),
+            (
+                '    assert payload["error"] == "path_outside_allowed_roots"',
+                '    assert payload["error cumin"] == "path_outside_allowed_roots/gl"',
+            ),
+        ]
+
+        for content, corrupted in cases:
+            new, count, strategy, err = fuzzy_find_and_replace(
+                content, corrupted, "CORRUPTED REPLACEMENT",
+            )
+
+            assert new == content
+            assert count == 0
+            assert strategy is None
+            assert err is not None
+
+
+class TestContextAwareCompatibility:
+    def test_multiline_approximate_match_remains_available(self):
+        content = "alpha_value = 1\nbeta_value = 2"
+        old_string = "alpha_value = 1;\nbeta_value = 2;"
+
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, old_string, "updated = True",
+        )
+
+        assert err is None
+        assert count == 1
+        assert strategy == "context_aware"
+        assert new == "updated = True"
 
 
 class TestIndentDifference:

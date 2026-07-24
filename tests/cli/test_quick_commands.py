@@ -128,6 +128,28 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
+    def test_plugin_command_receives_none_context_and_preserves_raw_args(self):
+        """Classic CLI supplies no gateway provenance to opted-in handlers."""
+        cli = self._make_cli({})
+        received = []
+
+        def handler(raw_args, *, command_context):
+            received.append((raw_args, command_context))
+            return "ok"
+
+        with (
+            patch("cli._get_plugin_cmd_handler_names", return_value={"audit"}),
+            patch(
+                "hermes_cli.plugins.get_plugin_command_handler",
+                return_value=handler,
+            ),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            assert cli.process_command("/audit preserve these args") is True
+
+        assert received == [("preserve these args", None)]
+        mock_cprint.assert_called_once_with("ok")
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 

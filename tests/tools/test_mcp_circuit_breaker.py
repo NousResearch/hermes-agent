@@ -150,7 +150,7 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         result = handler({})
         parsed = json.loads(result)
         assert "error" in parsed, parsed
-        assert "unreachable" in parsed["error"].lower()
+        assert "unavailable" in parsed["error"].lower()
         assert call_count["n"] == 0, (
             "breaker should short-circuit before cooldown elapses"
         )
@@ -213,7 +213,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         # immediate call should short-circuit, not invoke session again.
         result = handler({})
         parsed = json.loads(result)
-        assert "unreachable" in parsed.get("error", "").lower()
+        assert "unavailable" in parsed.get("error", "").lower()
         assert call_count["n"] == 1, (
             "breaker should re-open and block further calls after probe failure"
         )

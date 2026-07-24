@@ -36,6 +36,14 @@ def _raw_email(sender="user@test.com", subject="Hello"):
     return msg.as_bytes()
 
 
+class TestLongMessageDelivery(unittest.TestCase):
+    """Email accepts full cron bodies instead of the 4,000-char chat cap."""
+
+    def test_email_declares_long_message_support(self):
+        adapter = _make_adapter()
+        self.assertIs(adapter.splits_long_messages, True)
+
+
 class TestImapResponseGuard(unittest.TestCase):
     """_fetch_new_messages skips messages with unexpected IMAP structure."""
 

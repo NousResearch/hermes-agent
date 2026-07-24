@@ -9022,12 +9022,47 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
 
+        # Plugin hook: pre_command — fires once per user-invoked command
+        # (before any slash command handler). Uses a flag to prevent double-fire
+        # when process_command() is called recursively for alias/prefix expansion.
+        if not getattr(self, "_pre_command_fired", False):
+            self._pre_command_fired = True
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("pre_command"):
+                    invoke_hook(
+                        "pre_command",
+                        command=canonical,
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
+            except Exception:
+                pass
+
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)
         # disarms it so a later number isn't swallowed as a stale selection.
         # See #34584.
         if canonical not in {"resume", "sessions"}:
             self._pending_resume_sessions = None
+
+        # Plugin hook: post_command — fires after every command handler completes.
+        # Excluded for quit/exit (those use on_quit instead).
+        _is_quit = (canonical in {"quit", "exit"})
+        if not _is_quit:
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("post_command"):
+                    invoke_hook(
+                        "post_command",
+                        command=canonical,
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
+            except Exception:
+                pass
 
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
@@ -9040,6 +9075,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
                 return True
+            # Plugin hook: on_quit — fires before CLI exits so plugins
+            # can auto-title, compress conversation, or save state.
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if has_hook("on_quit"):
+                    invoke_hook(
+                        "on_quit",
+                        command="quit",
+                        raw=cmd_original,
+                        session_id=self.session_id,
+                        cli=self,
+                    )
+            except Exception:
+                pass
             return False
         elif canonical == "help":
             self.show_help()

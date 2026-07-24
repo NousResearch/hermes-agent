@@ -6,7 +6,7 @@ description: "Run custom code at key lifecycle points — log activity, send ale
 
 # Event Hooks
 
-Hermes has three hook systems that run custom code at key lifecycle points:
+Hermes has four hook systems that run custom code at key lifecycle points:
 
 | System | Registered via | Runs in | Use case |
 |--------|---------------|---------|----------|
@@ -1497,3 +1497,77 @@ Shell hooks run with **your full user credentials** — same trust boundary as a
 ### Ordering and precedence
 
 Both Python plugin hooks and shell hooks flow through the same `invoke_hook()` dispatcher. Python plugins are registered first (`discover_and_load()`), shell hooks second (`register_from_config()`), so Python `pre_tool_call` block decisions take precedence in tie cases. The first valid block wins — the aggregator returns as soon as any callback produces `{"action": "block", "message": str}` with a non-empty message.
+
+## CLI Command Hooks
+
+CLI command hooks fire inside `HermesCLI.process_command()` — the slash-command
+dispatch loop that handles every `/help`, `/model`, `/exit`, and plugin command.
+They let plugins observe (but not block) command dispatch.
+
+Three hooks are available, **CLI-only** (TUI, desktop, and gateway use their own
+dispatch paths):
+
+| Hook | Fires | Payload |
+|------|-------|---------|
+| `pre_command` | Before any slash command handler | `command` (canonical), `raw` (original), `session_id`, `cli` |
+| `post_command` | After every non-quit command handler completes | same as `pre_command` |
+| `on_quit` | Immediately before `/quit` or `/exit` returns `False` | `command="quit"`, `raw`, `session_id`, `cli` |
+
+### Registering a CLI command hook
+
+```python
+# Inside your plugin's register(ctx) function:
+ctx.register_hook("pre_command", my_pre_observer)
+ctx.register_hook("post_command", my_post_logger)
+ctx.register_hook("on_quit", my_cleanup_handler)
+```
+
+### Callback signatures
+
+```python
+def my_pre_observer(command, raw, session_id, cli, **kwargs):
+    """command: canonical name (e.g. "help", "model")
+       raw: original user input (e.g. "/help", "/model deepseek")
+       session_id: current session identifier
+       cli: the HermesCLI instance
+    """
+
+def my_post_logger(command, raw, session_id, cli, **kwargs):
+    """Same signature as pre_command."""
+
+def my_cleanup_handler(command, raw, session_id, cli, **kwargs):
+    """command is always "quit" for on_quit."""
+```
+
+### Anti-reentry
+
+`pre_command` fires **at most once** per submitted command line. When
+`process_command()` is called recursively (alias expansion, prefix dispatch),
+the `_pre_command_fired` flag prevents the hook from firing again. Plugins
+receive the canonical name after alias resolution.
+
+### Example: log every slash command
+
+```python
+import json
+from pathlib import Path
+from datetime import datetime, timezone
+
+_log = Path.home() / ".hermes" / "command_log.jsonl"
+
+def log_command(command, raw, session_id, **kwargs):
+    _log.parent.mkdir(parents=True, exist_ok=True)
+    with open(_log, "a") as f:
+        f.write(json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+            "raw": raw,
+            "session": session_id,
+        }) + "\n")
+```
+
+### Return values
+
+All three CLI command hooks are **fire-and-forget observers**. Return values
+are ignored. To block or modify command behavior, use a regular slash-command
+handler or plugin command dispatch instead.

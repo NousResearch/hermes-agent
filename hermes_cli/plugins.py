@@ -163,6 +163,14 @@ VALID_HOOKS: Set[str] = {
     "on_session_reset",
     "subagent_start",
     "subagent_stop",
+    # CLI slash-command lifecycle hooks.
+    # pre_command: fires before every slash command handler.
+    # post_command: fires after every slash command handler completes.
+    # on_quit: fires when /quit or /exit is invoked, before the CLI exits.
+    # Plugins receive canonical command name, raw args, session_id, and CLI ref.
+    "pre_command",
+    "post_command",
+    "on_quit",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

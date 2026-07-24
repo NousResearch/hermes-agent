@@ -1839,7 +1839,9 @@ class TestGatewaySystemServiceRouting:
             lambda deep=False, system=False, full=False: calls.append((deep, system, full)),
         )
 
-        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="status", deep=False, system=False)
+        )
 
         assert calls == [(False, False, False)]
 
@@ -1878,6 +1880,38 @@ class TestGatewaySystemServiceRouting:
         assert "service stopped" in out
         assert "Gateway process is running for this profile" in out
         assert "PID(s): 4321" in out
+
+    def test_gateway_status_does_not_label_systemd_pid_manual_when_unit_file_is_profile_scoped(
+        self, monkeypatch, capsys
+    ):
+        missing_unit = SimpleNamespace(exists=lambda: False)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: missing_unit)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {1896})
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: gateway_cli.GatewayRuntimeSnapshot(
+                manager="systemd (user)",
+                service_installed=False,
+                service_running=False,
+                gateway_pids=(1896,),
+                service_scope="user",
+            ),
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+        out = capsys.readouterr().out
+        assert "Gateway is running as a systemd service" in out
+        assert "PID: 1896" in out
+        assert "Running manually" not in out
+        assert "To install as a service" not in out
 
     def test_gateway_status_on_termux_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)

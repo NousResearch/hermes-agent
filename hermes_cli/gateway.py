@@ -7229,8 +7229,22 @@ def _gateway_command_inner(args):
             # Check for manually running processes
             pids = list(snapshot.gateway_pids)
             if pids:
-                print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
-                print("  (Running manually, not as a system service)")
+                service_pids = _get_service_pids()
+                managed_pids = [pid for pid in pids if pid in service_pids]
+                manual_pids = [pid for pid in pids if pid not in service_pids]
+                if managed_pids:
+                    pid_text = ", ".join(map(str, managed_pids))
+                    if supports_systemd_services():
+                        print(f"✓ Gateway is running as a systemd service (PID: {pid_text})")
+                    elif is_macos():
+                        print(f"✓ Gateway is running as a launchd service (PID: {pid_text})")
+                    else:
+                        print(f"✓ Gateway is running as a system service (PID: {pid_text})")
+                    if manual_pids:
+                        print(f"  Also found manual PID(s): {', '.join(map(str, manual_pids))}")
+                else:
+                    print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
+                    print("  (Running manually, not as a system service)")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()
@@ -7241,6 +7255,10 @@ def _gateway_command_inner(args):
                 if is_termux():
                     print("Termux note:")
                     print("  Android may stop background jobs when Termux is suspended")
+                elif managed_pids and supports_systemd_services():
+                    print("To inspect the service:")
+                    print("  systemctl --user status 'hermes-gateway*'")
+                    print("  sudo systemctl status 'hermes-gateway*'")
                 elif is_wsl():
                     print("WSL note:")
                     print(

@@ -1731,6 +1731,7 @@ class CredentialPool:
             # Increment usage counter so subsequent selections distribute load
             updated = replace(entry, request_count=entry.request_count + 1)
             self._replace_entry(entry, updated)
+            self._persist()
             self._current_id = entry.id
             return updated
 

@@ -854,7 +854,7 @@ def _secret_projection(
         raise HostPlanProducerError(
             "host_plan_secret_foundation_invalid"
         ) from exc
-    return {
+    projection = {
         "schema": value["schema"],
         "bearer_verifier_path": value["bearer_verifier_path"],
         "bearer_verifier_sha256": value["bearer_verifier_sha256"],
@@ -875,6 +875,95 @@ def _secret_projection(
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
     }
+    return _validate_secret_foundation_projection(
+        projection,
+        inputs=inputs,
+    )
+
+
+def _validate_secret_foundation_projection(
+    value: Any,
+    *,
+    inputs: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    expected_fields = {
+        "schema",
+        "bearer_verifier_path",
+        "bearer_verifier_sha256",
+        "approval_verifier_path",
+        "approval_verifier_sha256",
+        "writer_private_path",
+        "writer_public_key_id",
+        "edge_private_path",
+        "edge_public_key_id",
+        "operational_edge_key_foundation",
+        "operational_edge_key_foundation_sha256",
+        "operational_edge_receipt_public_key_ids",
+        "private_content_or_digest_recorded",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_fields:
+        raise HostPlanProducerError("host_plan_secret_foundation_invalid")
+    operational = value.get("operational_edge_key_foundation")
+    operational_ids = value.get("operational_edge_receipt_public_key_ids")
+    if (
+        value.get("schema") != production_secret_stager.STAGING_SCHEMA
+        or value.get("bearer_verifier_path")
+        != str(production_secret_stager.STAGED_API_BEARER_VERIFIER_PATH)
+        or value.get("approval_verifier_path")
+        != str(production_secret_stager.STAGED_API_APPROVAL_VERIFIER_PATH)
+        or value.get("writer_private_path")
+        != str(production_secret_stager.STAGED_WRITER_PRIVATE_KEY_PATH)
+        or value.get("edge_private_path")
+        != str(production_secret_stager.STAGED_EDGE_PRIVATE_KEY_PATH)
+        or value.get("writer_public_key_id")
+        != inputs["writer_capability_public_key_id"]
+        or value.get("edge_public_key_id")
+        != inputs["discord_edge_receipt_public_key_id"]
+        or value.get("operational_edge_key_foundation_sha256")
+        != inputs["operational_edge_key_foundation_sha256"]
+        or operational_ids
+        != inputs["operational_edge_receipt_public_key_ids"]
+        or not isinstance(operational, Mapping)
+        or operational.get("receipt_sha256")
+        != value.get("operational_edge_key_foundation_sha256")
+        or any(
+            _SHA256.fullmatch(str(value.get(name))) is None
+            for name in (
+                "bearer_verifier_sha256",
+                "approval_verifier_sha256",
+                "writer_public_key_id",
+                "edge_public_key_id",
+                "operational_edge_key_foundation_sha256",
+            )
+        )
+        or not isinstance(operational_ids, Mapping)
+        or any(
+            _SHA256.fullmatch(str(item)) is None
+            for item in operational_ids.values()
+        )
+        or value.get("private_content_or_digest_recorded") is not False
+        or value.get("secret_material_recorded") is not False
+        or value.get("secret_digest_recorded") is not False
+    ):
+        raise HostPlanProducerError("host_plan_secret_foundation_invalid")
+    try:
+        validate_operational_edge_key_foundation(
+            operational,
+            expected_writer_public_key_id=inputs[
+                "writer_capability_public_key_id"
+            ],
+            key_root=production_secret_stager.KEY_STAGING_ROOT,
+            trust_root=production_secret_stager.KEY_STAGING_ROOT,
+            expected_uid=0,
+            expected_gid=0,
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise HostPlanProducerError(
+            "host_plan_secret_foundation_invalid"
+        ) from exc
+    return copy.deepcopy(dict(value))
 
 
 def _staged_rows(
@@ -973,7 +1062,10 @@ def _validate_staging_receipt(
         or value.get("receipt_sha256") != _sha(_canonical(unsigned))
     ):
         raise HostPlanProducerError("host_plan_staging_receipt_invalid")
-    _secret_projection(value.get("secret_foundation"), inputs=inputs)
+    _validate_secret_foundation_projection(
+        value.get("secret_foundation"),
+        inputs=inputs,
+    )
     try:
         validate_production_capability_topology(value["capability_topology"])
     except (TypeError, ValueError, RuntimeError) as exc:

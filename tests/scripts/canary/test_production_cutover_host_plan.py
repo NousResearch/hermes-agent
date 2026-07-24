@@ -128,6 +128,109 @@ def test_stage_uses_runtime_pinned_mac_ops_project(
         )
 
 
+def test_staging_receipt_validates_projected_secret_foundation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _unit_inputs()
+    foundation_sha256 = inputs["operational_edge_key_foundation_sha256"]
+    secret_foundation = {
+        "schema": producer.production_secret_stager.STAGING_SCHEMA,
+        "bearer_verifier_path": str(
+            producer.production_secret_stager.STAGED_API_BEARER_VERIFIER_PATH
+        ),
+        "bearer_verifier_sha256": "a" * 64,
+        "approval_verifier_path": str(
+            producer.production_secret_stager.STAGED_API_APPROVAL_VERIFIER_PATH
+        ),
+        "approval_verifier_sha256": "b" * 64,
+        "writer_private_path": str(
+            producer.production_secret_stager.STAGED_WRITER_PRIVATE_KEY_PATH
+        ),
+        "writer_public_key_id": inputs["writer_capability_public_key_id"],
+        "edge_private_path": str(
+            producer.production_secret_stager.STAGED_EDGE_PRIVATE_KEY_PATH
+        ),
+        "edge_public_key_id": inputs["discord_edge_receipt_public_key_id"],
+        "operational_edge_key_foundation": {
+            "receipt_sha256": foundation_sha256,
+        },
+        "operational_edge_key_foundation_sha256": foundation_sha256,
+        "operational_edge_receipt_public_key_ids": inputs[
+            "operational_edge_receipt_public_key_ids"
+        ],
+        "private_content_or_digest_recorded": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    staged = {
+        name: {"artifact": name}
+        for name in package.HOST_ARTIFACT_TARGETS
+    }
+    unsigned = {
+        "schema": producer.STAGING_SCHEMA,
+        "release_revision": REVISION,
+        "release_manifest_sha256": "c" * 64,
+        "host_artifact_contract_sha256": "d" * 64,
+        "unit_inputs_authority_plan_sha256": inputs[
+            "authority_plan_sha256"
+        ],
+        "unit_inputs_authority_approval_sha256": inputs[
+            "authority_approval_sha256"
+        ],
+        "source_gateway_config_sha256": "e" * 64,
+        "source_writer_config_sha256": "f" * 64,
+        "secret_foundation": secret_foundation,
+        "capability_topology": {},
+        "staged_file_count": len(staged),
+        "staged_files": staged,
+        "staged_set_sha256": producer._sha(
+            producer._canonical({"files": staged})
+        ),
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    receipt = {
+        **unsigned,
+        "receipt_sha256": producer._sha(producer._canonical(unsigned)),
+    }
+    monkeypatch.setattr(
+        producer,
+        "validate_operational_edge_key_foundation",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        producer,
+        "validate_production_capability_topology",
+        lambda value: value,
+    )
+
+    assert producer._validate_staging_receipt(
+        receipt,
+        revision=REVISION,
+        inputs=inputs,
+    ) == receipt
+
+    tampered = copy.deepcopy(receipt)
+    tampered["secret_foundation"]["secret_material_recorded"] = True
+    tampered_unsigned = {
+        name: item
+        for name, item in tampered.items()
+        if name != "receipt_sha256"
+    }
+    tampered["receipt_sha256"] = producer._sha(
+        producer._canonical(tampered_unsigned)
+    )
+    with pytest.raises(
+        producer.HostPlanProducerError,
+        match="host_plan_secret_foundation_invalid",
+    ):
+        producer._validate_staging_receipt(
+            tampered,
+            revision=REVISION,
+            inputs=inputs,
+        )
+
+
 def test_create_only_staging_resumes_and_rejects_conflicts(
     tmp_path: Path,
 ) -> None:

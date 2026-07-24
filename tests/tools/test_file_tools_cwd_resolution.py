@@ -167,6 +167,37 @@ def test_container_path_detection_uses_live_docker_environment(monkeypatch):
     assert ft._uses_container_paths("default") is True
 
 
+def test_ssh_environment_uses_container_path_resolution(monkeypatch):
+    """An SSH remote is a POSIX host, so file ops must skip host-side path
+    resolution — even though ssh is NOT a container sandbox.
+
+    Regression: ssh is detected by ``_terminal_env_type_for_task`` but was
+    omitted from the path-backends set, so on a Windows gateway an SSH remote
+    path like ``/home/user`` was host-resolved to ``\\home\\user`` and
+    corrupted.
+    """
+    class _DummySshEnvironment:
+        cwd = "/home/ubuntu/.hermes"
+        cwd_owner = "default"
+
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": _DummySshEnvironment()},
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: (_ for _ in ()).throw(AssertionError("should not read config")),
+    )
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    assert ft._uses_container_paths("default") is True
+    # ssh must stay OUT of _CONTAINER_BACKENDS so an SSH remote /home/<user> cwd
+    # is not discarded by the unusable-container-cwd guards.
+    assert "ssh" not in terminal_tool._CONTAINER_BACKENDS
+
+
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
     workspace, decoy = _isolated_cwd

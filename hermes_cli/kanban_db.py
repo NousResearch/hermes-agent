@@ -160,6 +160,17 @@ def _assert_not_delegated_child_mutation() -> None:
             "delegate_task child contexts cannot mutate Kanban tasks or boards"
         )
 
+# Legacy board language used role names before Brian's live mesh settled on
+# profile IDs. Keep the translation close to Kanban ingress/dispatch so old
+# cards and decomposer choices do not strand work in non-spawnable lanes.
+ROLE_ASSIGNEE_ALIASES: dict[str, str] = {
+    "operator": "winston",
+    "researcher": "brennan",
+    "builder": "stark",
+    "steward": "pepper",
+    "studio": "taylor",
+}
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -184,6 +195,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
     except Exception as exc:  # pragma: no cover - defensive
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
+
 
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -2762,12 +2774,79 @@ def _claimer_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Normalize Kanban assignee names to real spawnable profile IDs.
+
+    Besides ordinary profile-name canonicalization, this maps the legacy role
+    labels that still appear in older board/task language onto the current live
+    profile IDs. That keeps both new cards and old rows from falling into the
+    dispatcher's ``skipped_nonspawnable`` bucket purely because they said
+    ``operator`` instead of ``winston``.
+    """
     if assignee is None:
+        return None
+    if not str(assignee).strip():
         return None
     from hermes_cli.profiles import normalize_profile_name
 
-    return normalize_profile_name(assignee)
+    normalized = normalize_profile_name(assignee)
+    alias_target = ROLE_ASSIGNEE_ALIASES.get(normalized)
+    if alias_target:
+        return alias_target
+    return normalized
+
+
+def canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+    """Public wrapper for callers that need Kanban's assignee alias contract."""
+    return _canonical_assignee(assignee)
+
+
+def _alias_for_assignee(assignee: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(canonical, alias_used)`` for an assignee-like value."""
+    if assignee is None:
+        return None, None
+    if not str(assignee).strip():
+        return None, None
+    from hermes_cli.profiles import normalize_profile_name
+
+    normalized = normalize_profile_name(assignee)
+    canonical = _canonical_assignee(normalized)
+    return canonical, (normalized if canonical != normalized else None)
+
+
+def _apply_assignee_alias_unlocked(
+    conn: sqlite3.Connection,
+    task_id: str,
+    assignee: Optional[str],
+    *,
+    dry_run: bool = False,
+) -> Optional[str]:
+    """Canonicalize an existing task row's assignee, emitting an audit event.
+
+    ``create_task`` canonicalizes new rows, but long-lived boards may already
+    contain role-name assignees. The dispatcher calls this before profile
+    validation so legacy ``operator``/``researcher`` cards route to their live
+    profiles instead of being skipped as non-spawnable.
+    """
+    canonical, alias = _alias_for_assignee(assignee)
+    if canonical is None:
+        return None
+    if alias and not dry_run:
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ? AND assignee = ?",
+                (canonical, task_id, assignee),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "assigned",
+                {
+                    "assignee": canonical,
+                    "source": "kanban.role_alias",
+                    "alias": alias,
+                },
+            )
+    return canonical
 
 
 def create_task(
@@ -2785,6 +2864,7 @@ def create_task(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    idempotency_exclude_parent: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -2990,19 +3070,34 @@ def create_task(
         skills_list = cleaned
 
     # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
-        row = conn.execute(
+    # duplicate. The preflight keeps the common duplicate path fast; the
+    # same lookup is repeated inside the write transaction below so a racing
+    # creator that wins after this check but before our INSERT cannot produce
+    # a second non-archived row with the same key.  Review-required routing can
+    # exclude parent-linked matches so a deadlocked child with the right
+    # idempotency key is not mistaken for an independent reviewer successor.
+    def _existing_idempotent_task() -> Optional[sqlite3.Row]:
+        if not idempotency_key:
+            return None
+        query = (
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
+        )
+        params: list[Any] = [idempotency_key]
+        if idempotency_exclude_parent:
+            query += (
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM task_links "
+                "  WHERE parent_id = ? AND child_id = tasks.id"
+                ") "
+            )
+            params.append(idempotency_exclude_parent)
+        query += "ORDER BY created_at DESC LIMIT 1"
+        return conn.execute(query, tuple(params)).fetchone()
+
+    row = _existing_idempotent_task()
+    if row:
+        return row["id"]
 
     now = int(time.time())
 
@@ -3031,6 +3126,10 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                row = _existing_idempotent_task()
+                if row:
+                    return row["id"]
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3141,6 +3240,13 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                for pid in parents:
+                    _inherit_notify_subs_unlocked(
+                        conn,
+                        source_task_id=pid,
+                        target_task_id=task_id,
+                        source="parent",
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5981,6 +6087,12 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            _inherit_notify_subs_unlocked(
+                conn,
+                source_task_id=task_id,
+                target_task_id=new_id,
+                source="decompose_root",
+            )
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
@@ -6611,6 +6723,987 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    created_review_required_successors: list[str] = field(default_factory=list)
+    """Blocked review-required source task ids for which this dispatch tick
+    created an independent reviewer/triage successor."""
+    consumed_review_verdicts: list[str] = field(default_factory=list)
+    """Blocked source task ids whose completed reviewer verdicts were consumed
+    this dispatch tick."""
+    created_review_verdict_followups: list[str] = field(default_factory=list)
+    """Follow-up task ids created from consumed reviewer verdicts."""
+
+
+_LIVENESS_AUTHOR = "kanban-liveness"
+_REVIEW_REQUIRED_OWNER_KEYS = (
+    "review_owner",
+    "review_assignee",
+    "needed_review_owner",
+    "needed_profile",
+    "awaiting_profile",
+)
+
+# Canonical reviewer for a review-required source task when no explicit owner is
+# declared.  This is the "assignee directory" fallback: independent review of
+# builder work goes to the researcher.  Other profiles (operator, steward,
+# studio/visual) either have their own routing heuristics or genuinely need
+# triage when no reviewer is inferable.
+_REVIEW_REQUIRED_SOURCE_REVIEWER: dict[str, str] = {
+    "stark": "brennan",  # builder -> researcher (alias builder canonicalizes to stark)
+}
+
+_REVIEW_REQUIRED_SUCCESSOR_KEYS = (
+    "successor_task_ids",
+    "review_successor_task_ids",
+    "reviewer_task_ids",
+)
+_REVIEW_REQUIRED_RECEIPT_KEYS = (
+    "changed_files",
+    "tests_run",
+    "tests_passed",
+    "test_commands",
+    "commands",
+    "diff_path",
+    "artifacts",
+    "output_image",
+    "output_images",
+    "image_path",
+    "image_paths",
+    "risk_class",
+    "review_type",
+    "review_kind",
+    "requested_verdict",
+    "decisions",
+)
+_REVIEW_REQUIRED_VISUAL_OUTPUT_KEYS = frozenset(
+    {
+        "artifact",
+        "artifacts",
+        "output_image",
+        "output_images",
+        "image",
+        "images",
+        "image_path",
+        "image_paths",
+        "preview_image",
+        "preview_images",
+        "contact_sheet",
+        "contact_sheets",
+    }
+)
+_REVIEW_REQUIRED_VISUAL_OUTPUT_RE = re.compile(
+    r"\b(?:ai[-\s]?influencer|comfyui|instantid|identity[-\s]?control|"
+    r"one[-\s]?image|generated\s+image|output\s+image|image\s+(?:smoke|output|artifact|packet|review)|"
+    r"visual\s+(?:qa|review|handoff)|contact\s+sheet|avatar|face\s+family|"
+    r"synthetic\s+(?:brand|reference|image))\b",
+    re.IGNORECASE,
+)
+_REVIEW_REQUIRED_NEGATED_RED_GATE_PATTERNS = (
+    re.compile(
+        r"\bno\s+(?:active\s+|remaining\s+)?red[-\s]?gates?\s*"
+        r"(?:remains?|remaining|required|needed|present|left|appl(?:y|ies))?\b"
+    ),
+    re.compile(r"\bnot\s+(?:a\s+)?red[-\s]?gates?\b"),
+    re.compile(r"\bnot\s+red[-\s]?gated\b"),
+    re.compile(r"\bwithout\s+(?:a\s+)?red[-\s]?gates?\b"),
+    re.compile(r"\bnon[-\s]?red[-\s]?gated\b"),
+    re.compile(
+        r"\bno\s+stop\s*/\s*human\s+boundary\s*"
+        r"(?:remains?|remaining|required|needed|present|left)?\b"
+    ),
+    re.compile(
+        r"\bno\s+human\s+approval\s*"
+        r"(?:remains?|remaining|required|needed|present|left)?\b"
+    ),
+    re.compile(
+        r"\bhuman\s+approval\s+(?:is\s+)?(?:not|no\s+longer)\s+"
+        r"(?:required|needed|present|remaining)\b"
+    ),
+)
+_REVIEW_REQUIRED_RED_GATE_PATTERNS = (
+    re.compile(r"\bred[-\s]?gated\b"),
+    re.compile(r"\bred[-\s]?gates?\b"),
+    re.compile(r"\bhuman\s+approval\b"),
+    re.compile(r"\bstop\s*/\s*human\s+boundary\b"),
+)
+
+
+@dataclass
+class LivenessScanResult:
+    """Mutating liveness repairs performed by one scanner pass."""
+
+    created_review_required_successors: list[str] = field(default_factory=list)
+    consumed_review_verdicts: list[str] = field(default_factory=list)
+    created_review_verdict_followups: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ReviewVerdictConsumptionResult:
+    """Summary returned by :func:`consume_review_verdicts`."""
+
+    consumed_review_verdicts: list[str] = field(default_factory=list)
+    created_review_verdict_followups: list[str] = field(default_factory=list)
+    skipped_review_verdicts: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class _ReviewRequiredRoute:
+    assignee: str
+    owner_source: str
+    triage: bool = False
+    red_gated: bool = False
+
+
+def _parse_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _metadata_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    return [value]
+
+
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> str:
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row:
+        reason = _parse_json_dict(row["payload"]).get("reason")
+        if isinstance(reason, str):
+            return reason
+    row = conn.execute(
+        "SELECT summary FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return str(row["summary"] or "") if row else ""
+
+
+def _is_review_required_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    return _latest_block_reason(conn, task_id).strip().lower().startswith("review-required:")
+
+
+def _latest_blocked_review_runs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT t.id AS task_id,
+               t.title AS task_title,
+               t.body AS task_body,
+               t.assignee AS task_assignee,
+               t.workspace_kind AS workspace_kind,
+               t.workspace_path AS workspace_path,
+               t.tenant AS tenant,
+               r.id AS run_id,
+               r.summary AS summary,
+               r.metadata AS metadata
+          FROM tasks t
+          JOIN task_runs r ON r.id = (
+                SELECT r2.id
+                  FROM task_runs r2
+                 WHERE r2.task_id = t.id
+                   AND r2.outcome = 'blocked'
+                   AND r2.ended_at IS NOT NULL
+                 ORDER BY r2.id DESC
+                 LIMIT 1
+          )
+         WHERE t.status = 'blocked'
+        """
+    ).fetchall()
+
+
+def _review_required_idempotency_key(task_id: str, run_id: int) -> str:
+    return f"review-required:{task_id}:{int(run_id)}"
+
+
+def _task_has_successor_for_review_required(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+    metadata: dict[str, Any],
+) -> bool:
+    declared = [
+        str(v).strip()
+        for key in _REVIEW_REQUIRED_SUCCESSOR_KEYS
+        for v in _metadata_list(metadata.get(key))
+        if str(v).strip()
+    ]
+    if declared:
+        placeholders = ",".join("?" * len(declared))
+        if conn.execute(
+            f"SELECT 1 FROM tasks WHERE id IN ({placeholders}) "
+            "AND status != 'archived' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM task_links "
+            "  WHERE parent_id = ? AND child_id = tasks.id"
+            ") LIMIT 1",
+            tuple(declared) + (task_id,),
+        ).fetchone():
+            return True
+
+    idem = _review_required_idempotency_key(task_id, run_id)
+    if conn.execute(
+        "SELECT 1 FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_links "
+        "  WHERE parent_id = ? AND child_id = tasks.id"
+        ") LIMIT 1",
+        (idem, task_id),
+    ).fetchone():
+        return True
+
+    rows = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_required_successor_created' "
+        "ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    for event in rows:
+        payload = _parse_json_dict(event["payload"])
+        if int(payload.get("run_id") or -1) != int(run_id):
+            continue
+        successor_id = str(payload.get("successor_task_id") or "").strip()
+        if not successor_id:
+            continue
+        if conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ? AND status != 'archived' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM task_links "
+            "  WHERE parent_id = ? AND child_id = tasks.id"
+            ") LIMIT 1",
+            (successor_id, task_id),
+        ).fetchone():
+            return True
+    return False
+
+
+def _json_dict_from_text(text: str) -> dict[str, Any]:
+    parsed = _parse_json_dict(text)
+    if parsed:
+        return parsed
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text or ""):
+        try:
+            value, _end = decoder.raw_decode(text[match.start() :])
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _latest_review_required_comment_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id DESC",
+        (task_id,),
+    ).fetchall()
+    owner_needles = tuple(key.lower() for key in _REVIEW_REQUIRED_OWNER_KEYS)
+    receipt_needles = tuple(key.lower() for key in _REVIEW_REQUIRED_RECEIPT_KEYS)
+    for row in rows:
+        body = str(row["body"] or "")
+        body_l = body.lower()
+        if (
+            "review-required" not in body_l
+            and not any(key in body_l for key in owner_needles)
+            and not any(key in body_l for key in receipt_needles)
+        ):
+            continue
+        parsed = _json_dict_from_text(body)
+        if parsed:
+            return parsed
+    return {}
+
+
+def _review_required_owner_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for key in _REVIEW_REQUIRED_OWNER_KEYS:
+        match = re.search(rf"\b{re.escape(key)}\s*[:=]\s*([A-Za-z0-9_.-]+)", text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+_REVIEW_REQUIRED_NESTED_DICT_KEYS = (
+    "review_required",
+    "review",
+    "successor_action",
+    "successor",
+    "block_reason",
+    "owner_hint",
+)
+
+
+def _review_required_nested_dicts(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    dicts: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def visit(item: dict[str, Any]) -> None:
+        marker = id(item)
+        if marker in seen:
+            return
+        seen.add(marker)
+        dicts.append(item)
+        for key in _REVIEW_REQUIRED_NESTED_DICT_KEYS:
+            value = item.get(key)
+            if isinstance(value, dict):
+                visit(value)
+
+    visit(metadata)
+    return dicts
+
+
+def _review_required_first_owner(metadata: dict[str, Any]) -> Optional[str]:
+    for item in _review_required_nested_dicts(metadata):
+        for key in _REVIEW_REQUIRED_OWNER_KEYS:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for item in _review_required_nested_dicts(metadata)[1:]:
+        for key in ("assignee", "profile", "owner"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _review_required_metadata_is_red_gated(metadata: dict[str, Any]) -> bool:
+    for item in _review_required_nested_dicts(metadata):
+        if item.get("requires_approval") or item.get("red_gate"):
+            return True
+        if _metadata_list(item.get("red_gates")):
+            return True
+        status_class = str(item.get("status_class") or "").strip().lower()
+        if status_class in {"red", "red-gated"}:
+            return True
+    return False
+
+
+def _review_required_reason_is_red_gated(reason: str) -> bool:
+    reason_l = (reason or "").lower()
+    for pattern in _REVIEW_REQUIRED_NEGATED_RED_GATE_PATTERNS:
+        reason_l = pattern.sub(" ", reason_l)
+    return any(pattern.search(reason_l) for pattern in _REVIEW_REQUIRED_RED_GATE_PATTERNS)
+
+
+def _review_required_is_red_gated(metadata: dict[str, Any], reason: str) -> bool:
+    if _review_required_reason_is_red_gated(reason):
+        return True
+    return _review_required_metadata_is_red_gated(metadata)
+
+
+def _review_required_has_code_change_receipts(metadata: dict[str, Any]) -> bool:
+    code_receipt_present = any(
+        _metadata_list(item.get(key))
+        for item in _review_required_nested_dicts(metadata)
+        for key in ("changed_files", "diff_path")
+    )
+    test_receipt_present = any(
+        _metadata_list(item.get(key))
+        for item in _review_required_nested_dicts(metadata)
+        for key in ("tests_run", "tests_passed", "test_commands", "commands")
+    )
+    return code_receipt_present and test_receipt_present
+
+
+def _review_required_visual_text_fragments(value: Any) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, dict):
+        fragments: list[str] = []
+        for key, nested in value.items():
+            fragments.append(str(key))
+            fragments.extend(_review_required_visual_text_fragments(nested))
+        return fragments
+    if isinstance(value, (list, tuple, set)):
+        fragments = []
+        for nested in value:
+            fragments.extend(_review_required_visual_text_fragments(nested))
+        return fragments
+    return [str(value)]
+
+
+def _review_required_has_visual_artifact_hint(metadata: dict[str, Any]) -> bool:
+    for item in _review_required_nested_dicts(metadata):
+        for key, value in item.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in _REVIEW_REQUIRED_VISUAL_OUTPUT_KEYS and _metadata_list(value):
+                return True
+            if normalized_key.endswith(("_image", "_images", "_image_path", "_image_paths")) and _metadata_list(value):
+                return True
+    return False
+
+
+def _review_required_has_visual_output_review(
+    metadata: dict[str, Any],
+    reason: str,
+    *,
+    source_title: Optional[str] = None,
+    source_body: Optional[str] = None,
+) -> bool:
+    if not _review_required_has_visual_artifact_hint(metadata):
+        return False
+    text = "\n".join(
+        fragment
+        for fragment in [reason or "", source_title or "", source_body or ""]
+        + _review_required_visual_text_fragments(metadata)
+        if fragment
+    )
+    return bool(_REVIEW_REQUIRED_VISUAL_OUTPUT_RE.search(text))
+
+
+def _review_required_route(
+    metadata: dict[str, Any],
+    reason: str,
+    comment_metadata: Optional[dict[str, Any]] = None,
+    source_assignee: Optional[str] = None,
+    source_title: Optional[str] = None,
+    source_body: Optional[str] = None,
+) -> _ReviewRequiredRoute:
+    comment_metadata = comment_metadata or {}
+    effective_metadata = {**comment_metadata, **metadata}
+    if _review_required_is_red_gated(effective_metadata, reason):
+        return _ReviewRequiredRoute(
+            assignee="default",
+            owner_source="red-gated",
+            red_gated=True,
+        )
+    explicit = _review_required_first_owner(metadata)
+    if explicit:
+        return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-metadata")
+    explicit = _review_required_first_owner(comment_metadata)
+    if explicit:
+        return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-comment")
+    explicit = _review_required_owner_from_text(reason)
+    if explicit:
+        return _ReviewRequiredRoute(_canonical_assignee(explicit) or explicit, "explicit-reason")
+    if (
+        not _review_required_has_code_change_receipts(effective_metadata)
+        and _review_required_has_visual_output_review(
+            effective_metadata,
+            reason,
+            source_title=source_title,
+            source_body=source_body,
+        )
+    ):
+        return _ReviewRequiredRoute(
+            _canonical_assignee("studio") or "taylor",
+            "visual-output-review",
+        )
+    if (
+        _canonical_assignee(source_assignee) in {"builder", "stark"}
+        and _review_required_has_code_change_receipts(effective_metadata)
+    ):
+        return _ReviewRequiredRoute(
+            _canonical_assignee("researcher") or "researcher",
+            "code-review-receipts",
+        )
+    source_canon = _canonical_assignee(source_assignee)
+    directory_reviewer = _REVIEW_REQUIRED_SOURCE_REVIEWER.get(source_canon) if source_canon else None
+    if directory_reviewer:
+        return _ReviewRequiredRoute(
+            _canonical_assignee(directory_reviewer) or directory_reviewer,
+            "source-assignee-directory",
+        )
+    return _ReviewRequiredRoute("default", "router-triage", triage=True)
+
+
+def _review_required_card_body(
+    *,
+    source_id: str,
+    source_title: str,
+    source_assignee: Optional[str],
+    run_id: int,
+    reason: str,
+    metadata: dict[str, Any],
+    route: _ReviewRequiredRoute,
+) -> str:
+    lines = [
+        f"Review-required routed card created from source task {source_id}: {source_title}",
+        f"Source run: {run_id}",
+        f"Source assignee: {source_assignee or 'unassigned'}",
+        f"Block reason: {reason}",
+        f"Selected reviewer assignee: {route.assignee} ({route.owner_source})",
+        "",
+        "Review the source task handoff and return one of: approve/unblock source; "
+        "changes requested; stop/rollback/human approval required; insufficient evidence.",
+    ]
+    if route.triage:
+        lines.extend([
+            "",
+            "No explicit review owner was inferable; this is a router/triage packet, not executable review work.",
+        ])
+    if route.red_gated:
+        lines.extend(["", "RED-GATED: do not execute the gated action; route/approve explicitly first."])
+    red_gates = _metadata_list(metadata.get("red_gates"))
+    if red_gates:
+        lines.extend(["Red gates:"] + [f"- {gate}" for gate in red_gates])
+
+    receipt_lines: list[str] = []
+    for key in _REVIEW_REQUIRED_RECEIPT_KEYS:
+        value = metadata.get(key)
+        if value in (None, "", [], {}):
+            continue
+        try:
+            rendered = (
+                str(value)
+                if isinstance(value, (str, int, float, bool))
+                else json.dumps(value, ensure_ascii=False, sort_keys=True)
+            )
+        except TypeError:
+            rendered = str(value)
+        receipt_lines.append(f"- {key}: {rendered}")
+    if receipt_lines:
+        lines.extend(["", "Source receipt excerpts:"] + receipt_lines)
+    return "\n".join(lines)
+
+
+def _create_review_required_successor(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    metadata: dict[str, Any],
+    comment_metadata: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    source_id = row["task_id"]
+    run_id = int(row["run_id"])
+    comment_metadata = comment_metadata or {}
+    effective_metadata = {**comment_metadata, **metadata}
+    if _task_has_successor_for_review_required(conn, source_id, run_id, effective_metadata):
+        return None
+
+    reason = _latest_block_reason(conn, source_id)
+    route = _review_required_route(
+        metadata,
+        reason,
+        comment_metadata,
+        source_assignee=row["task_assignee"],
+        source_title=row["task_title"],
+        source_body=row["task_body"],
+    )
+    title = f"Review required: {row['task_title'] or source_id}"
+    if route.triage:
+        title = f"Route review-required: {row['task_title'] or source_id}"
+    if route.red_gated:
+        title = f"RED-GATED routing needed: {title}"
+
+    source_kind = row["workspace_kind"] or "scratch"
+    source_workspace = row["workspace_path"] if source_kind in {"dir", "worktree"} else None
+    successor_id = create_task(
+        conn,
+        title=title,
+        body=_review_required_card_body(
+            source_id=source_id,
+            source_title=row["task_title"] or "",
+            source_assignee=row["task_assignee"],
+            run_id=run_id,
+            reason=reason,
+            metadata=effective_metadata,
+            route=route,
+        ),
+        assignee=route.assignee,
+        created_by=_LIVENESS_AUTHOR,
+        workspace_kind=source_kind,
+        workspace_path=source_workspace,
+        tenant=row["tenant"],
+        idempotency_key=_review_required_idempotency_key(source_id, run_id),
+        idempotency_exclude_parent=source_id,
+        triage=route.triage and not route.red_gated,
+        initial_status="blocked" if route.red_gated else "running",
+    )
+    with write_txn(conn):
+        if route.red_gated:
+            _append_event(
+                conn,
+                successor_id,
+                "blocked",
+                {"reason": "red-gated: approval/routing required before execution"},
+            )
+        _append_event(
+            conn,
+            source_id,
+            "review_required_successor_created",
+            {
+                "successor_task_id": successor_id,
+                "run_id": run_id,
+                "idempotency_key": _review_required_idempotency_key(source_id, run_id),
+                "assignee": route.assignee,
+                "owner_source": route.owner_source,
+                "triage": route.triage,
+                "red_gated": route.red_gated,
+            },
+            run_id=run_id,
+        )
+    return successor_id
+
+
+def _extract_review_verdict(metadata: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(metadata, dict):
+        return None
+    source = (
+        metadata.get("review_of")
+        or metadata.get("subject_task_id")
+        or metadata.get("source_task_id")
+    )
+    if not source:
+        return None
+    raw_verdict = metadata.get("verdict")
+    if not raw_verdict and metadata.get("approved") is True:
+        raw_verdict = "APPROVED"
+    verdict = str(raw_verdict or "").strip().upper()
+    if verdict in {"GO", "PASS"}:
+        verdict = "APPROVED"
+    if verdict in {"REJECTED", "REQUEST_CHANGES", "REQUESTED_CHANGES"}:
+        verdict = "CHANGES_REQUESTED"
+    if verdict not in {
+        "APPROVED",
+        "CHANGES_REQUESTED",
+        "INSUFFICIENT_EVIDENCE",
+        "STOP_RED_HUMAN",
+    }:
+        return None
+    return {
+        "source_task_id": str(source).strip(),
+        "verdict": verdict,
+        "summary": str(metadata.get("summary") or metadata.get("review_summary") or "").strip(),
+    }
+
+
+_REVIEW_OUTPUT_STOP_RED_HUMAN_RE = re.compile(
+    r"\b(?:STOP|RED|HUMAN(?:\s+APPROVAL)?\s+REQUIRED|ROLLBACK)\b",
+    re.IGNORECASE,
+)
+
+
+def _review_output_has_stop_red_human(text: str) -> bool:
+    """Return True for reviewer-authored STOP/RED/HUMAN gate language.
+
+    This is intentionally applied only to completed review output (run summary
+    and explicit metadata summary), not review-card bodies/source prose, so the
+    normal review instructions do not become verdict text.  Within actual
+    reviewer output it preserves fail-closed precedence: STOP/RED/HUMAN beats a
+    lower-severity explicit verdict such as CHANGES_REQUESTED.
+    """
+    return bool(_REVIEW_OUTPUT_STOP_RED_HUMAN_RE.search(text or ""))
+
+
+def _review_verdict_already_consumed(conn: sqlite3.Connection, review_task_id: str) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_verdict_consumed' LIMIT 1",
+        (review_task_id,),
+    ).fetchone())
+
+
+def _latest_completed_review_verdict_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT r.id AS run_id, r.task_id AS review_task_id, r.metadata,
+               r.summary, r.ended_at, t.title AS review_title
+          FROM task_runs r
+          JOIN tasks t ON t.id = r.task_id
+         WHERE r.outcome = 'completed'
+           AND r.metadata IS NOT NULL
+         ORDER BY COALESCE(r.ended_at, r.started_at, 0) ASC, r.id ASC
+        """
+    ).fetchall()
+
+
+def _payload_has_typed_red_or_human_hold(payload: Any) -> bool:
+    """Return True only for structured red/human hold metadata.
+
+    Free-text block reasons are intentionally ignored here: review handoff
+    prose often says things like "no red gate remains" and must not be used as
+    control-plane state for APPROVED verdict routing.
+    """
+    if not isinstance(payload, dict):
+        return False
+    for key in (
+        "red_gate",
+        "red_gated",
+        "human_approval_required",
+        "human_required",
+        "stop_red_human",
+    ):
+        if payload.get(key) is True:
+            return True
+    for key in ("gate", "hold", "severity", "verdict", "route", "status"):
+        value = str(payload.get(key) or "").strip().lower().replace("-", "_")
+        if value in {"red", "human", "red_human", "stop_red_human"}:
+            return True
+    return False
+
+
+def _source_has_typed_red_or_human_hold(
+    conn: sqlite3.Connection,
+    source_id: str,
+) -> bool:
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY created_at DESC, id DESC",
+        (source_id,),
+    ).fetchall()
+    return any(
+        _payload_has_typed_red_or_human_hold(
+            json.loads(row["payload"] or "{}")
+        )
+        for row in rows
+    )
+
+
+def _review_verdict_followup_idempotency_key(
+    source_id: str,
+    review_run_id: int,
+    verdict: str,
+) -> str:
+    return f"review-verdict:{source_id}:{review_run_id}:{verdict.lower()}"
+
+
+def _red_human_packet_idempotency_key(source_id: str) -> str:
+    return f"review-verdict:{source_id}:red-human-hold"
+
+
+def _create_review_verdict_followup(
+    conn: sqlite3.Connection,
+    *,
+    source: Task,
+    review_task_id: str,
+    review_run_id: int,
+    verdict: str,
+    summary: str,
+) -> str:
+    if verdict == "CHANGES_REQUESTED":
+        title_prefix = "Address review changes for"
+        assignee = source.assignee
+        key = _review_verdict_followup_idempotency_key(source.id, review_run_id, verdict)
+    elif verdict == "INSUFFICIENT_EVIDENCE":
+        title_prefix = "Provide review evidence for"
+        assignee = source.assignee
+        key = _review_verdict_followup_idempotency_key(source.id, review_run_id, verdict)
+    else:
+        title_prefix = "STOP_RED_HUMAN routing needed:"
+        assignee = "default"
+        key = _red_human_packet_idempotency_key(source.id)
+    body = (
+        "Created by kanban verdict consumer.\n"
+        f"source_task_id={source.id}\n"
+        f"review_task_id={review_task_id}\n"
+        f"review_run_id={review_run_id}\n"
+        f"verdict={verdict}\n\n"
+        f"Review summary: {summary}\n\n"
+        "Do not treat this as approval to apply/restart/deploy/push/merge. Preserve Red gates."
+    )
+    return create_task(
+        conn,
+        title=f"{title_prefix} {source.id}",
+        body=body,
+        assignee=assignee or "default",
+        created_by="kanban-verdict-consumer",
+        tenant=source.tenant,
+        priority=source.priority,
+        initial_status="blocked",
+        idempotency_key=key,
+    )
+
+
+def consume_review_verdicts(conn: sqlite3.Connection) -> ReviewVerdictConsumptionResult:
+    """Consume completed independent-review verdicts exactly once.
+
+    The reconciler and dispatcher need a canonical Python primitive, not a
+    removed CLI verb. Completed review tasks advertise their source with
+    ``metadata.review_of`` / ``subject_task_id`` / ``source_task_id`` and a
+    normalized verdict. This function is idempotent via a
+    ``review_verdict_consumed`` event on the review task.
+    """
+    result = ReviewVerdictConsumptionResult()
+    for row in _latest_completed_review_verdict_rows(conn):
+        review_task_id = str(row["review_task_id"])
+        if _review_verdict_already_consumed(conn, review_task_id):
+            continue
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except Exception:
+            result.skipped_review_verdicts.append({
+                "review_task_id": review_task_id,
+                "reason": "metadata_parse_failed",
+            })
+            continue
+        verdict_doc = _extract_review_verdict(metadata)
+        if not verdict_doc:
+            continue
+        source_id = verdict_doc["source_task_id"]
+        source = get_task(conn, source_id)
+        if source is None:
+            result.skipped_review_verdicts.append({
+                "review_task_id": review_task_id,
+                "source_task_id": source_id,
+                "reason": "missing_source_task",
+            })
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    review_task_id,
+                    "review_verdict_consumed",
+                    {**verdict_doc, "action": "skipped_missing_source"},
+                    run_id=int(row["run_id"]),
+                )
+            continue
+        verdict = verdict_doc["verdict"]
+        review_run_id = int(row["run_id"])
+        summary = str(verdict_doc.get("summary") or row["summary"] or "")
+        review_output = "\n".join(
+            part
+            for part in (
+                str(verdict_doc.get("summary") or ""),
+                str(row["summary"] or ""),
+            )
+            if part
+        )
+        if verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"} and _review_output_has_stop_red_human(review_output):
+            verdict = "STOP_RED_HUMAN"
+            verdict_doc["verdict"] = verdict
+        payload = {
+            **verdict_doc,
+            "review_task_id": review_task_id,
+            "review_run_id": review_run_id,
+        }
+        created_followup: Optional[str] = None
+        approved_red_hold = verdict == "APPROVED" and _source_has_typed_red_or_human_hold(
+            conn,
+            source_id,
+        )
+        if (
+            verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE", "STOP_RED_HUMAN"}
+            or approved_red_hold
+        ):
+            followup_verdict = "STOP_RED_HUMAN" if approved_red_hold else verdict
+            created_followup = _create_review_verdict_followup(
+                conn,
+                source=source,
+                review_task_id=review_task_id,
+                review_run_id=review_run_id,
+                verdict=followup_verdict,
+                summary=summary,
+            )
+            payload["created_followup"] = created_followup
+        with write_txn(conn):
+            if verdict == "APPROVED" and not approved_red_hold:
+                if source.status in {"blocked", "scheduled"}:
+                    next_status = "ready"
+                    # Preserve dependency semantics: if any parent is still open,
+                    # park in todo until recompute_ready can promote it.
+                    open_parent = conn.execute(
+                        "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+                        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                        (source_id,),
+                    ).fetchone()
+                    if open_parent:
+                        next_status = "todo"
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                        "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+                        (next_status, source_id),
+                    )
+                _append_event(conn, source_id, "review_verdict_approved", payload)
+            elif verdict == "APPROVED" and approved_red_hold:
+                _append_event(
+                    conn,
+                    source_id,
+                    "review_verdict_red_hold",
+                    {**payload, "action": "typed_red_human_hold"},
+                )
+            elif verdict in {"CHANGES_REQUESTED", "INSUFFICIENT_EVIDENCE"}:
+                _append_event(conn, source_id, "review_verdict_followup_created", payload)
+            elif verdict == "STOP_RED_HUMAN":
+                _append_event(conn, source_id, "review_verdict_red_hold", payload)
+            _append_event(
+                conn,
+                review_task_id,
+                "review_verdict_consumed",
+                payload,
+                run_id=review_run_id,
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    source_id,
+                    "kanban-verdict-consumer",
+                    f"Consumed review verdict {verdict} from {review_task_id}."
+                    + (f" Created follow-up {created_followup}." if created_followup else ""),
+                    int(time.time()),
+                ),
+            )
+        result.consumed_review_verdicts.append(source_id)
+        if created_followup:
+            result.created_review_verdict_followups.append(created_followup)
+    return result
+
+
+def _source_has_independent_reviewer(conn: sqlite3.Connection, source_id: str) -> bool:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT r.task_id AS reviewer_task_id,
+               r.metadata AS metadata
+          FROM task_runs r
+          JOIN tasks rt ON rt.id = r.task_id
+         WHERE rt.status != 'archived'
+           AND r.metadata IS NOT NULL
+         ORDER BY r.id DESC
+        """
+    ).fetchall()
+    for row in rows:
+        verdict_doc = _extract_review_verdict(_parse_json_dict(row["metadata"]))
+        if not verdict_doc or verdict_doc.get("source_task_id") != source_id:
+            continue
+        reviewer_task_id = row["reviewer_task_id"]
+        if source_id not in parent_ids(conn, reviewer_task_id):
+            return True
+    return False
+
+
+def scan_liveness(conn: sqlite3.Connection) -> LivenessScanResult:
+    """Apply cheap Kanban liveness repairs used by the dispatcher.
+
+    Current mutating scope is intentionally narrow: completed review verdicts
+    are consumed first, then blocked sources whose latest block reason starts
+    with ``review-required:`` receive exactly one independent review/triage
+    successor.  The source remains blocked for successor creation and the
+    successor is not parent-linked to the source, avoiding review deadlock.
+    """
+    result = LivenessScanResult()
+    verdict_result = consume_review_verdicts(conn)
+    result.consumed_review_verdicts.extend(verdict_result.consumed_review_verdicts)
+    result.created_review_verdict_followups.extend(verdict_result.created_review_verdict_followups)
+    for row in _latest_blocked_review_runs(conn):
+        source_id = row["task_id"]
+        if not _is_review_required_block(conn, source_id):
+            continue
+        metadata = _parse_json_dict(row["metadata"])
+        comment_metadata = _latest_review_required_comment_metadata(conn, source_id)
+        successor_id = _create_review_required_successor(conn, row, metadata, comment_metadata)
+        if successor_id:
+            result.created_review_required_successors.append(source_id)
+    return result
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7938,7 +9031,8 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         # Can't introspect — assume spawnable, preserve legacy behavior.
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        assignee = _canonical_assignee(row["assignee"])
+        if assignee and profile_exists(assignee):
             return True
     return False
 
@@ -7963,7 +9057,8 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     except Exception:
         return True
     for row in rows:
-        if profile_exists(row["assignee"]):
+        assignee = _canonical_assignee(row["assignee"])
+        if assignee and profile_exists(assignee):
             return True
     return False
 
@@ -8108,6 +9203,17 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    if not dry_run:
+        liveness_result = scan_liveness(conn)
+        if liveness_result.created_review_verdict_followups:
+            recompute_ready(conn, failure_limit=failure_limit)
+        result.consumed_review_verdicts.extend(liveness_result.consumed_review_verdicts)
+        result.created_review_verdict_followups.extend(
+            liveness_result.created_review_verdict_followups
+        )
+        result.created_review_required_successors.extend(
+            liveness_result.created_review_required_successors
+        )
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -8167,7 +9273,7 @@ def _dispatch_once_locked(
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
-    _default_assignee = (default_assignee or "").strip() or None
+    _default_assignee = _canonical_assignee(default_assignee)
     _default_assignee_resolved = False
     if _default_assignee:
         try:
@@ -8183,7 +9289,9 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
-        row_assignee = row["assignee"]
+        row_assignee = _apply_assignee_alias_unlocked(
+            conn, row["id"], row["assignee"], dry_run=dry_run,
+        )
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
             # unassigned ready task and an operator-configured fallback
@@ -8374,18 +9482,21 @@ def _dispatch_once_locked(
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
-        if not row["assignee"]:
+        row_assignee = _apply_assignee_alias_unlocked(
+            conn, row["id"], row["assignee"], dry_run=dry_run,
+        )
+        if not row_assignee:
             result.skipped_unassigned.append(row["id"])
             continue
         try:
             from hermes_cli.profiles import profile_exists
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if profile_exists is not None and not profile_exists(row_assignee):
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
+            result.spawned.append((row["id"], row_assignee, ""))
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -9297,6 +10408,70 @@ def task_age(task: Task) -> dict:
 # ---------------------------------------------------------------------------
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
+
+def _inherit_notify_subs_unlocked(
+    conn: sqlite3.Connection,
+    *,
+    source_task_id: str,
+    target_task_id: str,
+    source: str,
+) -> int:
+    """Copy gateway terminal-event subscriptions from one card to another.
+
+    The gateway auto-subscribes the original front-door ``/kanban create``
+    card. Follow-up/successor cards created later (decomposition, controller
+    repair cards, parent-linked continuations) must inherit that subscription
+    or their terminal GO / changes-requested / blocked events become silent.
+
+    Call only from an existing write transaction; this helper deliberately does
+    not open ``write_txn`` so create/decompose operations stay atomic.
+    """
+    if not source_task_id or not target_task_id or source_task_id == target_task_id:
+        return 0
+    cursor_row = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) AS max_id FROM task_events WHERE task_id = ?",
+        (target_task_id,),
+    ).fetchone()
+    target_cursor = int(cursor_row["max_id"] if cursor_row else 0)
+    now = int(time.time())
+    inserted = 0
+    rows = conn.execute(
+        "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+        "FROM kanban_notify_subs WHERE task_id = ?",
+        (source_task_id,),
+    ).fetchall()
+    for row in rows:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_notify_subs
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notifier_profile, created_at, last_event_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                target_task_id,
+                row["platform"],
+                row["chat_id"],
+                row["thread_id"] or "",
+                row["user_id"],
+                row["notifier_profile"],
+                now,
+                target_cursor,
+            ),
+        )
+        inserted += max(0, cur.rowcount)
+    if inserted:
+        _append_event(
+            conn,
+            target_task_id,
+            "notify_sub_inherited",
+            {
+                "from_task_id": source_task_id,
+                "source": source,
+                "count": inserted,
+            },
+        )
+    return inserted
 
 def add_notify_sub(
     conn: sqlite3.Connection,

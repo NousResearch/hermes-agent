@@ -36,6 +36,7 @@ Design notes
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -44,7 +45,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import profiles as profiles_mod
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,17 @@ Default assignee (used when no profile fits a task): {default_assignee}
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
+def _profiles():
+    """Return the current profiles module, tolerating test env re-imports.
+
+    Some Kanban tests reset ``sys.modules['hermes_cli.*']`` to move
+    ``HERMES_HOME`` between temp dirs. Resolve the module lazily at call time so
+    monkeypatches on ``hermes_cli.profiles`` still reach the decomposer even if
+    this module was imported before that reset.
+    """
+    return importlib.import_module("hermes_cli.profiles")
+
+
 @dataclass
 class DecomposeOutcome:
     """Result of decomposing a single triage task."""
@@ -184,16 +195,16 @@ def _resolve_orchestrator_profile(cfg: dict) -> str:
     is unset, so a task is never stranded for lack of an orchestrator.
     """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get("orchestrator_profile") or "").strip()
+    explicit = kb.canonical_assignee(kanban_cfg.get("orchestrator_profile"))
     if explicit:
         try:
-            if profiles_mod.profile_exists(explicit):
+            if _profiles().profile_exists(explicit):
                 return explicit
         except Exception:
             pass
     # Fall back to the active default profile.
     try:
-        return profiles_mod.get_active_profile_name() or "default"
+        return _profiles().get_active_profile_name() or "default"
     except Exception:
         return "default"
 
@@ -201,15 +212,15 @@ def _resolve_orchestrator_profile(cfg: dict) -> str:
 def _resolve_default_assignee(cfg: dict) -> str:
     """Resolve which profile catches child tasks the orchestrator can't route."""
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    explicit = (kanban_cfg.get("default_assignee") or "").strip()
+    explicit = kb.canonical_assignee(kanban_cfg.get("default_assignee"))
     if explicit:
         try:
-            if profiles_mod.profile_exists(explicit):
+            if _profiles().profile_exists(explicit):
                 return explicit
         except Exception:
             pass
     try:
-        return profiles_mod.get_active_profile_name() or "default"
+        return _profiles().get_active_profile_name() or "default"
     except Exception:
         return "default"
 
@@ -224,7 +235,7 @@ def _build_roster() -> tuple[list[dict], set[str]]:
     roster: list[dict] = []
     valid: set[str] = set()
     try:
-        all_profiles = profiles_mod.list_profiles()
+        all_profiles = _profiles().list_profiles()
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return roster, valid
@@ -262,7 +273,10 @@ def _normalize_assignee_choice(
     """
     if not isinstance(assignee, str) or not assignee.strip():
         return default_assignee
-    chosen = assignee.strip()
+    raw_choice = _profiles().normalize_profile_name(assignee)
+    if raw_choice in valid_names:
+        return raw_choice
+    chosen = kb.canonical_assignee(assignee)
     if chosen not in valid_names:
         return default_assignee
     return chosen

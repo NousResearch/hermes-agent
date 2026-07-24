@@ -82,6 +82,26 @@ async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender(tm
 
 
 @pytest.mark.asyncio
+async def test_base_adapter_deduplicates_explicit_and_bare_file_paths(tmp_path, monkeypatch):
+    "An explicit MEDIA tag wins over the same path named in report text."
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    report = _allowed_media_path(tmp_path, monkeypatch, "report.md")
+    adapter._message_handler = AsyncMock(
+        return_value=f"Report saved: {report}\nMEDIA:{report}"
+    )
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(report),
+        metadata={"notify": True},
+    )
+
+
+@pytest.mark.asyncio
 async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_sender(tmp_path, monkeypatch):
     adapter = _MediaRoutingAdapter()
     event = _event()

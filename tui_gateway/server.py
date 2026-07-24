@@ -1464,6 +1464,12 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         from gateway.run import _redact_approval_command
 
         payload["command"] = _redact_approval_command(payload.get("command"))
+    if "explanation" in payload:
+        from gateway.run import _redact_approval_explanation
+
+        payload["explanation"] = _redact_approval_explanation(
+            payload.get("explanation")
+        )
     _emit("approval.request", sid, payload)
 
 

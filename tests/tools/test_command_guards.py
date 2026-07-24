@@ -37,6 +37,8 @@ _TIRITH_PATCH = "tools.tirith_security.check_command_security"
 def _clean_state():
     """Clear approval state and relevant env vars between tests."""
     approval_module._session_approved.clear()
+    approval_module._gateway_queues.clear()
+    approval_module._gateway_notify_cbs.clear()
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     saved = {}
@@ -45,6 +47,8 @@ def _clean_state():
             saved[k] = os.environ.pop(k)
     yield
     approval_module._session_approved.clear()
+    approval_module._gateway_queues.clear()
+    approval_module._gateway_notify_cbs.clear()
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     for k, v in saved.items():
@@ -368,8 +372,79 @@ class TestWarnEmptyFindings:
 
 
 # ---------------------------------------------------------------------------
-# Programming errors propagate through orchestration
+# Approval context
 # ---------------------------------------------------------------------------
+
+class TestApprovalContext:
+    def test_clean_approval_context_accepts_tool_schema_aliases(self):
+        cleaned = approval_module._clean_approval_context({
+            "approval_purpose": " explain why ",
+            "approval_effect": " explain effect ",
+            "approval_risk": " explain risk ",
+            "ignored": "value",
+            "purpose": "overridden by alias order",
+        })
+        assert cleaned == {
+            "purpose": "explain why",
+            "effect": "explain effect",
+            "risk": "explain risk",
+        }
+
+    def test_clean_approval_context_ignores_empty_and_non_strings(self):
+        cleaned = approval_module._clean_approval_context({
+            "purpose": "   ",
+            "effect": 123,
+            "risk": "real risk",
+        })
+        assert cleaned == {"risk": "real risk"}
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_approval_data_includes_context(self, mock_tirith):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        session_key = "test-session"
+        token = set_current_session_key(session_key)
+        seen = {}
+
+        def notify_cb(data):
+            seen.update(data)
+            queue = approval_module._gateway_queues[session_key]
+            queue[0].result = "deny"
+            queue[0].event.set()
+
+        approval_module.register_gateway_notify(session_key, notify_cb)
+        try:
+            result = check_all_command_guards(
+                "rm -rf /tmp/example",
+                "local",
+                approval_context={
+                    "purpose": "clean a temp path",
+                    "effect": "removes temporary files",
+                    "risk": "deleted files cannot be recovered",
+                },
+            )
+        finally:
+            approval_module.unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+
+        assert result["approved"] is False
+        assert seen["explanation"] == {
+            "purpose": "clean a temp path",
+            "effect": "removes temporary files",
+            "risk": "deleted files cannot be recovered",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Terminal schema exposes approval context
+# ---------------------------------------------------------------------------
+
+def test_terminal_schema_exposes_approval_context_fields():
+    from tools.terminal_tool import TERMINAL_SCHEMA
+
+    props = TERMINAL_SCHEMA["parameters"]["properties"]
+    assert "approval_purpose" in props
+    assert "approval_effect" in props
+    assert "approval_risk" in props
 
 class TestProgrammingErrorsPropagateFromWrapper:
     @patch(_TIRITH_PATCH, side_effect=AttributeError("bug in wrapper"))

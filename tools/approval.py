@@ -3062,6 +3062,33 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def _clean_approval_context(approval_context: dict | None) -> dict:
+    """Normalize optional model-supplied approval context."""
+    if not isinstance(approval_context, dict):
+        return {}
+    allowed = {
+        "purpose": "purpose",
+        "effect": "effect",
+        "risk": "risk",
+        "approval_purpose": "purpose",
+        "approval_effect": "effect",
+        "approval_risk": "risk",
+    }
+    cleaned = {}
+    for src, dst in allowed.items():
+        value = approval_context.get(src)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                cleaned[dst] = value[:1000]
+    return cleaned
+
+
+def _approval_context_or_fallback(approval_context: dict | None) -> dict:
+    """Return normalized model-supplied approval context, if provided."""
+    return _clean_approval_context(approval_context)
+
+
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                             *, surface: str = "gateway") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
@@ -3179,13 +3206,17 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
-                             has_host_access: bool = False) -> dict:
+                             has_host_access: bool = False,
+                             approval_context: dict | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``approval_context`` is optional model-supplied context explaining why the
+    command is being run. It is only surfaced when approval is required.
 
     ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
     such a session is no longer isolated, so it goes through the normal flow
@@ -3421,6 +3452,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    approval_explanation = _approval_context_or_fallback(approval_context)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     # "Always" is offered when at least one warning is a dangerous-pattern
@@ -3460,6 +3492,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": redact_sensitive_text(combined_desc),
+                "explanation": approval_explanation,
                 # Smart DENY overrides are one-operation decisions, so the UI
                 # must not offer a permanent scope.  Otherwise offer Always
                 # whenever any dangerous-pattern warning can actually be
@@ -3552,6 +3585,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
+            "explanation": approval_explanation,
         }
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)

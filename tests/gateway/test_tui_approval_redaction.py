@@ -47,6 +47,31 @@ class TestTuiApprovalEmitRedaction:
         tui_server._emit_approval_request("s", None)
         assert emitted["payload"] == {}
 
+    def test_emit_approval_request_force_redacts_explanation(self, monkeypatch):
+        from tui_gateway import server as tui_server
+
+        emitted = {}
+        monkeypatch.setattr(
+            tui_server, "_emit",
+            lambda event, sid, payload=None: emitted.update({"payload": payload}),
+        )
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
+        fake_credential = "sk-proj-" + "X" * 40
+
+        tui_server._emit_approval_request(
+            "s",
+            {
+                "explanation": {
+                    "purpose": "Use " + fake_credential,
+                    "effect": "No credential here",
+                }
+            },
+        )
+
+        explanation = emitted["payload"]["explanation"]
+        assert fake_credential not in explanation["purpose"]
+        assert explanation["effect"] == "No credential here"
+
     @pytest.mark.parametrize(
         ("data", "expected"),
         [

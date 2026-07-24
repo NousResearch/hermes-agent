@@ -368,6 +368,21 @@ def _redact_approval_command(cmd: "str | None") -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+def _redact_approval_explanation(explanation: object) -> dict:
+    """Force-redact model-supplied approval context at the display boundary."""
+    if not isinstance(explanation, dict):
+        return {}
+
+    from agent.redact import redact_sensitive_text
+
+    redacted = {}
+    for key in ("purpose", "effect", "risk"):
+        value = explanation.get(key)
+        if isinstance(value, str) and value.strip():
+            redacted[key] = redact_sensitive_text(value.strip(), force=True)
+    return redacted
+
+
 def _format_exec_approval_fallback(
     command: str,
     description: str,
@@ -21646,6 +21661,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                explanation = _redact_approval_explanation(
+                    approval_data.get("explanation")
+                )
+                purpose = explanation.get("purpose")
+                effect = explanation.get("effect")
+                risk = explanation.get("risk")
+                followup_msg = ""
+                if purpose or effect or risk:
+                    followup_msg = (
+                        "Command approval context:\n\n"
+                        f"Purpose: {purpose or 'Not provided'}\n\n"
+                        f"Effect: {effect or 'Not provided'}\n\n"
+                        f"Risk: {risk or 'Not provided'}"
+                    )
+
+                def _send_approval_context_followup() -> None:
+                    if not followup_msg:
+                        return
+                    _followup_fut = safe_schedule_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            followup_msg,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="Approval context-send scheduling error",
+                    )
+                    if _followup_fut is not None:
+                        _followup_fut.result(timeout=15)
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -21679,6 +21724,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             raise RuntimeError("send_exec_approval: loop unavailable")
                         _approval_result = _approval_fut.result(timeout=15)
                         if _approval_result.success:
+                            _send_approval_context_followup()
                             return
                         logger.warning(
                             "Button-based approval failed (send returned error), falling back to text: %s",
@@ -21715,6 +21761,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     if _approval_send_fut is not None:
                         _approval_send_fut.result(timeout=15)
+                        _send_approval_context_followup()
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 

@@ -5063,6 +5063,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         from gateway.run import _redact_approval_command
 
                         event["command"] = _redact_approval_command(event.get("command"))
+                    if "explanation" in event:
+                        from gateway.run import _redact_approval_explanation
+
+                        event["explanation"] = _redact_approval_explanation(
+                            event.get("explanation")
+                        )
                     event.update({
                         "event": "approval.request",
                         "run_id": run_id,

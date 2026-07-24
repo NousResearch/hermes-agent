@@ -17,7 +17,7 @@ the redactor regexes so the assertions stay meaningful, but contain no real
 or real-looking key, so secret scanners do not flag this file.
 """
 
-from gateway.run import _redact_approval_command
+from gateway.run import _redact_approval_command, _redact_approval_explanation
 
 # Synthetic, scanner-safe credential fixtures. Each matches its redactor
 # regex (ghp_/sk-/JWT) but is unmistakably fake -- a run of X's, never a
@@ -67,6 +67,33 @@ class TestRedactApprovalCommand:
         assert _redact_approval_command(None) == ""
 
 
+class TestRedactApprovalExplanation:
+    """Approval explanations are an equally strict secret-egress boundary."""
+
+    def test_forces_redaction_for_each_context_field(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
+        explanation = {
+            "purpose": "Call GitHub with " + _FAKE_GHP,
+            "effect": "Export OPENAI_API_KEY=" + _FAKE_OPENAI,
+            "risk": "Bearer " + _FAKE_JWT + " may be logged",
+        }
+
+        out = _redact_approval_explanation(explanation)
+
+        for credential in (_FAKE_GHP, _FAKE_OPENAI, _FAKE_JWT):
+            assert credential not in " ".join(out.values())
+        assert set(out) == {"purpose", "effect", "risk"}
+
+    def test_ignores_unknown_or_invalid_values(self):
+        assert _redact_approval_explanation(None) == {}
+        assert _redact_approval_explanation("raw") == {}
+        assert _redact_approval_explanation({
+            "purpose": " deploy ",
+            "effect": 123,
+            "unknown": "do not forward",
+        }) == {"purpose": "deploy"}
+
+
 class TestApprovalCommandWiring:
     """Guard the production wiring on BOTH approval-notify transports:
     1. the chat-platform path (_approval_notify_sync in gateway/run.py), and
@@ -77,7 +104,10 @@ class TestApprovalCommandWiring:
     benign refactor doesn't cause a false failure, and so a discarded-result
     call (`_redact(cmd); send(cmd)`) does NOT pass."""
 
-    def _assert_redacts_then_uses(self, module, func_name: str, sink_substr: str):
+    def _assert_redacts_then_uses(
+        self, module, func_name: str, sink_substr: str,
+        redactor: str = "_redact_approval_command",
+    ):
         """Parse `module`'s full AST, locate the (possibly nested) function
         `func_name`, and assert it contains an assignment
         `<x> = _redact_approval_command(...)` whose result is then used by a
@@ -100,10 +130,10 @@ class TestApprovalCommandWiring:
         for node in ast.walk(target_fn):
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
                 fn = node.value.func
-                if isinstance(fn, ast.Name) and fn.id == "_redact_approval_command":
+                if isinstance(fn, ast.Name) and fn.id == redactor:
                     redact_line = node.lineno
         assert redact_line is not None, (
-            f"{func_name} must assign the result of _redact_approval_command(...) "
+            f"{func_name} must assign the result of {redactor}(...) "
             "(a discarded-result call would still leak the raw command)"
         )
 
@@ -126,6 +156,26 @@ class TestApprovalCommandWiring:
         from gateway.platforms import api_server
 
         self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+
+    def test_chat_platform_path_redacts_explanation_before_send(self):
+        import gateway.run as run
+
+        self._assert_redacts_then_uses(
+            run,
+            "_approval_notify_sync",
+            "_status_adapter.send",
+            redactor="_redact_approval_explanation",
+        )
+
+    def test_sse_api_path_redacts_explanation_before_enqueue(self):
+        from gateway.platforms import api_server
+
+        self._assert_redacts_then_uses(
+            api_server,
+            "_approval_notify",
+            "put_nowait",
+            redactor="_redact_approval_explanation",
+        )
 
     def test_chat_platform_threads_approval_capabilities_to_adapter(self):
         """The gateway must not drop the backend's one-operation UI contract."""

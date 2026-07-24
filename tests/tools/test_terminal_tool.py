@@ -1,6 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
 import tools.terminal_tool as terminal_tool
+from tools.registry import registry
 
 
 def setup_function():
@@ -9,6 +10,11 @@ def setup_function():
 
 def teardown_function():
     terminal_tool._reset_cached_sudo_passwords()
+
+
+def test_terminal_tool_registers_at_import_time():
+    """Importing terminal_tool must register the terminal tool definition."""
+    assert registry.get_entry("terminal") is not None
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
@@ -254,6 +260,36 @@ def test_get_env_config_preserves_ssh_tilde_child_cwd(monkeypatch):
 
     assert config["env_type"] == "ssh"
     assert config["cwd"] == "~/project"
+
+
+def test_get_env_config_preserves_remote_ssh_mnt_cwd(monkeypatch):
+    """A remote SSH path must never be rewritten as a host Windows path."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_SSH_CWD", "/mnt/c/remote/project")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/mnt/c/remote/project"
+
+
+def test_get_env_config_converts_wsl_cwd_for_windows_local(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_LOCAL_CWD", "/mnt/c/Users/Alice/project")
+    monkeypatch.setattr(terminal_tool.platform, "system", lambda: "Windows")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == r"C:\Users\Alice\project"
+
+
+def test_get_env_config_preserves_mnt_cwd_for_non_windows_local(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_LOCAL_CWD", "/mnt/c/project")
+    monkeypatch.setattr(terminal_tool.platform, "system", lambda: "Linux")
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/mnt/c/project"
 
 
 def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeypatch):

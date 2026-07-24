@@ -2844,10 +2844,39 @@ def stream_tts_to_speaker(
                 audio_iter = streamer.stream(cleaned)
                 if output_stream is not None:
                     import numpy as _np
+                    _pcm_leftover = b""
                     for chunk in audio_iter:
                         if stop_event.is_set():
                             break
-                        output_stream.write(_np.frombuffer(chunk, dtype=_np.int16).reshape(-1, 1))
+                        # PCM streaming chunks from providers (OpenAI, etc.)
+                        # may arrive on arbitrary byte boundaries that are not
+                        # aligned to the int16 frame width (2 bytes). Carrying
+                        # the odd tail into the next chunk prevents
+                        # numpy.frombuffer from raising "buffer size must be a
+                        # multiple of element size" and dropping the chunk.
+                        _buf = _pcm_leftover + chunk
+                        _aligned_len = len(_buf) - (len(_buf) % 2)
+                        if _aligned_len >= 2:
+                            try:
+                                output_stream.write(
+                                    _np.frombuffer(
+                                        _buf[:_aligned_len], dtype="<i2"
+                                    ).reshape(-1, 1)
+                                )
+                            except Exception as write_exc:
+                                # PortAudio/Core Audio can raise transient
+                                # errors (e.g. PaErrorCode -9986 "Internal
+                                # PortAudio error" on macOS device state
+                                # changes or buffer underruns).  Log and
+                                # break rather than killing the thread.
+                                logger.warning(
+                                    "PortAudio write failed (continuing): %s",
+                                    write_exc,
+                                )
+                                break
+                        _pcm_leftover = (
+                            _buf[_aligned_len:] if _aligned_len < len(_buf) else b""
+                        )
                 else:
                     # No audio device: buffer chunks to a temp WAV and play it.
                     _play_via_tempfile(audio_iter, stop_event, streamer.sample_rate)

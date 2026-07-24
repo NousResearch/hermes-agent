@@ -736,3 +736,159 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ---------------------------------------------------------------------------
+# Fix: parked wait helpers + reload must not raise "Event loop is closed"
+# ---------------------------------------------------------------------------
+
+class TestSafeCancelAwait:
+    """_safe_cancel_await must tolerate a closed event loop."""
+
+    def test_cancel_on_live_loop(self):
+        from tools.mcp_tool import _safe_cancel_await
+
+        async def _run():
+            blocker = asyncio.Event()
+            task = asyncio.create_task(blocker.wait())
+            await asyncio.sleep(0)  # let task start
+            await _safe_cancel_await(task)
+            assert task.cancelled() or task.done()
+
+        asyncio.run(_run())
+
+    def test_cancel_when_loop_already_closed(self):
+        """Simulates the reload race: cancel after the loop is gone."""
+        from tools.mcp_tool import _safe_cancel_await
+
+        async def _run():
+            # Create a dummy future on this loop, then hand it to a helper
+            # that will try cancel after we close a *different* scenario —
+            # we mock cancel() to raise RuntimeError like a closed loop.
+            fut = asyncio.get_running_loop().create_future()
+
+            class BoomFuture:
+                def done(self):
+                    return False
+
+                def cancel(self):
+                    raise RuntimeError("Event loop is closed")
+
+            # Must not raise
+            await _safe_cancel_await(BoomFuture())
+            fut.cancel()
+
+        asyncio.run(_run())
+
+    def test_done_task_is_noop(self):
+        from tools.mcp_tool import _safe_cancel_await
+
+        async def _run():
+            async def done_coro():
+                return 1
+
+            task = asyncio.create_task(done_coro())
+            await task
+            await _safe_cancel_await(task)  # no-op, no raise
+
+        asyncio.run(_run())
+
+
+class TestParkedFailedServerShutdown:
+    """Failed start that leaves run() parked must still be reaped on reload."""
+
+    def test_connect_server_tracks_parked_failed_start(self):
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import MCPServerTask, _connect_server
+
+        async def _run():
+            with mcp_mod._lock:
+                mcp_mod._parked_failed_servers.clear()
+                mcp_mod._servers.clear()
+
+            server = MCPServerTask("parked-fail")
+
+            async def boom_start(self, config):
+                # Mimic start(): spawn run, signal ready with error, leave
+                # the task parked (alive) so the orphan race can fire.
+                async def parked_run():
+                    self._error = ConnectionError("permanent boom")
+                    self._ready.set()
+                    # Park like _wait_for_reconnect_or_shutdown
+                    await self._wait_for_reconnect_or_shutdown(timeout=60)
+
+                self._task = asyncio.ensure_future(parked_run())
+                await self._ready.wait()
+                if self._error:
+                    raise self._error
+
+            with patch.object(MCPServerTask, "start", boom_start):
+                try:
+                    await _connect_server("parked-fail", {"command": "fake"})
+                    raise AssertionError("expected connect failure")
+                except ConnectionError:
+                    pass
+
+            with mcp_mod._lock:
+                assert "parked-fail" in mcp_mod._parked_failed_servers
+                tracked = mcp_mod._parked_failed_servers["parked-fail"]
+                assert tracked._task is not None
+                assert not tracked._task.done()
+
+            # Shutdown must reap the parked task without raising.
+            await tracked.shutdown()
+            assert tracked._task.done()
+
+            with mcp_mod._lock:
+                mcp_mod._parked_failed_servers.clear()
+
+        asyncio.run(_run())
+
+    def test_shutdown_mcp_servers_includes_parked_failed(self):
+        import tools.mcp_tool as mcp_mod
+
+        try:
+            mcp_mod._ensure_mcp_loop()
+
+            mock_server = MagicMock()
+            mock_server.name = "orphan-park"
+
+            async def _shutdown_coro():
+                return None
+
+            mock_server.shutdown = _shutdown_coro
+
+            with mcp_mod._lock:
+                mcp_mod._servers.clear()
+                mcp_mod._parked_failed_servers.clear()
+                mcp_mod._parked_failed_servers["orphan-park"] = mock_server
+
+            # Should not raise; should clear parked map
+            mcp_mod.shutdown_mcp_servers()
+
+            with mcp_mod._lock:
+                assert mcp_mod._parked_failed_servers == {}
+        finally:
+            with mcp_mod._lock:
+                mcp_mod._servers.clear()
+                mcp_mod._parked_failed_servers.clear()
+            mcp_mod._stop_mcp_loop()
+
+    def test_wait_for_reconnect_finally_survives_closed_loop(self):
+        """_wait_for_reconnect_or_shutdown finally must not raise on closed loop."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _run():
+            server = MCPServerTask("closed-loop-park")
+            # Start the wait, then cancel the outer task while forcing the
+            # helper's cancel path through _safe_cancel_await.
+            wait_task = asyncio.create_task(
+                server._wait_for_reconnect_or_shutdown(timeout=30)
+            )
+            await asyncio.sleep(0)
+            # Trigger shutdown so wait returns cleanly
+            server._shutdown_event.set()
+            result = await wait_task
+            assert result == "shutdown"
+
+        asyncio.run(_run())

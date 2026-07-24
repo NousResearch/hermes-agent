@@ -144,6 +144,7 @@ gateway:
     resumed:               "▶ Doelwit hervat: {goal}\nStuur enige boodskap om voort te gaan, of wag — ek sal die volgende stap met die volgende beurt neem."
     invalid:               "Ongeldige doelwit: {error}"
     set:                   "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
+    set_unbounded:         "⊙ Doelwit gestel (onbegrensde begroting): {goal}\nEk sal aanhou werk totdat die beoordelaar sê dit is klaar of jy dit pouseer/verwyder — daar is geen beurtbeperking nie.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
 
   help:
     header:                "📖 **Hermes-opdragte**\n"

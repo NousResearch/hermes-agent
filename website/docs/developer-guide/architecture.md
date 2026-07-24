@@ -150,7 +150,7 @@ User input → HermesCLI.process_input()
 ### Gateway Message
 
 ```text
-Platform event → Adapter.on_message() → MessageEvent
+Platform event → adapter listener → MessageEvent → BasePlatformAdapter.handle_message()
   → GatewayRunner._handle_message()
     → authorize user
     → resolve session key

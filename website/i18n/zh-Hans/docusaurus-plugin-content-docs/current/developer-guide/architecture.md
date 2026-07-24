@@ -150,7 +150,7 @@ hermes-agent/
 ### Gateway 消息
 
 ```text
-平台事件 → Adapter.on_message() → MessageEvent
+平台事件 → 适配器监听器 → MessageEvent → BasePlatformAdapter.handle_message()
   → GatewayRunner._handle_message()
     → 授权用户
     → 解析会话 key

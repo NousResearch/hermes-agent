@@ -1361,6 +1361,14 @@ def execute_code(
         # passed through — without those, the child can't create a socket
         # or spawn a subprocess.  See ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)
+        # Overlay the current request's session ContextVars so the child
+        # inherits the *correct* HERMES_SESSION_ID — not whichever value
+        # last wrote to the process-global os.environ mirror.  See #69820.
+        try:
+            from tools.environments.local import _inject_session_context_env
+            _inject_session_context_env(child_env)
+        except Exception:
+            pass
         child_env["HERMES_RPC_SOCKET"] = rpc_endpoint
         child_env["HERMES_RPC_TOKEN"] = rpc_token
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"

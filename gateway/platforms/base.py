@@ -105,6 +105,7 @@ def _reply_anchor_for_event(event) -> str | None:
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
+<<<<<<< HEAD
     raw_message = getattr(event, "raw_message", None)
     if (
         platform == "slack"
@@ -117,6 +118,8 @@ def _reply_anchor_for_event(event) -> str | None:
         # SlackAdapter._resolve_thread_ts() treat it as a thread anchor and
         # reply in a (nonexistent) thread anyway.
         return None
+=======
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
@@ -761,14 +764,22 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
+<<<<<<< HEAD
     from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+=======
+    from tools.url_safety import is_safe_url
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
     _log = logging.getLogger(__name__)
 
+<<<<<<< HEAD
     async with create_ssrf_safe_async_client(
+=======
+    async with httpx.AsyncClient(
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -881,14 +892,22 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
+<<<<<<< HEAD
     from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+=======
+    from tools.url_safety import is_safe_url
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import httpx
     _log = logging.getLogger(__name__)
 
+<<<<<<< HEAD
     async with create_ssrf_safe_async_client(
+=======
+    async with httpx.AsyncClient(
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
         timeout=30.0,
         follow_redirects=True,
         event_hooks={"response": [_ssrf_redirect_guard]},
@@ -1838,15 +1857,23 @@ class MessageEvent:
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
+<<<<<<< HEAD
         return (self.text or "").lstrip().startswith("/")
+=======
+        return self.text.startswith("/")
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
+<<<<<<< HEAD
         command_text = (self.text or "").lstrip()
         parts = command_text.split(maxsplit=1)
+=======
+        parts = self.text.split(maxsplit=1)
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
@@ -1859,8 +1886,12 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
+<<<<<<< HEAD
         command_text = (self.text or "").lstrip()
         parts = command_text.split(maxsplit=1)
+=======
+        parts = self.text.split(maxsplit=1)
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
@@ -2455,11 +2486,14 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+<<<<<<< HEAD
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
         self._reaction_handler: Optional[
             Callable[[Dict[str, Any]], Awaitable[None]]
         ] = None
+=======
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -3005,6 +3039,7 @@ class BasePlatformAdapter(ABC):
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
 
+<<<<<<< HEAD
     def set_reaction_handler(
         self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
     ) -> None:
@@ -3024,6 +3059,8 @@ class BasePlatformAdapter(ABC):
         # in tests never run ``BasePlatformAdapter.__init__``.
         self._reaction_handler = handler  # type: ignore[attr-defined]
 
+=======
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
     def set_authorization_check(
         self,
         callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
@@ -5817,7 +5854,10 @@ class BasePlatformAdapter(ABC):
                         user_id_alt=user_id_alt,
                         chat_id_alt=chat_id_alt,
                         is_bot=is_bot,
+<<<<<<< HEAD
                         scope_id=str(scope_id) if scope_id else None,
+=======
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
                         guild_id=str(guild_id) if guild_id else None,
                         parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
                         message_id=str(message_id) if message_id else None,
@@ -5932,6 +5972,7 @@ class BasePlatformAdapter(ABC):
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
+<<<<<<< HEAD
                 final_chunk = prefix + remaining
                 # Check fence balance: if carry_lang was set, the chunk
                 # starts with an opening fence.  Walk the remaining text
@@ -5952,6 +5993,9 @@ class BasePlatformAdapter(ABC):
                     if _final_in_code:
                         final_chunk += FENCE_CLOSE
                 chunks.append(final_chunk)
+=======
+                chunks.append(prefix + remaining)
+>>>>>>> a23e39f (test(desktop): cover correction resume without duplicate prompts (#69708))
                 break
 
             # Find a natural split point (prefer newlines, then spaces).

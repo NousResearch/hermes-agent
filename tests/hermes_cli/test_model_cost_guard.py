@@ -75,6 +75,18 @@ def test_openai_gpt55_pro_adds_suggestion(monkeypatch):
     assert "did you mean to select openai/gpt-5.5?" in warning.message
 
 
+def test_openai_gpt55_pro_warns_even_without_pricing(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *_args, **_kwargs: None)
+
+    warning = expensive_model_warning("openai/gpt-5.5-pro", provider="openai-codex")
+
+    assert warning is not None
+    assert warning.input_cost_per_million is None
+    assert warning.output_cost_per_million is None
+    assert "did you mean to select openai/gpt-5.5?" in warning.message
+
+
 def test_openai_gpt55_pro_warns_for_nous_portal_pricing(monkeypatch):
     monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

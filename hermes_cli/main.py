@@ -1062,6 +1062,67 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _confirm_startup_expensive_model_override(args) -> None:
+    """Guard startup -m/--provider overrides before the first API call."""
+    explicit_model = (getattr(args, "model", None) or "").strip()
+    explicit_provider = (getattr(args, "provider", None) or "").strip()
+    if not explicit_model and not explicit_provider:
+        return
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.model_cost_guard import expensive_model_warning
+    except Exception as exc:
+        logger.warning("startup model cost guard unavailable: %s", exc)
+        return
+
+    try:
+        model_cfg = (load_config().get("model") or {})
+    except Exception as exc:
+        logger.warning("startup model cost guard could not load config: %s", exc)
+        model_cfg = {}
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+
+    model = explicit_model or (model_cfg.get("default") or "").strip()
+    if not model:
+        return
+    provider = (explicit_provider or model_cfg.get("provider") or "").strip()
+    try:
+        warning = expensive_model_warning(
+            model,
+            provider=provider,
+            base_url=(model_cfg.get("base_url") or ""),
+            api_key=(model_cfg.get("api_key") or ""),
+        )
+    except Exception as exc:
+        logger.warning("startup model cost guard failed for %s/%s: %s", provider, model, exc)
+        return
+    if warning is None:
+        return
+
+    # Cost and provider-routing confirmation is intentionally independent of
+    # --yolo / --accept-hooks: those flags approve local command/tool risk, not
+    # paid aggregator spend or a surprising provider route.
+    message = warning.message
+    if not sys.stdin.isatty():
+        sys.stderr.write(message + "\n")
+        sys.stderr.write(
+            "Refusing this startup model override in non-interactive mode. "
+            "Run interactively and confirm if you intend to use it.\n"
+        )
+        raise SystemExit(1)
+
+    sys.stderr.write(message + "\n")
+    try:
+        reply = input("Use this model for this invocation? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        reply = ""
+    if reply not in {"y", "yes"}:
+        sys.stderr.write("Model override cancelled.\n")
+        raise SystemExit(1)
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
@@ -2601,6 +2662,7 @@ def cmd_chat(args):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
     _pin_kanban_board_env()
+    _confirm_startup_expensive_model_override(args)
 
     if use_tui:
         _launch_tui(

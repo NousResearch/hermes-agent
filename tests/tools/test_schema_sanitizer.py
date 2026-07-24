@@ -189,6 +189,26 @@ def test_required_all_missing_is_dropped():
     assert "required" not in out[0]["function"]["parameters"]
 
 
+def test_dependent_required_property_names_are_preserved():
+    schema = {
+        "type": "object",
+        "properties": {
+            "organization": {"type": "string"},
+            "project": {"type": "string"},
+            "repository": {"type": "string"},
+        },
+        "dependentRequired": {
+            "project": ["organization"],
+            "repository": ["organization", "project"],
+        },
+    }
+    tools = [_tool("code_history", copy.deepcopy(schema))]
+
+    out = sanitize_tool_schemas(tools)
+
+    assert out[0]["function"]["parameters"] == schema
+
+
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",

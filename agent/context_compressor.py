@@ -246,6 +246,49 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
             msg.pop(_DB_PERSISTED_MARKER, None)
 
 
+def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
+    """Strip stale replay fields (``codex_reasoning_items``) from retained
+    assistant messages older than the most recent assistant turn.
+
+    During Codex/Responses sessions, every retained assistant message carries
+    encrypted reasoning blobs (``codex_reasoning_items``) that are only needed
+    for replaying the *current* turn's reasoning chain.  Prior-turn items are
+    pure re-billed weight: the compaction boundary has already invalidated the
+    prompt-cache prefix, and ``conversation_loop.py`` already drops these
+    wholesale when ``api_mode != "codex_responses"``.
+
+    Operates in place on the fully assembled compacted message list.  Returns
+    the number of messages that were pruned (for diagnostics).  #71058.
+
+    The pruning rule is conservative: everything up to (but not including) the
+    *last* assistant message in the list gets its stale replay fields stripped.
+    The final assistant message retains its items because it is the most recent
+    turn and its replay chain may still be active.  When there is no assistant
+    message at all (shouldn't happen in practice, but defensive) nothing is
+    stripped.
+    """
+    # Find the last assistant message index — everything before it is stale.
+    last_asst_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            last_asst_idx = i
+            break
+    if last_asst_idx <= 0:
+        # No assistant message, or only one (nothing to prune).
+        return 0
+
+    pruned = 0
+    for i in range(last_asst_idx):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for key in _STALE_REPLAY_PRUNE_KEYS:
+            if msg.pop(key, None) is not None:
+                pruned += 1
+    return pruned
+
+
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
 # Without it, weak models read the verbatim "## Active Task" quote as fresh
@@ -873,6 +916,17 @@ _REPLAY_BUDGET_KEYS = (
     "codex_message_items",
 )
 
+# Replay keys that can be safely pruned from stale assistant messages during
+# compaction.  ``codex_reasoning_items`` carries encrypted reasoning blobs that
+# are only needed for the current turn's replay — prior-turn items are pure
+# re-billed weight.  Stripping stale items at compaction time is a safe, cheap
+# pre-pass: the compaction boundary has already invalidated the prompt-cache
+# prefix, and the conversation_loop already drops these wholesale when
+# ``api_mode != "codex_responses"`` (#71058).
+_STALE_REPLAY_PRUNE_KEYS = (
+    "codex_reasoning_items",
+)
+
 
 def _reasoning_details_text_chars(value: Any) -> int:
     """Textual thinking chars inside a ``reasoning_details`` envelope.
@@ -924,8 +978,11 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     same size class; otherwise an assistant message with tiny visible
     content but large hidden replay blobs is protected as if it were small,
     the post-compression session stays near the context limit, and
-    compaction re-fires continuously (#55572).  Accounting-only: replay
-    fields are never mutated or pruned here.
+    compaction re-fires continuously (#55572).  Stale replay fields from
+    prior assistant turns are stripped during the compaction assembly pass
+    (``_prune_stale_reasoning_replay``, #71058).  Accounting-only here: this
+    budget walk does not mutate or prune — it counts so the tail-protection
+    boundary does not undershoot due to invisible replay payload.
     """
     content = msg.get("content") or ""
     if isinstance(content, str):
@@ -7048,6 +7105,21 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        # Prune stale codex_reasoning_items from retained assistant messages
+        # older than the most recent assistant turn (#71058).  These encrypted
+        # reasoning blobs are only needed for the *current* turn's replay;
+        # prior-turn items are pure re-billed weight that keeps compaction from
+        # reaching its target ratio.  The compaction boundary has already
+        # invalidated the prompt-cache prefix, so stripping them here costs
+        # nothing extra cache-wise.  conversation_loop.py already drops these
+        # wholesale when api_mode != "codex_responses", so this is a scoped
+        # strip consistent with existing semantics.
+        _pruned_replay = _prune_stale_reasoning_replay(compressed)
+        if _pruned_replay and not self.quiet_mode:
+            logger.info(
+                "Pruned stale replay items from %d assistant message(s) during compaction",
+                _pruned_replay,
+            )
         self._last_compression_made_progress = True
 
         # A successful compaction just freed the largest allocation a long

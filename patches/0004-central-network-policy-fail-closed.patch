@@ -1,0 +1,376 @@
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+index f71f8dc87..a074704b8 100644
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -354,6 +354,17 @@ def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[st
+     return False
+
+
++def _authorize_platform_proxy(proxy_url: str | None) -> str | None:
++    from darkloom.policy import NetworkChannel, authorize
++
++    authorize(
++        NetworkChannel.PLATFORM,
++        proxy_url=proxy_url,
++        proxy_aware=proxy_url is not None,
++    )
++    return proxy_url
++
++
+ def resolve_proxy_url(
+     platform_env_var: str | None = None,
+     *,
+@@ -373,8 +384,8 @@ def resolve_proxy_url(
+         value = (os.environ.get(platform_env_var) or "").strip()
+         if value:
+             if should_bypass_proxy(target_hosts):
+-                return None
+-            return normalize_proxy_url(value)
++                return _authorize_platform_proxy(None)
++            return _authorize_platform_proxy(normalize_proxy_url(value))
+         # HARDENING: warn when platform-specific proxy var is empty but ALL_PROXY is set.
+         # Empty platform var overrides ALL_PROXY silently — user may not know they disabled Tor.
+         _all_proxy = os.environ.get("ALL_PROXY") or os.environ.get("all_proxy") or ""
+@@ -390,12 +401,12 @@ def resolve_proxy_url(
+         value = (os.environ.get(key) or "").strip()
+         if value:
+             if should_bypass_proxy(target_hosts):
+-                return None
+-            return normalize_proxy_url(value)
++                return _authorize_platform_proxy(None)
++            return _authorize_platform_proxy(normalize_proxy_url(value))
+     detected = normalize_proxy_url(_detect_macos_system_proxy())
+     if detected and should_bypass_proxy(target_hosts):
+-        return None
+-    return detected
++        return _authorize_platform_proxy(None)
++    return _authorize_platform_proxy(detected)
+
+
+ def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
+diff --git a/plugins/platforms/photon/adapter.py b/plugins/platforms/photon/adapter.py
+index 7b4090c91..94e2572cd 100644
+--- a/plugins/platforms/photon/adapter.py
++++ b/plugins/platforms/photon/adapter.py
+@@ -73,6 +73,7 @@ logger = logging.getLogger(__name__)
+
+ _DEFAULT_SIDECAR_PORT = 8789
+ _DEFAULT_SIDECAR_BIND = "127.0.0.1"
++_SIDECAR_SUPPORTS_PROXY = False
+
+ # Photon iMessage messages from the SDK side have no documented hard
+ # limit, but the underlying iMessage protocol limits practical message
+@@ -990,6 +991,12 @@ class PhotonAdapter(BasePlatformAdapter):
+                 exc,
+             )
+
++        from darkloom.policy import authorize_subprocess, configured_proxy
++
++        authorize_subprocess(
++            proxy_aware=_SIDECAR_SUPPORTS_PROXY,
++            proxy_url=configured_proxy(),
++        )
+         self._sidecar_proc = subprocess.Popen(  # noqa: S603
+             [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
+             stdin=subprocess.PIPE,
+diff --git a/plugins/platforms/whatsapp/adapter.py b/plugins/platforms/whatsapp/adapter.py
+index 260a77989..e55142d98 100644
+--- a/plugins/platforms/whatsapp/adapter.py
++++ b/plugins/platforms/whatsapp/adapter.py
+@@ -24,6 +24,7 @@ import signal
+ import subprocess
+
+ _IS_WINDOWS = platform.system() == "Windows"
++_BRIDGE_SUPPORTS_PROXY = False
+ from pathlib import Path
+ from typing import Dict, Optional, Any
+
+@@ -653,6 +654,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
+                 if _pk in os.environ:
+                     bridge_env[_pk] = os.environ[_pk]
+
++            from darkloom.policy import authorize_subprocess, configured_proxy
++
++            authorize_subprocess(
++                proxy_aware=_BRIDGE_SUPPORTS_PROXY,
++                proxy_url=configured_proxy(),
++            )
+             self._bridge_process = subprocess.Popen(
+                 [
+                     find_node_executable("node") or "node",
+diff --git a/plugins/web/exa/provider.py b/plugins/web/exa/provider.py
+index 17ce665dc..c592bc98c 100644
+--- a/plugins/web/exa/provider.py
++++ b/plugins/web/exa/provider.py
+@@ -71,6 +71,11 @@ def _get_exa_client() -> Any:
+
+     from exa_py import Exa  # noqa: WPS433 — deliberately lazy
+
++    from darkloom.policy import NetworkChannel, authorize, configured_proxy
++
++    # exa-py 2.10.2 exposes no injectable HTTP client/transport. Never mark it
++    # proxy-aware in strict mode merely because proxy variables are present.
++    authorize(NetworkChannel.WEB_TOOL, proxy_url=configured_proxy(), proxy_aware=False)
+     client = Exa(api_key=api_key)
+     client.headers["x-exa-integration"] = "hermes-agent"
+     _wt._exa_client = client
+diff --git a/plugins/web/firecrawl/provider.py b/plugins/web/firecrawl/provider.py
+index 50e032568..127bdb865 100644
+--- a/plugins/web/firecrawl/provider.py
++++ b/plugins/web/firecrawl/provider.py
+@@ -260,8 +260,17 @@ def _get_firecrawl_client() -> Any:
+
+     # Construct via the re-exported Firecrawl proxy on tools.web_tools so
+     # unit tests patching ``tools.web_tools.Firecrawl`` see their mock.
+-    # HARDENING: inject proxy so Firecrawl SDK routes through Tor
+-    _proxy_url = os.environ.get("ALL_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("TOR_PROXY") or None
++    from darkloom.policy import NetworkChannel, authorize, configured_proxy
++
++    # Authorization must happen before constructing the SDK client.  In
++    # strict mode a missing/invalid proxy therefore fails closed rather than
++    # falling back to Firecrawl's direct transport.
++    _proxy_url = configured_proxy()
++    authorize(
++        NetworkChannel.WEB_TOOL,
++        proxy_url=_proxy_url,
++        proxy_aware=bool(_proxy_url),
++    )
+     if _proxy_url:
+         kwargs["proxy"] = _proxy_url
+     _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
+index b61138f21..3df74d66e 100644
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -6909,4 +6909,11 @@ def call_llm(
+     max_tokens: int = 4096,
+     **kwargs,
+ ):
++    from darkloom.policy import NetworkChannel, authorize
++
++    # Guard the shared auxiliary LLM entry point before provider resolution
++    # can construct a provider client. The shared provider path cannot prove
++    # that every selected SDK honors an ambient proxy, so strict mode must
++    # deny it until a request-scoped proxy transport is installed.
++    authorize(NetworkChannel.LLM, proxy_aware=False)
+     """Call an LLM for an auxiliary task with provider fallback."""
+diff --git a/tools/mcp_tool.py b/tools/mcp_tool.py
+index 2f1297ff0..d0ff110e8 100644
+--- a/tools/mcp_tool.py
++++ b/tools/mcp_tool.py
+@@ -4462,4 +4462,10 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
+     """Connect one configured MCP server and return its live task."""
++    from darkloom.policy import NetworkChannel, authorize
++
++    # MCPServerTask receives no request-scoped proxy configuration for either
++    # HTTP or stdio transports. Do not infer proxy support from ambient
++    # variables; strict mode must fail closed before task construction.
++    authorize(NetworkChannel.MCP, proxy_aware=False)
+     task = MCPServerTask(name, config)
+     await task.connect()
+     return task
+diff --git a/plugins/platforms/discord/adapter.py b/plugins/platforms/discord/adapter.py
+index a54185489..a8fc0466d 100644
+--- a/plugins/platforms/discord/adapter.py
++++ b/plugins/platforms/discord/adapter.py
+@@ -3717,5 +3717,9 @@ class DiscordAdapter(BasePlatformAdapter):
+     async def join_voice_channel(self, channel) -> bool:
+         """Join a Discord voice channel."""
++        from darkloom.policy import NetworkChannel, authorize_raw_socket
++
++        # discord.py voice uses UDP and cannot be carried by Tor SOCKS5.
++        authorize_raw_socket(NetworkChannel.UDP_VOICE)
+         guild_id = channel.guild.id
+         try:
+             existing = self._voice_clients.get(guild_id)
+diff --git a/plugins/platforms/email/adapter.py b/plugins/platforms/email/adapter.py
+index 0fcfca02d..01f0772ce 100644
+--- a/plugins/platforms/email/adapter.py
++++ b/plugins/platforms/email/adapter.py
+@@ -524,6 +524,10 @@ class EmailAdapter(BasePlatformAdapter):
+         Returns a connected SMTP object with TLS established — callers
+         can proceed directly to ``login()``.
+         """
++        from darkloom.policy import NetworkChannel, authorize_raw_socket
++
++        # Guard every SMTP construction, including sends outside connect().
++        authorize_raw_socket(NetworkChannel.SMTP)
+         ctx = ssl.create_default_context()
+         host = self._smtp_host
+         port = self._smtp_port
+@@ -551,4 +555,8 @@ class EmailAdapter(BasePlatformAdapter):
+     async def connect(self, *, is_reconnect: bool = False) -> bool:
+         """Connect to the IMAP server and start polling for new messages."""
++        from darkloom.policy import NetworkChannel, authorize_raw_socket
++
++        # Refuse before the initial IMAP4_SSL constructor opens a socket.
++        authorize_raw_socket(NetworkChannel.IMAP)
+         # Validate up front so a missing host surfaces as an actionable config
+         # error instead of IMAP4_SSL("") raising the cryptic
+@@ -650,5 +658,9 @@ class EmailAdapter(BasePlatformAdapter):
+     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
+         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
++        from darkloom.policy import NetworkChannel, authorize_raw_socket
++
++        # Polling can also be invoked directly by tests/integrations.
++        authorize_raw_socket(NetworkChannel.IMAP)
+         results = []
+         try:
+             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+diff --git a/plugins/platforms/irc/adapter.py b/plugins/platforms/irc/adapter.py
+index cc29a2814..311755d89 100644
+--- a/plugins/platforms/irc/adapter.py
++++ b/plugins/platforms/irc/adapter.py
+@@ -155,4 +155,8 @@ class IRCAdapter(BasePlatformAdapter):
+     async def connect(self, *, is_reconnect: bool = False) -> bool:
+         """Connect to the IRC server, register, and join the channel."""
++        from darkloom.policy import NetworkChannel, authorize_raw_socket
++
++        # asyncio.open_connection is a raw TCP path with no SOCKS support.
++        authorize_raw_socket(NetworkChannel.IRC)
+         if not self.server or not self.channel:
+             logger.error("IRC: server and channel must be configured")
+diff --git a/plugins/web/parallel/provider.py b/plugins/web/parallel/provider.py
+index 028f5df3f..5d90dc824 100644
+--- a/plugins/web/parallel/provider.py
++++ b/plugins/web/parallel/provider.py
+@@ -85,7 +85,13 @@ def _get_sync_client() -> Any:
+     _ensure_parallel_sdk_installed()
+     from parallel import Parallel  # noqa: WPS433 — deliberately lazy
+
+-    client = Parallel(api_key=api_key)
++    import httpx
++    from darkloom.policy import NetworkChannel, authorize, configured_proxy
++
++    proxy_url = configured_proxy()
++    authorize(NetworkChannel.WEB_TOOL, proxy_url=proxy_url, proxy_aware=bool(proxy_url))
++    http_client = httpx.Client(transport=httpx.HTTPTransport(proxy=proxy_url))
++    client = Parallel(api_key=api_key, http_client=http_client)
+     _wt._parallel_client = client
+     return client
+
+@@ -113,7 +119,13 @@ def _get_async_client() -> Any:
+     _ensure_parallel_sdk_installed()
+     from parallel import AsyncParallel  # noqa: WPS433 — deliberately lazy
+
+-    client = AsyncParallel(api_key=api_key)
++    import httpx
++    from darkloom.policy import NetworkChannel, authorize, configured_proxy
++
++    proxy_url = configured_proxy()
++    authorize(NetworkChannel.WEB_TOOL, proxy_url=proxy_url, proxy_aware=bool(proxy_url))
++    http_client = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(proxy=proxy_url))
++    client = AsyncParallel(api_key=api_key, http_client=http_client)
+     _wt._async_parallel_client = client
+     return client
+
+diff --git a/plugins/web/tavily/provider.py b/plugins/web/tavily/provider.py
+index e2a9d7b40..f0b2d9aaf 100644
+--- a/plugins/web/tavily/provider.py
++++ b/plugins/web/tavily/provider.py
+@@ -56,7 +56,13 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+     url = f"{base_url}/{endpoint.lstrip('/')}"
+     logger.info("Tavily %s request to %s", endpoint, url)
+
+-    response = httpx.post(url, json=payload, timeout=60)
++    from darkloom.policy import NetworkChannel, authorize, configured_proxy
++
++    proxy_url = configured_proxy()
++    authorize(NetworkChannel.WEB_TOOL, proxy_url=proxy_url, proxy_aware=bool(proxy_url))
++    transport = httpx.HTTPTransport(proxy=proxy_url)
++    with httpx.Client(transport=transport, timeout=60) as client:
++        response = client.post(url, json=payload)
+     response.raise_for_status()
+     return response.json()
+
+diff --git a/tools/browser_tool.py b/tools/browser_tool.py
+index d84ca39d5..f8943f095 100644
+--- a/tools/browser_tool.py
++++ b/tools/browser_tool.py
+@@ -1093,9 +1093,22 @@ def _run_chrome_fallback_command(
+         cmd_prefix = [browser_cmd]
+     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
+
+-    # HARDENING: if Tor proxy is configured, pass --proxy-server to Chromium
+-    _tor_proxy = os.environ.get("ALL_PROXY") or os.environ.get("TOR_PROXY") or ""
+-    if _tor_proxy and "socks5://" in _tor_proxy:
++    # Install the proxy in Chromium's command line before authorizing it.
++    from darkloom.policy import NetworkChannel, authorize, configured_proxy
++
++    _tor_proxy = configured_proxy()
++    _proxy_installed = bool(_tor_proxy)
++    if _proxy_installed:
++        base_args += [
++            "--proxy-server", _tor_proxy,
++            # Prevent WebRTC from falling back to direct UDP around SOCKS.
++            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
++        ]
++    authorize(
++        NetworkChannel.BROWSER,
++        proxy_url=_tor_proxy,
++        proxy_aware=_proxy_installed,
++    )
+
+     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
+     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
+diff --git a/plugins/platforms/slack/adapter.py b/plugins/platforms/slack/adapter.py
+index 8fc5874e5..926432ab1 100644
+--- a/plugins/platforms/slack/adapter.py
++++ b/plugins/platforms/slack/adapter.py
+@@ -489,9 +489,21 @@ _SLACK_PROXY_HOSTS = (
+
+ def _resolve_slack_proxy_url() -> Optional[str]:
+     """Resolve a proxy URL that Slack SDK clients can safely use."""
++    from darkloom.policy import NetworkChannel, authorize
++
++    def authorized(proxy: Optional[str]) -> Optional[str]:
++        # Slack accepts HTTP(S) proxies only. In strict mode, None is a denial,
++        # never permission for the SDK to silently construct a direct client.
++        authorize(
++            NetworkChannel.PLATFORM,
++            proxy_url=proxy,
++            proxy_aware=proxy is not None,
++        )
++        return proxy
++
+     proxy_url = resolve_proxy_url()
+     if not proxy_url:
+-        return None
++        return authorized(None)
+
+     normalized = proxy_url.lower()
+     if not normalized.startswith(("http://", "https://")):
+@@ -512,12 +521,12 @@ def _resolve_slack_proxy_url() -> Optional[str]:
+                 safe_url_for_log(proxy_url),
+             )
+-        return None
++        return authorized(None)
+
+     if any(is_host_excluded_by_no_proxy(host) for host in _SLACK_PROXY_HOSTS):
+         logger.info("[Slack] NO_PROXY bypasses Slack proxy configuration")
+-        return None
++        return authorized(None)
+
+-    return proxy_url
++    return authorized(proxy_url)
+
+
+ def _slack_dedup_ttl_seconds() -> float:
+diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
+index 11c6346b2..9ca9ad0dc 100644
+--- a/tools/code_execution_tool.py
++++ b/tools/code_execution_tool.py
+@@ -1395,6 +1395,13 @@ def execute_code(
+         _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
+         _script_path = os.path.join(tmpdir, "script.py")
+
++        from darkloom.policy import authorize_subprocess, configured_proxy
++
++        # The sandboxed Python process can launch curl, git, native extensions,
++        # or arbitrary binaries. Proxy environment variables cannot verify that
++        # those descendants honor a proxy, so strict mode denies at the actual
++        # execute_code process boundary before Popen is reached.
++        authorize_subprocess(proxy_aware=False, proxy_url=configured_proxy())
+         proc = subprocess.Popen(
+             [_child_python, _script_path],
+             cwd=_child_cwd,

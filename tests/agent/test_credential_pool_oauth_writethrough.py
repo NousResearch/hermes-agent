@@ -113,6 +113,57 @@ def test_pool_refresh_writes_through_to_root_when_profile_reads_root(
     assert root["providers"][provider]["tokens"]["refresh_token"] == "new-refresh"
 
 
+def test_xai_pool_refresh_clears_stale_error_without_activating_provider(
+    profile_and_root,
+):
+    profile_path, root_path = profile_and_root
+    _write_store(
+        profile_path,
+        {"version": 1, "active_provider": "openrouter", "providers": {}},
+    )
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {
+                        "access_token": "old-access",
+                        "refresh_token": "old-refresh",
+                    },
+                    "last_auth_error": {
+                        "provider": "xai-oauth",
+                        "reason": "credential_pool_refresh_failure",
+                        "relogin_required": True,
+                    },
+                }
+            },
+        },
+    )
+
+    pool = CredentialPool("xai-oauth", [])
+    pool._sync_device_code_entry_to_auth_store(
+        _entry(
+            "xai-oauth",
+            id="xai-stale-error",
+            access_token="new-access",
+            refresh_token="new-refresh",
+        )
+    )
+
+    profile = _read_store(profile_path)
+    root = _read_store(root_path)
+    assert profile["active_provider"] == "openrouter"
+    assert root["active_provider"] == "openai-codex"
+    assert "last_auth_error" not in profile["providers"]["xai-oauth"]
+    assert "last_auth_error" not in root["providers"]["xai-oauth"]
+    assert (
+        root["providers"]["xai-oauth"]["tokens"]["refresh_token"]
+        == "new-refresh"
+    )
+
+
 @pytest.mark.parametrize(
     "provider",
     ["openai-codex", "xai-oauth"],

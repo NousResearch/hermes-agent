@@ -647,7 +647,6 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
         _prompt_model_selection,
-        _save_model_choice,
         _update_config_for_provider,
         resolve_xai_oauth_runtime_credentials,
         _login_xai_oauth,
@@ -676,6 +675,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                     mock_args,
                     PROVIDER_REGISTRY["xai-oauth"],
                     force_new_login=True,
+                    update_config=False,
                 )
             except SystemExit:
                 print("Login cancelled or failed.")
@@ -693,7 +693,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )
-            _login_xai_oauth(mock_args, PROVIDER_REGISTRY["xai-oauth"])
+            _login_xai_oauth(
+                mock_args,
+                PROVIDER_REGISTRY["xai-oauth"],
+                update_config=False,
+            )
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -717,8 +721,12 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
     selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
     if selected:
-        _save_model_choice(selected)
-        _update_config_for_provider("xai-oauth", base_url)
+        _update_config_for_provider(
+            "xai-oauth",
+            base_url,
+            default_model=selected,
+            replace_default_model=True,
+        )
         print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")

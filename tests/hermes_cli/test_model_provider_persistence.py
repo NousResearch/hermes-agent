@@ -6,6 +6,7 @@ isinstance(model, dict)) to silently fail — leaving the provider unset and
 falling back to auto-detection.
 """
 
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -76,6 +77,21 @@ class TestProviderPersistsAfterModelSave:
 
         config_path = config_home / "config.yaml"
         original_text = config_path.read_text(encoding="utf-8")
+        auth_path = config_home / "auth.json"
+        auth_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "updated_at": "2026-07-19T00:00:00+00:00",
+                    "active_provider": "openrouter",
+                    "providers": {},
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        original_auth = auth_path.read_bytes()
 
         def _boom(path, data, **kwargs):
             assert path == config_path
@@ -95,6 +111,7 @@ class TestProviderPersistsAfterModelSave:
 
         assert mock_write.call_count == 1
         assert config_path.read_text(encoding="utf-8") == original_text
+        assert auth_path.read_bytes() == original_auth
 
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when

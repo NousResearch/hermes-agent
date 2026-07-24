@@ -3562,3 +3562,33 @@ def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
         and "only internal reasoning" in str(item.get("content"))
         for item in replay_input
     )
+
+def test_build_api_kwargs_codex_text_verbosity(monkeypatch):
+    """agent.text_verbosity config flows through to text.verbosity in the
+    normalized Codex Responses request payload (GPT-5+ only)."""
+    agent = _build_agent(monkeypatch)
+    agent.text_verbosity = "low"
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["text"] == {"verbosity": "low"}
+
+
+def test_build_api_kwargs_codex_text_verbosity_empty_no_injection(monkeypatch):
+    """Empty text_verbosity must not inject a text dict."""
+    agent = _build_agent(monkeypatch)
+    agent.text_verbosity = ""
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert "text" not in kwargs

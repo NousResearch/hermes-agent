@@ -347,6 +347,47 @@ def test_preflight_still_rejects_unknown_tool_type():
 
 
 # ---------------------------------------------------------------------------
+# _preflight_codex_api_kwargs - text dict pass-through.
+# The text parameter (used for text.verbosity on GPT-5+) must survive
+# preflight normalization: whitelisted in allowed_keys AND explicitly
+# copied into the normalized output dict.
+# ---------------------------------------------------------------------------
+
+
+def _make_preflight_kwargs(**overrides):
+    """Minimal valid kwargs for _preflight_codex_api_kwargs."""
+    base = {
+        "model": "gpt-5.5",
+        "instructions": "You are helpful.",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "store": False,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_preflight_passes_text_verbosity_through():
+    kwargs = _make_preflight_kwargs(text={"verbosity": "low"})
+    out = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+    assert out["text"] == {"verbosity": "low"}
+
+
+def test_preflight_preserves_text_format_and_verbosity():
+    kwargs = _make_preflight_kwargs(
+        text={"verbosity": "low", "format": {"type": "json_schema"}}
+    )
+    out = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+    assert out["text"]["verbosity"] == "low"
+    assert out["text"]["format"] == {"type": "json_schema"}
+
+
+def test_preflight_drops_empty_text_dict():
+    kwargs = _make_preflight_kwargs(text={})
+    out = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+    assert "text" not in out
+
+
+# ---------------------------------------------------------------------------
 # _format_responses_error — adapted from anomalyco/opencode#28757.
 # Provider failures should surface BOTH the code (rate_limit_exceeded /
 # context_length_exceeded / internal_error / server_error) and the message,

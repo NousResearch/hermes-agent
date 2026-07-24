@@ -913,7 +913,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers", "extra_body", "timeout",
+        "text", "extra_headers", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -934,6 +934,9 @@ def _preflight_codex_api_kwargs(
     service_tier = api_kwargs.get("service_tier")
     if isinstance(service_tier, str) and service_tier.strip():
         normalized["service_tier"] = service_tier.strip()
+    text = api_kwargs.get("text")
+    if isinstance(text, dict) and text:
+        normalized["text"] = dict(text)
 
     # Pass through max_output_tokens and temperature
     max_output_tokens = api_kwargs.get("max_output_tokens")

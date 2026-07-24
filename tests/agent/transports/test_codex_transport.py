@@ -1087,3 +1087,88 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestTextVerbosity:
+    """Tests for text.verbosity injection on GPT-5+ models."""
+
+    @pytest.fixture
+    def transport(self):
+        import agent.transports.codex  # noqa: F401
+        return get_transport("codex_responses")
+
+    def _build(self, transport, model, text_verbosity="", **extra):
+        messages = [{"role": "user", "content": "Hi"}]
+        return transport.build_kwargs(
+            model=model, messages=messages, tools=[],
+            text_verbosity=text_verbosity, **extra,
+        )
+
+    # -- Model guard: should inject --
+
+    @pytest.mark.parametrize("model", [
+        "gpt-5.5",
+        "gpt-5.4-mini",
+        "gpt-5.6-sol",
+        "gpt-5",
+        "gpt-7",
+        "gpt-12.3",
+    ])
+    def test_injects_on_gpt5_plus(self, transport, model):
+        kw = self._build(transport, model, text_verbosity="low")
+        assert kw.get("text") == {"verbosity": "low"}
+
+    # -- Model guard: should skip --
+
+    @pytest.mark.parametrize("model", [
+        "gpt-4o",
+        "gpt-4.1-mini",
+        "claude-opus-4.8",
+        "grok-4",
+        "gemini-2.5-pro",
+    ])
+    def test_skips_non_gpt5(self, transport, model):
+        kw = self._build(transport, model, text_verbosity="low")
+        assert "text" not in kw
+
+    def test_skips_bare_gpt_prefix(self, transport):
+        """gpt- with no version number should not inject."""
+        kw = self._build(transport, "gpt-", text_verbosity="low")
+        assert "text" not in kw
+
+    # -- Empty verbosity: should not inject --
+
+    def test_empty_verbosity_no_injection(self, transport):
+        kw = self._build(transport, "gpt-5.5", text_verbosity="")
+        assert "text" not in kw
+
+    def test_no_verbosity_param_no_injection(self, transport):
+        """No text_verbosity kwarg at all."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="gpt-5.5", messages=messages, tools=[])
+        assert "text" not in kw
+
+    # -- Precedence: text_verbosity merges with request_overrides --
+
+    def test_verbosity_merges_with_request_overrides(self, transport):
+        kw = self._build(
+            transport, "gpt-5.5", text_verbosity="low",
+            request_overrides={"text": {"format": {"type": "json_schema"}}},
+        )
+        assert kw["text"]["verbosity"] == "low"
+        assert kw["text"]["format"] == {"type": "json_schema"}
+
+    # -- Vendor-prefixed model names --
+
+    @pytest.mark.parametrize("model", [
+        "openai/gpt-5.5",
+        "azure/gpt-5.4-mini",
+        "litellm/gpt-7",
+    ])
+    def test_injects_on_vendor_prefixed_gpt5(self, transport, model):
+        kw = self._build(transport, model, text_verbosity="low")
+        assert kw.get("text") == {"verbosity": "low"}
+
+    def test_skips_vendor_prefixed_gpt4(self, transport):
+        kw = self._build(transport, "openai/gpt-4o", text_verbosity="low")
+        assert "text" not in kw

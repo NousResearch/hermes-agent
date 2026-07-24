@@ -9,6 +9,7 @@ import pytest
 
 from tools.environments.ssh import SSHEnvironment
 from tools.environments import ssh as ssh_env
+from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
 
 _SSH_HOST = os.getenv("TERMINAL_SSH_HOST", "")
 _SSH_USER = os.getenv("TERMINAL_SSH_USER", "")
@@ -65,6 +66,36 @@ class TestBuildSSHCommand:
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
+
+    def test_passthrough_env_vars_are_exported_from_process_env(self, monkeypatch):
+        clear_env_passthrough()
+        register_env_passthrough(["TENOR_API_KEY"])
+        monkeypatch.setenv("TENOR_API_KEY", "tenor-secret")
+
+        env = SSHEnvironment(host="h", user="u")
+
+        exports = env._build_passthrough_exports()
+
+        assert "export TENOR_API_KEY=" in exports
+        assert "tenor-secret" in exports
+        clear_env_passthrough()
+
+    def test_passthrough_env_vars_fall_back_to_hermes_env_file(self, monkeypatch):
+        clear_env_passthrough()
+        register_env_passthrough(["TENOR_API_KEY"])
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_env",
+            lambda: {"TENOR_API_KEY": "persisted-secret"},
+        )
+
+        env = SSHEnvironment(host="h", user="u")
+
+        exports = env._build_passthrough_exports()
+
+        assert "export TENOR_API_KEY=" in exports
+        assert "persisted-secret" in exports
+        clear_env_passthrough()
 
 
 class TestControlSocketPath:

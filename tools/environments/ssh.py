@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,
@@ -19,6 +21,7 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _ensure_ssh_available() -> None:
@@ -96,6 +99,39 @@ class SSHEnvironment(BaseEnvironment):
             cmd.extend(extra_args)
         cmd.append(f"{self.user}@{self.host}")
         return cmd
+
+    def _build_passthrough_exports(self) -> str:
+        """Build export statements for skill/config allowlisted env vars."""
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            passthrough_keys = set(get_all_passthrough())
+        except Exception:
+            passthrough_keys = set()
+
+        if not passthrough_keys:
+            return ""
+
+        try:
+            from hermes_cli.config import load_env
+            hermes_env = load_env() or {}
+        except Exception:
+            hermes_env = {}
+
+        exports: list[str] = []
+        for key in sorted(passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST):
+            if not isinstance(key, str):
+                continue
+            key = key.strip()
+            if not _ENV_VAR_NAME_RE.match(key):
+                continue
+            value = os.getenv(key)
+            if value is None:
+                value = hermes_env.get(key)
+            if value is None:
+                continue
+            exports.append(f"export {key}={shlex.quote(value)}")
+
+        return "\n".join(exports)
 
     def _establish_connection(self):
         cmd = self._build_ssh_command()
@@ -345,6 +381,9 @@ class SSHEnvironment(BaseEnvironment):
                   stdin_data: str | None = None) -> subprocess.Popen:
         """Spawn an SSH process that runs bash on the remote host."""
         cmd = self._build_ssh_command()
+        passthrough_exports = self._build_passthrough_exports()
+        if passthrough_exports:
+            cmd_string = f"{passthrough_exports}\n{cmd_string}"
         if login:
             cmd.extend(["bash", "-l", "-c", shlex.quote(cmd_string)])
         else:

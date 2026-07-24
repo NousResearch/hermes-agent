@@ -305,6 +305,23 @@ class TestRunConversationCodexPath:
         # Counter should be reset after the review fires
         assert agent._iters_since_skill == 0
 
+    def test_active_goal_suppresses_background_review(self, fake_session):
+        from hermes_cli.goals import GoalState, save_goal
+
+        session_id = "codex-active-goal"
+        save_goal(session_id, GoalState(goal="finish the standing task"))
+        agent = _make_codex_agent(session_id=session_id)
+        agent._skill_nudge_interval = 1
+        agent._iters_since_skill = 0
+        agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()))
+        agent.valid_tool_names.add("skill_manage")
+
+        with patch.object(agent, "_spawn_background_review", return_value=None) as spawn:
+            result = agent.run_conversation("continue")
+
+        assert result["final_response"] == "echo: continue"
+        spawn.assert_not_called()
+
     def test_background_review_signature_never_breaks(self, fake_session):
         """Even when no trigger fires, the helper must never call
         _spawn_background_review with the wrong signature. Run a turn,

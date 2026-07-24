@@ -167,6 +167,28 @@ def test_plain_branch_general_pool_has_tight_keepalive(monkeypatch):
     _assert_keepalive_tight(instances)
 
 
+def test_media_uploads_get_a_longer_default_write_timeout(monkeypatch):
+    """PTB must not retain its 20-second default for file uploads."""
+    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", raising=False)
+
+    instances = _drive_connect(monkeypatch, proxy_url=None)
+
+    assert instances
+    assert all(inst.kwargs["write_timeout"] == 20.0 for inst in instances)
+    assert all(inst.kwargs["media_write_timeout"] == 180.0 for inst in instances)
+
+
+def test_write_timeout_override_also_applies_to_media_uploads(monkeypatch):
+    """The existing documented override must govern PTB upload requests."""
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", "75")
+
+    instances = _drive_connect(monkeypatch, proxy_url=None)
+
+    assert instances
+    assert all(inst.kwargs["write_timeout"] == 75.0 for inst in instances)
+    assert all(inst.kwargs["media_write_timeout"] == 75.0 for inst in instances)
+
+
 def test_limits_keepalive_below_ptb_default_is_the_contract():
     """Document the invariant independent of adapter wiring: the shared
     helper itself must tighten keepalive below httpx's 5.0 default."""

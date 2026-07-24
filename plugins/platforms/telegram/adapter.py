@@ -3488,6 +3488,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # PTB applies a separate timeout to file-upload endpoints.
+                # Reuse the existing write-timeout override, while allowing
+                # Telegram's supported large documents enough time by default.
+                "media_write_timeout": _env_float(
+                    "HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 180.0
+                ),
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's

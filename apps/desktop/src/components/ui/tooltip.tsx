@@ -24,39 +24,64 @@ function TooltipProvider({
   )
 }
 
-function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
-}
-
 // Radix opens a tooltip on ANY trigger focus (its pointer-down guard only
 // covers clicks on the trigger itself). Menus and dialogs return focus to
 // their trigger when they close, so "open the model menu, pick a model" left
 // the trigger's tip stuck open over the fresh selection. Gate focus-opens to
 // KEYBOARD focus (:focus-visible): Chromium keeps modality, so a mouse pick's
 // focus restore is suppressed while Tab-focus still shows the tip for a11y.
-// preventDefault doesn't cancel the focus itself — Radix's composed handler
-// just skips its onOpen when the event is defaultPrevented.
-export function suppressNonKeyboardFocusOpen(event: React.FocusEvent<HTMLElement>): void {
-  let keyboardFocus = true
+//
+// IMPORTANT: We cannot use event.preventDefault() on the focus event because
+// in Electron/Chromium, preventDefault() on a focus event can prevent the
+// subsequent click event from firing on the same element (#66854). Instead,
+// we track whether the focus was mouse-driven and suppress the tooltip open
+// via onOpenChange on the Root.
+const suppressMouseFocusOpenContext = React.createContext<{
+  suppressNextOpen: React.MutableRefObject<boolean>
+} | null>(null)
 
-  try {
-    keyboardFocus = event.currentTarget.matches(':focus-visible')
-  } catch {
-    // Selector unsupported (older jsdom) — keep Radix's default focus-open.
-  }
+function Tooltip({ onOpenChange, ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  const suppressNextOpenRef = React.useRef(false)
 
-  if (!keyboardFocus) {
-    event.preventDefault()
-  }
+  const handleOpenChange = React.useCallback(
+    (open: boolean) => {
+      if (suppressNextOpenRef.current && open) {
+        suppressNextOpenRef.current = false
+        return // Suppress the open
+      }
+      suppressNextOpenRef.current = false
+      onOpenChange?.(open)
+    },
+    [onOpenChange]
+  )
+
+  return (
+    <suppressMouseFocusOpenContext.Provider value={{ suppressNextOpen: suppressNextOpenRef }}>
+      <TooltipPrimitive.Root data-slot="tooltip" onOpenChange={handleOpenChange} {...props} />
+    </suppressMouseFocusOpenContext.Provider>
+  )
 }
 
 function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+  const ctx = React.useContext(suppressMouseFocusOpenContext)
+
   return (
     <TooltipPrimitive.Trigger
       data-slot="tooltip-trigger"
       onFocus={event => {
         onFocus?.(event)
-        suppressNonKeyboardFocusOpen(event)
+        // If this focus was triggered by a mouse interaction (not keyboard),
+        // mark that we should suppress the next tooltip open. We don't call
+        // preventDefault() because that can break clicks in Electron (#66854).
+        if (ctx) {
+          try {
+            if (!event.currentTarget.matches(':focus-visible')) {
+              ctx.suppressNextOpen.current = true
+            }
+          } catch {
+            // Selector unsupported (older jsdom) — don't suppress
+          }
+        }
       }}
       {...props}
     />

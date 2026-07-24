@@ -38,13 +38,25 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
 }
 
 // "+" affordance shared by repo and worktree headers — reveals on header hover.
-export function WorkspaceAddButton({ label, onClick }: { label: string; onClick: () => void }) {
+// Also a drag source: dragging it starts the new-session drag pinned to the
+// project's path (`onPointerDown`), so the created session inherits the
+// project's cwd. A sub-threshold release stays an ordinary click (`onClick`).
+export function WorkspaceAddButton({
+  label,
+  onClick,
+  onPointerDown
+}: {
+  label: string
+  onClick: () => void
+  onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void
+}) {
   return (
     <Tip label={label}>
       <button
         aria-label={label}
         className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
         onClick={onClick}
+        onPointerDown={onPointerDown}
         type="button"
       >
         <Codicon name="add" size="0.75rem" />

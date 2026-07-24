@@ -13,6 +13,7 @@ import { groupEntriesByRecency, type SidebarListRow, toSessionRows } from '@/lib
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import type { TileDock } from '@/store/session-states'
 
 import { SidebarCount, SidebarDateDivider } from './chrome'
 import {
@@ -95,6 +96,8 @@ interface SidebarSessionsSectionProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
+  /** Create a new session as a tile at a drop target (drag from a project "+"). */
+  onNewSessionSplit?: (dir: TileDock, opts?: { anchor?: string; before?: null | string; cwd?: null | string }) => void
   pinned: boolean
   rootClassName?: string
   contentClassName?: string
@@ -162,6 +165,7 @@ export function SidebarSessionsSection({
   onBranchSession,
   onTogglePin,
   onNewSessionInWorkspace,
+  onNewSessionSplit,
   pinned,
   rootClassName,
   contentClassName,
@@ -308,6 +312,7 @@ export function SidebarSessionsSection({
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
         previewSessions={project.path ? projectOverviewPreviews?.[project.path] : undefined}
         project={project}
         renderRows={renderRows}

@@ -548,3 +548,200 @@ def test_hermes_version_is_valid():
     assert _HERMES_VERSION != "0.0.0", (
         "Version should resolve from hermes_cli.__version__, not the fallback"
     )
+
+
+# --- Context caching (cachedContents) ---------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_context_cache_registry():
+    from agent.gemini_native_adapter import _context_cache_registry
+
+    _context_cache_registry.clear()
+    yield
+    _context_cache_registry.clear()
+
+
+class _RecordingHTTP:
+    """Fake httpx.Client that records every POST and returns scripted responses."""
+
+    def __init__(self, responses):
+        self.calls = []
+        self._responses = list(responses)
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        return self._responses.pop(0)
+
+    def close(self):
+        return None
+
+
+def _generate_content_response(text="hi"):
+    return DummyResponse(
+        payload={
+            "candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
+        }
+    )
+
+
+def test_small_system_prompt_skips_context_cache(monkeypatch):
+    """Below Gemini's 32,768-token minimum, no cachedContents call is made."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    http = _RecordingHTTP([_generate_content_response()])
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+
+    client = GeminiNativeClient(api_key="AIza-test")
+    client.chat.completions.create(
+        model="gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "Hello"},
+        ],
+    )
+
+    assert len(http.calls) == 1
+    assert http.calls[0]["url"].endswith(":generateContent")
+    assert "cachedContent" not in http.calls[0]["json"]
+    assert http.calls[0]["json"]["systemInstruction"]["parts"][0]["text"] == "Be helpful."
+
+
+def test_large_system_prompt_creates_and_reuses_context_cache(monkeypatch):
+    """Above the threshold, the client creates a cache once and reuses it on the next call."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    big_system_prompt = "You are a helpful assistant. " * 5000  # well over 32,768 tokens
+
+    create_response = DummyResponse(payload={"name": "cachedContents/abc123"})
+    http = _RecordingHTTP([create_response, _generate_content_response(), _generate_content_response()])
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+    monkeypatch.setattr("agent.gemini_native_adapter._gemini_cache_settings", lambda: (True, 300))
+
+    client = GeminiNativeClient(api_key="AIza-test")
+    for _ in range(2):
+        client.chat.completions.create(
+            model="gemini-2.5-flash",
+            messages=[
+                {"role": "system", "content": big_system_prompt},
+                {"role": "user", "content": "Hello"},
+            ],
+        )
+
+    assert len(http.calls) == 3  # 1 cache create + 2 generateContent
+    assert http.calls[0]["url"].endswith("/cachedContents")
+    assert http.calls[0]["json"]["model"] == "models/gemini-2.5-flash"
+    assert http.calls[0]["json"]["ttl"] == "300s"
+
+    for call in http.calls[1:]:
+        assert call["json"]["cachedContent"] == "cachedContents/abc123"
+        assert "systemInstruction" not in call["json"]
+
+
+def test_context_cache_disabled_via_config_skips_create(monkeypatch):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    big_system_prompt = "You are a helpful assistant. " * 5000
+
+    http = _RecordingHTTP([_generate_content_response()])
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter._gemini_cache_settings", lambda: (False, 300)
+    )
+
+    client = GeminiNativeClient(api_key="AIza-test")
+    client.chat.completions.create(
+        model="gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": big_system_prompt},
+            {"role": "user", "content": "Hello"},
+        ],
+    )
+
+    assert len(http.calls) == 1
+    assert "cachedContent" not in http.calls[0]["json"]
+
+
+def test_stale_cached_content_retries_uncached(monkeypatch):
+    """A 404 on a cachedContent reference is retried once with the original request."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _context_cache_registry
+    import time as time_module
+
+    _context_cache_registry["https://generativelanguage.googleapis.com/v1beta|gemini-2.5-flash|" + "x" * 64] = {
+        "name": "cachedContents/expired",
+        "expires_at": time_module.time() + 300,
+    }
+
+    big_system_prompt = "You are a helpful assistant. " * 5000
+    # Force the registry key to match regardless of hash by monkeypatching the key builder.
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter._context_cache_key",
+        lambda base_url, model, api_key, text: "https://generativelanguage.googleapis.com/v1beta|gemini-2.5-flash|" + "x" * 64,
+    )
+
+    stale_response = DummyResponse(status_code=404, payload={"error": {"message": "cachedContent not found"}})
+    http = _RecordingHTTP([stale_response, _generate_content_response()])
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+    monkeypatch.setattr("agent.gemini_native_adapter._gemini_cache_settings", lambda: (True, 300))
+
+    client = GeminiNativeClient(api_key="AIza-test")
+    response = client.chat.completions.create(
+        model="gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": big_system_prompt},
+            {"role": "user", "content": "Hello"},
+        ],
+    )
+
+    assert response.choices[0].message.content == "hi"
+    assert len(http.calls) == 2
+    assert http.calls[0]["json"]["cachedContent"] == "cachedContents/expired"
+    assert "cachedContent" not in http.calls[1]["json"]
+    assert http.calls[1]["json"]["systemInstruction"]["parts"][0]["text"] == big_system_prompt.strip()
+    assert not _context_cache_registry  # stale entry was evicted
+
+
+def test_forbidden_cached_content_also_retries_uncached(monkeypatch):
+    """A 403 (e.g. the key that created the cache was rotated/revoked) gets
+    the same treatment as a 404, not a hard failure."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _context_cache_registry
+
+    big_system_prompt = "You are a helpful assistant. " * 5000
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter._context_cache_key",
+        lambda base_url, model, api_key, text: "some-key",
+    )
+    _context_cache_registry["some-key"] = {"name": "cachedContents/foreign", "expires_at": 9999999999}
+
+    forbidden_response = DummyResponse(status_code=403, payload={"error": {"message": "permission denied"}})
+    http = _RecordingHTTP([forbidden_response, _generate_content_response()])
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+    monkeypatch.setattr("agent.gemini_native_adapter._gemini_cache_settings", lambda: (True, 300))
+
+    client = GeminiNativeClient(api_key="AIza-test")
+    response = client.chat.completions.create(
+        model="gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": big_system_prompt},
+            {"role": "user", "content": "Hello"},
+        ],
+    )
+
+    assert response.choices[0].message.content == "hi"
+    assert len(http.calls) == 2
+    assert "cachedContent" not in http.calls[1]["json"]
+    assert not _context_cache_registry
+
+
+def test_context_cache_key_binds_api_key_so_different_keys_never_share_a_cache():
+    """Two different API keys must never resolve to the same registry entry,
+    even with identical base_url/model/system text — a Gemini cachedContents
+    resource is scoped to the key/project that created it, and a multi-tenant
+    gateway process can hold several users' keys at once."""
+    from agent.gemini_native_adapter import _context_cache_key
+
+    key_a = _context_cache_key("https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash", "AIza-user-a", "same system prompt")
+    key_b = _context_cache_key("https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash", "AIza-user-b", "same system prompt")
+
+    assert key_a != key_b

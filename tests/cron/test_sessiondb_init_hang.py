@@ -229,3 +229,84 @@ class TestDispatchGuardReleasedAfterHang:
             never_set.set()
             sched._running_job_ids.discard("guard-sessiondb-hang")
             sched._shutdown_parallel_pool()
+
+    def test_guard_is_released_when_execution_claim_fails_with_emfile(self, tmp_path, monkeypatch):
+        """A failed durable execution claim must not wedge the in-memory guard.
+
+        MAX-1354 reproduced a live gateway fd-exhaustion window where cron jobs
+        stayed in ``_running_job_ids`` and later ticks only logged "already
+        running — skipping". If the profile-local execution ledger cannot be
+        opened (for example ``EMFILE`` while creating executions.db), dispatch is
+        aborted before any worker future exists; the in-memory guard must be
+        released on that pre-submit failure.
+        """
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = {
+            "id": "emfile-claim",
+            "name": "emfile-claim",
+            "prompt": "hello",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        try:
+            with patch.object(sched, "get_due_jobs", return_value=[job]), \
+                 patch.object(sched, "advance_next_run"), \
+                 patch.object(sched, "create_execution", side_effect=OSError(24, "Too many open files")):
+                assert sched.tick(verbose=False) == 0
+
+            assert "emfile-claim" not in sched.get_running_job_ids()
+
+            # A later healthy tick can dispatch the job instead of being
+            # suppressed by a stale in-memory guard from the failed claim.
+            with patch.object(sched, "get_due_jobs", return_value=[job]), \
+                 patch.object(sched, "advance_next_run"), \
+                 patch.object(sched, "create_execution", return_value={"id": "exec-1"}), \
+                 patch.object(sched, "run_one_job", return_value=True):
+                assert sched.tick(verbose=False) == 1
+        finally:
+            sched._running_job_ids.discard("emfile-claim")
+            sched._shutdown_parallel_pool()
+
+    def test_orphaned_running_guard_without_future_is_reconciled(self):
+        """A stale running-set member with no executor future must self-heal.
+
+        During the MAX-1354 fd-exhaustion incident, later ticks saw only
+        ``already running — skipping`` even though the matching no-agent script
+        process was gone. If the in-memory running guard contains a job ID but
+        the scheduler has no live future for it, the guard is provably orphaned
+        in the current process and must be cleared before deciding to skip.
+        """
+        import cron.scheduler as sched
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+        sched._running_job_ids.add("orphaned-no-future")
+
+        job = {
+            "id": "orphaned-no-future",
+            "name": "orphaned-no-future",
+            "prompt": "hello",
+            "schedule": "every 5m",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "local",
+        }
+
+        try:
+            with patch.object(sched, "get_due_jobs", return_value=[job]), \
+                 patch.object(sched, "advance_next_run"), \
+                 patch.object(sched, "create_execution", return_value={"id": "exec-1"}), \
+                 patch.object(sched, "run_one_job", return_value=True):
+                assert sched.tick(verbose=False) == 1
+        finally:
+            sched._running_job_ids.discard("orphaned-no-future")
+            sched._shutdown_parallel_pool()

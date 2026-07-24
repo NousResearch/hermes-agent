@@ -174,3 +174,37 @@ def test_service_status_includes_clients(mock_pyright):
         assert any(c["server_id"] == "pyright" for c in info["clients"])
     finally:
         svc.shutdown()
+
+
+def test_service_reaps_idle_clients_before_reuse(mock_pyright):
+    """Long-lived gateway processes must not keep one LSP child per
+    touched workspace forever.  Once a client is older than the service's
+    idle timeout, the next diagnostic request should shut it down before
+    reusing the key.
+    """
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("")
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=1.0,
+    )
+    try:
+        svc.get_diagnostics_sync(str(f))
+        key = ("pyright", str(repo))
+        with svc._state_lock:
+            first_client = svc._clients[key]
+            svc._last_used[key] = 0.0
+
+        svc.get_diagnostics_sync(str(f))
+
+        with svc._state_lock:
+            second_client = svc._clients[key]
+        assert second_client is not first_client
+        assert not first_client.is_running
+        assert second_client.is_running
+    finally:
+        svc.shutdown()

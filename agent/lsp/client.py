@@ -50,6 +50,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -492,17 +493,44 @@ class LSPClient:
             return
         if proc.returncode is None:
             try:
-                proc.terminate()
+                sent_group_signal = self._signal_process_group(proc.pid, signal.SIGTERM)
+                if not sent_group_signal:
+                    proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
                 except asyncio.TimeoutError:
                     try:
-                        proc.kill()
+                        sent_group_signal = self._signal_process_group(proc.pid, signal.SIGKILL)
+                        if not sent_group_signal:
+                            proc.kill()
                         await proc.wait()
                     except ProcessLookupError:
                         pass
             except ProcessLookupError:
                 pass
+
+    @staticmethod
+    def _signal_process_group(pid: int, sig: signal.Signals) -> bool:
+        """Signal the POSIX process group created by ``start_new_session``.
+
+        Some language-server wrappers spawn helper children (notably
+        TypeScript's ``tsserver`` / ``typingsInstaller``).  Signalling only the
+        direct wrapper process can leave those helpers and their pipes attached
+        to a long-lived gateway.  On POSIX, the LSP server is its own session
+        leader, so ``killpg(pid, sig)`` targets only that server tree.  Windows
+        has no ``killpg`` equivalent in this path; callers fall back to the
+        direct ``Process`` methods there.
+        """
+        if os.name == "nt" or not hasattr(os, "killpg"):
+            return False
+        try:
+            os.killpg(pid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError as e:
+            logger.debug("failed to signal LSP process group %s: %s", pid, e)
+            return False
 
     # ------------------------------------------------------------------
     # request / notification plumbing

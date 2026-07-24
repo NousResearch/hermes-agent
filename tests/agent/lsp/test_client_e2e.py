@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -123,6 +124,42 @@ async def test_client_shutdown_idempotent(tmp_path: Path):
     await client.start()
     await client.shutdown()
     await client.shutdown()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_cleanup_process_terminates_posix_process_group(monkeypatch, tmp_path: Path):
+    """Language servers can spawn helper children (tsserver,
+    typingsInstaller).  Shutdown must signal the process group created by
+    start_new_session=True, not only the direct wrapper process.
+    """
+
+    class FakeProcess:
+        pid = 4242
+        returncode = None
+        stdin = None
+        stdout = None
+        stderr = None
+
+        def terminate(self):  # pragma: no cover - should not be used on POSIX
+            raise AssertionError("direct terminate used instead of process-group SIGTERM")
+
+        def kill(self):  # pragma: no cover - graceful wait completes
+            raise AssertionError("direct kill used instead of process-group SIGKILL")
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+    sent = []
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+
+    client = _client(tmp_path, "clean")
+    client._proc = FakeProcess()  # type: ignore[assignment]
+
+    await client._cleanup_process()
+
+    assert sent == [(4242, signal.SIGTERM)]
+    assert client._proc is None
 
 
 @pytest.mark.asyncio

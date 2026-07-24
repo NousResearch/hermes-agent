@@ -21,7 +21,9 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { prepareTerminalFontFamily } from './terminal-font'
 import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
 // terminal.integrated.persistentSessionScrollback default; the store caps the
@@ -416,6 +418,7 @@ export function useTerminalSession({
   // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
   // last fit is stale by the time it's shown again.
   const fitRef = useRef<(() => void) | null>(null)
+  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -501,7 +504,7 @@ export function useTerminalSession({
       allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      fontFamily: latestFontFamilyRef.current,
       fontSize: 11,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.
@@ -861,6 +864,7 @@ export function useTerminalSession({
       }
 
       term.open(host)
+      mountedRef.current = true
       term.focus()
 
       // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
@@ -881,18 +885,21 @@ export function useTerminalSession({
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; the regular (400),
-    // bold (700) and italic aren't asked for until styled output paints (past
-    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
-    // fallback face and the terminal renders thin until a repaint.
-    const warm = document.fonts?.load
-      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
-      : Promise.resolve()
+    void prepareTerminalFontFamily(
+      () => latestFontFamilyRef.current,
+      () => !disposed && host.isConnected
+    ).then(fontFamily => {
+      if (!fontFamily) {
+        return
+      }
 
-    void warm.then(mount, mount)
+      term.options.fontFamily = fontFamily
+      mount()
+    })
 
     return () => {
       disposed = true
+      mountedRef.current = false
       cleanup.forEach(run => run())
       fitRef.current = null
 
@@ -913,7 +920,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // closeTerminal(id) call in onExit.
-  }, [addSelectionToChat, cwd, id])
+  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current

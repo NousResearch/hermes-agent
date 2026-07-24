@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 
+import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
@@ -97,9 +98,10 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
+        setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         applyAutoSpeakFromConfig(config)
       } catch {
-      // Config is nice-to-have; chat still works without it.
+        // Config is nice-to-have; chat still works without it.
       }
     },
     [activeSessionIdRef]

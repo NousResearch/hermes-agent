@@ -620,6 +620,87 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_load_time_cublas_unsupported_retries_float16_on_cuda(self, tmp_path):
+        """cuBLAS_STATUS_NOT_SUPPORTED at load → retry explicit float16 on CUDA, not CPU."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "hi"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        gpu_model = MagicMock()
+        gpu_model.transcribe.return_value = ([seg], info)
+
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            if device == "auto":
+                raise RuntimeError("cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED")
+            return gpu_model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hi"
+        assert call_args == [("auto", "auto"), ("cuda", "float16")]
+
+    def test_runtime_cublas_unsupported_evicts_cache_and_retries_float16(self, tmp_path, caplog):
+        """Auto-picked int8 kernels unsupported (Blackwell + ctranslate2 < 4.6.3)
+        at transcribe() → evict cache, reload with explicit float16 on CUDA and
+        retry. The GPU works; only the auto-selected compute type doesn't — so
+        this must NOT take the CPU fallback."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "recovered"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        # First model loads fine (auto → int8 kernels), but the first GEMM at
+        # transcribe() hits the unsupported cuBLAS path.
+        int8_model = MagicMock()
+        int8_model.transcribe.side_effect = RuntimeError(
+            "cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED"
+        )
+        # Second model (explicit float16 on CUDA) works.
+        float16_model = MagicMock()
+        float16_model.transcribe.return_value = ([seg], info)
+
+        models = [int8_model, float16_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             caplog.at_level("WARNING"):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "recovered"
+        assert call_args == [("auto", "auto"), ("cuda", "float16")]
+        assert int8_model.transcribe.call_count == 1
+        assert float16_model.transcribe.call_count == 1
+        # Float16 is the degraded mode, not the destination — the log must
+        # point at the real fix (upgrading ctranslate2).
+        assert "ctranslate2" in caplog.text
+
 
 # ============================================================================
 # Model auto-correction

@@ -334,9 +334,11 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
+      general: 'General',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
+      tray: 'System tray',
       plugins: 'Plugins'
     },
     plugins: {
@@ -394,6 +396,43 @@ export const en: Translations = {
       completionSoundTitle: 'Completion Sound',
       completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
       completionSoundPreview: 'Preview'
+    },
+    tray: {
+      title: 'System tray',
+      intro:
+        'Windows-only tray behavior. Close-to-tray keeps Hermes (and the desktop pet) running in the background. Launch at login uses the OS startup list.',
+      windowsOnly: 'System tray controls are available on Windows.',
+      trayUnavailable:
+        'Tray is enabled, but no tray icon is active yet (missing icon asset or setup failed). Close-to-tray needs a live tray.',
+      enable: 'Enable tray',
+      enableDesc: 'Show Hermes in the notification area. Turn off to use a normal window close/quit lifecycle.',
+      closeToTray: 'Close window to tray',
+      closeToTrayDesc: 'Title-bar close hides Hermes instead of quitting, while the tray can restore it.',
+      startInTray: 'Start in tray',
+      startInTrayDesc: 'On launch, keep the main window hidden until you open Hermes from the tray.',
+      popOutPetOnStartup: 'Pop out pet on startup',
+      popOutPetOnStartupDesc: 'When the pet is available, automatically detach it as a floating desktop pet after launch.',
+      launchAtLogin: 'Launch at login',
+      launchAtLoginDesc: 'Start Hermes when Windows signs you in (OS login item).'
+    },
+    general: {
+      title: 'General',
+      intro:
+        'Desktop basics for Windows: system tray behavior and whether Hermes starts with Windows.',
+      windowsOnly: 'These options are available on Windows.',
+      loadFailed: 'Could not load desktop preferences.',
+      trayUnavailable:
+        'Tray is enabled, but no tray icon is active yet (missing icon asset or setup failed). Close-to-tray needs a live tray.',
+      enable: 'Enable tray',
+      enableDesc: 'Show Hermes in the notification area. Turn off to use a normal window close/quit lifecycle.',
+      closeToTray: 'Close window to tray',
+      closeToTrayDesc: 'Title-bar close hides Hermes instead of quitting, while the tray can restore it.',
+      startInTray: 'Start in tray',
+      startInTrayDesc: 'On launch, keep the main window hidden until you open Hermes from the tray.',
+      popOutPetOnStartup: 'Pop out pet on startup',
+      popOutPetOnStartupDesc: 'When the pet is available, automatically detach it as a floating desktop pet after launch.',
+      launchAtLogin: 'Launch at login',
+      launchAtLoginDesc: 'Start Hermes when Windows signs you in (OS login item).'
     },
     sections: {
       model: 'Model',

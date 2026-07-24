@@ -291,10 +291,45 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      general: string
       about: string
       billing: string
       notifications: string
+      tray: string
       plugins: string
+    }
+    tray: {
+      title: string
+      intro: string
+      windowsOnly: string
+      trayUnavailable: string
+      enable: string
+      enableDesc: string
+      closeToTray: string
+      closeToTrayDesc: string
+      startInTray: string
+      startInTrayDesc: string
+      popOutPetOnStartup: string
+      popOutPetOnStartupDesc: string
+      launchAtLogin: string
+      launchAtLoginDesc: string
+    }
+    general: {
+      title: string
+      intro: string
+      windowsOnly: string
+      loadFailed: string
+      trayUnavailable: string
+      enable: string
+      enableDesc: string
+      closeToTray: string
+      closeToTrayDesc: string
+      startInTray: string
+      startInTrayDesc: string
+      popOutPetOnStartup: string
+      popOutPetOnStartupDesc: string
+      launchAtLogin: string
+      launchAtLoginDesc: string
     }
     plugins: {
       title: string

@@ -17,7 +17,7 @@ import {
   setPetInfo
 } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
-import { $petOverlayActive, initPetOverlayBridge, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
+import { $petOverlayActive, initPetOverlayBridge, popInPet, popOutPet, restorePetOverlay } from '@/store/pet-overlay'
 import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
@@ -243,6 +243,38 @@ export function FloatingPet() {
 
     return () => window.removeEventListener('focus', onFocus)
   }, [])
+
+  // Report the renderer-owned pet state to the native tray and handle tray
+  // commands through the same pop-in/pop-out path as the in-window gesture.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    const api = window.hermesDesktop?.petOverlay
+
+    if (!api) {
+      return
+    }
+
+    const off = api.onTrayCommand(command => {
+      if (command === 'pop-in') {
+        popInPet()
+
+        return
+      }
+
+      const rect = containerRef.current?.getBoundingClientRect()
+
+      if (command === 'pop-out' && active && rect) {
+        popOutPet({ height: rect.height, width: rect.width, x: rect.x, y: rect.y })
+      }
+    })
+
+    api.reportTrayState({ available: active, poppedOut: overlayActive })
+
+    return off
+  }, [active, overlayActive])
 
   // Restore a popped-out pet on boot, once the pet has loaded (so we never spawn
   // an empty overlay window). Primary window only; runs at most once.

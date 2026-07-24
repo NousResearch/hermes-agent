@@ -325,9 +325,11 @@ export const zh: Translations = {
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
+      general: '常规',
       about: '关于',
       billing: '账单',
       notifications: '通知',
+      tray: '系统托盘',
       plugins: '插件'
     },
     plugins: {
@@ -384,6 +386,42 @@ export const zh: Translations = {
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
       completionSoundPreview: '预览'
+    },
+    tray: {
+      title: '系统托盘',
+      intro:
+        '仅 Windows。关闭到托盘可让 Hermes（以及桌宠）在后台继续运行。开机启动使用系统登录项。',
+      windowsOnly: '系统托盘相关设置仅在 Windows 可用。',
+      trayUnavailable:
+        '托盘已启用，但当前没有活动托盘图标（缺少图标资源或创建失败）。关闭到托盘需要托盘可用。',
+      enable: '启用托盘',
+      enableDesc: '在通知区域显示 Hermes。关闭后恢复普通的窗口关闭/退出行为。',
+      closeToTray: '关闭窗口到托盘',
+      closeToTrayDesc: '点标题栏关闭时隐藏窗口而不是退出，可从托盘恢复。',
+      startInTray: '启动时进入托盘',
+      startInTrayDesc: '启动时先隐藏主窗口，需要时再从托盘打开。',
+      popOutPetOnStartup: '启动时弹出桌宠',
+      popOutPetOnStartupDesc: '桌宠可用时，启动后自动弹出为独立悬浮宠物。',
+      launchAtLogin: '开机启动',
+      launchAtLoginDesc: 'Windows 登录后自动启动 Hermes（系统登录项）。'
+    },
+    general: {
+      title: '常规',
+      intro: 'Windows 桌面基础项：系统托盘行为，以及是否随系统登录启动 Hermes。',
+      windowsOnly: '这些选项仅在 Windows 可用。',
+      loadFailed: '无法加载桌面偏好设置。',
+      trayUnavailable:
+        '托盘已启用，但当前没有活动托盘图标（缺少图标资源或创建失败）。关闭到托盘需要托盘可用。',
+      enable: '启用托盘',
+      enableDesc: '在通知区域显示 Hermes。关闭后恢复普通的窗口关闭/退出行为。',
+      closeToTray: '关闭窗口到托盘',
+      closeToTrayDesc: '点标题栏关闭时隐藏窗口而不是退出，可从托盘恢复。',
+      startInTray: '启动时进入托盘',
+      startInTrayDesc: '启动时先隐藏主窗口，需要时再从托盘打开。',
+      popOutPetOnStartup: '启动时弹出桌宠',
+      popOutPetOnStartupDesc: '桌宠可用时，启动后自动弹出为独立悬浮宠物。',
+      launchAtLogin: '开机启动',
+      launchAtLoginDesc: 'Windows 登录后自动启动 Hermes（系统登录项）。'
     },
     sections: {
       model: '模型',

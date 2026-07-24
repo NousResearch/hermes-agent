@@ -36,6 +36,7 @@ import { BillingSettings } from './billing'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
+import { GeneralSettings } from './general-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { NotificationsSettings } from './notifications-settings'
@@ -54,6 +55,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'billing',
   'plugins',
   'sessions',
+  'general',
   'about'
 ]
 
@@ -243,6 +245,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       onSelect: () => setActiveView('sessions')
     },
     {
+      active: activeView === 'general',
+      icon: Settings2,
+      id: 'general',
+      label: t.settings.nav.general,
+      onSelect: () => setActiveView('general')
+    },
+    {
       active: activeView === 'about',
       gapBefore: true,
       icon: Info,
@@ -291,6 +300,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
+          ) : activeView === 'general' ? (
+            <GeneralSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />
           ) : activeView === 'gateway' ? (

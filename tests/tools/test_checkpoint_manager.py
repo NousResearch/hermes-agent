@@ -532,8 +532,65 @@ class TestDirFileCount:
     def test_counts_files(self, work_dir):
         assert _dir_file_count(str(work_dir)) >= 2
 
+    def test_skips_default_excludes(self, work_dir):
+        build_dir = Path(work_dir) / "build"
+        build_dir.mkdir()
+        for idx in range(10):
+            (build_dir / f"generated-{idx}.o").write_text("generated")
+        (Path(work_dir) / ".DS_Store").write_text("metadata")
+        (Path(work_dir) / "generated.pyc").write_text("bytecode")
+
+        assert _dir_file_count(work_dir) == 2
+
+    def test_skips_nested_default_excluded_directories(self, work_dir):
+        build_dir = Path(work_dir) / "src" / "build"
+        build_dir.mkdir(parents=True)
+        for idx in range(10):
+            (build_dir / f"generated-{idx}.txt").write_text("generated")
+
+        assert _dir_file_count(work_dir) == 2
+
+    def test_counts_directory_symlink_without_following_target(
+        self, work_dir, tmp_path
+    ):
+        target = tmp_path / "external-output"
+        target.mkdir()
+        for idx in range(10):
+            (target / f"generated-{idx}.txt").write_text("generated")
+        try:
+            (Path(work_dir) / "linked-output").symlink_to(
+                target, target_is_directory=True
+            )
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        assert _dir_file_count(work_dir) == 3
+
     def test_nonexistent_dir(self, tmp_path):
         assert _dir_file_count(str(tmp_path / "nonexistent")) == 0
+
+    def test_checkpoint_guard_ignores_default_excluded_trees(
+        self, mgr, work_dir, monkeypatch
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        build_dir = Path(work_dir) / "build"
+        build_dir.mkdir()
+        for idx in range(10):
+            (build_dir / f"generated-{idx}.o").write_text("generated")
+
+        assert mgr.ensure_checkpoint(work_dir, "before_edit") is True
+
+    def test_checkpoint_guard_counts_retained_files_and_stops_at_limit(
+        self, mgr, work_dir, monkeypatch
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager._MAX_FILES", 5)
+        source_dir = Path(work_dir) / "src"
+        source_dir.mkdir()
+        for idx in range(10):
+            (source_dir / f"module-{idx}.py").write_text("pass\n")
+
+        assert _dir_file_count(work_dir) == 6
+        assert mgr.ensure_checkpoint(work_dir, "before_edit") is False
 
 
 # =========================================================================

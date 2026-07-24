@@ -191,6 +191,31 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_github_responses_drops_connection_bound_reasoning(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "done",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "encrypted_content": "copilot-connection-bound-ciphertext",
+                        "summary": [{"type": "summary_text", "text": "analysis"}],
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            is_github_responses=True,
+        )
+
+        assert all(item.get("type") != "reasoning" for item in kw["input"])
+        assert any(item.get("content") == "done" for item in kw["input"])
+
     def test_github_preflight_drops_id_reintroduced_by_request_override(self, transport):
         injected = {
             "type": "message",
@@ -219,6 +244,33 @@ class TestCodexBuildKwargs:
         assert message_item["phase"] == "final_answer"
         assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
 
+    def test_github_preflight_drops_reasoning_reintroduced_by_request_override(self, transport):
+        injected_reasoning = {
+            "type": "reasoning",
+            "encrypted_content": "copilot-connection-bound-ciphertext",
+            "summary": [{"type": "summary_text", "text": "analysis"}],
+        }
+        injected_message = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "done"}],
+        }
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "continue"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"input": [injected_reasoning, injected_message]},
+        )
+
+        preflight = transport.preflight_kwargs(
+            kw,
+            is_github_responses=True,
+        )
+
+        assert preflight["input"] == [injected_message]
+
     def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
         messages = [
             {"role": "system", "content": "You are Hermes."},
@@ -242,6 +294,31 @@ class TestCodexBuildKwargs:
         )
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
+
+    def test_non_github_responses_keeps_encrypted_reasoning(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "done",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "encrypted_content": "portable-ciphertext",
+                        "summary": [{"type": "summary_text", "text": "analysis"}],
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+        )
+
+        reasoning = next(item for item in kw["input"] if item.get("type") == "reasoning")
+        assert reasoning["encrypted_content"] == "portable-ciphertext"
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the

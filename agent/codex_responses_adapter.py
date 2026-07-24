@@ -339,15 +339,14 @@ def _chat_messages_to_responses_input(
     items from the conversation history and threads ``replay_enabled=False``
     through this converter so subsequent turns send no reasoning items.
 
-    ``is_github_responses`` drops the ``id`` field from replayed
-    ``codex_message_items`` regardless of length. The Copilot backend
-    (api.githubcopilot.com/responses) binds these ids to a specific
-    backend "connection" — credential-pool rotation, a gateway restart,
-    or routine load-balancer churn between turns all invalidate it — and
-    rejects a stale id with HTTP 401 "input item ID does not belong to
-    this connection" even for short ids (see #32716). ``phase``/
-    ``status``/``content`` are still replayed; only ``id`` is unsafe to
-    reuse across a Copilot connection.
+    ``is_github_responses`` drops connection-bound replay state. The
+    Copilot backend (api.githubcopilot.com/responses) binds message ids
+    and encrypted reasoning to a specific backend "connection" —
+    credential-pool rotation, a gateway restart, or routine load-balancer
+    churn between turns all invalidate them. Replaying a stale message id
+    gets HTTP 401 "input item ID does not belong to this connection" (see
+    #32716), while stale reasoning gets ``invalid_encrypted_content``.
+    Visible assistant content, ``phase``, and ``status`` are still replayed.
 
     ``current_issuer_kind`` enables a per-item cross-issuer guard. The
     Responses API's ``encrypted_content`` blob is decryptable only by the
@@ -392,7 +391,7 @@ def _chat_messages_to_responses_input(
                 # for the May 2026 reversal of the earlier xAI gate.
                 codex_reasoning = (
                     msg.get("codex_reasoning_items")
-                    if replay_encrypted_reasoning
+                    if replay_encrypted_reasoning and not is_github_responses
                     else None
                 )
                 has_codex_reasoning = False
@@ -692,6 +691,12 @@ def _preflight_codex_input_items(
             continue
 
         if item_type == "reasoning":
+            # Copilot Responses credentials rotate between requests, so
+            # encrypted reasoning from a previous backend connection cannot
+            # be replayed safely. Keep this final guard after request
+            # overrides so callers cannot reintroduce stale ciphertext.
+            if is_github_responses:
+                continue
             encrypted = item.get("encrypted_content")
             if isinstance(encrypted, str) and encrypted:
                 item_id = item.get("id")

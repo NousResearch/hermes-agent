@@ -3530,9 +3530,11 @@ class SlackAdapter(BasePlatformAdapter):
                 if view is None:
                     return
                 client = self._team_clients.get(str(team_id or ""))
-                if client is None and self._app is not None:
-                    client = self._app.client
                 if client is None:
+                    logger.warning(
+                        "[Slack] Refusing App Home publish for unknown workspace %s",
+                        team_id or "<missing>",
+                    )
                     return
                 await client.views_publish(user_id=user_id, view=view)
             except Exception:

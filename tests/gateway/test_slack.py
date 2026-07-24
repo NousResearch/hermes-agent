@@ -3971,6 +3971,25 @@ class TestAssistantThreadLifecycle:
         assistant_adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_app_home_home_tab_unknown_workspace_never_uses_primary_client(
+        self, assistant_adapter, mock_session_store
+    ):
+        event = {
+            "type": "app_home_opened",
+            "tab": "home",
+            "team": "T_UNKNOWN",
+            "user": "U_USER",
+        }
+        view = {"type": "home", "blocks": []}
+        assistant_adapter._app.client.views_publish = AsyncMock()
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[view]):
+            await assistant_adapter._handle_app_home_opened(event)
+
+        assistant_adapter._app.client.views_publish.assert_not_awaited()
+        mock_session_store.get_or_create_session.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_message_uses_cached_assistant_thread_identity(
         self, assistant_adapter
     ):

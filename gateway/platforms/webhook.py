@@ -57,6 +57,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 from gateway.platforms.webhook_filters import (
@@ -424,6 +425,17 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    def _forget_delivery_id(self, delivery_id: str, session_chat_id: str | None = None) -> None:
+        """Release a failed delivery claim so provider retries can run again."""
+        self._seen_deliveries.pop(delivery_id, None)
+        if not session_chat_id:
+            return
+        self._delivery_info.pop(session_chat_id, None)
+        self._delivery_info_created.pop(session_chat_id, None)
+        self._delivery_info_order = deque(
+            item for item in self._delivery_info_order if item[1] != session_chat_id
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -770,6 +782,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     route_name,
                     delivery_id,
                 )
+                self._forget_delivery_id(delivery_id)
                 return web.json_response(
                     {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                     status=502,
@@ -793,6 +806,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 delivery["deliver"],
                 result.error,
             )
+            self._forget_delivery_id(delivery_id)
             return web.json_response(
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,
@@ -863,7 +877,7 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
     async def on_processing_complete(
-        self, event: "MessageEvent", outcome: Any
+        self, event: "MessageEvent", outcome: ProcessingOutcome
     ) -> None:
         """Close the per-delivery webhook session once its run finishes.
 
@@ -884,6 +898,8 @@ class WebhookAdapter(BasePlatformAdapter):
         ``end_session()`` is first-reason-wins and no-ops on an already-ended
         row, so this never clobbers a ``compression``/``agent_close`` reason.
         """
+        if outcome is ProcessingOutcome.FAILURE and event.message_id:
+            self._forget_delivery_id(event.message_id, event.source.chat_id)
         await self._end_webhook_session(event, event.source.chat_id)
 
     async def _end_webhook_session(

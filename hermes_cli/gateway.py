@@ -1309,10 +1309,16 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
 
     from hermes_constants import is_container
 
-    if is_linux() and is_container():
+    if is_linux():
         # Phase 4: report s6 supervision when running under our /init.
-        # Other container runtimes (or containers built before Phase 2)
-        # still get the original "docker (foreground)" label.
+        #
+        # Gate on detect_service_manager() == "s6" (PID 1 == s6-svscan),
+        # NOT is_container(): the latter only detects Docker/Podman/lxc, so
+        # it is False on Fly's Firecracker microVMs even though s6-overlay
+        # is genuinely PID 1 and supervising the gateway there (#46290 made
+        # the same fix for the s6 dispatch path in detect_service_manager()
+        # itself). Without this, a Fly-hosted s6-supervised gateway falls all
+        # the way through to "manual process" below.
         try:
             from hermes_cli.service_manager import detect_service_manager, get_service_manager
             if detect_service_manager() == "s6":
@@ -1341,10 +1347,15 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
                 )
         except Exception:
             pass  # Fall through to the legacy label on any detection error.
-        return GatewayRuntimeSnapshot(
-            manager="docker (foreground)",
-            gateway_pids=gateway_pids,
-        )
+
+        # Other container runtimes (or containers built before Phase 2)
+        # that are not s6-supervised still get the original
+        # "docker (foreground)" label.
+        if is_container():
+            return GatewayRuntimeSnapshot(
+                manager="docker (foreground)",
+                gateway_pids=gateway_pids,
+            )
 
     if supports_systemd_services():
         selected_system, service_running = _probe_systemd_service_running(system=system)

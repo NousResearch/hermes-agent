@@ -376,6 +376,71 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
     assert snapshot.gateway_pids == (123,)
 
 
+def test_s6_runtime_snapshot_reports_supervised_service_on_fly_firecracker(monkeypatch, tmp_path):
+    """On Fly.io, is_container() is False (Firecracker microVM, not Docker/
+    Podman/lxc) even though s6-overlay is genuinely PID 1 and supervising the
+    gateway. The snapshot must report s6 supervision here too — gated on
+    detect_service_manager() == "s6", matching the #46290 fix to
+    detect_service_manager() itself, not on is_container()."""
+    service_dir = tmp_path / "gateway-default"
+    service_dir.mkdir()
+
+    class FakeS6Manager:
+        scandir = tmp_path
+
+        def is_running(self, name):
+            assert name == "gateway-default"
+            return True
+
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("hermes_cli.service_manager.get_service_manager", lambda: FakeS6Manager())
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])
+    monkeypatch.setattr(gateway, "_profile_suffix", lambda: "")
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "s6 (container supervisor)"
+    assert snapshot.service_installed is True
+    assert snapshot.service_running is True
+    assert snapshot.service_scope == "s6"
+    assert snapshot.gateway_pids == (123,)
+
+
+def test_non_s6_container_still_reports_docker_foreground(monkeypatch, tmp_path):
+    """A Docker/Podman container that is NOT s6-supervised (pre-Phase-2
+    image, or another init system) keeps the legacy "docker (foreground)"
+    label — the is_container() fallback is preserved, just no longer the
+    sole gate."""
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "none")
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "docker (foreground)"
+    assert snapshot.gateway_pids == (123,)
+
+
+def test_non_container_non_s6_linux_falls_through_to_systemd_check(monkeypatch):
+    """A regular (non-container) Linux host with neither s6 nor a container
+    must fall through to the existing systemd/launchd/manual-process checks
+    unchanged."""
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "systemd")
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "manual process"
+    assert snapshot.gateway_pids == (123,)
+
+
 def test_running_under_gateway_supervisor_markers(monkeypatch):
     _clear_supervisor_markers(monkeypatch)
     assert gateway._running_under_gateway_supervisor() is False

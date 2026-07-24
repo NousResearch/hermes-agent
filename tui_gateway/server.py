@@ -17757,6 +17757,12 @@ def _tts_stream_stop(user_barge: bool = True) -> None:
     if state is None:
         return
     if user_barge and not state["done"].is_set():
+        import traceback as _tb
+        logger.debug(
+            "TTS CUT: _tts_stream_stop(user_barge=True) — new turn or "
+            "interrupt cutting in-flight TTS\n%s",
+            "".join(_tb.format_stack()),
+        )
         from tools.tts_streaming import mark_speech_interrupted
 
         mark_speech_interrupted()
@@ -17782,10 +17788,28 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
         from tools.tts_streaming import mark_speech_interrupted
         from tools.voice_mode import listen_for_speech, stop_playback, transcribe_recording
 
+        # Grace period: wait briefly before opening the mic so the
+        # first TTS sentence is already playing and the VAD calibration
+        # samples the actual playback level (not silence).  This
+        # prevents speaker bleed from falsely triggering barge-in
+        # at the start of playback.  Mirrors the CLI path in cli.py
+        # _voice_barge_in_monitor.
+        _grace_s = float(_voice_cfg_dict().get("barge_in_grace_seconds", 2.0))
+        if _grace_s > 0:
+            stop.wait(timeout=_grace_s)
+            if stop.is_set() or done.is_set():
+                return
+
         barged = threading.Event()
 
         def _cut_playback():
             if not done.is_set():
+                import traceback as _tb
+                logger.debug(
+                    "TTS CUT: gateway barge-in _cut_playback fired (VAD trip) — "
+                    "stop.set() + stop_playback()\n%s",
+                    "".join(_tb.format_stack()),
+                )
                 barged.set()
                 mark_speech_interrupted()
                 stop.set()
@@ -17796,6 +17820,8 @@ def _tts_stream_barge_in_monitor(stop: threading.Event, done: threading.Event) -
             lambda: stop.is_set() or done.is_set(),
             capture=True,
             on_trigger=_cut_playback,
+            sustained_ms=1000,
+            calibration_ms=800,
         )
         if not (wav_path and barged.is_set()):
             return

@@ -1599,9 +1599,18 @@ def listen_for_speech(
     trip_blocks = max(1, sustained_ms // 30)
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
     max_blocks = max(1, max_utterance_ms // 30)
-    floor_samples: List[float] = []
+
+    # Rolling floor window: continuously tracks TTS speaker-bleed volume
+    # throughout playback, not just the first calibration_ms.  This is the
+    # key fix for false barge-in — a one-shot calibration freezes a floor
+    # from the opening TTS passage, but later louder passages exceed the
+    # stale floor and false-trigger.  The rolling window keeps the floor
+    # current so only genuinely louder-than-playback speech trips the VAD.
+    floor_window: "deque[float]" = deque(maxlen=max(calib_blocks, 100))  # ~3s rolling
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     consecutive = 0
+    min_floor = 0.0  # baseline from initial calibration; floor never drops below this
+    block_idx = 0  # block counter for diagnostic logging
 
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
@@ -1610,15 +1619,79 @@ def listen_for_speech(
                 rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
                 if capture:
                     pre_roll.append(data.copy())
-                if len(floor_samples) < calib_blocks:
-                    floor_samples.append(rms)
+                block_idx += 1
+
+                # Wait for at least calib_blocks before evaluating.  During
+                # the initial warmup we always feed the window so calibration
+                # has data to work with.
+                if len(floor_window) < calib_blocks:
+                    floor_window.append(rms)
                     continue
-                trigger = max(float(threshold or SILENCE_RMS_THRESHOLD * 2), float(np.median(floor_samples)) * 3.5)
+
+                # Lock a minimum floor from the initial calibration samples.
+                # During inter-sentence pauses the rolling window can flush
+                # with near-silence, collapsing the 90th-percentile floor
+                # toward zero and false-triggering on the next rising
+                # sentence.  min_floor keeps the trigger from ever dropping
+                # below the baseline TTS playback level established during
+                # the initial calibration_ms window.
+                #
+                # If the grace period ended during an inter-sentence gap the
+                # calibration samples near-silence.  Locking a near-zero
+                # floor sets the trigger so low that TTS blocks exceed it,
+                # are excluded from the rolling window (rms >= trigger), and
+                # the floor freezes — guaranteeing a false trigger the moment
+                # TTS resumes.  Clamp min_floor to SILENCE_RMS_THRESHOLD * 2
+                # (400 RMS) so the 8x multiplier yields a trigger of at least
+                # (500-2000 RMS) stays below it and feeds the rolling window,
+                # while genuine speech (3000-8000 RMS) can still trip it.
+                if min_floor == 0.0 and len(floor_window) >= calib_blocks:
+                    _pct90 = float(np.percentile(list(floor_window), 90))
+                    min_floor = max(_pct90, SILENCE_RMS_THRESHOLD * 2)
+                else:
+                    _pct90 = float(np.percentile(list(floor_window), 90))
+
+                # Use the 90th percentile of the ROLLING window for the
+                # noise floor so the trigger reflects the loudest parts of
+                # recent playback — not a frozen snapshot from TTS onset.
+                _floor = max(_pct90, min_floor)
+                # 8.0x multiplier: TTS speaker bleed has wide
+                # volume variation between sentences and within sentences.
+                # At 5x, louder TTS passages exceed the trigger, get
+                # excluded from the floor window, and create a low-stale
+                # floor that false-triggers on the next loud passage.
+                # 8x gives enough headroom for TTS dynamics to stay below
+                # the trigger and get absorbed into the rolling floor.
+                trigger = max(float(threshold or SILENCE_RMS_THRESHOLD * 2), _floor * 8.0)
+                # Ceiling: never let the trigger exceed 4000 RMS, otherwise
+                # a very loud TTS passage would push the trigger so high
+                # that genuine speech (which is typically 3000–8000 RMS)
+                # couldn't trip it.
+                trigger = min(trigger, 4000.0)
+
+                # Only feed the floor window with blocks that are NOT above
+                # the current trigger — speech blocks would inflate the floor
+                # and make the trigger unreachable.
+                if rms < trigger:
+                    floor_window.append(rms)
+
                 consecutive = consecutive + 1 if rms >= trigger else 0
+                if consecutive > 0:
+                    logger.debug(
+                        "VAD above-trigger: block=%d rms=%.0f floor=%.0f trigger=%.0f "
+                        "consec=%d/%d min_floor=%.0f window_len=%d",
+                        block_idx, rms, _floor, trigger, consecutive,
+                        trip_blocks, min_floor, len(floor_window),
+                    )
                 if consecutive < trip_blocks:
                     continue
 
                 # Tripped — the user is talking over playback.
+                logger.info(
+                    "VAD TRIPPED: block=%d rms=%.0f floor=%.0f trigger=%.0f "
+                    "consec=%d min_floor=%.0f — cutting TTS playback",
+                    block_idx, rms, _floor, trigger, consecutive, min_floor,
+                )
                 if on_trigger:
                     try:
                         on_trigger()

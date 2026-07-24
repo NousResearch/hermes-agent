@@ -2075,6 +2075,77 @@ class TestListenForSpeech:
         heard, _ = self._run(mock_sd, levels)
         assert heard is False
 
+    def test_quiet_then_loud_playback_does_not_trip(self, mock_sd):
+        """TTS that starts quiet and gets louder must NOT trip barge-in.
+
+        This is the core regression: a one-shot calibration freezes the
+        floor from the quiet opening, then louder TTS exceeds the stale
+        floor and false-triggers.  The rolling window keeps the floor
+        current so the louder passage is absorbed into the floor.
+        """
+        levels = [100] * self.CALIB_BLOCKS + [200] * 30 + [500] * 30 + [1000] * 30
+        heard, _ = self._run(mock_sd, levels)
+        assert heard is False
+
+    def test_8x_multiplier_absorbs_tts_volume_spikes(self, mock_sd):
+        """TTS volume spikes that would exceed a 5x floor must NOT trip.
+
+        At 5x multiplier, a quiet TTS passage (RMS 200) sets a floor of
+        ~180 and a trigger of 900. A subsequent louder passage at RMS
+        1000 exceeds the trigger, is excluded from the floor window, and
+        after sustained_ms of consecutive above-trigger blocks the VAD
+        false-trips and cuts playback mid-sentence. The 8x multiplier
+        raises the trigger to 1440 so the 1000-RMS passage stays below
+        it and gets absorbed into the rolling floor.
+        """
+        # Calib at 200 RMS → floor ~180 → 8x trigger = 1440
+        # Then 1000 RMS TTS: below 3200 (400*8), absorbed into floor, no trip.
+        # With old 5x: trigger=2000 (400*5), 1000 < 2000, would NOT trip either.
+        # To actually test the 8x multiplier, use levels where 5x would trip
+        # but 8x would not: calib at 200 → floor=180 → 5x trigger=900,
+        # 8x trigger=1440. Feed 1200 RMS: above 900 (5x trips) but below
+        # 1440 (8x absorbs). With min_floor=400 the trigger is max(400,180*8)=1440,
+        # so 1200 < 1440 → no trip at 8x, but 1200 > 900 → would trip at 5x.
+        levels = [200] * self.CALIB_BLOCKS + [1200] * 50
+        heard, _ = self._run(mock_sd, levels)
+        assert heard is False
+
+    def test_trigger_ceiling_lets_genuine_speech_trip(self, mock_sd):
+        """Even with a loud TTS floor, genuine speech must still trip.
+
+        Loud TTS at 3000 RMS → floor ~2700 → 8x trigger = 21600, but
+        the ceiling caps it at 4000. Speech at 5000 RMS exceeds the
+        capped trigger and trips after sustained_ms blocks.
+        """
+        levels = [3000] * self.CALIB_BLOCKS + [5000] * 50
+        heard, _ = self._run(mock_sd, levels)
+        assert heard is True
+
+    def test_silence_calibration_does_not_false_trip_on_tts(self, mock_sd):
+        """Calibration during an inter-sentence gap must NOT false-trip.
+
+        If the grace period ends during a pause between TTS sentences, the
+        calibration window samples near-silence.  Without the min_floor clamp,
+        min_floor locks near zero, the trigger drops to 400 RMS (SILENCE_RMS_THRESHOLD
+        * 2), and the next TTS sentence at 800 RMS exceeds it — those blocks are
+        excluded from the rolling window (rms >= trigger), the floor freezes, and
+        after sustained_ms the VAD false-triggers and cuts playback mid-sentence.
+
+        With the clamp, min_floor stays at SILENCE_RMS_THRESHOLD * 2 = 400, the
+        trigger is max(400, 400 * 8.0) = 3200, and 800-RMS TTS stays below it and
+        feeds the rolling floor.  No false trip.
+        """
+        # calibration_ms=800 → CALIB_BLOCKS = 800/30 ≈ 26 blocks of silence
+        # Then TTS resumes at 800 RMS — must NOT trip (below 3200 trigger).
+        calib = 800 // 30
+        levels = [0] * calib + [800] * 100
+        heard, _ = self._run(
+            mock_sd, levels,
+            sustained_ms=1000,
+            calibration_ms=800,
+        )
+        assert heard is False
+
 
 class TestListenForSpeechCapture:
     """capture=True: the barge monitor records the interruption with pre-roll,

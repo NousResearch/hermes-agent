@@ -123,6 +123,99 @@ class TestLoadMCPConfig:
             assert result == {}
 
 
+class TestMCPRuntimeScopes:
+    def test_detects_gateway_run_with_profile_flag_before_command(self):
+        from tools.mcp_tool import _detect_mcp_runtime_context
+
+        argv = [
+            "hermes",
+            "--profile",
+            "vision",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+        assert _detect_mcp_runtime_context(argv) == "gateway"
+
+    def test_ordinary_cli_is_not_misclassified_as_gateway(self):
+        from tools.mcp_tool import _detect_mcp_runtime_context
+
+        assert _detect_mcp_runtime_context(["hermes", "chat", "-q", "hello"]) == "cli"
+
+    @pytest.mark.parametrize(
+        ("scope", "expected"),
+        [
+            ("gateway", True),
+            (["gateway"], True),
+            ("*", True),
+            (["*"], True),
+            ("cli", False),
+            ([], False),
+            ("   ", False),
+            (["gateway", 7], False),
+            ("not-a-runtime", False),
+        ],
+    )
+    def test_runtime_scope_matching_is_backward_compatible_and_fail_closed(
+        self, scope, expected
+    ):
+        from tools.mcp_tool import _mcp_server_allowed_in_runtime
+
+        assert (
+            _mcp_server_allowed_in_runtime(
+                {"command": "xcrun", "runtime_contexts": scope},
+                runtime_context="gateway",
+            )
+            is expected
+        )
+        assert _mcp_server_allowed_in_runtime(
+            {"command": "xcrun"}, runtime_context="cli"
+        ) is True
+
+    def test_discovery_filters_scoped_servers_before_registration(self):
+        import tools.mcp_tool as mcp_tool
+
+        servers = {
+            "xcode": {"command": "xcrun", "runtime_contexts": ["gateway"]},
+            "filesystem": {"command": "npx"},
+        }
+        with patch.object(mcp_tool, "_MCP_AVAILABLE", True), \
+             patch.object(mcp_tool, "_load_mcp_config", return_value=servers), \
+             patch.object(mcp_tool, "_detect_mcp_runtime_context", return_value="cli"), \
+             patch.object(mcp_tool, "register_mcp_servers", return_value=[]) as register:
+            assert mcp_tool.discover_mcp_tools() == []
+
+        register.assert_called_once_with({"filesystem": {"command": "npx"}})
+
+    def test_direct_registration_cannot_bypass_runtime_scope(self):
+        import tools.mcp_tool as mcp_tool
+
+        servers = {
+            "xcode": {"command": "xcrun", "runtime_contexts": ["gateway"]},
+        }
+        with patch.object(mcp_tool, "_MCP_AVAILABLE", True), \
+             patch.object(mcp_tool, "_detect_mcp_runtime_context", return_value="cli"), \
+             patch.object(mcp_tool, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp_tool, "_existing_tool_names", return_value=[]):
+            assert mcp_tool.register_mcp_servers(servers) == []
+
+        ensure_loop.assert_not_called()
+
+    def test_probe_cannot_bypass_runtime_scope(self):
+        import tools.mcp_tool as mcp_tool
+
+        servers = {
+            "xcode": {"command": "xcrun", "runtime_contexts": ["gateway"]},
+        }
+        with patch.object(mcp_tool, "_MCP_AVAILABLE", True), \
+             patch.object(mcp_tool, "_load_mcp_config", return_value=servers), \
+             patch.object(mcp_tool, "_detect_mcp_runtime_context", return_value="cli"), \
+             patch.object(mcp_tool, "_ensure_mcp_loop") as ensure_loop:
+            assert mcp_tool.probe_mcp_server_tools() == {}
+
+        ensure_loop.assert_not_called()
+
+
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
         self, monkeypatch

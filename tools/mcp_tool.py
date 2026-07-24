@@ -4455,6 +4455,96 @@ def _load_mcp_config() -> Dict[str, dict]:
         return {}
 
 
+_MCP_RUNTIME_CONTEXTS = frozenset({"gateway", "cli", "cron", "tui", "acp"})
+
+
+def _detect_mcp_runtime_context(argv: Optional[List[str]] = None) -> str:
+    """Return the current Hermes runtime class without granting gateway by default.
+
+    The gateway check deliberately uses the real launcher argv rather than
+    ``HERMES_GATEWAY_SESSION``. TUI/dashboard workers also set that environment
+    marker for approval routing, but they are short-lived processes and must not
+    inherit privileged, long-lived gateway MCP connections.
+    """
+    args = [str(arg) for arg in (sys.argv if argv is None else argv)]
+    if any(
+        args[index] == "gateway" and args[index + 1] == "run"
+        for index in range(len(args) - 1)
+    ):
+        return "gateway"
+
+    lowered = [arg.lower() for arg in args]
+    if any("acp_adapter" in arg for arg in lowered) or any(
+        os.path.basename(arg) == "hermes-acp" for arg in lowered
+    ):
+        return "acp"
+    if "dashboard" in lowered or any("tui_gateway" in arg for arg in lowered):
+        return "tui"
+    if "cron" in lowered or os.getenv("HERMES_CRON_SESSION", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return "cron"
+    # Unknown/ordinary launchers fail away from the privileged gateway lane.
+    return "cli"
+
+
+def _mcp_server_allowed_in_runtime(
+    config: dict,
+    *,
+    runtime_context: Optional[str] = None,
+) -> bool:
+    """Return whether one MCP server is eligible in the current runtime.
+
+    Omitting ``runtime_contexts`` preserves the historical all-runtime behavior.
+    An explicit scope accepts one string, a list of strings, or ``*``. Empty,
+    malformed, and unknown explicit scopes fail closed so a typo cannot launch a
+    privileged server in every Hermes process.
+    """
+    if "runtime_contexts" not in config:
+        return True
+
+    raw_scopes = config.get("runtime_contexts")
+    if isinstance(raw_scopes, str):
+        scopes = [raw_scopes.strip()]
+    elif isinstance(raw_scopes, (list, tuple, set)):
+        if not raw_scopes or any(not isinstance(item, str) for item in raw_scopes):
+            return False
+        scopes = [item.strip() for item in raw_scopes]
+    else:
+        return False
+
+    if not scopes or any(not scope for scope in scopes):
+        return False
+    if any(scope != "*" and scope not in _MCP_RUNTIME_CONTEXTS for scope in scopes):
+        return False
+
+    current = runtime_context or _detect_mcp_runtime_context()
+    return "*" in scopes or current in scopes
+
+
+def _filter_mcp_servers_for_runtime(
+    servers: Dict[str, dict],
+    *,
+    runtime_context: Optional[str] = None,
+) -> Dict[str, dict]:
+    """Filter explicit/configured servers through the runtime-scope contract."""
+    current = runtime_context or _detect_mcp_runtime_context()
+    eligible: Dict[str, dict] = {}
+    for name, config in servers.items():
+        if not isinstance(config, dict):
+            continue
+        if _mcp_server_allowed_in_runtime(config, runtime_context=current):
+            eligible[name] = config
+        else:
+            logger.debug(
+                "Skipping MCP server '%s' in runtime context '%s' (runtime_contexts=%r)",
+                name,
+                current,
+                config.get("runtime_contexts"),
+            )
+    return eligible
+
+
 # ---------------------------------------------------------------------------
 # Server connection helper
 # ---------------------------------------------------------------------------
@@ -5616,7 +5706,12 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
 
-    servers = _filter_suspicious_mcp_servers(servers)
+    # Apply runtime scoping here as well as in config discovery. ACP and other
+    # callers can register explicit server maps directly; without this gate they
+    # could bypass a gateway-only scope and spawn a fresh privileged process.
+    servers = _filter_mcp_servers_for_runtime(
+        _filter_suspicious_mcp_servers(servers)
+    )
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return []
@@ -5750,7 +5845,7 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("MCP SDK not available -- skipping MCP tool discovery")
         return []
 
-    servers = _load_mcp_config()
+    servers = _filter_mcp_servers_for_runtime(_load_mcp_config())
     if not servers:
         logger.debug("No MCP servers configured")
         return []
@@ -5895,7 +5990,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     if not _MCP_AVAILABLE:
         return {}
 
-    servers_config = _load_mcp_config()
+    servers_config = _filter_mcp_servers_for_runtime(_load_mcp_config())
     if not servers_config:
         return {}
 

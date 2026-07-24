@@ -2857,9 +2857,23 @@ def stream_tts_to_speaker(
                         _buf = _pcm_leftover + chunk
                         _aligned_len = len(_buf) - (len(_buf) % 2)
                         if _aligned_len >= 2:
-                            output_stream.write(
-                                _np.frombuffer(_buf[:_aligned_len], dtype=_np.int16).reshape(-1, 1)
-                            )
+                            try:
+                                output_stream.write(
+                                    _np.frombuffer(
+                                        _buf[:_aligned_len], dtype="<i2"
+                                    ).reshape(-1, 1)
+                                )
+                            except Exception as write_exc:
+                                # PortAudio/Core Audio can raise transient
+                                # errors (e.g. PaErrorCode -9986 "Internal
+                                # PortAudio error" on macOS device state
+                                # changes or buffer underruns).  Log and
+                                # break rather than killing the thread.
+                                logger.warning(
+                                    "PortAudio write failed (continuing): %s",
+                                    write_exc,
+                                )
+                                break
                         _pcm_leftover = (
                             _buf[_aligned_len:] if _aligned_len < len(_buf) else b""
                         )

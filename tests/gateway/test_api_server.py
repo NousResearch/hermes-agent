@@ -3467,6 +3467,238 @@ class TestToolCallsInOutput:
 
 
 # ---------------------------------------------------------------------------
+# Turn-start detection robustness (phantom function_call + history doubling)
+# ---------------------------------------------------------------------------
+
+
+class TestTurnStartRobustness:
+    """Regression coverage for _response_messages_turn_start_index.
+
+    A wrong ``return 0`` when the prior-history prefix cannot be matched
+    byte-for-byte is the common root cause of two reported symptoms:
+      * output side — previous turns' tool calls replayed as phantom
+        ``function_call`` / ``function_call_output`` items on a turn that
+        called no tools;
+      * storage side — history concatenated on front of itself and doubled
+        every chained request (#68257).
+
+    These assert the *invariants* (this turn's output contains only this turn's
+    items; stored history is not duplicated) rather than freezing literals.
+    """
+
+    @staticmethod
+    def _prior_with_tool_turn():
+        return [
+            {"role": "user", "content": "search the web for X"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "web_search", "arguments": '{"query": "X"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "results..."},
+            {"role": "assistant", "content": "Here is what I found about X."},
+        ]
+
+    def test_inplace_stamp_no_phantom_function_call(self):
+        """api_content sidecar stamp on history must not defeat detection.
+
+        The agent core stamps ``api_content`` onto history messages in place
+        (conversation_loop). A byte-equality check then fails and old code walked
+        the whole transcript from index 0, replaying the prior turn's web_search
+        as a phantom function_call. This turn called no tools, so the output must
+        be exactly ``['message']``.
+        """
+        prior = self._prior_with_tool_turn()
+        user_message = "thanks, now just say hi"
+
+        mutated = [dict(m) for m in prior]
+        mutated[1]["api_content"] = "<stamped>"  # in-place reshaping
+        result = {
+            "messages": mutated
+            + [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": "hi"},
+            ],
+            "final_response": "hi",
+        }
+
+        idx = APIServerAdapter._response_messages_turn_start_index(
+            prior, user_message, result
+        )
+        items = APIServerAdapter._extract_output_items(result, start_index=idx)
+        assert [it["type"] for it in items] == ["message"]
+        assert items[-1]["content"][0]["text"] == "hi"
+
+    def test_leading_system_output_and_no_history_doubling(self):
+        """Leading private system message (#68257): correct output + no doubling.
+
+        The core prepends a private system message to the transcript. It must be
+        skipped for turn detection so (a) the output contains only this turn's
+        items and (b) the stored history equals the client-visible turn sequence
+        (prior + user + assistant), not a duplicated concatenation.
+        """
+        prior = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        user_message = "say bye"
+        agent_messages = (
+            [{"role": "system", "content": "<private system prompt>"}]
+            + [dict(m) for m in prior]
+            + [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": "bye"},
+            ]
+        )
+        result = {"messages": agent_messages, "final_response": "bye"}
+
+        idx = APIServerAdapter._response_messages_turn_start_index(
+            prior, user_message, result
+        )
+        items = APIServerAdapter._extract_output_items(result, start_index=idx)
+        assert [it["type"] for it in items] == ["message"]
+
+        stored = APIServerAdapter._build_response_conversation_history(
+            prior, user_message, result, "bye"
+        )
+        # No doubling: stored is exactly prior + current user + assistant reply,
+        # with the private system message stripped.
+        assert stored == prior + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": "bye"},
+        ]
+        # And it round-trips: re-loaded as prior next turn, the prefix matches.
+        assert not any(m.get("role") == "system" for m in stored)
+
+    def test_leading_system_with_tool_turn_no_phantom(self):
+        """Leading system + a genuine tool call this turn: emit only this turn.
+
+        Combines the #68257 leading-system trigger with a real tool call in the
+        current turn — the output must contain this turn's function_call/output
+        but none from the prior turn.
+        """
+        prior = self._prior_with_tool_turn()
+        user_message = "now search for Y"
+        agent_messages = (
+            [{"role": "system", "content": "<private>"}]
+            + [dict(m) for m in prior]
+            + [
+                {"role": "user", "content": user_message},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_2",
+                            "function": {"name": "web_search", "arguments": '{"query": "Y"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_2", "content": "Y results"},
+                {"role": "assistant", "content": "Here is Y."},
+            ]
+        )
+        result = {"messages": agent_messages, "final_response": "Here is Y."}
+
+        idx = APIServerAdapter._response_messages_turn_start_index(
+            prior, user_message, result
+        )
+        items = APIServerAdapter._extract_output_items(result, start_index=idx)
+        assert [it["type"] for it in items] == [
+            "function_call",
+            "function_call_output",
+            "message",
+        ]
+        # The one function_call is this turn's (call_2), never the prior call_1.
+        assert items[0]["call_id"] == "call_2"
+        assert items[1]["call_id"] == "call_2"
+
+    def test_compressed_transcript_no_phantom(self):
+        """Compression replaced the prefix (_compressed): still no phantom.
+
+        When compression rewrites the transcript with a summary prefix the prior
+        history cannot be matched. Reverse-anchoring on this turn's user message
+        must still yield only this turn's items.
+        """
+        prior = self._prior_with_tool_turn()
+        user_message = "continue"
+        compressed = [
+            {"role": "user", "content": "[Compressed summary of earlier conversation]"},
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": "done"},
+        ]
+        result = {
+            "messages": compressed,
+            "final_response": "done",
+            "_compressed": True,
+        }
+        idx = APIServerAdapter._response_messages_turn_start_index(
+            prior, user_message, result
+        )
+        items = APIServerAdapter._extract_output_items(result, start_index=idx)
+        assert [it["type"] for it in items] == ["message"]
+
+    def test_exact_prefix_match_regression(self):
+        """Happy path (no reshaping): exact prefix still detected correctly."""
+        prior = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        user_message = "again"
+        agent_messages = list(prior) + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": "sure"},
+        ]
+        result = {"messages": agent_messages, "final_response": "sure"}
+        idx = APIServerAdapter._response_messages_turn_start_index(
+            prior, user_message, result
+        )
+        assert idx == len(prior) + 1
+        items = APIServerAdapter._extract_output_items(result, start_index=idx)
+        assert [it["type"] for it in items] == ["message"]
+
+    def test_suffix_only_path_preserved(self):
+        """No prior history + genuine current-turn tool call: emit everything.
+
+        The older/mocked path returns only the current-turn suffix with real
+        tool calls and no prior history. Detection must return 0 so all items
+        are emitted (this is NOT phantom replay).
+        """
+        result = {
+            "final_response": "The result is 42.",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_abc",
+                            "function": {"name": "calculator", "arguments": '{"e": "6*7"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_abc", "content": "42"},
+                {"role": "assistant", "content": "The result is 42."},
+            ],
+        }
+        idx = APIServerAdapter._response_messages_turn_start_index(
+            [], "What is 6*7?", result
+        )
+        assert idx == 0
+        items = APIServerAdapter._extract_output_items(result, start_index=idx)
+        assert [it["type"] for it in items] == [
+            "function_call",
+            "function_call_output",
+            "message",
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Usage / token counting
 # ---------------------------------------------------------------------------
 

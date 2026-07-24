@@ -183,3 +183,96 @@ class TestProviderCollectorCliNoop:
         )
         # Should not store anything — CLI is discovered via file convention
         assert not hasattr(collector, "_cli_commands")
+
+
+# ── Deferred platform plugin CLI resolution ───────────────────────────────
+
+
+class TestDeferredPlatformCliResolution:
+    """A bundled platform plugin registers its ``hermes <platform>`` CLI
+    command inside ``register()``, but platform plugins load lazily (deferred):
+    the module — and thus the ``register_cli_command()`` call — is only imported
+    when the platform_registry is first asked for that platform.
+
+    Regression: a standalone ``hermes <platform> ...`` invocation parses argv
+    before the registry is touched, so the subcommand was never wired up and
+    argparse rejected it as an invalid choice. The fix force-resolves the one
+    deferred platform whose name matches the first positional token. These
+    tests assert the underlying contract that fix relies on: resolving a
+    deferred platform runs its loader, which populates ``_cli_commands``.
+    """
+
+    def _make_deferred_platform(self, platform_name):
+        """Wire a deferred loader whose module registers a CLI command.
+
+        Returns ``(registry, manager, loader_calls)`` where ``loader_calls`` is
+        a single-element list used as a call counter so tests can assert the
+        loader ran at most once.
+        """
+        from gateway.platform_registry import PlatformRegistry
+
+        registry = PlatformRegistry()
+        manager = PluginManager()
+        loader_calls = []
+
+        def _loader():
+            # Mirrors what a real platform plugin's register() does: register
+            # the platform entry AND its `hermes <platform>` CLI command.
+            loader_calls.append(1)
+            ctx = PluginContext(PluginManifest(name=f"{platform_name}-platform"), manager)
+            ctx.register_cli_command(
+                name=platform_name,
+                help=f"Manage the {platform_name} integration",
+                setup_fn=MagicMock(),
+                handler_fn=MagicMock(),
+            )
+
+        registry.register_deferred(platform_name, _loader)
+        return registry, manager, loader_calls
+
+    def test_cli_command_absent_until_resolved(self):
+        """Before the platform is resolved, its CLI command is not registered."""
+        registry, manager, loader_calls = self._make_deferred_platform("acmechat")
+        # Deferred loader is pending but has NOT run yet.
+        assert "acmechat" in registry._deferred
+        assert loader_calls == []
+        assert "acmechat" not in manager._cli_commands
+
+    def test_resolving_platform_registers_cli_command(self):
+        """Resolving the deferred platform runs its loader and wires the CLI."""
+        registry, manager, loader_calls = self._make_deferred_platform("acmechat")
+
+        entry = registry.get("acmechat")
+
+        assert entry is None or entry.name == "acmechat"  # loader may skip register()
+        assert loader_calls == [1]
+        # The CLI command is now available on the manager.
+        assert "acmechat" in manager._cli_commands
+        assert manager._cli_commands["acmechat"]["help"] == (
+            "Manage the acmechat integration"
+        )
+
+    def test_loader_runs_at_most_once(self):
+        """A second lookup does not re-run the loader (deferred entry popped)."""
+        registry, manager, loader_calls = self._make_deferred_platform("acmechat")
+        registry.get("acmechat")
+        registry.get("acmechat")
+        assert loader_calls == [1]
+
+    def test_unrelated_token_does_not_resolve_platform(self):
+        """A non-platform token (e.g. a chat prompt) leaves loaders untouched.
+
+        This is the fast-path guarantee: ``hermes <chat prompt>`` must not
+        import any platform SDK just because discovery ran.
+        """
+        registry, manager, loader_calls = self._make_deferred_platform("acmechat")
+
+        # Simulate the guard in main(): only resolve when the token names a
+        # deferred platform. "hello" is not a platform, so nothing resolves.
+        token = "hello"
+        if token in registry._deferred:
+            registry.get(token)
+
+        assert loader_calls == []
+        assert "acmechat" not in manager._cli_commands
+

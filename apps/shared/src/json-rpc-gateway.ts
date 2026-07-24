@@ -72,6 +72,8 @@ export class JsonRpcGatewayClient {
   private pending = new Map<GatewayRequestId, PendingCall>()
   private socket: WebSocketLike | null = null
   private state: ConnectionState = 'idle'
+  /** Shared in-flight connect so concurrent callers await the same handshake. */
+  private connectPromise: Promise<void> | null = null
   private readonly eventHandlers = new Map<string, Set<(event: GatewayEvent) => void>>()
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<Omit<GatewayClientOptions, 'socketFactory'>> &
@@ -119,8 +121,15 @@ export class JsonRpcGatewayClient {
       throw invalidUrl()
     }
 
-    if (this.socket?.readyState === WebSocket.OPEN || this.state === 'connecting') {
+    if (this.socket?.readyState === WebSocket.OPEN) {
       return
+    }
+
+    // Concurrent connect() during an in-flight handshake must await the same
+    // promise — returning early while state === 'connecting' made callers believe
+    // the socket was ready and immediately hit "gateway not connected".
+    if (this.connectPromise) {
+      return this.connectPromise
     }
 
     this.setState('connecting')
@@ -146,7 +155,7 @@ export class JsonRpcGatewayClient {
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
 
-    await new Promise<void>((resolve, reject) => {
+    this.connectPromise = new Promise<void>((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -159,26 +168,36 @@ export class JsonRpcGatewayClient {
         socket.removeEventListener('error', onError)
       }
 
-      const onOpen = () => {
-        if (settled || this.socket !== socket) {
+      const finish = (fn: () => void) => {
+        if (settled) {
           return
         }
 
         settled = true
         cleanup()
-        this.setState('open')
-        resolve()
+        fn()
+      }
+
+      const onOpen = () => {
+        if (this.socket !== socket) {
+          return
+        }
+
+        finish(() => {
+          this.setState('open')
+          resolve()
+        })
       }
 
       const onError = () => {
-        if (settled || this.socket !== socket) {
+        if (this.socket !== socket) {
           return
         }
 
-        settled = true
-        cleanup()
-        this.setState('error')
-        reject(new Error(this.options.connectErrorMessage))
+        finish(() => {
+          this.setState('error')
+          reject(new Error(this.options.connectErrorMessage))
+        })
       }
 
       socket.addEventListener('open', onOpen, { once: true })
@@ -186,30 +205,29 @@ export class JsonRpcGatewayClient {
 
       if (this.options.connectTimeoutMs > 0) {
         timer = setTimeout(() => {
-          if (settled) {
-            return
-          }
+          finish(() => {
+            // Drop the half-open socket so the next connect() starts clean
+            // instead of short-circuiting on a zombie 'connecting' state.
+            if (this.socket === socket) {
+              try {
+                socket.close()
+              } catch {
+                // ignore
+              }
 
-          settled = true
-          cleanup()
-
-          // Drop the half-open socket so the next connect() starts clean
-          // instead of short-circuiting on a zombie 'connecting' state.
-          if (this.socket === socket) {
-            try {
-              socket.close()
-            } catch {
-              // ignore
+              this.socket = null
             }
 
-            this.socket = null
-          }
-
-          this.setState('error')
-          reject(new Error(this.options.connectErrorMessage))
+            this.setState('error')
+            reject(new Error(this.options.connectErrorMessage))
+          })
         }, this.options.connectTimeoutMs)
       }
+    }).finally(() => {
+      this.connectPromise = null
     })
+
+    await this.connectPromise
   }
 
   close(): void {

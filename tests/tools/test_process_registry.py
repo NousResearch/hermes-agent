@@ -1406,6 +1406,34 @@ def test_drain_notifications_empty_queue():
     assert results == []
 
 
+def test_drain_notifications_event_filter_scopes_all_event_types(registry):
+    """A transport-level filter must leave every foreign event queued."""
+    registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_owned",
+        "session_key": "acp-owned",
+        "command": "echo owned",
+        "exit_code": 0,
+        "output": "owned",
+    })
+    registry.completion_queue.put({
+        "type": "watch_match",
+        "session_id": "proc_foreign",
+        "session_key": "acp-foreign",
+        "command": "tail -f log",
+        "pattern": "READY",
+        "output": "READY",
+    })
+
+    results = registry.drain_notifications(
+        event_filter=lambda event: event.get("session_key") == "acp-owned",
+    )
+
+    assert [event["session_id"] for event, _ in results] == ["proc_owned"]
+    leftover = registry.completion_queue.get_nowait()
+    assert leftover["session_id"] == "proc_foreign"
+
+
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_drain_notifications_filters_addressed_completion_by_owns_event(
     registry, exit_code
@@ -2229,3 +2257,18 @@ class TestHandleProcessRedaction:
         monkeypatch.setattr(pr, "process_registry", reg)
         out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
         assert "zzzopaque1234567890abcdef" in out["output"]
+
+
+class TestAtomicCompletionNotification:
+    def test_fast_process_keeps_spawn_time_notification_intent(self, registry, tmp_path):
+        session = registry.spawn_local(
+            "printf fast-done",
+            cwd=str(tmp_path),
+            session_key="acp-session",
+            notify_on_complete=True,
+        )
+        assert session._completion_event.wait(timeout=5)
+        event = registry.completion_queue.get(timeout=1)
+        assert event["session_id"] == session.id
+        assert event["session_key"] == "acp-session"
+        assert event["exit_code"] == 0

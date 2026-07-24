@@ -174,3 +174,67 @@ def test_service_status_includes_clients(mock_pyright):
         assert any(c["server_id"] == "pyright" for c in info["clients"])
     finally:
         svc.shutdown()
+
+
+def test_idle_reaper_shuts_down_idle_clients(mock_pyright):
+    """Clients idle past ``idle_timeout`` must be reaped automatically."""
+    import time as _time
+
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=0.5,  # 0.5 second — triggers quickly for test
+    )
+    try:
+        assert svc.enabled_for(str(f))
+        svc.get_diagnostics_sync(str(f))
+        # Client should be alive now.
+        info = svc.get_status()
+        assert len(info["clients"]) == 1
+        assert info["clients"][0]["running"] is True
+
+        # Wait for idle timeout to expire.
+        _time.sleep(1.0)
+
+        # Directly invoke reap — should remove the idle client.
+        svc._loop.run(svc._reap_idle_clients(), timeout=5.0)
+
+        # Client should be gone.
+        info = svc.get_status()
+        assert len(info["clients"]) == 0
+    finally:
+        svc.shutdown()
+
+
+def test_idle_reaper_keeps_active_clients(mock_pyright):
+    """Clients that were recently used must NOT be reaped."""
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        idle_timeout=300.0,  # 5 minutes — won't expire
+    )
+    try:
+        svc.get_diagnostics_sync(str(f))
+        info = svc.get_status()
+        assert len(info["clients"]) == 1
+
+        # Directly invoke reap — should NOT remove the active client.
+        svc._loop.run(svc._reap_idle_clients(), timeout=5.0)
+
+        info = svc.get_status()
+        assert len(info["clients"]) == 1
+        assert info["clients"][0]["running"] is True
+    finally:
+        svc.shutdown()

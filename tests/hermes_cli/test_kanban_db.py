@@ -1944,6 +1944,72 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_ignores_pr_comment_before_latest_unblock(kanban_home):
+    """A deliberate unblock supersedes earlier PR handoff comments."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-feedback", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR opened: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now - 60),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'unblocked', NULL, ?)",
+            (t, now),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason is None
+
+
+def test_respawn_guard_keeps_pr_comment_after_latest_unblock(kanban_home):
+    """A PR URL added after the latest unblock still guards respawn."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="new-pr-after-unblock", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'unblocked', NULL, ?)",
+            (t, now - 60),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR opened: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason == "active_pr"
+
+
+def test_respawn_guard_keeps_same_second_pr_comment_after_unblock(kanban_home):
+    """Second-resolution timestamps preserve same-tick PR guard conservatively."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="same-second-pr-after-unblock", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'unblocked', NULL, ?)",
+            (t, now),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'PR opened: https://github.com/totemx-AI/subsidysmart/pull/42', ?)",
+            (t, now),
+        )
+
+        reason = kb.check_respawn_guard(conn, t)
+
+    assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):
@@ -2037,6 +2103,37 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_pr_feedback_after_unblock(
+    kanban_home, all_assignees_spawnable
+):
+    """dispatch_once honors an unblock after an earlier PR handoff."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="pr-feedback", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', "
+            "'Opened https://github.com/totemx-AI/subsidysmart/pull/99', ?)",
+            (t, now - 60),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'unblocked', NULL, ?)",
+            (t, now),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert not res.respawn_guarded
+    assert t in spawned_ids
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

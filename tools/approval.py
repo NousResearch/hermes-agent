@@ -2517,6 +2517,19 @@ def _get_cron_approval_mode() -> str:
         return "deny"
 
 
+def _get_kanban_approval_mode() -> str:
+    """Read the kanban-worker approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        mode = str(cfg_get(config, "approvals", "kanban_mode", default="deny")).lower().strip()
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _strip_shell_comments(command: str) -> str:
     """Strip shell-style comments from a command before LLM assessment.
 
@@ -2648,6 +2661,7 @@ def _run_approval_gate(
     display_target: str,
     approval_callback=None,
     cron_deny_message: str,
+    kanban_deny_message: str,
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
@@ -2661,8 +2675,9 @@ def _run_approval_gate(
     persist policy in ONE place so the two entry points can never drift.
 
     Ordering mirrors the historical ``check_dangerous_command`` tail:
-    yolo bypass → session-cache short-circuit → interactive/gateway/cron
-    branch → prompt → ``deny/session/always`` persistence. The caller is
+    yolo bypass → session-cache short-circuit → kanban-worker policy →
+    interactive/gateway/cron branch → prompt → ``deny/session/always``
+    persistence. The caller is
     responsible for the checks that are specific to its input shape
     (hardline detection, command-string permanent allowlist, dangerous-
     pattern detection) BEFORE calling this gate.
@@ -2677,6 +2692,8 @@ def _run_approval_gate(
             ``tools.terminal_tool.set_approval_callback`` is used.
         cron_deny_message: Message returned when a cron job hits this gate
             under ``cron_mode: deny``.
+        kanban_deny_message: Message returned when a kanban worker hits this
+            gate under ``kanban_mode: deny``.
         autoapprove_log_prefix: Log line prefix for the non-interactive
             auto-approve warning (identifies command vs plugin origin).
         fail_closed_when_no_human: When True, a non-interactive non-gateway
@@ -2700,6 +2717,28 @@ def _run_approval_gate(
 
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
+    # Kanban worker subprocesses: explicit unattended identity, decided
+    # BEFORE the ambient is_cli/is_gateway/cron inference below. A real
+    # worker launches as `hermes ... chat -q` with stdin=DEVNULL and its own
+    # startup may export HERMES_INTERACTIVE=1, and a dispatching gateway/cron
+    # parent can leak its markers into the child env (#63183) — none of that
+    # ambient state means a human can answer here, so it must never reroute
+    # a worker into a prompt or a pending queue nobody watches. Both arms
+    # return so the precedence is unconditional.
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        if _get_kanban_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": kanban_deny_message,
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+        logger.warning(
+            "%s (pattern: %s): %s — approvals.kanban_mode is 'approve'.",
+            autoapprove_log_prefix, pattern_key, description,
+        )
         return {"approved": True, "message": None}
 
     if approval_callback is None:
@@ -2938,6 +2977,13 @@ def check_dangerous_command(command: str, env_type: str,
             "To allow dangerous commands in cron jobs, set "
             "approvals.cron_mode: approve in config.yaml."
         ),
+        kanban_deny_message=(
+            f"BLOCKED: Command flagged as dangerous ({description}) "
+            "but kanban workers run without a user present to approve it. "
+            "Find an alternative approach that avoids this command. "
+            "To allow dangerous commands in kanban workers, set "
+            "approvals.kanban_mode: approve in config.yaml."
+        ),
         autoapprove_log_prefix=(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context"
         ),
@@ -2984,10 +3030,11 @@ def request_tool_approval(
         blocked. Shape matches ``check_dangerous_command`` so callers handle
         both paths identically.
 
-    Non-interactive contexts: cron jobs honor ``approvals.cron_mode`` (parity
-    with dangerous commands); any OTHER non-interactive non-gateway context
-    (a bare script with no ``HERMES_INTERACTIVE``) fails CLOSED — a plugin-
-    flagged action never runs ungated without a human.
+    Non-interactive contexts: cron jobs honor ``approvals.cron_mode`` and
+    kanban workers honor ``approvals.kanban_mode`` (parity with dangerous
+    commands); any OTHER non-interactive non-gateway context (a bare script
+    with no ``HERMES_INTERACTIVE``) fails CLOSED — a plugin-flagged action
+    never runs ungated without a human.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
     # Allowlist grain: an explicit plugin rule_key wins; otherwise derive from
@@ -3017,6 +3064,12 @@ def request_tool_approval(
             "but cron jobs run without a user present to approve it. Find an "
             "alternative approach. To allow flagged actions in cron jobs, set "
             "approvals.cron_mode: approve in config.yaml."
+        ),
+        kanban_deny_message=(
+            f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+            "but kanban workers run without a user present to approve it. Find "
+            "an alternative approach. To allow flagged actions in kanban "
+            "workers, set approvals.kanban_mode: approve in config.yaml."
         ),
         autoapprove_log_prefix=(
             f"plugin-escalated tool call '{tool_name}' in "
@@ -3060,6 +3113,80 @@ def _format_tirith_description(tirith_result: dict) -> str:
         return f"Security scan: {summary}"
 
     return "Security scan — " + "; ".join(parts)
+
+
+def _unattended_deny_check(command: str, worker_label: str,
+                           mode_key: str) -> Optional[dict]:
+    """Deny-mode gate shared by unattended execution contexts (cron jobs,
+    kanban workers) inside ``check_all_command_guards``.
+
+    Runs pattern-based dangerous-command detection, then the tirith
+    content-level scan (homograph URLs, pipe-to-interpreter, terminal
+    injection, etc.) so threats that do not match the pattern detection are
+    still caught. When tirith is not installed, honours
+    ``security.tirith_fail_open``: the default (True) allows as before, but
+    an operator who opted into fail-closed gets a block — an unattended
+    session has no user to approve (mirrors the fail-closed synthesis in
+    the main flow; see #20733).
+
+    Args:
+        command: The shell command under evaluation.
+        worker_label: Plural human label for the block messages
+            ("cron jobs", "kanban workers").
+        mode_key: The ``approvals.*`` config key named in the block
+            messages ("cron_mode", "kanban_mode").
+
+    Returns:
+        A ``{"approved": False, "message": ...}`` block result, or ``None``
+        when the command may fall through to auto-approve.
+    """
+    remedy = (
+        f"but {worker_label} run without a user present to approve it. "
+        "Find an alternative approach that avoids this command. "
+        f"To allow dangerous commands in {worker_label}, set "
+        f"approvals.{mode_key}: approve in config.yaml."
+    )
+    is_dangerous, _pk, description = detect_dangerous_command(command)
+    if is_dangerous:
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command flagged as dangerous ({description}) "
+                + remedy
+            ),
+        }
+    try:
+        from tools.tirith_security import check_command_security
+        tirith_result = check_command_security(command)
+        if tirith_result.get("action") in ("block", "warn"):
+            tirith_desc = _format_tirith_description(tirith_result)
+            return {
+                "approved": False,
+                "message": f"BLOCKED: {tirith_desc} " + remedy,
+            }
+    except ImportError:
+        fail_open = True  # safe default if config is unreadable
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _sec = (_load_cfg() or {}).get("security", {}) or {}
+            if _sec.get("tirith_enabled", True):
+                fail_open = _sec.get("tirith_fail_open", True)
+        except Exception:
+            pass
+        if not fail_open:
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: the Tirith security scanner could not be "
+                    "imported and security.tirith_fail_open is false, "
+                    "so this command cannot be silently allowed — and "
+                    f"{worker_label} run without a user present to approve it. "
+                    "Find an alternative approach, install tirith, or set "
+                    f"approvals.{mode_key}: approve in config.yaml."
+                ),
+            }
+        # else: tirith_fail_open is True — allow as before
+    return None
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
@@ -3234,6 +3361,22 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
+    # Kanban worker subprocesses: explicit unattended identity, decided
+    # BEFORE the ambient is_cli/is_gateway/is_ask inference and before the
+    # cron marker. A real worker's own startup may export
+    # HERMES_INTERACTIVE=1 (cli.main), and a dispatching gateway/cron parent
+    # can leak HERMES_GATEWAY_SESSION / HERMES_EXEC_ASK / HERMES_CRON_SESSION
+    # into the child env (#63183). A worker has no human surface, so ambient
+    # state must never pull it into a prompt, smart approval, or a pending
+    # queue that lives in the dispatcher process. Both arms return so the
+    # precedence is unconditional.
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        if _get_kanban_approval_mode() == "deny":
+            blocked = _unattended_deny_check(command, "kanban workers", "kanban_mode")
+            if blocked is not None:
+                return blocked
+        return {"approved": True, "message": None}
+
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
@@ -3244,66 +3387,9 @@ def check_all_command_guards(command: str, env_type: str,
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
-                    return {
-                        "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
-                    }
-                # Also run tirith check in cron-deny mode so content-level
-                # threats (homograph URLs, pipe-to-interpreter, terminal
-                # injection, etc.) are caught even when they do not match
-                # the pattern-based detection above.
-                try:
-                    from tools.tirith_security import check_command_security
-                    _cron_tirith = check_command_security(command)
-                    if _cron_tirith.get("action") in ("block", "warn"):
-                        _cron_desc = _format_tirith_description(_cron_tirith)
-                        return {
-                            "approved": False,
-                            "message": (
-                                f"BLOCKED: {_cron_desc} "
-                                "but cron jobs run without a user present to approve it. "
-                                "Find an alternative approach that avoids this command. "
-                                "To allow dangerous commands in cron jobs, set "
-                                "approvals.cron_mode: approve in config.yaml."
-                            ),
-                        }
-                except ImportError:
-                    # Tirith not installed. Honour security.tirith_fail_open:
-                    # the default (True) allows as before, but when an operator
-                    # has explicitly opted into fail-closed the command cannot
-                    # be silently allowed — and a cron session has no user to
-                    # approve it, so fail-closed means block (mirrors the
-                    # fail-closed synthesis in the main flow below; see #20733).
-                    _cron_fail_open = True  # safe default if config is unreadable
-                    try:
-                        from hermes_cli.config import load_config as _load_cfg
-                        _sec = (_load_cfg() or {}).get("security", {}) or {}
-                        if _sec.get("tirith_enabled", True):
-                            _cron_fail_open = _sec.get("tirith_fail_open", True)
-                    except Exception:
-                        pass
-                    if not _cron_fail_open:
-                        return {
-                            "approved": False,
-                            "message": (
-                                "BLOCKED: the Tirith security scanner could not be "
-                                "imported and security.tirith_fail_open is false, "
-                                "so this command cannot be silently allowed — and "
-                                "cron jobs run without a user present to approve it. "
-                                "Find an alternative approach, install tirith, or set "
-                                "approvals.cron_mode: approve in config.yaml."
-                            ),
-                        }
-                    # else: tirith_fail_open is True — allow as before
+                blocked = _unattended_deny_check(command, "cron jobs", "cron_mode")
+                if blocked is not None:
+                    return blocked
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -3676,6 +3762,31 @@ def check_execute_code_guard(code: str, env_type: str,
 
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+
+    # Kanban worker subprocesses: no user is present to approve arbitrary
+    # code. Checked BEFORE the cron marker: HERMES_KANBAN_SESSION is set
+    # explicitly for this child by the dispatcher, while HERMES_CRON_SESSION
+    # is process-global in a scheduler parent and can leak into the worker
+    # env (#63183) — an inherited cron approve-mode must not preempt the
+    # worker's own kanban policy.
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        if _get_kanban_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). Kanban workers run without a user "
+                    "present to approve it. Use normal tools instead, or set "
+                    "approvals.kanban_mode: approve only if this kanban "
+                    "profile is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
 
     # Cron: no user is present to approve arbitrary code.
     if env_var_enabled("HERMES_CRON_SESSION"):

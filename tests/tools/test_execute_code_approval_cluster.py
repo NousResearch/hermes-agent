@@ -188,6 +188,30 @@ def test_guard_cron_deny_blocks(monkeypatch):
     assert res["outcome"] == "blocked"
 
 
+def test_guard_kanban_deny_blocks(monkeypatch):
+    """Kanban worker subprocesses are the same unattended-execution context
+    cron jobs are -- same #30882 fail-closed contract, via HERMES_KANBAN_SESSION
+    + approvals.kanban_mode instead of the cron equivalents."""
+    monkeypatch.setenv("HERMES_KANBAN_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_kanban_approval_mode", lambda: "deny")
+    res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is False
+    assert res["outcome"] == "blocked"
+
+
+def test_guard_kanban_approve_allows(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_kanban_approval_mode", lambda: "approve")
+    res = A.check_execute_code_guard("import os", "local")
+    assert res["approved"] is True
+
+
 def test_guard_gateway_user_approves_is_one_shot(gw_session):
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os; print(1)", "local")

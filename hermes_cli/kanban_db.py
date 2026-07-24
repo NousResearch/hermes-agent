@@ -8752,6 +8752,12 @@ def _default_spawn(
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Kanban workers run unattended (no user present to approve a dangerous
+    # command) -- flag the context so tools/approval.py applies the same
+    # deny-by-default policy cron jobs already get via HERMES_CRON_SESSION,
+    # instead of silently falling through to the bare non-interactive
+    # auto-approve branch.
+    env["HERMES_KANBAN_SESSION"] = "1"
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the
@@ -8818,6 +8824,33 @@ def _default_spawn(
     # highest-precedence interface override; dropping the env var covers
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
+
+    # Ambient approval-context markers must never leak into a worker
+    # (#63183): the dispatcher usually runs embedded in a gateway or
+    # cron-tainted process, and `env = dict(os.environ)` above copies its
+    # process-global state. An inherited HERMES_CRON_SESSION would misroute
+    # the worker into cron policy; HERMES_GATEWAY_SESSION /
+    # HERMES_SESSION_PLATFORM / HERMES_EXEC_ASK would route approvals into a
+    # gateway pending queue that lives in the DISPATCHER process (no
+    # listener in the child — a deterministic wedge); HERMES_YOLO_MODE would
+    # silently bypass the recoverable approval layer; HERMES_SESSION_KEY
+    # could hit the parent session's cached approvals; HERMES_INTERACTIVE
+    # would mark a stdin=DEVNULL child as promptable. The approval gates
+    # also rank HERMES_KANBAN_SESSION (set above) over all of these, so this
+    # scrub is defense in depth — the worker must still start from a clean
+    # slate for everything else that reads these markers. Scrubbing is safe
+    # ONLY because the explicit kanban marker is set: a scrubbed env with no
+    # context marker would fall into the legacy headless auto-approve branch.
+    for ambient_var in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_CRON_SESSION",
+        "HERMES_SESSION_PLATFORM",
+        "HERMES_SESSION_KEY",
+        "HERMES_YOLO_MODE",
+    ):
+        env.pop(ambient_var, None)
 
     cmd = [
         *_resolve_hermes_argv(),

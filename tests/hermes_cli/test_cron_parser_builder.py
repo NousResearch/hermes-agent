@@ -54,7 +54,7 @@ def test_cron_create_options():
         "cron", "create", "0 9 * * *", "daily task prompt",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
-        "--workdir", "/tmp/x",
+        "--always-deliver", "--workdir", "/tmp/x",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "daily task prompt"
@@ -63,6 +63,7 @@ def test_cron_create_options():
     assert ns.repeat == 3
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
+    assert ns.allow_silent is False
     assert ns.workdir == "/tmp/x"
 
 
@@ -72,6 +73,24 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
+
+
+def test_cron_allow_silent_flags():
+    parser = _build()
+    assert parser.parse_args(
+        ["cron", "create", "30m", "Brief", "--always-deliver"]
+    ).allow_silent is False
+    assert parser.parse_args(
+        ["cron", "create", "30m", "Brief", "--allow-silent"]
+    ).allow_silent is True
+    assert parser.parse_args(["cron", "create", "30m", "Brief"]).allow_silent is None
+    assert parser.parse_args(
+        ["cron", "edit", "jobid", "--always-deliver"]
+    ).allow_silent is False
+    assert parser.parse_args(
+        ["cron", "edit", "jobid", "--allow-silent"]
+    ).allow_silent is True
+    assert parser.parse_args(["cron", "edit", "jobid"]).allow_silent is None
 
 
 def test_cron_dispatch_func_is_injected_handler():

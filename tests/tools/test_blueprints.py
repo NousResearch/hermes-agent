@@ -31,6 +31,7 @@ metadata:
     blueprint:
       schedule: "0 8 * * *"
       deliver: telegram
+      allow_silent: false
       prompt: "Summarize my unread email and today's calendar."
 ---
 
@@ -70,6 +71,7 @@ class TestParseBlueprint:
         assert spec.skill_name == "morning-brief"
         assert spec.schedule == "0 8 * * *"
         assert spec.deliver == "telegram"
+        assert spec.allow_silent is False
         assert spec.prompt is not None and spec.prompt.startswith("Summarize")
 
     def test_plain_skill_is_not_a_blueprint(self):
@@ -140,6 +142,7 @@ class TestCreateBlueprintJob:
         assert captured["schedule"] == "0 8 * * *"
         assert captured["skills"] == ["morning-brief"]
         assert captured["deliver"] == "telegram"
+        assert captured["allow_silent"] is False
         assert captured["prompt"].startswith("Summarize")
         assert job["id"] == "abc123"
 
@@ -152,6 +155,7 @@ class TestExportBlueprint:
             "skills": ["morning-brief"],
             "deliver": "telegram",
             "prompt": "Summarize my unread email.",
+            "allow_silent": False,
         }
         md = export_blueprint(job, "# Morning Brief\n\nDoes the morning digest.")
         # The exported SKILL.md must itself parse back as a blueprint.
@@ -159,6 +163,7 @@ class TestExportBlueprint:
         assert spec is not None
         assert spec.schedule == "0 8 * * *"
         assert spec.deliver == "telegram"
+        assert spec.allow_silent is False
         # Name is sanitized to a valid skill identifier.
         assert spec.skill_name == "my-morning-brief"
 

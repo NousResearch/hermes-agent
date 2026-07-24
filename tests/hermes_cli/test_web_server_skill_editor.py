@@ -257,3 +257,29 @@ class TestCronJobSkills:
         )
         assert resp.status_code == 200
         assert resp.json()["skills"] == []
+
+    def test_create_job_allow_silent_must_be_bool(self, client, isolated_profiles):
+        resp = client.post(
+            "/api/cron/jobs",
+            json={
+                "prompt": "do work",
+                "schedule": "every 1h",
+                "allow_silent": "false",
+            },
+        )
+        assert resp.status_code == 400
+        assert "allow_silent" in resp.json()["detail"]
+
+    def test_update_job_allow_silent_must_be_bool(self, client, isolated_profiles):
+        job = client.post(
+            "/api/cron/jobs",
+            json={"prompt": "do work", "schedule": "every 1h"},
+        ).json()
+
+        resp = client.put(
+            f"/api/cron/jobs/{job['id']}",
+            json={"updates": {"allow_silent": "false"}},
+            params={"profile": "default"},
+        )
+        assert resp.status_code == 400
+        assert "allow_silent" in resp.json()["detail"]

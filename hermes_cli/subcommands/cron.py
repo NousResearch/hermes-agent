@@ -66,6 +66,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "pattern (memory alerts, disk alerts, CI pings)."
         ),
     )
+    create_silence = cron_create.add_mutually_exclusive_group()
+    create_silence.add_argument(
+        "--always-deliver",
+        dest="allow_silent",
+        action="store_false",
+        default=None,
+        help="Do not inject the cron [SILENT] suppression rule; send an all-clear instead.",
+    )
+    create_silence.add_argument(
+        "--allow-silent",
+        dest="allow_silent",
+        action="store_true",
+        help="Allow this job to suppress delivery with [SILENT] when there is nothing new.",
+    )
     cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
@@ -129,6 +143,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         action="store_const",
         const=False,
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
+    )
+    edit_silence = cron_edit.add_mutually_exclusive_group()
+    edit_silence.add_argument(
+        "--always-deliver",
+        dest="allow_silent",
+        action="store_false",
+        default=None,
+        help="Do not inject the cron [SILENT] suppression rule; send an all-clear instead.",
+    )
+    edit_silence.add_argument(
+        "--allow-silent",
+        dest="allow_silent",
+        action="store_true",
+        help="Allow this job to suppress delivery with [SILENT] when there is nothing new.",
     )
     cron_edit.add_argument(
         "--workdir",

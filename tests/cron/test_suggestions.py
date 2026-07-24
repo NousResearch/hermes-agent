@@ -151,6 +151,24 @@ class TestCatalog:
         assert classify_items_script_path() not in monitor.job_spec["prompt"]
         assert Path(classify_items_script_path()).name == "classify_items.py"
 
+    def test_daily_briefing_catalog_is_always_deliver(self):
+        from cron.suggestion_catalog import CATALOG
+
+        daily = next(e for e in CATALOG if e.key == "catalog:daily-briefing")
+        assert daily.job_spec["allow_silent"] is False
+
+    def test_report_catalog_entries_are_always_deliver(self):
+        from cron.suggestion_catalog import CATALOG
+
+        always_deliver = {
+            "catalog:daily-briefing",
+            "catalog:weekly-review",
+            "catalog:standup-reminder",
+        }
+        by_key = {entry.key: entry for entry in CATALOG}
+        for key in always_deliver:
+            assert by_key[key].job_spec["allow_silent"] is False
+
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):

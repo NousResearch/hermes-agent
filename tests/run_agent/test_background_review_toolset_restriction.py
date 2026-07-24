@@ -133,6 +133,13 @@ def test_background_review_installs_thread_local_whitelist():
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    deny_msg = captured["deny_msg_fmt"]
+    assert "Only these tools are allowed" in deny_msg
+    assert "`memory`" in deny_msg
+    assert "`skills_list`" in deny_msg
+    assert "`skill_view`" in deny_msg
+    assert "`skill_manage`" in deny_msg
+    assert "management tools" not in deny_msg
 
 
 def test_background_review_agent_tools_are_limited():
@@ -227,3 +234,43 @@ def test_background_review_includes_memory_when_user_profile_enabled():
         )
 
     assert "memory" in captured["whitelist"]
+
+
+def test_background_review_agent_prompt_names_exact_allowed_tools():
+    """The review fork prompt must enumerate exact tools, not vague categories."""
+    import run_agent
+
+    captured = {}
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    def _capture_run_conversation(self, *args, **kwargs):
+        captured["user_message"] = kwargs.get("user_message", "")
+        self._session_messages = []
+        return {"final_response": "Nothing to save."}
+
+    def _noop(self, *args, **kwargs):
+        return None
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(run_agent.AIAgent, "run_conversation", _capture_run_conversation), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", _noop), \
+         patch.object(run_agent.AIAgent, "close", _noop), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    prompt = captured["user_message"]
+    assert "Background review can only call these tools" in prompt
+    assert "`memory`" in prompt
+    assert "`skills_list`" in prompt
+    assert "`skill_view`" in prompt
+    assert "`skill_manage`" in prompt
+    assert "Use `skill_view` to read skills before `skill_manage` writes" in prompt
+    assert "management tools" not in prompt

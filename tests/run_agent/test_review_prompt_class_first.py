@@ -90,6 +90,17 @@ def test_skill_review_prompt_names_three_support_file_kinds():
     )
 
 
+def test_skill_review_prompt_requires_full_skill_read_before_support_file():
+    """Support files must require reading the umbrella SKILL.md first (#58475)."""
+    prompt = AIAgent._SKILL_REVIEW_PROMPT
+    lower = prompt.lower()
+    assert "before adding any support file" in lower
+    assert "skill_view(name='<umbrella>')" in prompt
+    assert "full current SKILL.md" in prompt
+    assert "name + description" in lower
+    assert "not enough" in lower
+
+
 def test_skill_review_prompt_has_name_veto_for_create():
     """Creating a new skill must be gated behind class-level naming."""
     prompt = AIAgent._SKILL_REVIEW_PROMPT
@@ -171,6 +182,17 @@ def test_combined_review_prompt_names_three_support_file_kinds():
     assert "references/" in prompt
     assert "templates/" in prompt
     assert "scripts/" in prompt
+
+
+def test_combined_review_prompt_requires_full_skill_read_before_support_file():
+    """Combined review must carry the same support-file read-first contract."""
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    lower = prompt.lower()
+    assert "before adding any support file" in lower
+    assert "skill_view(name='<umbrella>')" in prompt
+    assert "full current SKILL.md" in prompt
+    assert "name + description" in lower
+    assert "not enough" in lower
 
 
 def test_combined_review_prompt_preserves_opt_out_clause():

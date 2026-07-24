@@ -3884,7 +3884,18 @@ class AIAgent:
         except Exception:
             pass
 
-        # 7. Finalize the owned SQLite session row unless this agent is only a
+        # 7. Close the Codex app-server session so the subprocess tree is
+        # reaped rather than orphaned on close (#66671).  Idempotent:
+        # CodexAppServerSession.close() is already guarded by self._closed.
+        try:
+            codex = getattr(self, "_codex_session", None)
+            if codex is not None:
+                codex.close()
+                self._codex_session = None
+        except Exception:
+            pass
+
+        # 8. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
         # (manual compression helpers that rotate to a continuation session_id,
         # or background-review forks that share the live parent's session_id and

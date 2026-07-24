@@ -699,6 +699,151 @@ class TestSpawnEnvSanitization:
         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
 
+    def test_spawn_local_falls_back_to_unguarded_when_memguard_launch_fails(
+        self, registry, tmp_path
+    ):
+        wrapper_script = tmp_path / "hermes-memguard-guard.sh"
+        wrapper_env = tmp_path / "hermes-memguard-env-guard.sh"
+        wrapper_script.write_text("script")
+        wrapper_env.write_text("env")
+        popen_calls = []
+
+        def fake_popen(*args, **kwargs):
+            popen_calls.append(list(args[0]))
+            if len(popen_calls) == 1:
+                raise RuntimeError("systemd-run failed")
+            proc = MagicMock()
+            proc.pid = 7777
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        fake_thread = MagicMock()
+        guard_result = (
+            ["systemd-run", "--user", "/bin/true"],
+            {"X": "1"},
+            "/",
+            "hermes-terminal-memguard.service",
+            (str(wrapper_script), str(wrapper_env)),
+        )
+        with (
+            patch("tools.process_registry._find_shell", return_value="/tmp/user-shell"),
+            patch(
+                "tools.process_registry._maybe_wrap_with_systemd_memory_guard",
+                return_value=guard_result,
+            ),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=fake_thread),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert len(popen_calls) == 2
+        assert popen_calls[0][0] == "systemd-run"
+        assert popen_calls[1][0] == "/tmp/user-shell"
+        assert session.systemd_unit == ""
+        assert not wrapper_script.exists()
+        assert not wrapper_env.exists()
+        fake_thread.start.assert_called_once()
+
+    def test_spawn_local_falls_back_when_systemd_run_exits_before_command_starts(
+        self, registry, tmp_path
+    ):
+        wrapper_script = tmp_path / "hermes-memguard-guard.sh"
+        wrapper_env = tmp_path / "hermes-memguard-env-guard.sh"
+        start_pending = tmp_path / "hermes-memguard-start.pending"
+        start_ready = tmp_path / "hermes-memguard-start.ready"
+        for path in (wrapper_script, wrapper_env, start_pending):
+            path.write_text("")
+
+        failed_launcher = MagicMock(pid=7776)
+        failed_launcher.poll.return_value = 1
+        direct_proc = MagicMock(pid=7777)
+        direct_proc.poll.return_value = None
+        direct_proc.stdout = iter([])
+        popen_calls = []
+
+        def fake_popen(*args, **kwargs):
+            popen_calls.append(list(args[0]))
+            return failed_launcher if len(popen_calls) == 1 else direct_proc
+
+        fake_thread = MagicMock()
+        guard_result = (
+            ["systemd-run", "--user", "/bin/true"],
+            {"X": "1"},
+            "/",
+            "hermes-terminal-memguard.service",
+            (
+                str(wrapper_script),
+                str(wrapper_env),
+                str(start_pending),
+                str(start_ready),
+            ),
+        )
+        with (
+            patch("tools.process_registry._find_shell", return_value="/tmp/user-shell"),
+            patch(
+                "tools.process_registry._maybe_wrap_with_systemd_memory_guard",
+                return_value=guard_result,
+            ),
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("threading.Thread", return_value=fake_thread),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert session.process is direct_proc
+        assert session.systemd_unit == ""
+        assert len(popen_calls) == 2
+        assert popen_calls[0][0] == "systemd-run"
+        assert popen_calls[1][0] == "/tmp/user-shell"
+
+    def test_spawn_local_pty_uses_memory_guard(self, registry):
+        captured = {}
+
+        class FakePtyProcess:
+            @staticmethod
+            def spawn(args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+                proc = MagicMock()
+                proc.pid = 8675
+                return proc
+
+        guard = MagicMock(
+            return_value=(
+                ["systemd-run", "--user", "--pty", "/tmp/guard.sh"],
+                {"MANAGER_ENV": "1"},
+                "/",
+                "hermes-terminal-pty.service",
+                ("/tmp/guard.sh", "/tmp/guard-env.sh"),
+            )
+        )
+        fake_thread = MagicMock()
+        fake_module = MagicMock(PtyProcess=FakePtyProcess)
+
+        with (
+            patch.dict(sys.modules, {"ptyprocess": fake_module}),
+            patch("tools.process_registry._find_shell", return_value="/bin/bash"),
+            patch(
+                "tools.process_registry._maybe_wrap_with_systemd_memory_guard",
+                guard,
+            ),
+            patch("tools.process_registry.threading.Thread", return_value=fake_thread),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            session = registry.spawn_local("python -i", cwd="/tmp", use_pty=True)
+
+        assert captured["args"][:3] == ["systemd-run", "--user", "--pty"]
+        assert captured["kwargs"]["cwd"] == "/"
+        assert captured["kwargs"]["env"] == {"MANAGER_ENV": "1"}
+        assert session.systemd_unit == "hermes-terminal-pty.service"
+        assert session._pty is not None
+        guard.assert_called_once()
+        assert guard.call_args.kwargs["pty"] is True
+        fake_thread.start.assert_called_once()
+
     def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
         class FakeEnv:
             def __init__(self):
@@ -1159,6 +1304,69 @@ class TestKillProcess:
             assert ("terminate", 424242) in terminate_calls
         finally:
             registry._running.pop(s.id, None)
+
+    def test_recovered_memory_guard_kill_stops_unit_before_detached_branch(
+        self, registry, tmp_path, monkeypatch
+    ):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(
+            json.dumps(
+                [
+                    {
+                        "session_id": "proc_recovered_guard",
+                        "command": "sleep 999",
+                        "pid": 424242,
+                        "pid_scope": "host",
+                        "host_start_time": 1234,
+                        "systemd_unit": "hermes-terminal-recovered.service",
+                    }
+                ]
+            )
+        )
+        process_alive = True
+        systemctl_calls = []
+        events = []
+
+        def host_pid_is_ours(pid, expected_start):
+            events.append("identity")
+            assert (pid, expected_start) == (424242, 1234)
+            return process_alive
+
+        def stop_unit(args, **kwargs):
+            nonlocal process_alive
+            events.append("systemctl")
+            systemctl_calls.append(args)
+            process_alive = False
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(registry, "_host_pid_is_ours", host_pid_is_ours)
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda *_: pytest.fail("unit stop already killed the recovered process"),
+        )
+        monkeypatch.setattr("tools.process_registry.subprocess.run", stop_unit)
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            assert registry.recover_from_checkpoint() == 1
+            recovered = registry._running["proc_recovered_guard"]
+            assert recovered.detached is True
+            assert recovered.process is None
+            assert recovered.systemd_unit == "hermes-terminal-recovered.service"
+
+            events.clear()
+            result = registry.kill_process(recovered.id)
+
+        assert result["status"] == "killed"
+        assert events == ["systemctl", "identity"]
+        assert systemctl_calls == [
+            [
+                "systemctl",
+                "--user",
+                "stop",
+                "hermes-terminal-recovered.service",
+            ]
+        ]
 
 
 # =========================================================================

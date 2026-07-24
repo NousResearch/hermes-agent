@@ -148,7 +148,41 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+  local_memory_max_mb: 4096       # MiB; 0 disables the guard (default)
+  local_memory_swap_max_mb: 0     # MiB of swap for guarded commands
 ```
+
+#### Local memory guard (Linux/systemd)
+
+The optional local memory guard puts each foreground command and each
+background command (including PTY-backed interactive commands) in its own
+transient systemd user unit. This protects a long-lived Hermes gateway from a
+build, test, or other child process that consumes all host memory:
+
+```yaml
+terminal:
+  backend: local
+  local_memory_max_mb: 4096
+  local_memory_swap_max_mb: 0
+```
+
+`local_memory_max_mb` is the cgroup's hard memory limit in MiB. A value of `0`
+disables the guard, which is the default. When the guard is enabled,
+`local_memory_swap_max_mb` sets the child cgroup's swap allowance; its default
+of `0` disables swap for guarded commands.
+
+This feature requires Linux, `systemd-run` and `systemctl`, a running systemd
+user manager (`systemd-run --user`), and a memory controller available to that
+manager. Hermes probes the user manager before using the guard. On macOS,
+Windows, non-systemd Linux, containers without a user bus, or any probe/launch
+failure, Hermes falls back to normal unguarded local execution so terminal
+commands still run. The fallback is not a memory limit or a sandbox; use the
+Docker backend when isolation must be enforced.
+
+Hermes keeps the command and its sanitized environment out of the
+`systemd-run` argument list. Temporary files are owner-only (wrapper `0700`,
+environment `0600`) and remove themselves when the command exits; failed
+launches are also cleaned up before the unguarded fallback.
 
 By default, local tool subprocesses keep your real OS-user `HOME`. This lets
 external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex

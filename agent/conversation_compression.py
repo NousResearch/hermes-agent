@@ -1523,6 +1523,53 @@ def compress_context(
                 existing_prompt = agent._build_system_prompt(system_message)
             return messages, existing_prompt
 
+    # External context engines can be shared across side channels (subagents,
+    # background review, gateway workers).  Before asking one to write compaction
+    # state, make sure it is bound to the host session whose messages are being
+    # compressed; otherwise DAG/store rows can be attributed to a stale session
+    # and the later compression-boundary carry-over has no matching source.
+    #
+    # Precedence for reading the engine's bound session id:
+    #   bound_session_id (public, contract-respecting) →
+    #   _session_id (legacy private) →
+    #   current_session_id (older public fallback).
+    #
+    # Fail-closed: if the rebind attempt raises, compression is skipped
+    # (messages returned unchanged) rather than running under a stale binding.
+    try:
+        _bound_sid = getattr(agent.context_compressor, "bound_session_id", None)
+        if not isinstance(_bound_sid, str) or not _bound_sid:
+            _bound_sid = getattr(agent.context_compressor, "_session_id", None)
+        if not isinstance(_bound_sid, str) or not _bound_sid:
+            _bound_sid = getattr(agent.context_compressor, "current_session_id", None)
+        if (
+            isinstance(_bound_sid, str)
+            and _bound_sid
+            and agent.session_id
+            and _bound_sid != agent.session_id
+            and hasattr(agent.context_compressor, "on_session_start")
+        ):
+            agent.context_compressor.on_session_start(
+                agent.session_id,
+                platform=getattr(agent, "platform", None) or "cli",
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+                boundary_reason="rebind",
+            )
+    except Exception as _bind_err:
+        # Fail-closed: do NOT compress under a stale binding.  Return messages
+        # unchanged so the caller sees a no-op and can retry on the next tick.
+        logger.warning(
+            "context engine pre-compression rebind FAILED (session=%s): %s — "
+            "skipping compression to avoid stale-binding attribution",
+            agent.session_id or "none",
+            _bind_err,
+        )
+        _release_lock()
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        return messages, _existing_sp
+
     _activity_heartbeat: Optional[_CompressionActivityHeartbeat] = None
     try:
         if _lock_holder is not None:

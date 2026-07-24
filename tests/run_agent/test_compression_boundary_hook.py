@@ -319,6 +319,127 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+    def test_stale_bound_engine_rebinds_before_compress(self):
+        """Compression must write plugin state under the host's active session.
+
+        LCM instances can be rebound by side channels before a foreground
+        compaction fires.  If compress() runs while the engine is still bound to
+        that stale session, DAG nodes are attributed to the wrong session and
+        the subsequent old->new compression-boundary carry-over cannot find the
+        source.  The host owns the active session_id, so it must rebind before
+        invoking compress().
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(10)]
+
+            compressor = MagicMock()
+            compressor.current_session_id = "stale-side-channel"
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+
+            def _on_session_start(session_id, **_kwargs):
+                compressor.current_session_id = session_id
+
+            def _compress(*_args, **_kwargs):
+                assert compressor.current_session_id == agent.session_id
+                return [
+                    {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                    {"role": "user", "content": "tail question"},
+                ]
+
+            compressor.on_session_start.side_effect = _on_session_start
+            compressor.compress.side_effect = _compress
+            agent.context_compressor = compressor
+
+            original_sid = agent.session_id
+            agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+            rebind_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.args and c.args[0] == original_sid
+                and c.kwargs.get("boundary_reason") == "rebind"
+            ]
+            assert rebind_calls, compressor.on_session_start.call_args_list
+
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert comp_calls
+            assert comp_calls[-1].args[0] == agent.session_id
+            assert comp_calls[-1].kwargs.get("old_session_id") == original_sid
+
+    def test_rebind_failure_skips_compression_fail_closed(self):
+        """If on_session_start raises during the pre-compress rebind,
+        compression must be skipped (fail-closed) rather than running
+        under a stale binding."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(10)]
+
+            compressor = MagicMock()
+            compressor.bound_session_id = "stale-session"
+            compressor.compression_count = 0
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor.on_session_start.side_effect = RuntimeError("engine offline")
+            agent.context_compressor = compressor
+
+            compressed, _prompt = agent._compress_context(
+                messages, "sys", approx_tokens=10_000
+            )
+
+            # Fail-closed: messages returned unchanged, compress() never called.
+            assert compressed == messages
+            compressor.compress.assert_not_called()
+
+    def test_rebind_uses_bound_session_id_precedence(self):
+        """bound_session_id (public) takes precedence over _session_id
+        and current_session_id when detecting a stale binding."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(10)]
+
+            compressor = MagicMock()
+            # bound_session_id matches → no rebind needed, even though
+            # _session_id and current_session_id are stale.
+            compressor.bound_session_id = agent.session_id
+            compressor._session_id = "stale-private"
+            compressor.current_session_id = "stale-public"
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor.compress.return_value = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "user", "content": "tail"},
+            ]
+            agent.context_compressor = compressor
+
+            agent._compress_context(messages, "sys", approx_tokens=10_000)
+
+            # No rebind call because bound_session_id already matches.
+            rebind_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "rebind"
+            ]
+            assert not rebind_calls
 
 
 class TestSessionCompressEvent:

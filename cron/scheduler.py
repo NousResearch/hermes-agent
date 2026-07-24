@@ -54,6 +54,20 @@ def _redacted_exception_detail(error: BaseException | str) -> tuple[str, bool]:
     return redact_exception_detail(error)
 
 
+def _log_redacted_future_exception(context: str, error: BaseException) -> None:
+    """Log a future failure without exposing credentials from exception chains."""
+    detail, traceback_safe = _redacted_exception_detail(error)
+    if traceback_safe:
+        logger.error(
+            "%s: %s",
+            context,
+            detail,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+    else:
+        logger.error("%s: %s", context, detail)
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Robustly title a finished cron session before it is closed.
 
@@ -4274,7 +4288,7 @@ def tick(
                 try:
                     _results.append(f.result())
                 except Exception as exc:
-                    logger.error("Cron job future failed: %s", exc)
+                    _log_redacted_future_exception("Cron job future failed", exc)
                     _results.append(False)
             _sweep_mcp_orphans()
             return sum(_results)
@@ -4290,7 +4304,7 @@ def tick(
                 try:
                     _exc = _f.exception()
                     if _exc is not None:
-                        logger.error("Cron job future failed in async mode: %s", _exc, exc_info=(type(_exc), _exc, _exc.__traceback__))
+                        _log_redacted_future_exception("Cron job future failed in async mode", _exc)
                 except Exception:
                     pass
                 if _remaining[0] <= 0:

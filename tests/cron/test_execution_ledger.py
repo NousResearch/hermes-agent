@@ -157,6 +157,9 @@ def test_failed_execution_redacts_credential_shaped_error_before_persistence(mon
         "hf_" + "HER96SYNTHETIC" * 2,
         "xoxb-" + "HER96SYNTHETIC" * 2,
         "openai-" + "HER96SYNTHETIC" * 2,
+        "gsk_" + "HER96SYNTHETIC" * 2,
+        "r8_" + "HER96SYNTHETIC" * 2,
+        "pplx-" + "HER96SYNTHETIC" * 2,
     ],
 )
 def test_credential_detector_recognizes_common_provider_prefixes(credential):

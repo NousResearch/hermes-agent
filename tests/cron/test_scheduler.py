@@ -1384,6 +1384,24 @@ def test_provider_job_change_notification_redacts_credential_exception(caplog):
     assert "[redacted credential]" in caplog.text
 
 
+def test_future_failure_logger_redacts_chained_credential_traceback(caplog):
+    """Future failures must not use their chained traceback as a credential log sink."""
+    from cron.scheduler import _log_redacted_future_exception
+
+    credential = "gsk_" + "HER96SYNTHETIC" * 2
+    try:
+        try:
+            raise RuntimeError(credential)
+        except RuntimeError as cause:
+            raise RuntimeError("future failed") from cause
+    except RuntimeError as error:
+        with caplog.at_level(logging.ERROR, logger="cron.scheduler"):
+            _log_redacted_future_exception("Cron job future failed", error)
+
+    assert credential not in caplog.text
+    assert "future failed" in caplog.text
+
+
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {

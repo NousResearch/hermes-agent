@@ -11,7 +11,7 @@ _CREDENTIAL_PATTERNS = (
     re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
     re.compile(r"\bgh(?:p|o|u|s|r)_[A-Za-z0-9_]{8,}\b", re.IGNORECASE),
-    re.compile(r"\b(?:sk|xai|anthropic|AIza)[-_][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:sk|xai|anthropic|AIza|gsk|r8|pplx)[-_][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
     re.compile(r"\bAIzaSy[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\b(?:hf|openai)[_-][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9_-]{8,}\b", re.IGNORECASE),

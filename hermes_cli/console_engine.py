@@ -605,6 +605,13 @@ class HermesConsoleEngine:
                 [()],
                 set(),
             ),
+            "release-notes": (
+                "hermes_cli.subcommands.release_notes",
+                "build_release_notes_parser",
+                "cmd_release_notes",
+                [()],
+                set(),
+            ),
             "dump": (
                 "hermes_cli.subcommands.dump",
                 "build_dump_parser",

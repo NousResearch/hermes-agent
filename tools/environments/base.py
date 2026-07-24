@@ -331,7 +331,17 @@ class _ThreadedProcessHandle:
         def _worker():
             try:
                 output, exit_code = exec_fn()
-                self._returncode = exit_code
+                # Some SDK backends (Daytona, Modal) can report a null exit
+                # code for a command that actually finished.  Storing that None
+                # straight into _returncode is dangerous: poll() returns
+                # ``self._returncode if self._done.is_set() else None``, so a
+                # finished-but-None command is indistinguishable from a still
+                # running one.  _wait_for_process loops ``while poll() is None``
+                # and would spin until its deadline, killing the process and
+                # reporting a bogus timeout (returncode 124) for a command that
+                # already completed.  Coerce to a concrete int so completion is
+                # signalled solely by _done, never by the value of the code.
+                self._returncode = exit_code if isinstance(exit_code, int) else 0
                 # Write output into the pipe so drain thread picks it up.
                 try:
                     os.write(self._write_fd, output.encode("utf-8", errors="replace"))

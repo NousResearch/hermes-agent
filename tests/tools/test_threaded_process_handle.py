@@ -74,6 +74,44 @@ class TestPolling:
         assert handle.poll() == 0
 
 
+class TestNoneExitCode:
+    """A finished command with a null exit code must not look 'still running'.
+
+    Daytona/Modal SDKs can hand back ``None`` for ``exit_code`` even though the
+    command completed.  If that None reached _returncode verbatim, poll() —
+    ``self._returncode if self._done.is_set() else None`` — would return None
+    for a finished command, and _wait_for_process's ``while poll() is None``
+    loop would spin until its deadline and report a bogus timeout.
+    """
+
+    def test_none_exit_code_coerced_to_int(self):
+        def exec_fn():
+            return ("finished", None)
+
+        handle = _ThreadedProcessHandle(exec_fn)
+        handle.wait(timeout=5)
+
+        assert handle.returncode == 0
+        output = handle.stdout.read()
+        assert "finished" in output
+
+    def test_poll_reports_completion_with_none_exit_code(self):
+        # The regression guard: once the worker is done, poll() must return a
+        # concrete int so the wait loop can detect completion.
+        done = threading.Event()
+
+        def exec_fn():
+            done.wait(timeout=5)
+            return ("late", None)
+
+        handle = _ThreadedProcessHandle(exec_fn)
+        assert handle.poll() is None  # genuinely still running
+
+        done.set()
+        handle.wait(timeout=5)
+        assert handle.poll() == 0  # finished — never None
+
+
 class TestCancelFn:
     def test_cancel_fn_called_on_kill(self):
         called = threading.Event()

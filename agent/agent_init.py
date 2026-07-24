@@ -1744,6 +1744,13 @@ def init_agent(
         except Exception:
             pass
 
+    _cross_channel_context = _agent_section.get("cross_channel_context", {})
+    if not isinstance(_cross_channel_context, dict):
+        _cross_channel_context = {}
+    agent._cross_channel_context_config = _cross_channel_context
+    agent._cross_channel_context_cache_key = None
+    agent._cross_channel_context_cache_block = None
+
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
     # Lets an enterprise admin append to or replace Hermes' built-in
     # platform hint for a single messaging platform (e.g. WhatsApp) without

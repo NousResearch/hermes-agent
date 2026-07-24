@@ -259,13 +259,16 @@ class InProcessCronScheduler(CronScheduler):
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
-        Each profile uses ``use_cron_store()`` to scope its tick, heartbeat,
-        and recovery to that profile's own ``cron/jobs.json`` — mirroring how
-        the multiplexer already scopes config/SOUL/memory per turn.
+        Each profile uses ``set_hermes_home_override()`` + ``use_cron_store()``
+        to scope its tick, heartbeat, recovery, lock file, config/.env, and
+        agent execution to that profile's home — mirroring how
+        ``_profile_runtime_scope`` scopes the multiplexed inbound path and
+        ``web_server.py`` scopes per-profile cron API calls.
         """
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat, use_cron_store
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info(
@@ -277,15 +280,19 @@ class InProcessCronScheduler(CronScheduler):
         # Recovery + initial heartbeat for every profile.
         for entry in profile_homes:
             home = entry[1] if isinstance(entry, tuple) else entry
-            with use_cron_store(home):
-                recovered = self.recover_interrupted()
-                if recovered:
-                    logger.warning(
-                        "Marked %d interrupted cron execution(s) for profile at %s",
-                        recovered,
-                        home,
-                    )
-                record_ticker_heartbeat()
+            home_token = set_hermes_home_override(str(home))
+            try:
+                with use_cron_store(home):
+                    recovered = self.recover_interrupted()
+                    if recovered:
+                        logger.warning(
+                            "Marked %d interrupted cron execution(s) for profile at %s",
+                            recovered,
+                            home,
+                        )
+                    record_ticker_heartbeat()
+            finally:
+                reset_hermes_home_override(home_token)
 
         while not stop_event.is_set():
             ok = False
@@ -295,20 +302,28 @@ class InProcessCronScheduler(CronScheduler):
                 else:
                     for entry in profile_homes:
                         home = entry[1] if isinstance(entry, tuple) else entry
-                        with use_cron_store(home):
-                            cron_tick(
-                                verbose=False,
-                                adapters=adapters,
-                                loop=loop,
-                                sync=False,
-                                can_dispatch=can_dispatch,
-                            )
+                        home_token = set_hermes_home_override(str(home))
+                        try:
+                            with use_cron_store(home):
+                                cron_tick(
+                                    verbose=False,
+                                    adapters=adapters,
+                                    loop=loop,
+                                    sync=False,
+                                    can_dispatch=can_dispatch,
+                                )
+                        finally:
+                            reset_hermes_home_override(home_token)
                 ok = True
             except BaseException as e:
                 logger.error("Cron tick error: %s", e, exc_info=True)
             # Record per-profile heartbeat after each tick cycle.
             for entry in profile_homes:
                 home = entry[1] if isinstance(entry, tuple) else entry
-                with use_cron_store(home):
-                    record_ticker_heartbeat(success=ok)
+                home_token = set_hermes_home_override(str(home))
+                try:
+                    with use_cron_store(home):
+                        record_ticker_heartbeat(success=ok)
+                finally:
+                    reset_hermes_home_override(home_token)
             stop_event.wait(interval)

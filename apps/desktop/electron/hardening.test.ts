@@ -13,7 +13,8 @@ import {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  sensitiveFileBlockReason
+  sensitiveFileBlockReason,
+  validateHermesMemoryFileWrite
 } from './hardening'
 
 async function rejectsWithCode(promise, code: string) {
@@ -254,6 +255,92 @@ test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', as
     await rejectsWithCode(resolveReadableFileForIpc(linkPath, { purpose: 'File preview' }), 'sensitive-file')
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('validateHermesMemoryFileWrite rejects MEMORY.md over its configured limit', () => {
+  const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-memory-limit-'))
+
+  try {
+    const memories = path.join(hermesHome, 'memories')
+    fs.mkdirSync(memories)
+    fs.writeFileSync(
+      path.join(hermesHome, 'config.yaml'),
+      ['memory:', '  memory_char_limit: 5', '  user_char_limit: 99', ''].join('\n'),
+      'utf8'
+    )
+
+    assert.throws(
+      () => validateHermesMemoryFileWrite(path.join(memories, 'MEMORY.md'), '123456', { hermesHome }),
+      (error: any) => {
+        assert.equal(error?.code, 'memory-limit')
+        assert.match(error.message, /MEMORY\.md/)
+        assert.match(error.message, /6\/5 chars/)
+        assert.match(error.message, /memory\.memory_char_limit/)
+
+        return true
+      }
+    )
+  } finally {
+    fs.rmSync(hermesHome, { force: true, recursive: true })
+  }
+})
+
+test('validateHermesMemoryFileWrite rejects root USER.md over its configured limit', () => {
+  const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-user-limit-'))
+
+  try {
+    const memories = path.join(hermesHome, 'memories')
+    fs.mkdirSync(memories)
+    fs.writeFileSync(
+      path.join(hermesHome, 'config.yaml'),
+      ['memory:', '  memory_char_limit: 99', '  user_char_limit: 4', ''].join('\n'),
+      'utf8'
+    )
+
+    assert.throws(
+      () => validateHermesMemoryFileWrite(path.join(memories, 'USER.md'), '12345', { hermesHome }),
+      (error: any) => {
+        assert.equal(error?.code, 'memory-limit')
+        assert.match(error.message, /USER\.md/)
+        assert.match(error.message, /5\/4 chars/)
+        assert.match(error.message, /memory\.user_char_limit/)
+
+        return true
+      }
+    )
+  } finally {
+    fs.rmSync(hermesHome, { force: true, recursive: true })
+  }
+})
+
+test('validateHermesMemoryFileWrite applies profile config and counts Unicode characters', () => {
+  const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-profile-user-limit-'))
+
+  try {
+    const profileHome = path.join(hermesHome, 'profiles', 'work')
+    const memories = path.join(profileHome, 'memories')
+    fs.mkdirSync(memories, { recursive: true })
+    fs.writeFileSync(
+      path.join(profileHome, 'config.yaml'),
+      ['memory:', '  memory_char_limit: 99', '  user_char_limit: 2', ''].join('\n'),
+      'utf8'
+    )
+
+    const accepted = validateHermesMemoryFileWrite(path.join(memories, 'USER.md'), '🚀🚀', { hermesHome })
+    assert.equal(accepted?.current, 2)
+    assert.equal(accepted?.limit, 2)
+    assert.throws(
+      () => validateHermesMemoryFileWrite(path.join(memories, 'USER.md'), '🚀🚀🚀', { hermesHome }),
+      (error: any) => {
+        assert.equal(error?.code, 'memory-limit')
+        assert.match(error.message, /3\/2 chars/)
+
+        return true
+      }
+    )
+  } finally {
+    fs.rmSync(hermesHome, { force: true, recursive: true })
   }
 })
 

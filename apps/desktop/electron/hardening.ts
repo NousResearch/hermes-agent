@@ -6,9 +6,24 @@ import { fileURLToPath } from 'node:url'
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+const DEFAULT_MEMORY_CHAR_LIMIT = 2200
+const DEFAULT_USER_CHAR_LIMIT = 1375
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+
+const MEMORY_FILE_LIMITS = Object.freeze({
+  'MEMORY.md': {
+    configKey: 'memory.memory_char_limit',
+    defaultLimit: DEFAULT_MEMORY_CHAR_LIMIT,
+    limitKey: 'memory_char_limit'
+  },
+  'USER.md': {
+    configKey: 'memory.user_char_limit',
+    defaultLimit: DEFAULT_USER_CHAR_LIMIT,
+    limitKey: 'user_char_limit'
+  }
+})
 
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
@@ -116,6 +131,126 @@ function ipcPathError(code: any, message: string): Error & { code: any } {
   ;(error as any).code = code
 
   return error
+}
+
+function pathIsInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child))
+
+  return relative === '' || (relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function configuredMemoryLimit(profileHome, limitKey, fallback) {
+  let raw = ''
+
+  try {
+    raw = fs.readFileSync(path.join(profileHome, 'config.yaml'), 'utf8')
+  } catch {
+    return fallback
+  }
+
+  const lines = raw.split(/\r?\n/)
+  let inMemory = false
+  let memoryIndent = -1
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue
+    }
+
+    const indent = line.length - line.trimStart().length
+
+    if (/^memory\s*:\s*(?:#.*)?$/.test(trimmed)) {
+      inMemory = true
+      memoryIndent = indent
+
+      continue
+    }
+
+    if (inMemory && indent <= memoryIndent) {
+      inMemory = false
+    }
+
+    if (!inMemory || indent <= memoryIndent) {
+      continue
+    }
+
+    const match = trimmed.match(new RegExp(`^${limitKey}\\s*:\\s*([^#]+)`))
+
+    if (!match) {
+      continue
+    }
+
+    const normalized = match[1]
+      .trim()
+      .replace(/^['"]|['"]$/g, '')
+      .replace(/_/g, '')
+
+    if (!/^-?\d+$/.test(normalized)) {
+      return fallback
+    }
+
+    return Number.parseInt(normalized, 10)
+  }
+
+  return fallback
+}
+
+function hermesMemoryFileTarget(filePath, hermesHome) {
+  if (!hermesHome) {
+    return null
+  }
+
+  const resolvedHome = path.resolve(String(hermesHome))
+  const resolvedPath = path.resolve(String(filePath || ''))
+
+  if (!pathIsInside(resolvedHome, resolvedPath)) {
+    return null
+  }
+
+  const parts = path.relative(resolvedHome, resolvedPath).split(path.sep)
+  let profileHome = null
+  let fileName = null
+
+  if (parts.length === 2 && parts[0] === 'memories') {
+    profileHome = resolvedHome
+    fileName = parts[1]
+  } else if (parts.length === 4 && parts[0] === 'profiles' && parts[2] === 'memories') {
+    profileHome = path.join(resolvedHome, 'profiles', parts[1])
+    fileName = parts[3]
+  }
+
+  const limitInfo = fileName ? MEMORY_FILE_LIMITS[fileName] : null
+
+  return limitInfo && profileHome ? { ...limitInfo, fileName, profileHome } : null
+}
+
+function countUnicodeChars(value) {
+  return Array.from(String(value ?? '')).length
+}
+
+function validateHermesMemoryFileWrite(filePath, content, options: { hermesHome?: string } = {}) {
+  const target = hermesMemoryFileTarget(filePath, options.hermesHome)
+
+  if (!target) {
+    return null
+  }
+
+  const limit = configuredMemoryLimit(target.profileHome, target.limitKey, target.defaultLimit)
+  const current = countUnicodeChars(content)
+
+  if (current <= limit) {
+    return { current, limit, target }
+  }
+
+  const overBy = current - limit
+
+  throw ipcPathError(
+    'memory-limit',
+    `${target.fileName} is ${current}/${limit} chars, exceeding ${target.configKey}. ` +
+      `Reduce by ${overBy} chars or raise ${target.configKey} in config.yaml before saving.`
+  )
 }
 
 function rejectUnsafePathSyntax(filePath, purpose = 'File read') {
@@ -313,5 +448,6 @@ export {
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   sensitiveFileBlockReason,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES
+  TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  validateHermesMemoryFileWrite
 }

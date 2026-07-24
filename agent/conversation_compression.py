@@ -1413,8 +1413,9 @@ def compress_context(
             except Exception:
                 existing = None
             logger.warning(
-                "compression skipped: another path is compressing session=%s "
-                "(holder=%s) — returning messages unchanged to avoid session fork",
+                "compression skipped: lock unavailable, held, or session already "
+                "rotated for session=%s (holder=%s) — returning messages "
+                "unchanged to avoid session fork",
                 _lock_sid, existing,
             )
             _lock_holder = None  # don't release a lock we don't own
@@ -1428,9 +1429,9 @@ def compress_context(
                 agent._last_compression_lock_warning_sid = _lock_sid
                 try:
                     agent._emit_warning(
-                        "⚠ Skipping concurrent compression — another path "
-                        "is already compressing this session. Will retry "
-                        "after it finishes."
+                        "⚠ Skipping compression — another path is compressing "
+                        "or has already rotated this session. Keeping messages "
+                        "unchanged for this attempt."
                     )
                 except Exception:
                     pass

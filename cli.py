@@ -6100,14 +6100,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not text:
             return
 
-        # When show_reasoning is on and reasoning is still rendering,
-        # defer content until the reasoning box closes.  This ensures the
-        # reasoning block always appears BEFORE the response in the terminal.
-        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
-
-        # Close the live reasoning box before opening the response box
+        # When show_reasoning is on and the reasoning box is still open,
+        # close it immediately so the answer streams token-by-token.
+        # _close_reasoning_box() renders the reasoning tail and closes the
+        # border before we emit any content, so ordering is preserved.
         self._close_reasoning_box()
 
         # Open the response box header on the very first visible text

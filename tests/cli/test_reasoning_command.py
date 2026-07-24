@@ -678,6 +678,81 @@ class TestConfigDefault(unittest.TestCase):
         self.assertTrue(display["show_reasoning"])
 
 
+class TestReasoningBoxCloseOnContentTokens(unittest.TestCase):
+    """Verify that content tokens close the reasoning box immediately
+    instead of being deferred until end-of-stream (issue #47116)."""
+
+    def _make_cli(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.show_reasoning = True
+        cli.streaming_enabled = True
+        cli.verbose = False
+        cli._stream_box_opened = False
+        cli._stream_buf = ""
+        cli._stream_table_buf = []
+        cli._in_stream_table = False
+        cli._stream_prefilt = ""
+        cli._stream_last_was_newline = True
+        cli._reasoning_box_opened = False
+        cli._reasoning_buf = ""
+        cli._deferred_content = ""
+        cli._reasoning_shown_this_turn = False
+        cli.show_timestamps = False
+        cli._scrollback_box_width = lambda: 80
+        # Capture output
+        cli._emitted = []
+        cli._reasoning_closed = False
+        original_close = cli._close_reasoning_box
+
+        def tracking_close():
+            cli._reasoning_closed = True
+            # Call real implementation
+            from cli import HermesCLI as RealCLI
+            RealCLI._close_reasoning_box(cli)
+
+        cli._close_reasoning_box = tracking_close
+        return cli
+
+    def test_content_closes_reasoning_box_immediately(self):
+        """Content tokens should close the reasoning box, not be deferred."""
+        cli = self._make_cli()
+        # Simulate reasoning box is open (reasoning was streamed)
+        cli._reasoning_box_opened = True
+
+        # Call _emit_stream_text with content
+        # Patch _cprint to capture output instead of printing
+        emitted = []
+        import unittest.mock as mock
+        with mock.patch("cli._cprint", side_effect=lambda t: emitted.append(t)):
+            # _close_reasoning_box calls _cprint too, so we need to let it run
+            cli._emit_stream_text("Hello world")
+
+        # The reasoning box should have been closed
+        self.assertTrue(cli._reasoning_closed)
+        # _reasoning_box_opened should be False after close
+        self.assertFalse(cli._reasoning_box_opened)
+        # Content should NOT be in _deferred_content
+        self.assertEqual(cli._deferred_content, "")
+
+    def test_no_deferral_accumulation(self):
+        """Multiple content tokens should not accumulate in _deferred_content."""
+        cli = self._make_cli()
+        cli._reasoning_box_opened = True
+
+        import unittest.mock as mock
+        with mock.patch("cli._cprint", side_effect=lambda t: None):
+            cli._emit_stream_text("First ")
+            cli._emit_stream_text("Second ")
+            cli._emit_stream_text("Third")
+
+        # No content should be deferred
+        self.assertEqual(cli._deferred_content, "")
+        # Reasoning box should be closed
+        self.assertFalse(cli._reasoning_box_opened)
+
+
 class TestCommandRegistered(unittest.TestCase):
     """Verify /reasoning is in the COMMANDS dict."""
 

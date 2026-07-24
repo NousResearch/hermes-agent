@@ -174,6 +174,52 @@ class _FakeBlueBubblesRequest:
         return self._body
 
 
+class TestBlueBubblesWebhookAuth:
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_wrong_password(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message"}, password="wrong")
+        )
+        await asyncio.sleep(0)
+
+        assert response.status == 401
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_closed_when_password_unconfigured(self, monkeypatch):
+        # Lifecycle invariant: connect() returns early when password is falsy
+        # (gateway/platforms/bluebubbles.py), so an unconfigured adapter never
+        # binds the aiohttp webhook route. Do not mutate adapter.password after
+        # construction to simulate that state — assert connect() itself refuses.
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
+        from gateway.config import PlatformConfig
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server_url": "http://localhost:1234",
+                # explicit empty password: unconfigured webhook auth
+                "password": "",
+            },
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert not adapter.password
+        ok = await adapter.connect()
+        assert ok is False
+        # No webhook app should have been started for an unconfigured adapter.
+        assert getattr(adapter, "_runner", None) is None
+        assert getattr(adapter, "_site", None) is None
+
+
 class TestBlueBubblesMentionGating:
     @pytest.mark.asyncio
     async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):

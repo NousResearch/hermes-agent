@@ -866,10 +866,91 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
 
 
+@pytest.mark.asyncio
+async def test_send_restarts_all_chunks_as_plain_after_mid_reply_markdown_failure(adapter):
+    """Multi-chunk replies must not mix MarkdownV2 and plain chunks.
+
+    When chunk 1 succeeds as MarkdownV2 but a later chunk fails Telegram's
+    MarkdownV2 parse, the adapter must delete the already-sent Markdown
+    chunks and resend the whole reply as plain text — same consistency
+    rule as Feishu #26841.
+    """
+    from unittest.mock import patch
+
+    adapter._rich_messages_enabled = False
+    adapter._bot = MagicMock()
+    adapter.delete_message = AsyncMock(return_value=True)
+
+    first_chunk = "Intro prose with no special markers at all."
+    second_chunk = "Broken markdown leftover *unclosed bold"
+    sent = []
+
+    async def _fake_send_message(**kwargs):
+        parse_mode = kwargs.get("parse_mode")
+        text = kwargs["text"]
+        # First pass: accept MarkdownV2 for chunk 1, reject chunk 2.
+        # After restart, every send must be plain (parse_mode=None).
+        if parse_mode is not None and "unclosed" in text:
+            raise Exception("Can't parse entities: markdown parse error")
+        sent.append({"text": text, "parse_mode": parse_mode})
+        return SimpleNamespace(message_id=len(sent))
+
+    adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
+    adapter._bot.send_chat_action = AsyncMock()
+
+    with patch.object(
+        adapter,
+        "truncate_message",
+        return_value=[first_chunk, second_chunk],
+    ), patch.object(adapter, "format_message", side_effect=lambda content: content):
+        result = await adapter.send("123", first_chunk + "\n" + second_chunk)
+
+    assert result.success is True
+    adapter.delete_message.assert_awaited()
+    # Final delivered messages are the restarted plain pair only.
+    assert all(entry["parse_mode"] is None for entry in sent[-2:])
+    assert len(sent) >= 3  # at least one MD attempt + two plain resends
+
+
+@pytest.mark.asyncio
+async def test_send_keeps_remaining_chunks_plain_when_first_chunk_markdown_fails(adapter):
+    """If chunk 1 already fails MarkdownV2, later chunks stay plain too."""
+    from unittest.mock import patch
+
+    adapter._rich_messages_enabled = False
+    adapter._bot = MagicMock()
+    adapter.delete_message = AsyncMock(return_value=True)
+
+    first_chunk = "Broken *markdown on purpose"
+    second_chunk = "Second chunk with **bold** markers"
+    sent = []
+
+    async def _fake_send_message(**kwargs):
+        parse_mode = kwargs.get("parse_mode")
+        if parse_mode is not None:
+            raise Exception("Can't parse entities in markdown")
+        sent.append({"text": kwargs["text"], "parse_mode": parse_mode})
+        return SimpleNamespace(message_id=len(sent))
+
+    adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
+    adapter._bot.send_chat_action = AsyncMock()
+
+    with patch.object(
+        adapter,
+        "truncate_message",
+        return_value=[first_chunk, second_chunk],
+    ), patch.object(adapter, "format_message", side_effect=lambda content: content):
+        result = await adapter.send("123", first_chunk + "\n" + second_chunk)
+
+    assert result.success is True
+    assert len(sent) == 2
+    assert all(entry["parse_mode"] is None for entry in sent)
+    adapter.delete_message.assert_not_awaited()
+
+
 # =========================================================================
 # edit_message — streaming Markdown safety
 # =========================================================================
-
 
 class TestEditMessageStreamingSafety:
     @pytest.mark.asyncio

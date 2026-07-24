@@ -10,7 +10,9 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    parse_text_skill_invocation,
     resolve_skill_command_key,
+    resolve_text_skill_invocation,
     scan_skill_commands,
 )
 
@@ -452,6 +454,137 @@ class TestScanSkillCommands:
             with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
                 scan_skill_commands()
         assert any("already claimed" in r.message for r in caplog.records)
+
+
+class TestTextSkillAliases:
+    def test_scan_registers_top_level_aliases(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "weather",
+                frontmatter_extra="""aliases:
+  - погода
+  - forecast
+""",
+            )
+            result = scan_skill_commands()
+
+        assert result["/weather"]["aliases"] == ["weather", "погода", "forecast"]
+        assert "погода" in result["/weather"]["aliases_normalized"]
+
+    def test_parse_text_skill_invocation_english(self):
+        parsed = parse_text_skill_invocation("skill weather Moscow")
+        assert parsed is not None
+        assert parsed["alias"] == "weather"
+        assert parsed["user_instruction"] == "Moscow"
+
+    def test_parse_text_skill_invocation_russian(self):
+        parsed = parse_text_skill_invocation("скилл погода Москва")
+        assert parsed is not None
+        assert parsed["alias"] == "погода"
+        assert parsed["user_instruction"] == "Москва"
+
+    def test_parse_text_skill_invocation_requires_prefix(self):
+        assert parse_text_skill_invocation("weather Moscow") is None
+
+    def test_resolve_text_skill_invocation_matches_alias(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "weather",
+                frontmatter_extra="""aliases:
+  - погода
+""",
+            )
+            scan_skill_commands()
+            assert resolve_text_skill_invocation("скилл погода Москва") == (
+                "/weather",
+                "Москва",
+            )
+
+    def test_resolve_text_skill_invocation_returns_none_for_unknown_alias(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "weather")
+            scan_skill_commands()
+            assert resolve_text_skill_invocation("skill forecast Tokyo") is None
+
+    def test_resolve_text_skill_invocation_matches_multi_word_alias(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "project-handoff",
+                frontmatter_extra="""aliases:
+  - project handoff
+""",
+            )
+            scan_skill_commands()
+            assert resolve_text_skill_invocation("skill project handoff summarize PRs") == (
+                "/project-handoff",
+                "summarize PRs",
+            )
+
+    def test_resolve_text_skill_invocation_prefers_longest_alias(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "project",
+                frontmatter_extra="""aliases:
+  - project
+""",
+            )
+            _make_skill(
+                tmp_path,
+                "project-handoff",
+                frontmatter_extra="""aliases:
+  - project handoff
+""",
+            )
+            scan_skill_commands()
+            assert resolve_text_skill_invocation("skill project handoff summarize PRs") == (
+                "/project-handoff",
+                "summarize PRs",
+            )
+
+    def test_scan_marks_duplicate_text_skill_aliases(self, tmp_path, caplog):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "first-handoff",
+                frontmatter_extra="""aliases:
+  - handoff
+""",
+            )
+            _make_skill(
+                tmp_path,
+                "second-handoff",
+                frontmatter_extra="""aliases:
+  - handoff
+""",
+            )
+            result = scan_skill_commands()
+
+        assert result["/first-handoff"]["aliases_colliding_normalized"] == ["handoff"]
+        assert result["/second-handoff"]["aliases_colliding_normalized"] == ["handoff"]
+        assert "Duplicate text skill alias 'handoff'" in caplog.text
+
+    def test_resolve_text_skill_invocation_rejects_alias_collision(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "first-handoff",
+                frontmatter_extra="""aliases:
+  - handoff
+""",
+            )
+            _make_skill(
+                tmp_path,
+                "second-handoff",
+                frontmatter_extra="""aliases:
+  - handoff
+""",
+            )
+            scan_skill_commands()
+            assert resolve_text_skill_invocation("skill handoff summarize") is None
 
 
 class TestResolveSkillCommandKey:

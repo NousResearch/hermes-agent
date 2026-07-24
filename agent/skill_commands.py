@@ -25,6 +25,121 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_TEXT_SKILL_ACTIVATORS = {"skill", "скилл", "скил"}
+
+
+def _normalize_text_skill_alias(value: str) -> str:
+    """Normalize a text alias for explicit skill activation matching."""
+    return " ".join(
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("ё", "е")
+        .replace("_", "-")
+        .split()
+    )
+
+
+def _extract_frontmatter_aliases(frontmatter: dict[str, Any], skill_name: str) -> list[str]:
+    """Return deduplicated explicit text aliases from top-level frontmatter.
+
+    The canonical skill name is always included so text activation works even
+    when ``aliases`` is omitted.
+    """
+    aliases: list[str] = [str(skill_name or "").strip()]
+    raw_aliases = frontmatter.get("aliases")
+    if isinstance(raw_aliases, str):
+        aliases.append(raw_aliases)
+    elif isinstance(raw_aliases, list):
+        aliases.extend(str(item) for item in raw_aliases if isinstance(item, str))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        cleaned = str(alias or "").strip()
+        normalized = _normalize_text_skill_alias(cleaned)
+        if not cleaned or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(cleaned)
+    return result
+
+
+def parse_text_skill_invocation(message: str) -> dict[str, str] | None:
+    """Parse explicit voice/text-friendly skill activation.
+
+    Supports messages that begin with a dedicated activator, e.g.
+    ``skill weather Moscow`` or ``скилл погода Москва``.
+    """
+    raw = str(message or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(maxsplit=2)
+    if not parts:
+        return None
+    activator = _normalize_text_skill_alias(parts[0])
+    if activator not in _TEXT_SKILL_ACTIVATORS:
+        return None
+    alias = parts[1].strip() if len(parts) > 1 else ""
+    instruction = parts[2].strip() if len(parts) > 2 else ""
+    return {
+        "activator": parts[0],
+        "alias": alias,
+        "alias_normalized": _normalize_text_skill_alias(alias),
+        "user_instruction": instruction,
+    }
+
+
+def resolve_text_skill_invocation(message: str) -> tuple[str, str] | None:
+    """Resolve an explicit text skill invocation to ``(/cmd-key, args)``.
+
+    Text activations may use multi-word aliases (for example
+    ``skill project handoff summarize this``). Resolve the longest alias that
+    unambiguously prefixes the text after the activator, and return the
+    remaining suffix as the user instruction.
+    """
+    raw = str(message or "").strip()
+    if not raw:
+        return None
+    parts = raw.split()
+    if not parts:
+        return None
+    activator = _normalize_text_skill_alias(parts[0])
+    if activator not in _TEXT_SKILL_ACTIVATORS:
+        return None
+
+    remainder_parts = parts[1:]
+    remainder_normalized = _normalize_text_skill_alias(" ".join(remainder_parts))
+    if not remainder_normalized:
+        return None
+
+    matches: list[tuple[int, str, str]] = []
+    for cmd_key, info in get_skill_commands().items():
+        aliases = info.get("aliases_normalized") or []
+        for alias in aliases:
+            alias = _normalize_text_skill_alias(alias)
+            if not alias:
+                continue
+            if remainder_normalized == alias or remainder_normalized.startswith(f"{alias} "):
+                matches.append((len(alias.split()), cmd_key, alias))
+
+    if not matches:
+        return None
+
+    longest = max(length for length, _, _ in matches)
+    longest_matches = [(cmd_key, alias) for length, cmd_key, alias in matches if length == longest]
+    matched_cmds = {cmd_key for cmd_key, _ in longest_matches}
+    if len(matched_cmds) != 1:
+        logger.warning(
+            "Ambiguous text skill alias %r matched commands: %s",
+            " ".join(remainder_parts[:longest]),
+            sorted(matched_cmds),
+        )
+        return None
+
+    cmd_key, matched_alias = longest_matches[0]
+    instruction = " ".join(remainder_parts[len(matched_alias.split()):]).strip()
+    return cmd_key, instruction
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -366,6 +481,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                             if line and not line.startswith('#'):
                                 description = line[:80]
                                 break
+                    aliases = _extract_frontmatter_aliases(frontmatter, name)
                     seen_names.add(name)
                     # Normalize to hyphen-separated slug, stripping
                     # non-alnum chars (e.g. +, /) to avoid invalid
@@ -403,11 +519,32 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     _skill_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
+                        "aliases": aliases,
+                        "aliases_normalized": [
+                            _normalize_text_skill_alias(alias) for alias in aliases
+                        ],
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }
                 except Exception:
                     continue
+
+        alias_owners: dict[str, list[str]] = {}
+        for cmd_key, info in _skill_commands.items():
+            for alias in info.get("aliases_normalized") or []:
+                if alias:
+                    alias_owners.setdefault(alias, []).append(cmd_key)
+        for alias, owners in alias_owners.items():
+            if len(owners) > 1:
+                logger.warning(
+                    "Duplicate text skill alias %r declared by commands: %s",
+                    alias,
+                    sorted(owners),
+                )
+                for owner in owners:
+                    _skill_commands[owner].setdefault(
+                        "aliases_colliding_normalized", []
+                    ).append(alias)
     except Exception:
         pass
     return _skill_commands

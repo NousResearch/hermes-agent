@@ -371,3 +371,68 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_text_skill_alias_invokes_skill_pipeline(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(return_value={"final_response": "ok", "messages": []})
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/weather": {
+                "name": "weather",
+                "aliases": ["weather", "погода"],
+                "aliases_normalized": ["weather", "погода"],
+                "skill_dir": "/tmp/weather",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.build_skill_invocation_message",
+        lambda cmd_key, user_instruction, task_id=None: f"SKILL:{cmd_key}:{user_instruction}",
+    )
+
+    result = await runner._handle_message(_make_event("скилл погода Москва"))
+
+    assert result == "ok"
+    runner._run_agent.assert_called_once()
+    assert runner._run_agent.call_args.kwargs["message"] == "SKILL:/weather:Москва"
+
+
+@pytest.mark.asyncio
+async def test_text_skill_alias_unknown_returns_guidance(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("unknown text skill alias leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/weather": {
+                "name": "weather",
+                "aliases": ["weather"],
+                "aliases_normalized": ["weather"],
+                "skill_dir": "/tmp/weather",
+            }
+        },
+    )
+
+    result = await runner._handle_message(_make_event("skill forecast Tokyo"))
+
+    assert result is not None
+    assert "Unknown skill alias" in result
+    assert "forecast" in result
+    runner._run_agent.assert_not_called()

@@ -2834,6 +2834,7 @@ KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
@@ -2872,6 +2873,7 @@ KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
@@ -4043,6 +4045,9 @@ def generate_launchd_plist() -> str:
 
     <key>ExitTimeOut</key>
     <integer>25</integer>
+
+    <key>Umask</key>
+    <integer>63</integer>
 
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>

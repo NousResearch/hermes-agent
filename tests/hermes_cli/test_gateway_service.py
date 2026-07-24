@@ -505,6 +505,31 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_includes_umask_077(self):
+        """SEC-04A: generated plist must set Umask=63 (octal 077) so all
+        files created by the gateway process are owner-only."""
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>Umask</key>" in plist
+        assert "<integer>63</integer>" in plist
+
+    def test_system_user_unit_includes_umask_0077(self, monkeypatch):
+        """SEC-04A: generated system systemd unit must set UMask=0077 so all
+        files created by the gateway process are owner-only."""
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("hermes", "hermes", "/home/hermes"),
+        )
+        monkeypatch.setattr(gateway_cli, "_hermes_home_for_target_user", lambda home: "/home/hermes/.hermes")
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="hermes")
+        assert "UMask=0077" in unit
+
+    def test_user_unit_includes_umask_0077(self):
+        """SEC-04A: generated user systemd unit must set UMask=0077 so all
+        files created by the gateway process are owner-only."""
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert "UMask=0077" in unit
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

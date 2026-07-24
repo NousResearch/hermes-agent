@@ -2009,9 +2009,19 @@ class GatewayStreamConsumer:
                     # call (REQUIRES_EDIT_FINALIZE) must still receive the
                     # finalize=True edit even when content is unchanged, so
                     # their streaming UI can transition out of the in-
-                    # progress state.  Everyone else short-circuits.
+                    # progress state.  Also skip the short-circuit when the
+                    # adapter prefers fresh-final delivery for this content
+                    # (e.g. Feishu with markdown tables): the streaming
+                    # preview was sent as post-type pipe text, but the
+                    # finalize path can re-render it as an interactive CardKit
+                    # v2 table.  The fresh-final path (send + delete preview)
+                    # runs regardless of content equality, so we must not
+                    # short-circuit before it.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize and (
+                            self._adapter_requires_finalize
+                            or self._adapter_prefers_fresh_final(text)
+                        )
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing

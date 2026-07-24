@@ -255,6 +255,40 @@ class TestAddCommand:
         out = capsys.readouterr().out
         assert "already in the fallback chain" in out
 
+    def test_add_allows_same_model_different_base_url(self, isolated_home, capsys):
+        # Same provider label + model name but a DIFFERENT base_url is a distinct
+        # route (e.g. the same model served by two OpenAI-compatible endpoints),
+        # so it must be added, not rejected as a duplicate.
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            "fallback_providers": [
+                {"provider": "openai", "model": "gpt-oss", "base_url": "http://hostA:8000/v1"},
+            ],
+        })
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "openai",
+                "default": "gpt-oss",
+                "base_url": "http://hostB:8000/v1",
+            }
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \
+                patch("hermes_cli.main._require_tty"):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+            cmd_fallback_add(types.SimpleNamespace())
+
+        cfg = _read_config(isolated_home)
+        # Both distinct routes should be present.
+        assert len(cfg["fallback_providers"]) == 2
+        base_urls = {e.get("base_url") for e in cfg["fallback_providers"]}
+        assert base_urls == {"http://hostA:8000/v1", "http://hostB:8000/v1"}
+        out = capsys.readouterr().out
+        assert "already in the fallback chain" not in out
+
     def test_add_rejects_same_as_primary(self, isolated_home, capsys):
         _write_config(isolated_home, {
             "model": {"provider": "openrouter", "default": "gpt-5.4"},
@@ -265,6 +299,78 @@ class TestAddCommand:
             from hermes_cli.config import load_config, save_config
             cfg = load_config()
             cfg["model"] = {"provider": "openrouter", "default": "gpt-5.4"}
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \
+                patch("hermes_cli.main._require_tty"):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+            cmd_fallback_add(types.SimpleNamespace())
+
+        cfg = _read_config(isolated_home)
+        assert "fallback_providers" not in cfg or cfg["fallback_providers"] == []
+        out = capsys.readouterr().out
+        assert "matches the current primary" in out
+
+    def test_add_allows_same_model_as_primary_different_base_url(self, isolated_home, capsys):
+        # The PRIMARY is openai/gpt-oss on endpoint A. Adding openai/gpt-oss on a
+        # DIFFERENT base_url (endpoint B) is a distinct route, so the "same as
+        # primary" guard must NOT reject it — it should be appended as a fallback.
+        # Pre-fix, the guard compared only (provider, model) and blocked this.
+        _write_config(isolated_home, {
+            "model": {
+                "provider": "openai",
+                "default": "gpt-oss",
+                "base_url": "http://hostA:8000/v1",
+            },
+        })
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "openai",
+                "default": "gpt-oss",
+                "base_url": "http://hostB:8000/v1",
+            }
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \
+                patch("hermes_cli.main._require_tty"):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+            cmd_fallback_add(types.SimpleNamespace())
+
+        cfg = _read_config(isolated_home)
+        # Primary is preserved on endpoint A
+        assert cfg["model"]["provider"] == "openai"
+        assert cfg["model"]["default"] == "gpt-oss"
+        assert cfg["model"]["base_url"] == "http://hostA:8000/v1"
+        # The endpoint-B route was added as a fallback (not rejected as same-as-primary)
+        assert cfg["fallback_providers"] == [
+            {"provider": "openai", "model": "gpt-oss", "base_url": "http://hostB:8000/v1"},
+        ]
+        out = capsys.readouterr().out
+        assert "Added fallback" in out
+        assert "matches the current primary" not in out
+
+    def test_add_rejects_same_as_primary_identical_base_url(self, isolated_home, capsys):
+        # Negative case for the guard above: identical (provider, model, base_url)
+        # as the primary is still a self-fallback and must be rejected.
+        _write_config(isolated_home, {
+            "model": {
+                "provider": "openai",
+                "default": "gpt-oss",
+                "base_url": "http://hostA:8000/v1",
+            },
+        })
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "openai",
+                "default": "gpt-oss",
+                "base_url": "http://hostA:8000/v1",
+            }
             save_config(cfg)
 
         with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \

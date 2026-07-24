@@ -301,13 +301,13 @@ class TestIsSatisfiedVersionAware:
 
 class TestActiveFeatures:
     def test_no_packages_installed_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(ld, "_is_present", lambda spec: False)
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         assert ld.active_features() == []
 
-    def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
-        # Pretend only honcho-ai is installed; nothing else.
+    def test_finds_features_with_satisfied_specs(self, monkeypatch):
+        # Pretend only honcho-ai specs are satisfied; nothing else.
         monkeypatch.setattr(
-            ld, "_is_present",
+            ld, "_is_satisfied",
             lambda spec: ld._pkg_name_from_spec(spec) == "honcho-ai",
         )
         active = ld.active_features()
@@ -316,15 +316,31 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_any_satisfied(self, monkeypatch):
+        # platform.slack has 3 packages; only one needs to be satisfied
+        # for the feature to count as active.
         monkeypatch.setattr(
-            ld, "_is_present",
+            ld, "_is_satisfied",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_newer_version_not_counted_as_active(self, monkeypatch):
+        """Regression: presence-only check counted any installed version as
+        active, causing refresh_active_features to downgrade a working newer
+        version to the pinned version.  With _is_satisfied, a package at a
+        version outside the spec's range is NOT considered active."""
+        # Simulate: package is present but at a version that does NOT
+        # satisfy the spec (e.g. aiohttp 3.14 installed, spec is ==3.13.4).
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        assert ld.active_features() == []
+
+    def test_stale_older_version_not_counted_as_active(self, monkeypatch):
+        """A package installed at an older version than the spec requires
+        should also NOT be counted as active (same as newer — version
+        mismatch)."""
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        assert ld.active_features() == []
 
 
 class TestRefreshActiveFeatures:

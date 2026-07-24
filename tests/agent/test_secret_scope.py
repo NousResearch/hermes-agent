@@ -209,3 +209,67 @@ class TestEnvFileParsing:
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+    def test_managed_env_overrides_profile_secret_scope(self, tmp_path, monkeypatch):
+        from hermes_cli import managed_scope
+
+        (tmp_path / ".env").write_text(
+            "OPENROUTER_API_KEY=profile-key\nPROFILE_ONLY=profile-only\n"
+        )
+        monkeypatch.setattr(
+            managed_scope,
+            "load_managed_env",
+            lambda: {
+                "OPENROUTER_API_KEY": "managed-key",
+                "MANAGED_ONLY": "managed-only",
+            },
+        )
+
+        assert ss.build_profile_secret_scope(tmp_path) == {
+            "OPENROUTER_API_KEY": "managed-key",
+            "PROFILE_ONLY": "profile-only",
+            "MANAGED_ONLY": "managed-only",
+        }
+
+
+def test_config_env_lookup_does_not_swallow_unscoped_secret_error(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(
+        "OLLAMA_API_KEY=profile-file-key\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OLLAMA_API_KEY", "global-default-key")
+    ss.set_multiplex_active(True)
+    try:
+        with pytest.raises(ss.UnscopedSecretError):
+            get_env_value_prefer_dotenv("OLLAMA_API_KEY")
+    finally:
+        ss.set_multiplex_active(False)
+
+
+def test_provider_resolver_is_fail_closed_in_scope_but_legacy_global_unscoped(
+    tmp_path, monkeypatch
+):
+    from hermes_cli.auth import resolve_api_key_provider_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / ".env").write_text(
+        "OLLAMA_API_KEY=profile-file-key\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("OLLAMA_API_KEY", "single-profile-global-key")
+
+    token = ss.set_secret_scope({})
+    try:
+        scoped = resolve_api_key_provider_credentials("ollama-cloud")
+    finally:
+        ss.reset_secret_scope(token)
+    unscoped = resolve_api_key_provider_credentials("ollama-cloud")
+
+    assert scoped.get("api_key") in (None, "")
+    assert unscoped["api_key"] == "profile-file-key"

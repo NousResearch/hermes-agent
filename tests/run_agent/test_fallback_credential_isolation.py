@@ -167,6 +167,120 @@ class TestFallbackCredentialIsolation:
         assert agent._credential_pool.provider == "openai-codex"
         assert agent._transport_cache == {}
 
+    def test_fallback_key_env_uses_active_profile_secret_scope(self, monkeypatch):
+        from agent.chat_completion_helpers import try_activate_fallback
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        agent = _make_agent(provider="primary", model="primary-model")
+        agent._fallback_chain = [
+            {
+                "provider": "custom:secondary",
+                "model": "secondary-model",
+                "base_url": "https://secondary.example/v1",
+                "key_env": "FB_KEY",
+            }
+        ]
+        agent._credential_pool = None
+        agent._buffer_status = MagicMock()
+        agent._is_azure_openai_url.return_value = False
+        agent._is_direct_openai_url.return_value = False
+        agent._provider_model_requires_responses_api.return_value = False
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded = MagicMock()
+        agent._replace_primary_openai_client = MagicMock()
+        agent.context_compressor = None
+        fallback_client = SimpleNamespace(
+            api_key="profile-key",
+            base_url="https://secondary.example/v1",
+            _custom_headers={},
+        )
+        monkeypatch.setenv("FB_KEY", "global-default-profile-key")
+
+        token = set_secret_scope({"FB_KEY": "profile-key"})
+        try:
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fallback_client, "secondary-model"),
+            ) as resolve_provider_client:
+                assert try_activate_fallback(agent) is True
+        finally:
+            reset_secret_scope(token)
+
+        assert resolve_provider_client.call_args.kwargs["explicit_api_key"] == (
+            "profile-key"
+        )
+
+    def test_ollama_fallback_uses_active_profile_secret_scope(self, monkeypatch):
+        from agent.chat_completion_helpers import try_activate_fallback
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        agent = _make_agent(provider="primary", model="primary-model")
+        agent._fallback_chain = [
+            {
+                "provider": "ollama-cloud",
+                "model": "secondary-model",
+                "base_url": "https://ollama.com/v1",
+            }
+        ]
+        agent._credential_pool = None
+        agent._buffer_status = MagicMock()
+        agent._is_azure_openai_url.return_value = False
+        agent._is_direct_openai_url.return_value = False
+        agent._provider_model_requires_responses_api.return_value = False
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded = MagicMock()
+        agent._replace_primary_openai_client = MagicMock()
+        agent.context_compressor = None
+        fallback_client = SimpleNamespace(
+            api_key="profile-ollama-key",
+            base_url="https://ollama.com/v1",
+            _custom_headers={},
+        )
+        monkeypatch.setenv("OLLAMA_API_KEY", "global-default-ollama-key")
+
+        token = set_secret_scope({"OLLAMA_API_KEY": "profile-ollama-key"})
+        try:
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fallback_client, "secondary-model"),
+            ) as resolve_provider_client:
+                assert try_activate_fallback(agent) is True
+        finally:
+            reset_secret_scope(token)
+
+        assert resolve_provider_client.call_args.kwargs["explicit_api_key"] == (
+            "profile-ollama-key"
+        )
+
+    def test_openrouter_fallback_ignores_real_dotenv_under_empty_scope(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.chat_completion_helpers import try_activate_fallback
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text(
+            "OPENROUTER_API_KEY=profile-file-key\n", encoding="utf-8"
+        )
+        agent = _make_agent(provider="primary", model="primary-model")
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "fallback-model"}
+        ]
+        agent._credential_pool = None
+        agent._unavailable_fallback_keys = set()
+        agent._try_activate_fallback = MagicMock(return_value=False)
+
+        token = set_secret_scope({})
+        try:
+            assert try_activate_fallback(agent) is False
+        finally:
+            reset_secret_scope(token)
+
+        agent._try_activate_fallback.assert_called_once()
+        assert ("openrouter", "fallback-model", "") in (
+            agent._unavailable_fallback_keys
+        )
+
 
 # ── Test: _recover_with_credential_pool rejects mismatched pool ──────
 

@@ -8432,24 +8432,17 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     is scope-checked rather than leaking another profile's raw ``os.environ``
     value — matching the credential-pool seeding path's behaviour.
     """
+    from agent.secret_scope import (
+        get_secret as _get_secret,
+        is_secret_scope_authoritative,
+    )
+
+    if is_secret_scope_authoritative():
+        return _get_secret(key)
+
     env_vars = load_env()
     val = env_vars.get(key)
-    if val:
-        return val
-    try:
-        from agent.secret_scope import (
-            UnscopedSecretError,
-            get_secret as _get_secret,
-        )
-    except Exception:
-        return os.environ.get(key)
-
-    try:
-        return _get_secret(key)
-    except UnscopedSecretError:
-        raise
-    except Exception:
-        return os.environ.get(key)
+    return val if val else _get_secret(key)
 
 
 # =============================================================================

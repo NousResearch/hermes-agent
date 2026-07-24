@@ -2051,7 +2051,9 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
         # the OPENROUTER_API_KEY env-var path rather than failing outright.
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
+    from agent.secret_scope import get_secret
+
+    or_key = explicit_api_key or get_secret("OPENROUTER_API_KEY")
     if not or_key:
         _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
@@ -2068,7 +2070,9 @@ def _describe_openrouter_unavailable() -> str:
             return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
         if not _pool_runtime_api_key(entry):
             return "OpenRouter credential pool entry is missing a runtime API key"
-    if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
+    from agent.secret_scope import get_secret
+
+    if not str(get_secret("OPENROUTER_API_KEY") or "").strip():
         return "OPENROUTER_API_KEY not set"
     return "no usable OpenRouter credentials found"
 
@@ -4344,14 +4348,10 @@ def _try_configured_fallback_for_unavailable_client(
 
 
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
-    """Resolve inline or env-backed API key from a fallback-chain entry."""
-    explicit = str(entry.get("api_key") or "").strip()
-    if explicit:
-        return explicit
-    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
-    if key_env:
-        return os.getenv(key_env, "").strip() or None
-    return None
+    """Resolve inline or profile-scoped key from a fallback-chain entry."""
+    from hermes_cli.fallback_config import resolve_entry_api_key
+
+    return resolve_entry_api_key(entry)
 
 
 def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
@@ -5023,10 +5023,12 @@ def resolve_provider_client(
         custom_base = ""
         custom_key = ""
         if explicit_base_url:
+            from agent.secret_scope import get_secret
+
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
-                or os.getenv("OPENAI_API_KEY", "").strip()
+                or (get_secret("OPENAI_API_KEY") or "").strip()
                 or _read_main_api_key_if_same_host(custom_base)
                 or "no-key-required"  # local servers don't need auth
             )
@@ -5119,10 +5121,9 @@ def resolve_provider_client(
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = (custom_entry.get("base_url") or "").strip()
-            custom_key = (custom_entry.get("api_key") or "").strip()
-            custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
-            if not custom_key and custom_key_env:
-                custom_key = os.getenv(custom_key_env, "").strip()
+            from hermes_cli.fallback_config import resolve_entry_api_key
+
+            custom_key = resolve_entry_api_key(custom_entry) or ""
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

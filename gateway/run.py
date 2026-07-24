@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -36,6 +37,7 @@ import shlex
 import site
 import sys
 import signal
+import secrets
 import tempfile
 import threading
 import time
@@ -67,7 +69,7 @@ from agent.conversation_compression import (
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import load_fallback_chain_strict
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -2150,6 +2152,8 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+_FALLBACK_CREDENTIAL_FINGERPRINT_KEY = secrets.token_bytes(32)
+
 
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
@@ -2351,13 +2355,7 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        import yaml as _y
-        cfg_path = _hermes_home / "config.yaml"
-        if not cfg_path.exists():
-            return None
-        with open(cfg_path, encoding="utf-8") as _f:
-            cfg = _y.safe_load(_f) or {}
-        fb_list = get_fallback_chain(cfg)
+        fb_list = GatewayRunner._load_fallback_model()
         if not fb_list:
             return None
         for entry in fb_list:
@@ -3330,7 +3328,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
+        self._fallback_refresh_lock = threading.RLock()
         self._fallback_model = self._load_fallback_model()
+        self._fallback_models_by_home = {
+            str(_hermes_home): self._fallback_model,
+        }
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -5748,24 +5750,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_fallback_model() -> list | None:
-        """Load fallback provider chain from config.yaml.
-
-        Returns the merged effective chain from ``fallback_providers`` plus any
-        legacy ``fallback_model`` entries. ``fallback_providers`` stays first
-        when both keys are present.
-        """
+        """Load the effective fallback chain for the active profile."""
         try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = get_fallback_chain(cfg)
-                if fb:
-                    return fb
+            return load_fallback_chain_strict() or None
         except Exception:
-            pass
-        return None
+            return None
 
     def _refresh_fallback_model(self) -> list | None:
         """Re-read fallback_providers from disk for the next agent create/reuse.
@@ -5781,23 +5770,79 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cached agent's working fallback for that turn.  Only a successful read
         that genuinely lacks the key clears the chain.
         """
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if not cfg_path.exists():
-                self._fallback_model = None
-                return self._fallback_model
-            with open(cfg_path, encoding="utf-8") as _f:
-                cfg = _y.safe_load(_f) or {}
-        except Exception:
-            # Transient failure — keep last known-good chain.
-            logger.debug(
-                "fallback_providers refresh: config.yaml read failed; "
-                "keeping last known-good chain", exc_info=True,
+        lock = getattr(self, "_fallback_refresh_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._fallback_refresh_lock = lock
+        with lock:
+            profile_home = str(get_hermes_home())
+            fallback_models_by_home = getattr(
+                self, "_fallback_models_by_home", None
             )
-            return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
+            if fallback_models_by_home is None:
+                fallback_models_by_home = {}
+                self._fallback_models_by_home = fallback_models_by_home
+
+            try:
+                refreshed = load_fallback_chain_strict() or None
+            except Exception:
+                # Transient failure — keep last known-good chain.
+                logger.debug(
+                    "fallback_providers refresh: config.yaml read failed; "
+                    "keeping last-known-good chain",
+                    exc_info=True,
+                )
+                return fallback_models_by_home.get(profile_home)
+
+            fallback_models_by_home[profile_home] = refreshed
+            if profile_home == str(_hermes_home):
+                self._fallback_model = refreshed
+            return refreshed
+
+    @staticmethod
+    def _fallback_credential_fingerprint(chain: list[dict[str, Any]]) -> tuple:
+        """Digest credentials that affect *chain* without retaining secrets."""
+        from agent.secret_scope import get_secret
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.fallback_config import resolve_entry_api_key
+
+        fingerprints = []
+        for entry in chain:
+            secret = resolve_entry_api_key(entry) or ""
+            provider = str(entry.get("provider") or "").strip().lower()
+            if not secret:
+                pconfig = PROVIDER_REGISTRY.get(provider)
+                for env_name in getattr(pconfig, "api_key_env_vars", ()):
+                    secret = get_secret(env_name, "") or ""
+                    if secret:
+                        break
+            if not secret and provider == "openrouter":
+                secret = get_secret("OPENROUTER_API_KEY", "") or ""
+            if not secret and provider in {"ollama", "ollama-cloud"}:
+                secret = get_secret("OLLAMA_API_KEY", "") or ""
+            digest = ""
+            if secret:
+                digest = hashlib.blake2b(
+                    secret.encode("utf-8"),
+                    key=_FALLBACK_CREDENTIAL_FINGERPRINT_KEY,
+                    digest_size=16,
+                ).hexdigest()
+            fingerprints.append(
+                (
+                    provider,
+                    str(entry.get("model") or ""),
+                    str(entry.get("key_env") or entry.get("api_key_env") or ""),
+                    digest,
+                )
+            )
+
+        auth_path = get_hermes_home() / "auth.json"
+        try:
+            stat = auth_path.stat()
+            auth_revision = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            auth_revision = None
+        return tuple(fingerprints), auth_revision
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
@@ -5819,18 +5864,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ):
             return
         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        old_config_chain = list(
+            getattr(agent, "_fallback_config_chain", old_chain) or []
+        )
+        credential_fingerprint = GatewayRunner._fallback_credential_fingerprint(
+            new_chain
+        )
+        previous_credential_fingerprint = getattr(
+            agent, "_fallback_credential_fingerprint", None
+        )
+        credentials_changed = (
+            previous_credential_fingerprint is not None
+            and previous_credential_fingerprint != credential_fingerprint
+        )
+        agent._fallback_credential_fingerprint = credential_fingerprint
+        agent._fallback_config_chain = list(new_chain)
         agent._fallback_chain = new_chain
         agent._fallback_model = new_chain[0] if new_chain else None
         if not getattr(agent, "_fallback_activated", False):
             agent._fallback_index = 0
-        # A config edit signals the user changed something — drop the
-        # session-scoped unavailability memo so re-configured entries
-        # (e.g. credentials added mid-uptime for a previously-failing
-        # provider) get retried instead of staying suppressed for the
-        # cached agent's lifetime.  Only on actual content change, so
-        # the per-message no-op refresh keeps the memo's rate-limiting
-        # benefit (#60955).
-        if new_chain != old_chain:
+        # Config or credential rotation signals that a previously unavailable
+        # entry may now work. Clear only on an actual change so per-message
+        # no-op refreshes keep the memo's rate-limiting benefit (#60955).
+        if new_chain != old_config_chain or credentials_changed:
             unavailable = getattr(agent, "_unavailable_fallback_keys", None)
             if unavailable:
                 unavailable.clear()

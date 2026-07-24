@@ -2400,23 +2400,49 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._fallback_activated = False
     agent._fallback_index = 0
 
-    # When the user deliberately swaps primary providers (e.g. openrouter
-    # → anthropic), drop any fallback entries that target the OLD primary
-    # or the NEW one.  The chain was seeded from config at agent init for
-    # the original provider — without pruning, a failed turn on the new
-    # primary silently re-activates the provider the user just rejected,
-    # which is exactly what was reported during TUI v2 blitz testing
-    # ("switched to anthropic, tui keeps trying openrouter").
+    # In-place switches happen on long-lived agents (gateway, dashboard/TUI,
+    # desktop).  Their in-memory chain may predate a config edit; if we prune
+    # that stale chain here, the next 429 can walk old fallbacks even though the
+    # profile's current ``fallback_providers`` is different (#61614).  A
+    # successful config read is authoritative even when the chain is empty;
+    # only a read/parse failure keeps the agent's last-known-good chain.
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
-    fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+    old_fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
+    previous_config_chain = list(
+        getattr(agent, "_fallback_config_chain", old_fallback_chain) or []
+    )
+    fallback_chain_from_config = False
+    fallback_chain_changed_from_config = False
+    try:
+        from hermes_cli.fallback_config import load_fallback_chain_strict
+
+        fallback_chain = list(load_fallback_chain_strict() or [])
+        fallback_chain_from_config = True
+        fallback_chain_changed_from_config = fallback_chain != previous_config_chain
+        agent._fallback_config_chain = list(fallback_chain)
+    except Exception:
+        fallback_chain = old_fallback_chain
+
     if old_norm and new_norm and old_norm != new_norm:
+        # If we only have the agent's launch-time chain, keep the old defensive
+        # behavior and remove both the rejected OLD primary and the selected NEW
+        # primary.  If the chain was just read from config, treat entries as the
+        # user's current explicit fallback policy: only remove the NEW primary
+        # provider so fallback does not immediately route back to the same
+        # backend, but allow the old provider if the current config still names
+        # it as a later fallback.
+        blocked = {new_norm} if fallback_chain_from_config else {old_norm, new_norm}
         fallback_chain = [
             entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
+            if (entry.get("provider") or "").strip().lower() not in blocked
         ]
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
+    if fallback_chain_changed_from_config:
+        unavailable = getattr(agent, "_unavailable_fallback_keys", None)
+        if unavailable:
+            unavailable.clear()
 
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",

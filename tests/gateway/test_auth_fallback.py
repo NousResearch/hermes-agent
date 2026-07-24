@@ -21,6 +21,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         )
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         call_count = {"n": 0}
 
@@ -62,6 +63,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         config_path.write_text("model:\n  provider: openai-codex\n")
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -84,6 +86,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         )
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         calls = []
 
@@ -113,3 +116,46 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         assert calls == ["openrouter", "nous"]
         assert result["provider"] == "nous"
         assert result["model"] == "Hermes-4"
+
+    def test_fallback_resolution_reads_active_profile_config(self, tmp_path, monkeypatch):
+        from gateway import run as gateway_run
+
+        default_home = tmp_path / "default"
+        secondary_home = tmp_path / "secondary"
+        default_home.mkdir()
+        secondary_home.mkdir()
+        (default_home / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: default-only\n"
+            "    model: default-model\n",
+            encoding="utf-8",
+        )
+        (secondary_home / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: secondary-only\n"
+            "    model: secondary-model\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+        requested = []
+
+        def fake_resolve(**kwargs):
+            requested.append(kwargs["requested"])
+            return {
+                "api_key": "profile-key",
+                "base_url": "https://secondary.example/v1",
+                "provider": kwargs["requested"],
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=fake_resolve,
+        ), gateway_run._profile_runtime_scope(secondary_home):
+            result = gateway_run._try_resolve_fallback_provider()
+
+        assert requested == ["secondary-only"]
+        assert result["model"] == "secondary-model"

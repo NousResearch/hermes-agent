@@ -10,6 +10,59 @@ from datetime import datetime, timezone
 import pytest
 
 
+def test_env_seed_does_not_use_global_secret_under_empty_profile_scope(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import load_pool
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / ".env").write_text(
+        "OPENROUTER_API_KEY=profile-file-key\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "global-default-key")
+
+    token = set_secret_scope({})
+    try:
+        pool = load_pool("openrouter")
+    finally:
+        reset_secret_scope(token)
+
+    assert pool.has_credentials() is False
+    auth_path = hermes_home / "auth.json"
+    if auth_path.exists():
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+        assert auth.get("credential_pool", {}).get("openrouter", []) == []
+
+
+def test_env_seed_prefers_authoritative_managed_scope_over_profile_dotenv(
+    tmp_path, monkeypatch
+):
+    from agent.credential_pool import _seed_from_env
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / ".env").write_text(
+        "OPENROUTER_API_KEY=profile-file-key\n", encoding="utf-8"
+    )
+
+    token = set_secret_scope({"OPENROUTER_API_KEY": "managed-scope-key"})
+    try:
+        entries = []
+        changed, active = _seed_from_env("openrouter", entries)
+    finally:
+        reset_secret_scope(token)
+
+    assert changed is True
+    assert active == {"env:OPENROUTER_API_KEY"}
+    assert len(entries) == 1
+    assert entries[0].runtime_api_key == "managed-scope-key"
+
+
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

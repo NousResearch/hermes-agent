@@ -229,6 +229,82 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
 
+def test_api_tasks_list_prefers_gws_and_normalizes_output(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["tasks", "tasklists", "list"]:
+            assert params == {"maxResults": 10}
+            return {"items": [{"id": "list-1", "title": "Inbox"}]}
+        assert parts == ["tasks", "tasks", "list"]
+        assert params == {"tasklist": "list-1", "maxResults": 5, "showCompleted": False}
+        return {"items": [{"id": "task-1", "title": "Pay invoice", "status": "needsAction"}]}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(tasklist="", max=5, show_completed=False)
+
+    api_module.tasks_list(args)
+
+    assert [call["parts"] for call in calls] == [
+        ["tasks", "tasklists", "list"],
+        ["tasks", "tasks", "list"],
+    ]
+    result = json.loads(capsys.readouterr().out)
+    assert result == {
+        "tasklistId": "list-1",
+        "tasklistTitle": "Inbox",
+        "tasks": [
+            {
+                "id": "task-1",
+                "title": "Pay invoice",
+                "status": "needsAction",
+                "due": "",
+                "updated": "",
+                "webViewLink": "",
+            }
+        ],
+    }
+
+
+def test_api_tasks_add_prefers_gws_and_passes_due_body(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["tasks", "tasklists", "list"]:
+            return {"items": [{"id": "list-1", "title": "Inbox"}]}
+        assert parts == ["tasks", "tasks", "insert"]
+        assert params == {"tasklist": "list-1"}
+        assert body == {"title": "Pay invoice", "due": "2026-03-01T00:00:00Z"}
+        return {"id": "task-1", "title": "Pay invoice", "due": "2026-03-01T00:00:00Z"}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(title="Pay invoice", due="2026-03-01", tasklist="")
+
+    api_module.tasks_add(args)
+
+    assert [call["parts"] for call in calls] == [
+        ["tasks", "tasklists", "list"],
+        ["tasks", "tasks", "insert"],
+    ]
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "created"
+    assert result["tasklistId"] == "list-1"
+    assert result["title"] == "Pay invoice"
+
+
+def test_datetime_with_timezone_uses_hermes_configured_timezone(api_module, monkeypatch):
+    class FakeHermesTime(types.SimpleNamespace):
+        @staticmethod
+        def get_timezone():
+            return api_module.timezone(api_module.timedelta(hours=3))
+
+    monkeypatch.setitem(sys.modules, "hermes_time", FakeHermesTime())
+
+    assert api_module._datetime_with_timezone("2026-03-01T10:00:00") == "2026-03-01T10:00:00+03:00"
+
+
 @pytest.mark.parametrize(
     "header_names",
     [

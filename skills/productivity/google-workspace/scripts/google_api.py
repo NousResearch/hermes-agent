@@ -51,6 +51,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
 ]
 
 
@@ -165,6 +166,18 @@ def _extract_doc_text(doc: dict) -> str:
     return "".join(text_parts)
 
 
+def _default_timezone():
+    try:
+        from hermes_time import get_timezone
+
+        configured_tz = get_timezone()
+        if configured_tz is not None:
+            return configured_tz
+    except Exception:
+        pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
 def _datetime_with_timezone(value: str) -> str:
     if not value:
         return value
@@ -175,7 +188,10 @@ def _datetime_with_timezone(value: str) -> str:
     tail = value[10:]
     if "+" in tail or "-" in tail:
         return value
-    return value + "Z"
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_default_timezone())
+    return dt.isoformat()
 
 
 def get_credentials():
@@ -518,8 +534,8 @@ def calendar_list(args):
 def calendar_create(args):
     event = {
         "summary": args.summary,
-        "start": {"dateTime": args.start},
-        "end": {"dateTime": args.end},
+        "start": {"dateTime": _datetime_with_timezone(args.start)},
+        "end": {"dateTime": _datetime_with_timezone(args.end)},
     }
     if args.location:
         event["location"] = args.location
@@ -562,6 +578,122 @@ def calendar_delete(args):
     service = build_service("calendar", "v3")
     service.events().delete(calendarId=args.calendar, eventId=args.event_id).execute()
     print(json.dumps({"status": "deleted", "eventId": args.event_id}))
+
+
+# =========================================================================
+# Tasks
+# =========================================================================
+
+
+def _tasks_default_list_id(service, requested: str = "") -> tuple[str, str]:
+    if requested:
+        return requested, requested
+    result = service.tasklists().list(maxResults=10).execute()
+    return _tasks_first_list_from_result(result)
+
+
+def _tasks_default_list_id_gws(requested: str = "") -> tuple[str, str]:
+    if requested:
+        return requested, requested
+    result = _run_gws(["tasks", "tasklists", "list"], params={"maxResults": 10})
+    return _tasks_first_list_from_result(result)
+
+
+def _tasks_first_list_from_result(result: dict) -> tuple[str, str]:
+    items = result.get("items", [])
+    if not items:
+        print("No Google Tasks lists found.", file=sys.stderr)
+        sys.exit(1)
+    first = items[0]
+    return first["id"], first.get("title", "")
+
+
+def _task_summary(item: dict) -> dict:
+    return {
+        "id": item.get("id", ""),
+        "title": item.get("title", ""),
+        "status": item.get("status", ""),
+        "due": item.get("due", ""),
+        "updated": item.get("updated", ""),
+        "webViewLink": item.get("webViewLink", ""),
+    }
+
+
+def _tasks_due_value(raw_due: str) -> str:
+    if not raw_due:
+        return ""
+    if "T" not in raw_due:
+        return raw_due + "T00:00:00Z"
+    return _datetime_with_timezone(raw_due)
+
+
+def tasks_list(args):
+    if _gws_binary():
+        tasklist_id, tasklist_title = _tasks_default_list_id_gws(args.tasklist)
+        result = _run_gws(
+            ["tasks", "tasks", "list"],
+            params={
+                "tasklist": tasklist_id,
+                "maxResults": args.max,
+                "showCompleted": args.show_completed,
+            },
+        )
+        print(json.dumps({
+            "tasklistId": tasklist_id,
+            "tasklistTitle": tasklist_title,
+            "tasks": [_task_summary(item) for item in result.get("items", [])],
+        }, indent=2, ensure_ascii=False))
+        return
+
+    service = build_service("tasks", "v1")
+    tasklist_id, tasklist_title = _tasks_default_list_id(service, args.tasklist)
+    result = service.tasks().list(
+        tasklist=tasklist_id,
+        maxResults=args.max,
+        showCompleted=args.show_completed,
+    ).execute()
+    print(json.dumps({
+        "tasklistId": tasklist_id,
+        "tasklistTitle": tasklist_title,
+        "tasks": [_task_summary(item) for item in result.get("items", [])],
+    }, indent=2, ensure_ascii=False))
+
+
+def tasks_add(args):
+    task_body = {"title": args.title}
+    if args.due:
+        task_body["due"] = _tasks_due_value(args.due)
+
+    if _gws_binary():
+        tasklist_id, tasklist_title = _tasks_default_list_id_gws(args.tasklist)
+        task = _run_gws(
+            ["tasks", "tasks", "insert"],
+            params={"tasklist": tasklist_id},
+            body=task_body,
+        )
+        print(json.dumps({
+            "status": "created",
+            "tasklistId": tasklist_id,
+            "tasklistTitle": tasklist_title,
+            "id": task.get("id", ""),
+            "title": task.get("title", ""),
+            "due": task.get("due", ""),
+            "webViewLink": task.get("webViewLink", ""),
+        }, indent=2, ensure_ascii=False))
+        return
+
+    service = build_service("tasks", "v1")
+    tasklist_id, tasklist_title = _tasks_default_list_id(service, args.tasklist)
+    task = service.tasks().insert(tasklist=tasklist_id, body=task_body).execute()
+    print(json.dumps({
+        "status": "created",
+        "tasklistId": tasklist_id,
+        "tasklistTitle": tasklist_title,
+        "id": task.get("id", ""),
+        "title": task.get("title", ""),
+        "due": task.get("due", ""),
+        "webViewLink": task.get("webViewLink", ""),
+    }, indent=2, ensure_ascii=False))
 
 
 # =========================================================================
@@ -1118,6 +1250,22 @@ def main():
     p.add_argument("event_id")
     p.add_argument("--calendar", default="primary")
     p.set_defaults(func=calendar_delete)
+
+    # --- Tasks ---
+    tasks = sub.add_parser("tasks")
+    tasks_sub = tasks.add_subparsers(dest="action", required=True)
+
+    p = tasks_sub.add_parser("list")
+    p.add_argument("--tasklist", default="", help="Task list ID (defaults to the first available list)")
+    p.add_argument("--max", type=int, default=20)
+    p.add_argument("--show-completed", action="store_true", help="Include completed tasks")
+    p.set_defaults(func=tasks_list)
+
+    p = tasks_sub.add_parser("add")
+    p.add_argument("--title", required=True)
+    p.add_argument("--due", default="", help="Due date YYYY-MM-DD or ISO 8601 datetime")
+    p.add_argument("--tasklist", default="", help="Task list ID (defaults to the first available list)")
+    p.set_defaults(func=tasks_add)
 
     # --- Drive ---
     drv = sub.add_parser("drive")

@@ -85,6 +85,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     # Sakana
     ("sakana/fugu-ultra",                      ""),
+    # Thinking Machines
+    ("thinkingmachines/inkling",               ""),
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
@@ -235,6 +237,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         # Sakana
         "sakana/fugu-ultra",
+        # Thinking Machines
+        "thinkingmachines/inkling",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.

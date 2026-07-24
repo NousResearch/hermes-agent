@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -248,3 +250,68 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+    def test_system_scope_unit_queries_system_manager_only(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *_args, **_kwargs: io.StringIO(
+                "0::/system.slice/hermes-gateway-duke.service\n"
+            ),
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="TimeoutStopUSec=4min\n",
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert calls == [[
+            "systemctl",
+            "show",
+            "hermes-gateway-duke.service",
+            "--property=TimeoutStopUSec",
+        ]]
+        assert result is not None
+        assert result["unit"] == "hermes-gateway-duke.service"
+        assert result["timeout_stop_sec"] == 240.0
+        assert result["mismatch"] is False
+
+    def test_user_scope_unit_queries_user_manager_only(self, monkeypatch):
+        monkeypatch.setenv("INVOCATION_ID", "abc")
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda *_args, **_kwargs: io.StringIO(
+                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n"
+            ),
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="TimeoutStopUSec=5min\n",
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert calls == [[
+            "systemctl",
+            "--user",
+            "show",
+            "hermes-gateway.service",
+            "--property=TimeoutStopUSec",
+        ]]
+        assert result is not None
+        assert result["unit"] == "hermes-gateway.service"
+        assert result["timeout_stop_sec"] == 300.0
+        assert result["mismatch"] is False

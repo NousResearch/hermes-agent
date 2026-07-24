@@ -175,6 +175,116 @@ class TestGetDefinitions:
         assert len(defs) == 2
         assert calls["count"] == 1
 
+    def test_check_fn_cache_isolated_by_gateway_session_context(self):
+        """A cached availability result from one gateway turn cannot leak."""
+        from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+        from tools.registry import invalidate_check_fn_cache
+
+        reg = ToolRegistry()
+
+        def check():
+            from gateway.session_context import get_session_env
+
+            return get_session_env("HERMES_SESSION_PLATFORM") == "matrix"
+
+        reg.register(
+            name="session-gated",
+            toolset="session-gated",
+            schema=_make_schema("session-gated"),
+            handler=_dummy_handler,
+            check_fn=check,
+            check_fn_session_scoped=True,
+        )
+        try:
+            reset_session_vars()
+            invalidate_check_fn_cache()
+            matrix_tokens = set_session_vars(platform="matrix")
+            assert reg.get_definitions({"session-gated"})
+
+            clear_session_vars(matrix_tokens)
+            discord_tokens = set_session_vars(platform="discord")
+            assert reg.get_definitions({"session-gated"}) == []
+            clear_session_vars(discord_tokens)
+        finally:
+            reset_session_vars()
+            invalidate_check_fn_cache()
+
+    def test_check_fn_cache_isolated_by_active_profile(self, tmp_path):
+        """A profile-scoped availability result cannot leak into another turn."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import invalidate_check_fn_cache
+
+        reg = ToolRegistry()
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+        first_home.mkdir()
+        second_home.mkdir()
+
+        def check():
+            from hermes_constants import get_hermes_home
+
+            return get_hermes_home() == first_home
+
+        reg.register(
+            name="profile-gated",
+            toolset="profile-gated",
+            schema=_make_schema("profile-gated"),
+            handler=_dummy_handler,
+            check_fn=check,
+        )
+        try:
+            invalidate_check_fn_cache()
+            first_token = set_hermes_home_override(first_home)
+            try:
+                assert reg.get_definitions({"profile-gated"})
+            finally:
+                reset_hermes_home_override(first_token)
+
+            second_token = set_hermes_home_override(second_home)
+            try:
+                assert reg.get_definitions({"profile-gated"}) == []
+            finally:
+                reset_hermes_home_override(second_token)
+        finally:
+            invalidate_check_fn_cache()
+
+    def test_external_check_keeps_last_good_across_sessions(self, monkeypatch):
+        """Session changes do not discard an external probe's failure grace."""
+        import tools.registry as registry_module
+        from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+        from tools.registry import invalidate_check_fn_cache
+
+        reg = ToolRegistry()
+        state = {"available": True}
+        now = {"value": 100.0}
+
+        def check():
+            return state["available"]
+
+        monkeypatch.setattr(registry_module.time, "monotonic", lambda: now["value"])
+        reg.register(
+            name="external-gated",
+            toolset="external-gated",
+            schema=_make_schema("external-gated"),
+            handler=_dummy_handler,
+            check_fn=check,
+        )
+        try:
+            reset_session_vars()
+            invalidate_check_fn_cache()
+            matrix_tokens = set_session_vars(platform="matrix")
+            assert reg.get_definitions({"external-gated"})
+
+            clear_session_vars(matrix_tokens)
+            discord_tokens = set_session_vars(platform="discord")
+            now["value"] += registry_module._CHECK_FN_TTL_SECONDS + 1
+            state["available"] = False
+            assert reg.get_definitions({"external-gated"})
+            clear_session_vars(discord_tokens)
+        finally:
+            reset_session_vars()
+            invalidate_check_fn_cache()
+
 
 class TestUnknownToolDispatch:
     def test_returns_error_json(self):

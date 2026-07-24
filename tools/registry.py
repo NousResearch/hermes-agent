@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -91,11 +92,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "check_fn_session_scoped",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 check_fn_session_scoped=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -114,6 +117,7 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.check_fn_session_scoped = check_fn_session_scoped
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +152,49 @@ _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
 _check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_cache_generation = 0
 _check_fn_cache_lock = threading.Lock()
 
 
-def _check_fn_cached(fn: Callable) -> bool:
+def get_availability_cache_key(session_scoped: bool = False) -> tuple:
+    """Return the cache inputs that affect built-in tool availability.
+
+    Every availability check is scoped to the active Hermes home because
+    multiplexed gateway turns can resolve different profile credentials. Only
+    cronjob's gate is session-dependent, so external probes keep their
+    cross-platform TTL and last-good behavior.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        hermes_home = str(get_hermes_home())
+    except Exception:
+        hermes_home = ""
+    with _check_fn_cache_lock:
+        generation = _check_fn_cache_generation
+    key = (generation, hermes_home)
+    if not session_scoped:
+        return key
+
+    try:
+        from gateway.session_context import get_session_env
+
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    except Exception:
+        session_platform = ""
+    return key + (
+        os.environ.get("HERMES_INTERACTIVE", ""),
+        os.environ.get("HERMES_GATEWAY_SESSION", ""),
+        os.environ.get("HERMES_EXEC_ASK", ""),
+        session_platform,
+    )
+
+
+def _check_fn_cached(
+    fn: Callable,
+    session_scoped: bool = False,
+    return_expiry: bool = False,
+) -> bool | tuple[bool, float]:
     """Return bool(fn()), TTL-cached across calls.
 
     Exceptions are swallowed as False. A transient False/exception within
@@ -161,12 +204,17 @@ def _check_fn_cached(fn: Callable) -> bool:
     contention, probe timeout) from silently stripping tools mid-session.
     """
     now = time.monotonic()
+
+    def result(value: bool, expires_at: float):
+        return (value, expires_at) if return_expiry else value
+
+    cache_key = (fn, get_availability_cache_key(session_scoped))
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
-                return value
+                return result(value, ts + _CHECK_FN_TTL_SECONDS)
 
     raised = False
     try:
@@ -177,11 +225,11 @@ def _check_fn_cached(fn: Callable) -> bool:
 
     with _check_fn_cache_lock:
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
-            return True
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
+            return result(True, now + _CHECK_FN_TTL_SECONDS)
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -193,7 +241,9 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "raised" if raised else "returned False",
                 _CHECK_FN_FAILURE_GRACE_SECONDS,
             )
-            return True
+            # Do not let a higher-level cache extend the grace window: this
+            # failure is deliberately re-probed on the next lookup.
+            return result(True, now)
 
         # No recent success (or grace expired) — honor the failure. Log it so
         # silent tool loss in quiet mode (subagents) is diagnosable.
@@ -202,16 +252,18 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
-        return False
+        _check_fn_cache[cache_key] = (now, False)
+        return result(False, now + _CHECK_FN_TTL_SECONDS)
 
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results. Call after config changes that
     affect tool availability (e.g. ``hermes tools enable``)."""
+    global _check_fn_cache_generation
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_cache_generation += 1
 
 
 class ToolRegistry:
@@ -259,15 +311,16 @@ class ToolRegistry:
         Mixed toolsets (e.g. ``terminal`` plus desktop-only ``read_terminal``)
         must not be gated solely by the first registered ``check_fn``.
         """
-        check_results: Dict[Callable, bool] = {}
+        check_results: Dict[tuple, bool] = {}
         for entry in entries:
             if entry.toolset != toolset:
                 continue
             if not entry.check_fn:
                 return True
-            if entry.check_fn not in check_results:
-                check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
-            if check_results[entry.check_fn]:
+            check_key = (entry.check_fn, entry.check_fn_session_scoped)
+            if check_key not in check_results:
+                check_results[check_key] = _check_fn_cached(*check_key)
+            if check_results[check_key]:
                 return True
         return False
 
@@ -375,6 +428,7 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        check_fn_session_scoped: bool = False,
         override: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file.
@@ -445,6 +499,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                check_fn_session_scoped=check_fn_session_scoped,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -527,7 +582,12 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(
+        self,
+        tool_names: Set[str],
+        quiet: bool = False,
+        return_availability_expiry: bool = False,
+    ) -> List[dict] | tuple[List[dict], float]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -542,16 +602,23 @@ class ToolRegistry:
         # Per-call cache on top of the 30 s TTL — handles repeat probes of the
         # same check_fn within one definitions pass without re-reading the
         # TTL clock.
-        check_results: Dict[Callable, bool] = {}
+        check_results: Dict[tuple, tuple[bool, float]] = {}
+        availability_expires_at = float("inf")
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
                 continue
             if entry.check_fn:
-                if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
-                if not check_results[entry.check_fn]:
+                check_key = (entry.check_fn, entry.check_fn_session_scoped)
+                if check_key not in check_results:
+                    check_results[check_key] = _check_fn_cached(
+                        *check_key,
+                        return_expiry=True,
+                    )
+                available, expires_at = check_results[check_key]
+                availability_expires_at = min(availability_expires_at, expires_at)
+                if not available:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
@@ -574,6 +641,8 @@ class ToolRegistry:
                         name, exc,
                     )
             result.append({"type": "function", "function": schema_with_name})
+        if return_availability_expiry:
+            return result, availability_expires_at
         return result
 
     # ------------------------------------------------------------------

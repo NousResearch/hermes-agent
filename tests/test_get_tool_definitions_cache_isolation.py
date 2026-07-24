@@ -113,3 +113,171 @@ class TestQuietModeCacheIsolation:
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+    def test_availability_invalidation_refreshes_filtered_schema_cache(self):
+        """Explicit invalidation must refresh an already-filtered cache entry."""
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        name = "test_availability_invalidation"
+        available = {"value": False}
+
+        def check():
+            return available["value"]
+
+        registry.register(
+            name=name,
+            toolset=name,
+            schema={"description": "availability probe", "parameters": {"type": "object"}},
+            handler=lambda _args: "{}",
+            check_fn=check,
+        )
+        try:
+            invalidate_check_fn_cache()
+            missing = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name not in {tool["function"]["name"] for tool in missing}
+
+            available["value"] = True
+            invalidate_check_fn_cache()
+            refreshed = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name in {tool["function"]["name"] for tool in refreshed}
+        finally:
+            registry.deregister(name)
+            invalidate_check_fn_cache()
+
+    def test_availability_cache_isolated_by_active_profile(self, tmp_path):
+        """A filtered schema from one profile cannot leak into another turn."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        name = "test_profile_availability"
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+        first_home.mkdir()
+        second_home.mkdir()
+
+        def check():
+            from hermes_constants import get_hermes_home
+
+            return get_hermes_home() == first_home
+
+        registry.register(
+            name=name,
+            toolset=name,
+            schema={"description": "profile availability probe", "parameters": {"type": "object"}},
+            handler=lambda _args: "{}",
+            check_fn=check,
+        )
+        try:
+            invalidate_check_fn_cache()
+            first_token = set_hermes_home_override(first_home)
+            try:
+                visible = model_tools.get_tool_definitions(
+                    enabled_toolsets=[name], quiet_mode=True,
+                )
+                assert name in {tool["function"]["name"] for tool in visible}
+            finally:
+                reset_hermes_home_override(first_token)
+
+            second_token = set_hermes_home_override(second_home)
+            try:
+                hidden = model_tools.get_tool_definitions(
+                    enabled_toolsets=[name], quiet_mode=True,
+                )
+                assert name not in {tool["function"]["name"] for tool in hidden}
+            finally:
+                reset_hermes_home_override(second_token)
+        finally:
+            registry.deregister(name)
+            invalidate_check_fn_cache()
+
+    def test_availability_cache_refreshes_with_check_fn_ttl(self, monkeypatch):
+        """The outer filtered-schema cache cannot outlive check_fn freshness."""
+        import tools.registry as registry_module
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        name = "test_availability_ttl"
+        available = {"value": False}
+        now = {"value": 30.1}
+
+        def check():
+            return available["value"]
+
+        monkeypatch.setattr(registry_module.time, "monotonic", lambda: now["value"])
+        registry.register(
+            name=name,
+            toolset=name,
+            schema={"description": "TTL availability probe", "parameters": {"type": "object"}},
+            handler=lambda _args: "{}",
+            check_fn=check,
+        )
+        try:
+            invalidate_check_fn_cache()
+            missing = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name not in {tool["function"]["name"] for tool in missing}
+
+            now["value"] = 60.0
+            assert name not in {
+                tool["function"]["name"]
+                for tool in model_tools.get_tool_definitions(
+                    enabled_toolsets=[name], quiet_mode=True,
+                )
+            }
+
+            available["value"] = True
+            now["value"] = 60.2
+            refreshed = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name in {tool["function"]["name"] for tool in refreshed}
+        finally:
+            registry.deregister(name)
+            invalidate_check_fn_cache()
+
+    def test_availability_cache_expires_last_good_after_grace(self, monkeypatch):
+        """The outer cache cannot advertise a failed check past its grace."""
+        import tools.registry as registry_module
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        name = "test_availability_grace"
+        available = {"value": True}
+        now = {"value": 0.1}
+
+        def check():
+            return available["value"]
+
+        monkeypatch.setattr(registry_module.time, "monotonic", lambda: now["value"])
+        registry.register(
+            name=name,
+            toolset=name,
+            schema={"description": "grace availability probe", "parameters": {"type": "object"}},
+            handler=lambda _args: "{}",
+            check_fn=check,
+        )
+        try:
+            invalidate_check_fn_cache()
+            visible = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name in {tool["function"]["name"] for tool in visible}
+
+            available["value"] = False
+            now["value"] = 60.0
+            still_visible = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name in {tool["function"]["name"] for tool in still_visible}
+
+            now["value"] = 60.2
+            hidden = model_tools.get_tool_definitions(
+                enabled_toolsets=[name], quiet_mode=True,
+            )
+            assert name not in {tool["function"]["name"] for tool in hidden}
+        finally:
+            registry.deregister(name)
+            invalidate_check_fn_cache()

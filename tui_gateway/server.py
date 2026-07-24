@@ -1973,6 +1973,11 @@ def _session_source(session: dict | None) -> str:
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
+    # This flag controls per-session terminal cwd overrides, not the session's
+    # display/completion cwd. Fallback dirs from TERMINAL_CWD/os.getcwd() should
+    # not force Docker or other remote backends to use a host launch path.
+    if not session.get("explicit_cwd"):
+        return
     try:
         from tools.terminal_tool import register_task_env_overrides
 
@@ -5473,6 +5478,7 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    explicit_cwd: bool = False,
 ):
     now = time.time()
     with _sessions_lock:
@@ -5489,6 +5495,7 @@ def _init_session(
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
+            "explicit_cwd": bool(explicit_cwd),
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -9535,6 +9542,8 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _db_unavailable_error(rid, code=5008)
     old_key = session["session_key"]
+    branch_explicit_cwd = bool(session.get("explicit_cwd"))
+    branch_cwd = _session_cwd(session)
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
     if not history:
@@ -9569,7 +9578,7 @@ def _(rid, params: dict) -> dict:
             # thing that surfaces TUI branches. See issue #20856.
             model_config={"_branched_from": old_key},
             parent_session_id=old_key,
-            cwd=_session_cwd(session),
+            cwd=branch_cwd,
         )
         for msg in history:
             db.append_message(
@@ -9601,6 +9610,7 @@ def _(rid, params: dict) -> dict:
             list(history),
             cols=session.get("cols", 80),
             source=source,
+            explicit_cwd=branch_explicit_cwd,
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease

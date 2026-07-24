@@ -897,7 +897,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_path = Path(hermes_home) / ".env"
                 existing_llm_key = ""
                 if env_path.exists():
-                    for line in env_path.read_text(encoding="utf-8").splitlines():
+                    # utf-8-sig: a Notepad BOM must not hide the first key.
+                    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
                         if line.startswith("HINDSIGHT_LLM_API_KEY="):
                             existing_llm_key = line.split("=", 1)[1]
                             break
@@ -927,7 +928,10 @@ class HindsightMemoryProvider(MemoryProvider):
             env_path.parent.mkdir(parents=True, exist_ok=True)
             existing_lines = []
             if env_path.exists():
-                existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+                # utf-8-sig: a Notepad BOM would glue U+FEFF onto the first
+                # key, defeating the in-place update below and appending a
+                # duplicate line instead.
+                existing_lines = env_path.read_text(encoding="utf-8-sig").splitlines()
             updated_keys = set()
             new_lines = []
             for line in existing_lines:

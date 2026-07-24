@@ -13357,7 +13357,11 @@ def _render_distribution_plan(plan) -> None:
                 env_path = plan.target_dir / ".env"
                 if env_path.is_file():
                     try:
-                        for raw in env_path.read_text(encoding="utf-8").splitlines():
+                        # .env is written as UTF-8 everywhere in the codebase,
+                        # but a Notepad-edited file can carry a BOM — read as
+                        # utf-8-sig so the first key isn't hidden behind
+                        # U+FEFF (#62617).
+                        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
                             line = raw.strip()
                             if not line or line.startswith("#"):
                                 continue

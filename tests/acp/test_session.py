@@ -439,6 +439,58 @@ class TestPersistence:
             manager.create_session(cwd="/work")
 
         assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
+        assert "max_iterations" not in captured
+
+    @pytest.mark.parametrize(
+        ("agent_config", "expected"),
+        [
+            ({"max_turns": 8}, 8),
+            ({"max_turns": True}, None),
+            ({"max_turns": 0}, None),
+            ({"max_turns": -1}, None),
+            ({"max_turns": "8"}, None),
+            ("invalid", None),
+        ],
+    )
+    def test_create_session_validates_agent_max_turns(
+        self, tmp_path, monkeypatch, agent_config, expected
+    ):
+        captured = {}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"))
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "openrouter", "default": "test-model"},
+                "agent": agent_config,
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+            manager.create_session(cwd="/work")
+
+        if expected is None:
+            assert "max_iterations" not in captured
+        else:
+            assert captured["max_iterations"] == expected
 
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")

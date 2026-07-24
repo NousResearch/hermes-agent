@@ -360,6 +360,9 @@ TOOLSETS = {
             "todo", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_task",
+            # LSP code intelligence
+            "lsp_go_to_definition", "lsp_find_references", "lsp_hover",
+            "lsp_document_symbols", "lsp_workspace_symbols",
         ],
         "includes": [],
         # Posture toolset: selected per-session by agent/coding_context.py,
@@ -392,6 +395,9 @@ TOOLSETS = {
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
+            # LSP code intelligence
+            "lsp_go_to_definition", "lsp_find_references", "lsp_hover",
+            "lsp_document_symbols", "lsp_workspace_symbols",
         ],
         "includes": []
     },
@@ -420,6 +426,9 @@ TOOLSETS = {
             "session_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
+            # LSP code intelligence
+            "lsp_go_to_definition", "lsp_find_references", "lsp_hover",
+            "lsp_document_symbols", "lsp_workspace_symbols",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

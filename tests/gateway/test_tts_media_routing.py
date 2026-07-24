@@ -245,6 +245,56 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
 
 
 @pytest.mark.asyncio
+async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
+    tmp_path, monkeypatch,
+):
+    """Queued text and media must stay on the same precomputed reply route."""
+    event = _event(thread_id="source-topic")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "threaded.png")
+    runner = object.__new__(GatewayRunner)
+    runner._thread_metadata_for_source = (
+        lambda source, reply_to_message_id=None: {"thread_id": "recomputed-topic"}
+    )
+    runner._reply_anchor_for_event = lambda event: event.message_id
+    routing_metadata = {
+        "thread_id": "queued-topic",
+        "reply_to_message_id": "trigger-message",
+    }
+
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="text")),
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_queued_first_response(
+        runner,
+        f"Threaded image\nMEDIA:{media_file}",
+        source=event.source,
+        adapter=adapter,
+        metadata=routing_metadata,
+        event_message_id=event.message_id,
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "chat-1",
+        "Threaded image",
+        metadata=routing_metadata,
+    )
+    adapter.send_multiple_images.assert_awaited_once_with(
+        chat_id="chat-1",
+        images=[(f"file://{media_file.as_posix()}", "")],
+        metadata=routing_metadata,
+    )
+
+
+@pytest.mark.asyncio
 async def test_queued_followup_delivery_keeps_remote_image_url_in_text():
     event = _event(thread_id="topic-1")
     runner = object.__new__(GatewayRunner)
@@ -430,11 +480,11 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     _QueuedMediaAgent.first_response = f"Quote here\nMEDIA:{media_file}\n{protected}"
 
     fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    setattr(fake_dotenv, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = _QueuedMediaAgent
+    setattr(fake_run_agent, "AIAgent", _QueuedMediaAgent)
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     adapter = _QueuedMediaCaptureAdapter()

@@ -67,6 +67,7 @@ agent sees a syntax-clean file with semantic problems as
 | Astro | `@astrojs/language-server` | npm |
 | Go | `gopls` | `go install` |
 | Rust | `rust-analyzer` | manual (rustup) |
+| Swift | `sourcekit-lsp` | manual (Swift/Xcode toolchain) |
 | C / C++ | `clangd` | manual (LLVM) |
 | Bash / Zsh | `bash-language-server` | npm |
 | YAML | `yaml-language-server` | npm |

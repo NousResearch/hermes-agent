@@ -323,6 +323,22 @@ def _spawn_rust_analyzer(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
+def _spawn_sourcekit_lsp(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    bin_path = _resolve_override(ctx, "sourcekit-lsp") or _which("sourcekit-lsp")
+    if bin_path is None:
+        from agent.lsp.install import try_install
+        bin_path = try_install("sourcekit-lsp", ctx.install_strategy)
+        if bin_path is None:
+            return None
+    return SpawnSpec(
+        command=[bin_path],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("sourcekit-lsp", {}),
+        initialization_options=ctx.init_overrides.get("sourcekit-lsp", {}),
+    )
+
+
 def _spawn_clangd(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "clangd") or _which("clangd")
     if bin_path is None:
@@ -854,6 +870,10 @@ def _root_rust(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(file_path, workspace, ["Cargo.toml", "Cargo.lock"])
 
 
+def _root_swift(file_path: str, workspace: str) -> Optional[str]:
+    return _root_or_workspace(file_path, workspace, ["Package.swift"])
+
+
 def _root_ruby(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(file_path, workspace, ["Gemfile"])
 
@@ -1018,6 +1038,13 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_rust,
         build_spawn=_spawn_rust_analyzer,
         description="Rust — rust-analyzer",
+    ),
+    ServerDef(
+        server_id="sourcekit-lsp",
+        extensions=(".swift",),
+        resolve_root=_root_swift,
+        build_spawn=_spawn_sourcekit_lsp,
+        description="Swift — SourceKit-LSP",
     ),
     ServerDef(
         server_id="clangd",

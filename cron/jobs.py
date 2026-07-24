@@ -1567,7 +1567,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     repeat = job["repeat"]
                     times = repeat.get("times")
                     completed = repeat.get("completed", 0)
-                    kind = job.get("schedule", {}).get("kind")
+                    kind = (job.get("schedule") or {}).get("kind")
                     preclaimed_oneshot = (
                         kind == "once"
                         and times is not None
@@ -1595,7 +1595,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # missing runtime dep into "job completed" and the user's
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
+                    kind = (job.get("schedule") or {}).get("kind")
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
@@ -1645,7 +1645,7 @@ def claim_dispatch(job_id: str) -> bool:
         for i, job in enumerate(jobs):
             if job["id"] != job_id:
                 continue
-            if job.get("schedule", {}).get("kind") != "once":
+            if (job.get("schedule") or {}).get("kind") != "once":
                 return True  # recurring jobs use advance_next_run(), not dispatch claims
             repeat = job.get("repeat")
             if not repeat:
@@ -1707,7 +1707,7 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
         for job in jobs:
             if job.get("id") != job_id:
                 continue
-            if job.get("schedule", {}).get("kind") != "once":
+            if (job.get("schedule") or {}).get("kind") != "once":
                 return False
             claim = job.get("run_claim")
             if not isinstance(claim, dict) or claim.get("by") != expected_owner:
@@ -1734,11 +1734,11 @@ def advance_next_run(job_id: str) -> bool:
         jobs = load_jobs()
         for job in jobs:
             if job["id"] == job_id:
-                kind = job.get("schedule", {}).get("kind")
+                kind = (job.get("schedule") or {}).get("kind")
                 if kind not in {"cron", "interval"}:
                     return False
                 now = _hermes_now().isoformat()
-                new_next = compute_next_run(job["schedule"], now)
+                new_next = compute_next_run(job.get("schedule"), now)
                 if new_next and new_next != job.get("next_run_at"):
                     job["next_run_at"] = new_next
                     save_jobs(jobs)
@@ -1809,9 +1809,9 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                 except Exception:
                     pass  # malformed claim → overwrite
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
-            kind = job.get("schedule", {}).get("kind")
+            kind = (job.get("schedule") or {}).get("kind")
             if kind in {"cron", "interval"}:
-                nxt = compute_next_run(job["schedule"], now.isoformat())
+                nxt = compute_next_run(job.get("schedule"), now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)
@@ -1957,7 +1957,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # is treated as stale (the claiming tick died mid-run) and allowed
             # through so the job is recovered rather than wedged forever.
             existing_claim = job.get("run_claim")
-            if existing_claim and job.get("schedule", {}).get("kind") == "once":
+            if existing_claim and (job.get("schedule") or {}).get("kind") == "once":
                 try:
                     claimed_at = _ensure_aware(
                         datetime.fromisoformat(existing_claim["at"])
@@ -1973,7 +1973,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
             next_run = job.get("next_run_at")
             if not next_run:
-                schedule = job.get("schedule", {})
+                schedule = job.get("schedule") or {}
                 kind = schedule.get("kind")
 
                 # One-shot jobs use a small grace window via the dedicated helper.
@@ -2012,7 +2012,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                         break
 
             raw_next_run_dt = datetime.fromisoformat(next_run)
-            schedule = job.get("schedule", {})
+            schedule = job.get("schedule") or {}
             kind = schedule.get("kind")
 
             next_run_dt = _ensure_aware(raw_next_run_dt)

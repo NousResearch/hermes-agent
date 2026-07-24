@@ -2163,3 +2163,72 @@ class TestJobsJsonUtf8Bom:
         loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["ctrlbom01"]
         assert "newline" in loaded[0]["name"]
+
+
+# =========================================================================
+# Null Schedule Tolerance
+# =========================================================================
+
+class TestNullScheduleTolerance:
+    def test_mark_job_run_handles_null_schedule(self, tmp_cron_dir):
+        job = {
+            "id": "null-sched-1",
+            "name": "null-sched",
+            "enabled": True,
+            "prompt": "test",
+            "schedule": None,
+            "repeat": {"times": 2, "completed": 0},
+            "next_run_at": "2026-07-24T12:00:00+00:00",
+        }
+        save_jobs([job])
+        mark_job_run("null-sched-1", success=True)
+        loaded = get_job("null-sched-1")
+        assert loaded["repeat"]["completed"] == 1
+
+    def test_claim_dispatch_handles_null_schedule(self, tmp_cron_dir):
+        job = {
+            "id": "null-sched-2",
+            "name": "null-sched-dispatch",
+            "enabled": True,
+            "prompt": "test",
+            "schedule": None,
+        }
+        save_jobs([job])
+        assert claim_dispatch("null-sched-2") is True
+
+    def test_advance_next_run_handles_null_schedule(self, tmp_cron_dir):
+        job = {
+            "id": "null-sched-3",
+            "name": "null-sched-advance",
+            "enabled": True,
+            "prompt": "test",
+            "schedule": None,
+        }
+        save_jobs([job])
+        assert advance_next_run("null-sched-3") is False
+
+    def test_claim_job_for_fire_handles_null_schedule(self, tmp_cron_dir):
+        from cron.jobs import claim_job_for_fire
+        job = {
+            "id": "null-sched-4",
+            "name": "null-sched-fire",
+            "enabled": True,
+            "prompt": "test",
+            "schedule": None,
+        }
+        save_jobs([job])
+        assert claim_job_for_fire("null-sched-4") is True
+
+    def test_get_due_jobs_handles_null_schedule(self, tmp_cron_dir):
+        job = {
+            "id": "null-sched-5",
+            "name": "null-sched-due",
+            "enabled": True,
+            "prompt": "test",
+            "schedule": None,
+            "next_run_at": None,
+        }
+        save_jobs([job])
+        due = get_due_jobs()
+        assert len(due) == 0
+

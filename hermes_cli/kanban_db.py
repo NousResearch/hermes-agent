@@ -839,7 +839,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     # A concurrent connect(board=normed) after the rename/delete recreates
     # an empty sqlite file via mkdir(exist_ok=True); the cache entry must be
     # dropped first so the schema init pass re-runs on that fresh file.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
+    resolved_db = str((d / "kanban.db").resolve())
+    _INITIALIZED_PATHS.discard(resolved_db)
+    _LAST_HEALTH_OK.pop(resolved_db, None)
 
     if archive:
         archive_root = boards_root() / "_archived"
@@ -1326,6 +1328,13 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+# Schema initialization and DB health have different lifetimes. A path only
+# needs its migrations once per process, but a board that was healthy then can
+# still be damaged later. Keep successful health probes on a short TTL so
+# long-lived gateway/dispatcher processes eventually re-check the file instead
+# of trusting _INITIALIZED_PATHS forever.
+_LAST_HEALTH_OK: dict[str, float] = {}
+_HEALTH_CHECK_TTL_SECONDS = 30.0
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
@@ -1856,6 +1865,15 @@ def _attempt_index_reindex_repair(
     return _integrity_messages_ok(messages), messages
 
 
+def _health_check_due(resolved: str) -> bool:
+    """Return whether ``resolved`` needs another full integrity probe."""
+    last_ok = _LAST_HEALTH_OK.get(resolved)
+    return (
+        last_ok is None
+        or (time.monotonic() - last_ok) >= _HEALTH_CHECK_TTL_SECONDS
+    )
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1880,8 +1898,9 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     treated as corruption; they propagate raw so the caller sees a
     normal lock failure and no spurious ``.corrupt`` backup is made.
 
-    No-op for missing files, zero-byte files (treated as fresh), and
-    paths already proven healthy this process (cache hit).
+    No-op for missing files and zero-byte files (treated as fresh). Callers
+    decide when to invoke the probe; :func:`connect` TTL-gates its fast path
+    separately from process-lifetime schema initialization.
 
     Path-trust note: ``path`` arrives via :func:`connect`, which itself
     resolves it from an explicit ``db_path`` argument, the
@@ -1897,13 +1916,15 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         resolved = path.resolve()
     except OSError:
         return
+    resolved_key = str(resolved)
     try:
         if not resolved.exists() or resolved.stat().st_size == 0:
+            _LAST_HEALTH_OK.pop(resolved_key, None)
             return
     except OSError:
         return
-    if str(resolved) in _INITIALIZED_PATHS:
-        return
+    # Do not leave an earlier success stamp behind if this probe fails.
+    _LAST_HEALTH_OK.pop(resolved_key, None)
     reason: Optional[str] = None
     messages: list[str] = []
     try:
@@ -1923,6 +1944,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
+        _LAST_HEALTH_OK[resolved_key] = time.monotonic()
         return
     # Quarantine FIRST — both the repair path and the fail-closed path
     # preserve the pre-touch bytes before anything mutates the file.
@@ -1937,6 +1959,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         )
         repaired, post = _attempt_index_reindex_repair(resolved, index_names)
         if repaired:
+            _LAST_HEALTH_OK[resolved_key] = time.monotonic()
             _log.warning(
                 "kanban DB %s auto-repaired via REINDEX (%s); "
                 "integrity_check now clean. Pre-repair copy kept at %s.",
@@ -2046,7 +2069,9 @@ def repair_db(
         # The file changed on disk; force the next connect() in this process
         # to re-probe instead of trusting the stale healthy-path cache.
         with _INIT_LOCK:
-            _INITIALIZED_PATHS.discard(str(resolved))
+            resolved_key = str(resolved)
+            _INITIALIZED_PATHS.discard(resolved_key)
+            _LAST_HEALTH_OK.pop(resolved_key, None)
         return RepairResult(
             status="repaired" if repaired else "corrupt",
             db_path=resolved,
@@ -2098,6 +2123,16 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
+        # The schema/migration cache is process-lifetime, but health is not.
+        # Stay lock-free for successful probes inside the TTL; once it expires,
+        # use the same bounded init flock as the repair-capable guard below so
+        # a narrow REINDEX remains serialized with other connect-time work.
+        if _health_check_due(resolved):
+            with _cross_process_init_lock(path):
+                # Another same-process caller may have refreshed the stamp
+                # while this caller waited for the flock.
+                if _health_check_due(resolved):
+                    _guard_existing_db_is_healthy(path)
         conn = _sqlite_connect(path)
         try:
             conn.row_factory = sqlite3.Row
@@ -2119,8 +2154,8 @@ def connect(
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
         # Full integrity probe — catches corruption past the header (malformed
-        # pages, broken internal metadata). Cached per-path after first success
-        # via _INITIALIZED_PATHS so it only runs once per process per path.
+        # pages, broken internal metadata). Successful results are TTL-cached
+        # separately from process-lifetime schema initialization.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
         conn = _sqlite_connect(path)
@@ -2157,6 +2192,11 @@ def connect(
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
                     _INITIALIZED_PATHS.add(resolved)
+                # A fresh file is empty when the pre-open guard runs, so stamp
+                # it only after schema initialization succeeds. Existing files
+                # were already stamped by the guard above; refreshing here is
+                # harmless and starts the steady-state TTL at connect success.
+                _LAST_HEALTH_OK[resolved] = time.monotonic()
         except Exception:
             conn.close()
             raise
@@ -2223,6 +2263,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
+        _LAST_HEALTH_OK.pop(resolved, None)
     with contextlib.closing(connect(path)):
         pass
     return path

@@ -237,6 +237,157 @@ def test_make_agent_honors_tui_launch_env_flags():
         assert kwargs["skip_memory"] is True
 
 
+def test_make_agent_honors_checkpoints_enabled_in_config():
+    """``checkpoints.enabled: true`` in config.yaml must enable checkpoints
+    in the TUI even when the ``HERMES_TUI_CHECKPOINTS`` env var is unset.
+
+    Regression: the TUI previously only read the env var, so the config
+    setting was silently ignored and /rollback reported "checkpoints are
+    not enabled".  The classic CLI (cli.py) already honored config.
+    """
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "glm-5"},
+        "checkpoints": {"enabled": True, "max_snapshots": 50},
+    }
+
+    # Ensure the env var is NOT set so we test the config path.
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k != "HERMES_TUI_CHECKPOINTS"}
+    with (
+        patch.dict(os.environ, clean_env, clear=True),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-cp-cfg", "key-cp-cfg")
+
+        assert mock_agent.call_args.kwargs["checkpoints_enabled"] is True
+
+
+def test_make_agent_checkpoints_disabled_by_default():
+    """No ``checkpoints`` config and no env var → checkpoints off."""
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "glm-5"}}
+
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k != "HERMES_TUI_CHECKPOINTS"}
+    with (
+        patch.dict(os.environ, clean_env, clear=True),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-cp-off", "key-cp-off")
+
+        assert mock_agent.call_args.kwargs["checkpoints_enabled"] is False
+
+
+def test_make_agent_checkpoints_env_var_overrides_config_false():
+    """``HERMES_TUI_CHECKPOINTS=1`` (from ``--checkpoints`` flag) must
+    enable checkpoints even when config says ``enabled: false``.
+    Mirrors CLI precedence: CLI flag > config."""
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "glm-5"},
+        "checkpoints": {"enabled": False},
+    }
+
+    with (
+        patch.dict(os.environ, {"HERMES_TUI_CHECKPOINTS": "1"}),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-cp-env", "key-cp-env")
+
+        assert mock_agent.call_args.kwargs["checkpoints_enabled"] is True
+
+
+def test_make_agent_checkpoints_bool_config_shorthand():
+    """A bare ``checkpoints: true`` (bool instead of dict) must also work."""
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "glm-5"},
+        "checkpoints": True,
+    }
+
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k != "HERMES_TUI_CHECKPOINTS"}
+    with (
+        patch.dict(os.environ, clean_env, clear=True),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-cp-bool", "key-cp-bool")
+
+        assert mock_agent.call_args.kwargs["checkpoints_enabled"] is True
+
+
 def test_probe_config_health_flags_null_sections():
     """Bare YAML keys (`agent:` with no value) parse as None and silently
     drop nested settings; probe must surface them so users can fix."""

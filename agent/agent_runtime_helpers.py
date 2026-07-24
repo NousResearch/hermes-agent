@@ -1225,11 +1225,17 @@ def try_recover_primary_transport(
         return False
 
     try:
-        # Close existing client to release stale connections
+        # Retire the existing client to release stale connections. #70773:
+        # never hard-close the shared client here — this runs on the
+        # conversation-loop thread while workers from stale-killed streaming
+        # attempts may still be unwinding their SSL BIOs on the old pool.
+        # ``_retire_shared_openai_client`` shuts the sockets down (FD-safe
+        # from any thread) and defers the FD release to GC, which cannot
+        # complete until every borrowing thread has unwound.
         if getattr(agent, "client", None) is not None:
             try:
-                agent._close_openai_client(
-                    agent.client, reason="primary_recovery", shared=True,
+                agent._retire_shared_openai_client(
+                    agent.client, reason="primary_recovery",
                 )
             except Exception:
                 pass

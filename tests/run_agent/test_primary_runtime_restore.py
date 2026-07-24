@@ -577,20 +577,26 @@ class TestTryRecoverPrimaryTransport:
             # wait_time = min(3 + 10, 8) = 8
             mock_sleep.assert_called_once_with(8)
 
-    def test_closes_existing_client_before_rebuild(self):
+    def test_retires_existing_client_before_rebuild(self):
+        """#70773: the old shared client is retired (sockets shutdown, FD
+        release deferred to GC), never hard-closed — this path runs on the
+        conversation-loop thread while stale-killed workers may still be
+        unwinding on the old pool."""
         agent = _make_agent(provider="custom")
         old_client = agent.client
         error = _make_transport_error("ReadTimeout")
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \
              patch("time.sleep"), \
-             patch.object(agent, "_close_openai_client") as mock_close:
+             patch.object(agent, "_close_openai_client") as mock_close, \
+             patch.object(agent, "_retire_shared_openai_client") as mock_retire:
             agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
             )
-            mock_close.assert_called_once_with(
-                old_client, reason="primary_recovery", shared=True,
+            mock_retire.assert_called_once_with(
+                old_client, reason="primary_recovery",
             )
+            mock_close.assert_not_called()
 
     def test_survives_rebuild_failure(self):
         """If client rebuild fails, returns False gracefully."""

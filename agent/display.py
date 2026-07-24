@@ -1302,6 +1302,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
 
+        # web_extract returns an ``error`` field for every URL, including an
+        # empty one on success. Judge the result values instead of matching
+        # the serialized key name below.
+        if tool_name == "web_extract" and isinstance(data.get("results"), list):
+            results = data["results"]
+            failed = [
+                item for item in results
+                if isinstance(item, dict) and item.get("error") and not item.get("content")
+            ]
+            if results and len(failed) == len(results):
+                return True, f" [{_trim_error(str(failed[0]['error']))}]"
+            return False, ""
+
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.
@@ -1506,5 +1519,4 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
 

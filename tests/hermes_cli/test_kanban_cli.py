@@ -159,6 +159,51 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_unblock_records_active_pr_recovery_receipt(
+    kanban_home,
+    monkeypatch,
+):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    pr_url = "https://github.com/acme/widget/pull/42"
+    reviewed_head = "a" * 40
+    workspace = "/tmp/widget-recovery"
+    branch = "wt/recover-widget"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="repair reviewed PR",
+            assignee="builder",
+            workspace_kind="worktree",
+            workspace_path=workspace,
+            branch_name=branch,
+        )
+        kb.add_comment(conn, tid, "builder", f"PR {pr_url}")
+        assert kb.block_task(conn, tid, reason="review-required: PR #42")
+        kb.add_comment(
+            conn,
+            tid,
+            "reviewer",
+            f"REQUEST_CHANGES for PR #42 at {reviewed_head}",
+        )
+
+    out = kc.run_slash(
+        "unblock "
+        f"--active-pr-url {pr_url} "
+        f"--reviewed-head {reviewed_head} "
+        f"--expected-branch {branch} "
+        f"--expected-workspace {workspace} "
+        f"--reviewer reviewer {tid}"
+    )
+    assert f"Unblocked {tid}" in out
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None
+        event = kb.list_events(conn, tid)[-1]
+        assert isinstance(event.payload, dict)
+        assert event.payload["active_pr_recovery"]["task_id"] == tid
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

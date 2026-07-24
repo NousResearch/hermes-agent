@@ -71,11 +71,13 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
+| `recall_max_results` | `7` | Maximum distinct recall results after conservative deduplication |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |
 | `recall_types` | `observation` | Fact types surfaced by recall (both auto-recall and the `hindsight_recall` tool). Comma-separated string or JSON list. **Default narrowed to `observation` only** (see "Behavior change" below). Set to `observation,world,experience` to also include raw facts. |
+| `recall_authority_tags` | — | Optional tags whose matching results rank before otherwise higher-scored results. Authority is opt-in; retention tags are not treated as authority automatically. |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 
 > **Behavior change — `recall_types` defaults to `observation` only.**
@@ -85,6 +87,8 @@ Config file: `~/.hermes/hindsight/config.json`
 > Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes.
 >
 > Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
+
+Both recall paths use the same bounded post-processing step. Exact and narrowly equivalent repetitions are collapsed while distinct supporting details remain. If distinct results exceed `recall_max_results` or `recall_max_tokens`, the rendered output includes an omission notice rather than truncating silently.
 
 ### Retain
 

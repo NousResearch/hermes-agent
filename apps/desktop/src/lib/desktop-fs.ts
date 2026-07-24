@@ -127,6 +127,20 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
   return remoteFsApi<{ branch: string; cwd: string }>('/api/fs/default-cwd')
 }
 
+// Create a directory on the connected backend (remote folder picker's "New
+// folder"). Remote only: the local picker's native OS dialog already offers
+// folder creation, so there is no Electron IPC for this. A 404 here means the
+// backend predates the endpoint — the caller surfaces that as an inline error.
+export async function createDesktopDir(path: string): Promise<{ path: string }> {
+  if (!isDesktopFsRemoteMode()) {
+    throw new Error('Creating folders is only available against a remote backend')
+  }
+
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/mkdir', { path })
+
+  return { path: result.path || path }
+}
+
 // Reveal a path in the OS file manager (Finder / Explorer / Files). Local only.
 export async function revealDesktopPath(path: string): Promise<void> {
   await bridge().revealPath?.(path)

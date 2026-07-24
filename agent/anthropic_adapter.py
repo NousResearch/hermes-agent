@@ -721,7 +721,84 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _apply_anthropic_custom_headers(kwargs, base_url, normalized_base_url)
     return _anthropic_sdk.Anthropic(**kwargs)
+
+
+def _parse_anthropic_custom_headers(raw: Optional[str]) -> Dict[str, str]:
+    """Parse the ``ANTHROPIC_CUSTOM_HEADERS`` env var into a header dict.
+
+    Mirrors Claude Code's convention: one ``Name: Value`` pair per line
+    (newline-separated), with surrounding whitespace trimmed. Lines without a
+    ``:`` separator or with an empty name are ignored. Returns an empty dict
+    when unset/blank so callers can merge unconditionally.
+
+        ANTHROPIC_CUSTOM_HEADERS="x-project: my-project"
+        ANTHROPIC_CUSTOM_HEADERS=$'x-project: my-project\\nx-team: infra'
+    """
+    if not raw:
+        return {}
+    headers: Dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        name = name.strip()
+        if name:
+            headers[name] = value.strip()
+    return headers
+
+
+def _apply_anthropic_custom_headers(kwargs: dict, *base_url_candidates: Optional[str]) -> None:
+    """Merge user-configured headers onto Anthropic client ``kwargs``.
+
+    Two sources, lowest precedence first (SDK/provider defaults such as
+    ``anthropic-beta`` lose to both, but are preserved when not overridden):
+
+    1. ``ANTHROPIC_CUSTOM_HEADERS`` env var (Claude Code convention: one
+       ``Name: Value`` pair per line). Applied only when the client targets an
+       explicit custom endpoint — native Anthropic (no base_url) and Bedrock
+       never see it, so a proxy's tenant/auth header cannot leak to other
+       providers.
+    2. Endpoint-scoped ``extra_headers`` from a ``providers`` /
+       ``custom_providers`` config entry whose ``base_url`` matches the
+       client's endpoint — the same resolution path the OpenAI-wire clients
+       use. Most specific, so it wins over the env var.
+
+    *base_url_candidates* are the endpoint URL forms to match config entries
+    against (the caller's original ``base_url`` and its normalized/v1-stripped
+    variant — config may record either form). No-op when nothing is
+    configured.
+
+    SECURITY: header values routinely carry credentials — never log them.
+    """
+    candidates = [c for c in base_url_candidates if isinstance(c, str) and c.strip()]
+    if not candidates:
+        return
+
+    merged = dict(kwargs.get("default_headers") or {})
+    changed = False
+
+    env_headers = _parse_anthropic_custom_headers(os.environ.get("ANTHROPIC_CUSTOM_HEADERS"))
+    if env_headers:
+        merged.update(env_headers)
+        changed = True
+
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+
+        for candidate in candidates:
+            extra_headers = get_custom_provider_extra_headers(candidate)
+            if extra_headers:
+                merged.update(extra_headers)
+                changed = True
+                break
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped for Anthropic client", exc_info=True)
+
+    if changed:
+        kwargs["default_headers"] = merged
 
 
 def build_anthropic_client(
@@ -850,6 +927,7 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _apply_anthropic_custom_headers(kwargs, base_url, normalized_base_url)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

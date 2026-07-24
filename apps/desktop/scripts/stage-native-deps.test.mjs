@@ -2,15 +2,17 @@ import assert from 'node:assert/strict'
 import fs, { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
   stageNodePtyInto,
-  classifyNativeBinary
+  classifyNativeBinary,
+  copyDirRecursive
 } from '../scripts/stage-native-deps.mjs'
 
 const { join } = path
+const here = path.dirname(fileURLToPath(import.meta.url))
 
 // ─── fixtures ──────────────────────────────────────────────────────
 //
@@ -356,4 +358,104 @@ test('validation rejects a staged binary with the wrong platform magic', () => {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+// ─── copyDirRecursive tests (Windows 0xC0000409 crash regression) ────
+//
+// Node 22.x's native recursive cpSync (cpSyncCopyDir) hard-crashes on
+// Windows while copying node-pty's conpty payload — a silent 0xC0000409
+// that killed the packaged desktop build at the stage step. Directory
+// copies must go through the manual per-file walk instead.
+
+/**
+ * Returns true if any `cpSync(...)` call in `source` passes a `recursive`
+ * option. Walks each call's argument list tracking paren depth, so it catches
+ * a call whose `{ recursive: true }` is split across lines — and is not fooled
+ * by a `recursive` that belongs to a later mkdirSync/rmSync. Comments are
+ * stripped first so the doc comment naming the avoided API doesn't match.
+ */
+function usesRecursiveCpSync(source) {
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+    .replace(/^\s*\/\/.*$/gm, '') // line comments
+  const CALL = 'cpSync('
+  for (let start = code.indexOf(CALL); start !== -1; start = code.indexOf(CALL, start + 1)) {
+    let depth = 0
+    let i = start + CALL.length - 1 // points at the opening '('
+    for (; i < code.length; i++) {
+      if (code[i] === '(') depth++
+      else if (code[i] === ')' && --depth === 0) break
+    }
+    const args = code.slice(start + CALL.length, i)
+    if (/\brecursive\b/.test(args)) return true
+  }
+  return false
+}
+
+test('copyDirRecursive reproduces a nested tree with exact bytes', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const src = join(tmp, 'src')
+    const dest = join(tmp, 'dest')
+    // Mirror node-pty's payload shape: top-level files plus a nested conpty/
+    // dir holding a binary blob (the .dll/.exe that trip Windows cpSync).
+    fs.mkdirSync(join(src, 'conpty'), { recursive: true })
+    fs.writeFileSync(join(src, 'pty.node'), Buffer.from([0, 1, 2, 253, 254, 255]))
+    fs.writeFileSync(join(src, 'index.js'), 'module.exports = {}\n', 'utf8')
+    fs.writeFileSync(join(src, 'conpty', 'conpty.dll'), Buffer.from([77, 90, 0, 255]))
+    fs.writeFileSync(join(src, 'conpty', 'OpenConsole.exe'), Buffer.from([77, 90, 144, 0]))
+
+    copyDirRecursive(src, dest)
+
+    for (const rel of ['pty.node', 'index.js', 'conpty/conpty.dll', 'conpty/OpenConsole.exe']) {
+      assert.ok(existsSync(join(dest, rel)), `missing ${rel}`)
+      assert.deepEqual(
+        fs.readFileSync(join(dest, rel)),
+        fs.readFileSync(join(src, rel)),
+        `bytes differ for ${rel}`
+      )
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('copyDirRecursive creates the destination even for an empty source', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const src = join(tmp, 'empty-src')
+    const dest = join(tmp, 'empty-dest')
+    fs.mkdirSync(src, { recursive: true })
+    copyDirRecursive(src, dest)
+    assert.equal(existsSync(dest), true)
+    assert.deepEqual(fs.readdirSync(dest), [])
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('stage-native-deps uses no recursive cpSync (Windows 0xC0000409 regression)', () => {
+  // Guard against anyone reintroducing `cpSync(.., { recursive: true })`.
+  const source = fs.readFileSync(join(here, 'stage-native-deps.mjs'), 'utf8')
+  assert.equal(
+    usesRecursiveCpSync(source),
+    false,
+    'stage-native-deps.mjs must not call cpSync with { recursive: true }'
+  )
+})
+
+test('recursive-cpSync guard is newline-tolerant and precise', () => {
+  // A multi-line recursive call must still be caught (the guard's whole point).
+  assert.equal(
+    usesRecursiveCpSync('cpSync(\n  join(a, b),\n  join(c, d),\n  { recursive: true }\n)\n'),
+    true,
+    'must catch a cpSync whose { recursive: true } is on a later line'
+  )
+  // A non-recursive cpSync followed by an unrelated recursive mkdirSync must
+  // NOT trip the guard (no false positive from scanning past the call).
+  assert.equal(
+    usesRecursiveCpSync('cpSync(join(a, b), join(c, d))\nmkdirSync(dest, { recursive: true })\n'),
+    false,
+    'must not flag a recursive option that belongs to a later call'
+  )
 })

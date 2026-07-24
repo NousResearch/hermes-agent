@@ -2098,7 +2098,7 @@ def _resolve_command_cwd(
 
 
 def terminal_tool(
-    command: str,
+    command: str = "",
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
@@ -2108,6 +2108,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    argv: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2141,6 +2142,43 @@ def terminal_tool(
         # Note: force parameter is internal only, not exposed to model API
     """
     try:
+        # H2: argv-form support. If the model passes a non-empty `argv` list,
+        # we route the actual execution through env.execute_argv() (no shell)
+        # but use shlex.join(argv) as the string view for safety checks,
+        # logging, and exit-code interpretation that operate on a string.
+        _is_argv_form = False
+        if argv is not None and argv != []:
+            if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "Invalid argv: expected non-empty list of strings",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if command:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "Provide either 'command' (shell-parsed string) or 'argv' (list bypassing shell), not both.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if background or pty:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        "argv form does not currently support background=true "
+                        "or pty=true (the process registry path expects a "
+                        "shell string). Use the string `command` form for "
+                        "background or PTY workflows; argv form is for "
+                        "foreground program execution."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
+            import shlex as _shlex
+            command = _shlex.join(argv)
+            _is_argv_form = True
+
         if not isinstance(command, str):
             logger.warning(
                 "Rejected invalid terminal command value: %s",
@@ -2150,6 +2188,14 @@ def terminal_tool(
                 "output": "",
                 "exit_code": -1,
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "status": "error",
+            }, ensure_ascii=False)
+
+        if not _is_argv_form and not command:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "Empty command. Pass either a non-empty 'command' string or a non-empty 'argv' list.",
                 "status": "error",
             }, ensure_ascii=False)
 
@@ -2734,7 +2780,13 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
-                    result = env.execute(command, **execute_kwargs)
+                    if _is_argv_form:
+                        # argv form: skip the shell entirely. No sudo prep,
+                        # no compound-background rewrite, no cwd snapshot.
+                        # The argv list is what hits exec().
+                        result = env.execute_argv(argv, **execute_kwargs)
+                    else:
+                        result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -3078,7 +3130,27 @@ TERMINAL_SCHEMA = {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The command to execute on the VM"
+                "description": (
+                    "Shell-parsed command string. Goes through `bash -c`, so "
+                    "quoting and escaping rules apply. For HTTP/API calls "
+                    "containing JSON bodies with apostrophes, prefer the `http` "
+                    "tool or use `argv` (sibling parameter) — both skip the "
+                    "shell entirely. Pass empty string when using argv."
+                )
+            },
+            "argv": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Argv list — skips bash entirely. The first element is the "
+                    "executable; the rest are arguments handed to it verbatim. "
+                    "Use this when your command contains characters that bash "
+                    "would re-interpret (apostrophes in JSON bodies, `$` in "
+                    "literal strings, etc.). Mutually exclusive with `command` "
+                    "— pass one or the other, not both. Skips sudo prompt "
+                    "rewriting and shell-level features (pipes, redirection, "
+                    "compound `&&`); use `command` if you need those."
+                )
             },
             "background": {
                 "type": "boolean",
@@ -3117,7 +3189,7 @@ TERMINAL_SCHEMA = {
 
 def _handle_terminal(args, **kw):
     return terminal_tool(
-        command=args.get("command"),
+        command=args.get("command", ""),
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
@@ -3126,6 +3198,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        argv=args.get("argv"),
     )
 
 

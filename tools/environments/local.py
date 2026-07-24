@@ -1425,6 +1425,62 @@ class LocalEnvironment(BaseEnvironment):
 
         return proc
 
+    def _run_argv(
+        self,
+        argv: list[str],
+        *,
+        timeout: int = 120,  # noqa: ARG002 — accepted for interface compat; enforced by caller
+        stdin_data: str | None = None,
+    ) -> subprocess.Popen:
+        """Spawn an argv list directly via subprocess.Popen — no shell.
+
+        H2: this is the perf + safety win for HTTP-shaped tool calls.
+        Bash never sees the args, so apostrophes / double quotes / `$`
+        in JSON bodies pass through verbatim. Saves the ~30-80 ms
+        bash fork+parse overhead per call.
+        """
+        run_env = _make_run_env(self.env)
+
+        # Same cwd-recovery dance as _run_bash: a deleted cwd would otherwise
+        # crash Popen before the process starts.
+        safe_cwd = _resolve_safe_cwd(self.cwd)
+        if safe_cwd != self.cwd:
+            logger.warning(
+                "LocalEnvironment cwd %r is missing on disk; "
+                "falling back to %r so terminal commands keep working.",
+                self.cwd,
+                safe_cwd,
+            )
+            self.cwd = safe_cwd
+
+        _popen_cwd = self.cwd
+        if _IS_WINDOWS and _popen_cwd and re.match(r'^/[a-zA-Z]/', _popen_cwd):
+            _popen_cwd = _popen_cwd[1].upper() + ':' + _popen_cwd[2:].replace('/', '\\')
+
+        proc = subprocess.Popen(
+            argv,
+            text=True,
+            env=run_env,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            cwd=_popen_cwd,
+            shell=False,  # explicit — argv form must NEVER go through a shell
+        )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
+
+        if stdin_data is not None:
+            _pipe_stdin(proc, stdin_data)
+
+        return proc
+
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
 

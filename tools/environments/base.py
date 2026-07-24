@@ -445,6 +445,30 @@ class BaseEnvironment(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
 
+    # H2: argv-form execution. Backends that can natively spawn an argv list
+    # without going through bash (LocalEnvironment via subprocess.Popen,
+    # docker via `docker exec`, ssh via remote argv) override this for
+    # perf + quoting safety. The default falls back to bash with shlex.join,
+    # which is correct but loses the ~30-80 ms-per-call savings — the safety
+    # win (no shell parsing) still applies because shlex.join produces a
+    # provably-valid bash string.
+    def _run_argv(
+        self,
+        argv: list[str],
+        *,
+        timeout: int = 120,
+        stdin_data: str | None = None,
+    ) -> ProcessHandle:
+        """Spawn an argv list directly (no shell parsing).
+
+        Default implementation degrades to ``_run_bash(shlex.join(argv))``
+        for backends that haven't implemented a native argv path. Override
+        when the backend can spawn an argv list without a shell wrapper.
+        """
+        return self._run_bash(
+            shlex.join(argv), login=False, timeout=timeout, stdin_data=stdin_data
+        )
+
     @abstractmethod
     def cleanup(self):
         """Release backend resources (container, instance, connection)."""
@@ -1102,6 +1126,54 @@ class BaseEnvironment(ABC):
         )
         self._update_cwd(result)
 
+        return result
+
+    def execute_argv(
+        self,
+        argv: list[str],
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+    ) -> dict:
+        """Execute an argv list directly (no shell), return {"output", "returncode"}.
+
+        Bypasses the shell-only machinery in ``execute()``: no sudo
+        rewriting, no compound-background rewriting, no CWD-tracking
+        wrapper, no snapshot sourcing. The argv list is handed to
+        ``_run_argv`` as-is, which on supporting backends spawns the
+        process directly without bash.
+
+        Trade-offs vs ``execute()``:
+          * No cwd persistence — argv form runs a single program; it
+            cannot ``cd`` and have that affect later calls. The session's
+            ``self.cwd`` is used as the starting cwd and stays unchanged.
+          * No sudo prompt rewriting — pass ``sudo`` as the first argv
+            entry only if you've handled credentials yourself.
+          * No snapshot env — only the explicit ``self.env`` is in scope.
+        """
+        self._before_execute()
+
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            raise TypeError("execute_argv requires a non-empty list of strings")
+
+        effective_timeout = timeout or self.timeout
+        # cwd arg is informational here — _run_argv backends consult
+        # self.cwd; honor an explicit override by temporarily swapping.
+        prev_cwd = self.cwd
+        if cwd:
+            self.cwd = cwd
+        try:
+            proc = self._run_argv(
+                argv, timeout=effective_timeout, stdin_data=stdin_data
+            )
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+        finally:
+            if cwd:
+                self.cwd = prev_cwd
+
+        # NB: deliberately skip _update_cwd — argv processes can't change
+        # the session's working directory.
         return result
 
     # ------------------------------------------------------------------

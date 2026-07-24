@@ -38,9 +38,17 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Pattern enforced by strict backends for property key names inside tool
+# input schemas.  Use the most restrictive known rule (Anthropic: only
+# alphanumerics and underscores) so schemas are portable across all
+# providers.  GitHub Copilot additionally allows dots/hyphens, but
+# Anthropic does not — choosing the intersection keeps things safe.
+_VALID_PROPERTY_KEY_RE = re.compile(r"^[a-zA-Z0-9_]{1,64}$")
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -350,6 +358,39 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out.pop("required", None)
         elif len(valid) != len(out["required"]):
             out["required"] = valid
+
+    # Strip or rename property keys that violate the strict backend pattern
+    # (e.g. GitHub Copilot, Anthropic reject keys like "$defs" because '$'
+    # is not in [a-zA-Z0-9_.-]).  Rename by stripping invalid characters;
+    # drop the key entirely if nothing valid remains or if it collides.
+    if isinstance(out.get("properties"), dict):
+        props = out["properties"]
+        bad_keys = [k for k in props if not _VALID_PROPERTY_KEY_RE.match(k)]
+        if bad_keys:
+            for k in bad_keys:
+                sanitized_key = re.sub(r"[^a-zA-Z0-9_]", "", k)[:64]
+                if not sanitized_key or sanitized_key in props:
+                    # Can't safely rename — drop the property.
+                    logger.debug(
+                        "schema_sanitizer[%s]: dropping property %r "
+                        "(key contains invalid characters and cannot be renamed)",
+                        path, k,
+                    )
+                    del props[k]
+                else:
+                    logger.debug(
+                        "schema_sanitizer[%s]: renaming property %r -> %r "
+                        "(key contains characters invalid for strict backends)",
+                        path, k, sanitized_key,
+                    )
+                    props[sanitized_key] = props.pop(k)
+            # Re-prune required after key renames/removals
+            if isinstance(out.get("required"), list):
+                valid = [r for r in out["required"] if r in props]
+                if not valid:
+                    out.pop("required", None)
+                else:
+                    out["required"] = valid
 
     return out
 

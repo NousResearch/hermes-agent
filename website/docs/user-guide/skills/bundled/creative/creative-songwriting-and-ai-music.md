@@ -309,7 +309,7 @@ cover this (heavy dependencies, so not installed by default):
   `hermes skills install official/creative/heartmula`
 - **audiocraft** — Meta's MusicGen (instrumental text-to-music) and
   AudioGen (sound effects):
-  `hermes skills install official/creative/audiocraft`
+  `hermes skills install official/creative/audiocraft-audio-generation`
 
 The lyric-writing and prompting craft in this skill applies to
 heartmula too — its input format is lyrics with bracketed structure

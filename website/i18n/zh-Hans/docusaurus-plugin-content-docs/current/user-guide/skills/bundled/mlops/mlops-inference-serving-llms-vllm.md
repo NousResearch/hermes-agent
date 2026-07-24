@@ -15,7 +15,7 @@ vLLM：高吞吐量 LLM 服务、OpenAI API、量化。
 | | |
 |---|---|
 | 来源 | 内置（默认安装） |
-| 路径 | `skills/mlops/inference/vllm` |
+| 路径 | `skills/mlops/inference/serving-llms-vllm` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
 | 许可证 | MIT |
@@ -362,13 +362,13 @@ vllm serve MODEL --speculative-model DRAFT_MODEL
 
 ## 高级主题
 
-**服务器部署模式**：参见 [references/server-deployment.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/server-deployment.md)，了解 Docker、Kubernetes 和负载均衡配置。
+**服务器部署模式**：参见 [references/server-deployment.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/server-deployment.md)，了解 Docker、Kubernetes 和负载均衡配置。
 
-**性能优化**：参见 [references/optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/optimization.md)，了解 PagedAttention 调优、continuous batching 详情及基准测试结果。
+**性能优化**：参见 [references/optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/optimization.md)，了解 PagedAttention 调优、continuous batching 详情及基准测试结果。
 
-**量化指南**：参见 [references/quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/quantization.md)，了解 AWQ/GPTQ/FP8 配置、模型准备及精度对比。
+**量化指南**：参见 [references/quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/quantization.md)，了解 AWQ/GPTQ/FP8 配置、模型准备及精度对比。
 
-**故障排查**：参见 [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/vllm/references/troubleshooting.md)，了解详细错误信息、调试步骤及性能诊断。
+**故障排查**：参见 [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/inference/serving-llms-vllm/references/troubleshooting.md)，了解详细错误信息、调试步骤及性能诊断。
 
 ## 硬件要求
 

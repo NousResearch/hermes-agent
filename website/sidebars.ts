@@ -225,8 +225,8 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/mlops/mlops-huggingface-hub',
                     'user-guide/skills/bundled/mlops/mlops-inference-llama-cpp',
-                    'user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness',
-                    'user-guide/skills/bundled/mlops/mlops-inference-vllm',
+                    'user-guide/skills/bundled/mlops/mlops-evaluation-evaluating-llms-harness',
+                    'user-guide/skills/bundled/mlops/mlops-inference-serving-llms-vllm',
                     'user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases',
                   ],
                 },
@@ -353,7 +353,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/optional/creative/creative-audiocraft',
+                    'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-blender-mcp',
@@ -491,7 +491,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-pytorch-lightning',
                     'user-guide/skills/optional/mlops/mlops-qdrant',
                     'user-guide/skills/optional/mlops/mlops-saelens',
-                    'user-guide/skills/optional/mlops/mlops-models-segment-anything',
+                    'user-guide/skills/optional/mlops/mlops-models-segment-anything-model',
                     'user-guide/skills/optional/mlops/mlops-simpo',
                     'user-guide/skills/optional/mlops/mlops-slime',
                     'user-guide/skills/optional/mlops/mlops-stable-diffusion',

@@ -1568,6 +1568,14 @@ def restore_primary_runtime(agent) -> bool:
 _TRANSIENT_TRANSPORT_ERRORS = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
     "ConnectError", "RemoteProtocolError",
+    "ConnectionError", "ConnectionResetError",
+    "ConnectionAbortedError", "BrokenPipeError",
+    "TimeoutError", "ReadError",
+    "ServerDisconnectedError",
+    # SSL/TLS transport errors — transient mid-stream failures
+    "SSLError", "SSLZeroReturnError", "SSLWantReadError",
+    "SSLWantWriteError", "SSLEOFError", "SSLSyscallError",
+    # OpenAI SDK errors
     "APIConnectionError", "APITimeoutError",
 })
 

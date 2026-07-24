@@ -1,0 +1,111 @@
+[
+  {
+    "name": "role_filtering_recovers_recent_constraints",
+    "parent_messages": [
+      {"role": "system", "content": "SYSTEM_PRIVATE must never be projected"},
+      {"role": "user", "content": "Use the constraint USE_TDD for this task."},
+      {"role": "assistant", "content": "Acknowledged; I will preserve USE_TDD."},
+      {"role": "tool", "content": "TOOL_PRIVATE raw output"},
+      {"role": "user", "content": "Also preserve KEEP_TASK_LAST."}
+    ],
+    "explicit_context": null,
+    "goal": "Implement the constrained change.",
+    "projection_enabled": true,
+    "recent_turns": 3,
+    "max_chars": 1200,
+    "required_markers": ["USE_TDD", "KEEP_TASK_LAST"],
+    "forbidden_markers": ["SYSTEM_PRIVATE", "TOOL_PRIVATE"]
+  },
+  {
+    "name": "forbidden_categories_do_not_leak",
+    "parent_messages": [
+      {"role": "system", "content": "API_KEY=forbidden-system-value"},
+      {"role": "tool", "content": "TOKEN=forbidden-tool-value"},
+      {"role": "developer", "content": "ENV_BLOCK=forbidden-developer-value"},
+      {"role": "user", "content": {"type": "attachment", "raw": "ATTACHMENT_SECRET"}},
+      {"role": "assistant", "content": "Only carry SAFE_ONLY into the child context."}
+    ],
+    "explicit_context": null,
+    "goal": "Summarize the safe instruction.",
+    "projection_enabled": true,
+    "recent_turns": 3,
+    "max_chars": 800,
+    "required_markers": ["SAFE_ONLY"],
+    "forbidden_markers": ["forbidden-system-value", "forbidden-tool-value", "forbidden-developer-value", "ATTACHMENT_SECRET"]
+  },
+  {
+    "name": "explicit_context_remains_default",
+    "parent_messages": [
+      {"role": "user", "content": "SHOULD_NOT_COPY parent history"},
+      {"role": "assistant", "content": "More parent material that is irrelevant."}
+    ],
+    "explicit_context": "EXPLICIT_CANON\nPreserve these exact explicit details.",
+    "goal": "Use only explicit context.",
+    "projection_enabled": false,
+    "recent_turns": 3,
+    "max_chars": 800,
+    "required_markers": ["EXPLICIT_CANON"],
+    "forbidden_markers": ["SHOULD_NOT_COPY"]
+  },
+  {
+    "name": "long_history_obeys_budget_and_keeps_head_tail",
+    "parent_messages": [
+      {"role": "user", "content": "HEAD_MARK "},
+      {"role": "assistant", "content_repeat": {"text": "x", "count": 11000}},
+      {"role": "user", "content_repeat": {"text": "y", "count": 11000}},
+      {"role": "assistant", "content": " TAIL_MARK"}
+    ],
+    "explicit_context": null,
+    "goal": "Return a bounded deterministic result.",
+    "projection_enabled": true,
+    "recent_turns": 4,
+    "max_chars": 1200,
+    "required_markers": ["HEAD_MARK", "TAIL_MARK"],
+    "forbidden_markers": []
+  },
+  {
+    "name": "exact_oob_wrapper_keeps_body_only",
+    "parent_messages": [
+      {"role": "user", "content": "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered mid-turn; not tool output]\nOOB_KEEP and preserve this correction.\n[/OUT-OF-BAND USER MESSAGE]"}
+    ],
+    "explicit_context": null,
+    "goal": "Apply the correction.",
+    "projection_enabled": true,
+    "recent_turns": 3,
+    "max_chars": 800,
+    "required_markers": ["OOB_KEEP", "[OOB user]"],
+    "forbidden_markers": ["a direct message from the user", "[/OUT-OF-BAND USER MESSAGE]"]
+  },
+  {
+    "name": "counterexample_old_relevant_fact_is_lost",
+    "parent_messages": [
+      {"role": "user", "content": "OLD_REQUIRED is important but old."},
+      {"role": "assistant", "content": "Acknowledged long ago."},
+      {"role": "user", "content": "Recent detail one."},
+      {"role": "assistant", "content": "Recent response one."},
+      {"role": "user", "content": "Recent detail two."},
+      {"role": "assistant", "content": "Recent response two."}
+    ],
+    "explicit_context": null,
+    "goal": "Demonstrate the recent-window limitation.",
+    "projection_enabled": true,
+    "recent_turns": 2,
+    "max_chars": 800,
+    "required_markers": ["OLD_REQUIRED"],
+    "forbidden_markers": []
+  },
+  {
+    "name": "explicit_context_has_budget_priority",
+    "parent_messages": [
+      {"role": "user", "content_repeat": {"text": "projected-middle ", "count": 80}},
+      {"role": "assistant", "content": "PROJECTED_TAIL remains only if spare budget permits."}
+    ],
+    "explicit_context": "EXPLICIT_HEAD begins authoritative context. explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle explicit-middle EXPLICIT_TAIL ends authoritative context.",
+    "goal": "Preserve explicit context before projected history.",
+    "projection_enabled": true,
+    "recent_turns": 2,
+    "max_chars": 600,
+    "required_markers": ["EXPLICIT_HEAD", "EXPLICIT_TAIL", "PROJECTED_TAIL"],
+    "forbidden_markers": []
+  }
+]

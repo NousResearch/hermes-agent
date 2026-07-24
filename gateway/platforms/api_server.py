@@ -1367,9 +1367,23 @@ class APIServerAdapter(BasePlatformAdapter):
         Body: {"chat_id": "...", "message": "..."}
         Returns: {"success": true/false, "message_id": "...", "error": "..."}
         """
+        # --- caller identity for audit ---
+        caller = request.remote or "unknown"
+
         auth_err = self._check_auth(request)
         if auth_err:
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s result=auth_failed",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+            )
             return auth_err
+
+        # --- Content-Type check ---
+        if request.content_type != "application/json":
+            return web.json_response(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status=415,
+            )
 
         # --- parse body ---
         try:
@@ -1382,21 +1396,33 @@ class APIServerAdapter(BasePlatformAdapter):
 
         chat_id = (body.get("chat_id") or "").strip()
         message = (body.get("message") or "").strip()
+
+        # --- input validation ---
         if not chat_id or not message:
             return web.json_response(
                 {"success": False, "error": "chat_id and message are required"},
                 status=400,
             )
-        if len(message) > 65536:
+        if not (chat_id.endswith("@im.wechat") or chat_id.endswith("@chatroom")):
             return web.json_response(
-                {"success": False, "error": "message too large (max 64KB)"},
-                status=413,
+                {"success": False, "error": "chat_id must end with @im.wechat or @chatroom"},
+                status=400,
+            )
+        if len(message) > 4096:
+            return web.json_response(
+                {"success": False, "error": "message too long (max 4096 chars)"},
+                status=400,
             )
 
         # --- locate WeixinAdapter from peer registry ---
         from gateway.config import Platform as _Plat
         weixin_adapter = self._peer_adapters.get(_Plat.WEIXIN)
         if weixin_adapter is None:
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=adapter_unavailable",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+                chat_id, len(message),
+            )
             return web.json_response(
                 {"success": False, "error": "weixin adapter not connected"},
                 status=503,
@@ -1406,8 +1432,11 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             result = await weixin_adapter.send(chat_id=chat_id, content=message)
             logger.info(
-                "[weixin-send] chat=%s success=%s msg_id=%s err=%s",
-                chat_id, result.success, result.message_id, result.error,
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=%s error=%s",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+                chat_id, len(message),
+                "ok" if result.success else "send_failed",
+                result.error or "",
             )
             resp: Dict[str, Any] = {"success": result.success}
             if result.message_id:
@@ -1417,8 +1446,12 @@ class APIServerAdapter(BasePlatformAdapter):
             status = 200 if result.success else 502
             return web.json_response(resp, status=status)
         except Exception as exc:
-            logger.error("[weixin-send] chat=%s exception: %s", chat_id, exc)
             error_str = str(exc)
+            logger.info(
+                "[weixin-send-audit] ts=%s caller=%s chat=%s len=%d result=exception error=%s",
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"), caller,
+                chat_id, len(message), error_str,
+            )
             # iLink session conflicts surface as ret=-2
             if "ret=-2" in error_str or "session" in error_str.lower():
                 return web.json_response(

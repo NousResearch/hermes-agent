@@ -33,6 +33,10 @@
 //              "reactionId": "..." | null (restart-recovery fallback)}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
+//   - POST /send-poll   -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "title": "...", "options": ["A", "B", ...]}
+//       Sends a native poll (orange iMessage poll bubble). A tap streams
+//       back inbound as a `poll_option` event ({title, selected}).
 //   - POST /shutdown    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
@@ -238,7 +242,8 @@ let Spectrum,
   voice,
   spectrumText,
   spectrumMarkdown,
-  spectrumTyping;
+  spectrumTyping,
+  spectrumPoll;
 try {
   ({
     Spectrum,
@@ -247,6 +252,7 @@ try {
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
+    poll: spectrumPoll,
   } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
@@ -467,6 +473,29 @@ async function normalizeContent(content) {
       // Text of the reacted-to message, so Python can correlate the tapback to
       // the gateway's reply_to_text. Null for attachment/voice-only targets.
       targetText: reactionTargetText(target),
+    };
+  }
+  // A user tapping a poll choice arrives as `poll_option` carrying the chosen
+  // option title + whether it was selected (true) or deselected (false). This
+  // is how a native iMessage poll's vote streams back — Python turns a
+  // selection into the answer that resolves a pending `clarify`.
+  if (content.type === "poll_option") {
+    return {
+      type: "poll_option",
+      title: content.option?.title ?? content.title ?? "",
+      selected: content.selected !== false,
+      pollTitle: content.poll?.title ?? null,
+    };
+  }
+  // The poll message itself (its creation) — surfaced for completeness so the
+  // agent isn't told "content type not handled" if it sees the echo.
+  if (content.type === "poll") {
+    return {
+      type: "poll",
+      title: content.title ?? "",
+      options: Array.isArray(content.options)
+        ? content.options.map((o) => o?.title ?? "")
+        : [],
     };
   }
   return { type: content.type || "unknown" };
@@ -768,6 +797,27 @@ const server = http.createServer(async (req, res) => {
           );
         }
       }
+      return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-poll") {
+      const { spaceId, title, options } = body || {};
+      if (!spaceId || typeof title !== "string" || !title) {
+        return badRequest(res, "spaceId and title are required");
+      }
+      if (!Array.isArray(options) || options.length < 1) {
+        return badRequest(res, "options must be a non-empty array");
+      }
+      // spectrum-ts' poll() builder accepts string options; it degrades to a
+      // numbered text list on platforms without native polls (so the gateway
+      // text-intercept still resolves the clarify there).
+      const opts = options
+        .map((o) => (typeof o === "string" ? o : o?.title))
+        .filter((o) => typeof o === "string" && o);
+      if (!opts.length) {
+        return badRequest(res, "options must contain at least one string");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(spectrumPoll(title, ...opts));
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/react") {

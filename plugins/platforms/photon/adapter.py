@@ -752,6 +752,37 @@ class PhotonAdapter(BasePlatformAdapter):
         # caller doesn't pass an explicit message id. Recorded before the
         # mention gate: a reaction to a non-wake-word group message is valid.
         self._record_last_inbound(space_id, event.get("messageId"))
+        if ctype == "poll_option":
+            # A native poll vote. A *selection* carries the chosen option text
+            # straight to the agent as if the user had typed it — the gateway's
+            # pending-clarify text-intercept then resolves the open clarify and
+            # unblocks the agent. A *deselection* (selected=false) is dropped:
+            # there's no answer to record, and forwarding "" would mis-resolve.
+            if content.get("selected") is False:
+                logger.debug("[photon] ignoring poll deselection")
+                return
+            choice = (content.get("title") or "").strip()
+            if not choice:
+                logger.debug("[photon] ignoring poll vote with empty title")
+                return
+            source = self.build_source(
+                chat_id=space_id,
+                chat_name=space_id,
+                chat_type=chat_type,
+                user_id=sender_id,
+                user_name=sender_id or None,
+            )
+            await self.handle_message(
+                MessageEvent(
+                    text=choice,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=event.get("messageId"),
+                    raw_message=event,
+                    timestamp=timestamp,
+                )
+            )
+            return
         if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
@@ -1105,6 +1136,52 @@ class PhotonAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         return await self._sidecar_send(chat_id, self.format_message(content))
+
+    # -- Clarify (native iMessage poll) ------------------------------------
+    #
+    # iMessage has a native poll bubble; spectrum-ts exposes it via the
+    # `poll()` content builder. A multiple-choice clarify renders as that poll
+    # and the user taps a choice instead of typing a number — the vote streams
+    # back inbound as a `poll_option` event, which `_dispatch_inbound`
+    # translates into a plain-text message carrying the chosen option. We flip
+    # the clarify into text-capture mode (exactly like the base text fallback)
+    # so the gateway's pending-clarify intercept resolves it with that choice.
+    # Open-ended clarifies (no choices) keep the plain-text path.
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not choices:
+            # No choices → open-ended. Base behaviour (plain text; the next
+            # message resolves it) is exactly right.
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata
+            )
+        # The poll vote comes back as a normal text message, so enable
+        # text-capture and let the gateway intercept resolve the clarify.
+        from tools.clarify_gateway import mark_awaiting_text
+
+        mark_awaiting_text(clarify_id)
+        result = await self._sidecar_send_poll(chat_id, question, list(choices))
+        if not result.success:
+            # Native poll failed (old sidecar without /send-poll, or a send
+            # error) — fall back to the numbered-text clarify so the user can
+            # still answer. The base impl also calls mark_awaiting_text (a
+            # second call is harmless).
+            logger.warning(
+                "[photon] poll clarify failed (%s); falling back to text list",
+                result.error,
+            )
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata
+            )
+        return result
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -1499,6 +1576,32 @@ class PhotonAdapter(BasePlatformAdapter):
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
+        return SendResult(success=True, message_id=data.get("messageId"))
+
+    async def _sidecar_send_poll(
+        self, space_id: str, title: str, options: list,
+    ) -> SendResult:
+        """POST a poll to the sidecar's ``/send-poll`` endpoint.
+
+        Renders a native iMessage poll. ``options`` are choice strings; the
+        sidecar's ``poll()`` builder degrades to a numbered text list on
+        platforms without native polls.
+        """
+        opts = [str(o).strip() for o in (options or []) if str(o).strip()]
+        if not title or not title.strip():
+            return SendResult(success=False, error="poll title is required")
+        if not opts:
+            return SendResult(success=False, error="poll needs at least one option")
+        body: Dict[str, Any] = {
+            "spaceId": space_id,
+            "title": title.strip()[: self.MAX_MESSAGE_LENGTH],
+            "options": opts,
+        }
+        try:
+            data = await self._sidecar_call("/send-poll", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))

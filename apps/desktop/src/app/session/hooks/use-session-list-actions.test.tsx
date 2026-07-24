@@ -4,11 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import {
   $cronSessions,
+  $messagingPlatformTotals,
   $messagingSessions,
+  $messagingTruncated,
   $sessions,
   $sessionsLoading,
   setCronSessions,
+  setMessagingPlatformTotals,
   setMessagingSessions,
+  setMessagingTruncated,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -55,6 +59,16 @@ const sidebar = (
 const listSidebarSessions = vi.fn()
 const listAllProfileSessions = vi.fn()
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getCronJobs: vi.fn(async () => []),
@@ -77,6 +91,8 @@ beforeEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setMessagingPlatformTotals({})
+  setMessagingTruncated(false)
   setSessionsLoading(false)
 })
 
@@ -84,6 +100,8 @@ afterEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setMessagingPlatformTotals({})
+  setMessagingTruncated(false)
   setSessionsLoading(false)
 })
 
@@ -234,6 +252,173 @@ describe('refreshSessions batches slices into one request', () => {
         messagingExclude: expect.arrayContaining(['cron'])
       })
     )
+  })
+
+  it.each(['default', 'alma', 'aegis_h-01', 'synapse_h-01'])(
+    'keeps every sidebar slice inside concrete profile %s',
+    async profileScope => {
+      const own = row(`${profileScope}-local`, { profile: profileScope })
+      const ownCron = row(`${profileScope}-cron`, { profile: profileScope, source: 'cron' })
+      const ownTelegram = row(`${profileScope}-telegram`, { profile: profileScope, source: 'telegram' })
+      const sibling = row('sibling-local', { profile: 'sibling' })
+      const siblingCron = row('sibling-cron', { profile: 'sibling', source: 'cron' })
+      const siblingTelegram = row('sibling-telegram', { profile: 'sibling', source: 'telegram' })
+
+      listSidebarSessions.mockResolvedValue(
+        sidebar(
+          { sessions: [own, sibling], total: 2, profile_totals: { [profileScope]: 1, sibling: 1 } },
+          [ownCron, siblingCron],
+          [ownTelegram, siblingTelegram]
+        )
+      )
+
+      const { result } = renderHook(() => useSessionListActions({ profileScope }))
+
+      await act(async () => {
+        await result.current.refreshSessions()
+      })
+
+      expect($sessions.get().map(s => s.id)).toEqual([`${profileScope}-local`])
+      expect($cronSessions.get().map(s => s.id)).toEqual([`${profileScope}-cron`])
+      expect($messagingSessions.get().map(s => s.id)).toEqual([`${profileScope}-telegram`])
+    }
+  )
+
+  it('keeps provenance while All Profiles aggregates every profile', async () => {
+    const messaging = [
+      row('default-telegram', { profile: 'default', source: 'telegram' }),
+      row('alma-telegram', { profile: 'alma', source: 'telegram' })
+    ]
+
+    listSidebarSessions.mockResolvedValue(
+      sidebar({ sessions: [], total: 0, profile_totals: {} }, [], messaging)
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($messagingSessions.get().map(s => [s.id, s.profile])).toEqual([
+      ['default-telegram', 'default'],
+      ['alma-telegram', 'alma']
+    ])
+  })
+
+  it('replaces default rows with Alma rows after a profile switch', async () => {
+    listSidebarSessions
+      .mockResolvedValueOnce(
+        sidebar(
+          { sessions: [row('default-local')], total: 1, profile_totals: { default: 1 } },
+          [],
+          [row('default-telegram', { source: 'telegram' })]
+        )
+      )
+      .mockResolvedValueOnce(
+        sidebar(
+          { sessions: [row('alma-local', { profile: 'alma' })], total: 1, profile_totals: { alma: 1 } },
+          [],
+          [row('alma-telegram', { profile: 'alma', source: 'telegram' })]
+        )
+      )
+
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: string }) => useSessionListActions({ profileScope: scope }),
+      { initialProps: { scope: 'default' } }
+    )
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+    rerender({ scope: 'alma' })
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['alma-local'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['alma-telegram'])
+  })
+
+  it('clears Messaging pagination state when the profile scope changes', () => {
+    setMessagingPlatformTotals({ telegram: 27 })
+    setMessagingTruncated(true)
+
+    const { rerender } = renderHook(
+      ({ scope }: { scope: string }) => useSessionListActions({ profileScope: scope }),
+      { initialProps: { scope: 'default' } }
+    )
+
+    expect($messagingPlatformTotals.get()).toEqual({})
+    expect($messagingTruncated.get()).toBe(false)
+
+    setMessagingPlatformTotals({ telegram: 11 })
+    setMessagingTruncated(true)
+    rerender({ scope: 'alma' })
+
+    expect($messagingPlatformTotals.get()).toEqual({})
+    expect($messagingTruncated.get()).toBe(false)
+  })
+
+  it('does not let a delayed previous-profile refresh overwrite the new scope', async () => {
+    const oldRequest = deferred<SidebarSessionsResponse>()
+    listSidebarSessions
+      .mockReturnValueOnce(oldRequest.promise)
+      .mockResolvedValueOnce(
+        sidebar(
+          { sessions: [row('alma-local', { profile: 'alma' })], total: 1, profile_totals: { alma: 1 } },
+          [],
+          [row('alma-telegram', { profile: 'alma', source: 'telegram' })]
+        )
+      )
+
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: string }) => useSessionListActions({ profileScope: scope }),
+      { initialProps: { scope: 'default' } }
+    )
+
+    const delayed = result.current.refreshSessions()
+
+    rerender({ scope: 'alma' })
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    oldRequest.resolve(
+      sidebar(
+        { sessions: [row('default-local')], total: 1, profile_totals: { default: 1 } },
+        [],
+        [row('default-telegram', { source: 'telegram' })]
+      )
+    )
+    await act(async () => {
+      await delayed
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['alma-local'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['alma-telegram'])
+  })
+
+  it('preserves the concrete profile when loading more Messaging rows', async () => {
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('alma-telegram', { profile: 'alma', source: 'telegram' })],
+      total: 1
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'alma' }))
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('telegram')
+    })
+
+    expect(listAllProfileSessions).toHaveBeenCalledWith(
+      expect.any(Number),
+      1,
+      'exclude',
+      'recent',
+      'alma',
+      { source: 'telegram' }
+    )
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['alma-telegram'])
   })
 
   it('scopes the cron-jobs fetch to the active profile (all → unified view)', async () => {

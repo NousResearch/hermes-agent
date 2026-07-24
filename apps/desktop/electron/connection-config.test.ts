@@ -39,6 +39,7 @@ import {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
+  sidebarSessionSliceProfiles,
   tokenPreview
 } from './connection-config'
 
@@ -49,6 +50,25 @@ test('connectionScopeKey trims to a name or null for the global scope', () => {
   assert.equal(connectionScopeKey(''), null)
   assert.equal(connectionScopeKey(null), null)
   assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('sidebarSessionSliceProfiles scopes every remote slice to the concrete profile', () => {
+  assert.deepEqual(sidebarSessionSliceProfiles('  alma  '), {
+    recents: 'alma',
+    cron: 'alma',
+    messaging: 'alma'
+  })
+})
+
+test('sidebarSessionSliceProfiles preserves All Profiles aggregation', () => {
+  const aggregate = {
+    recents: 'all',
+    cron: 'all',
+    messaging: 'all'
+  }
+
+  assert.deepEqual(sidebarSessionSliceProfiles('all'), aggregate)
+  assert.deepEqual(sidebarSessionSliceProfiles(null), aggregate)
 })
 
 test('normAuthMode coerces to token unless explicitly oauth', () => {

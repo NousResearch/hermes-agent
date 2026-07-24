@@ -5,6 +5,7 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
+import { buildPinnedSessionIndex } from '@/app/chat/sidebar/session-pin-index'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -198,7 +199,7 @@ const HEADER_NAV_BTN =
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
 // by id; the snippet stands in for the preview).
-function searchResultToSession(result: SessionSearchResult): SessionInfo {
+function searchResultToSession(result: SessionSearchResult, profile?: string): SessionInfo {
   const ts = result.session_started ?? Date.now() / 1000
 
   return {
@@ -214,6 +215,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     model: result.model ?? null,
     output_tokens: 0,
     preview: result.snippet?.trim() || null,
+    profile,
     source: result.source ?? null,
     started_at: ts,
     title: null,
@@ -311,6 +313,7 @@ export function ChatSidebar({
   // profile while scope is still ALL (persisted), the rail is hidden and they'd
   // otherwise be stuck in the grouped view with no way out.
   const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
+  const aggregateAllProfiles = profileScope === ALL_PROFILES
   const agentOrderIds = useStore($sidebarSessionOrderIds)
   const agentOrderManual = useStore($sidebarSessionOrderManual)
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
@@ -329,7 +332,13 @@ export function ChatSidebar({
   const newSessionCombo = useStore($bindings)['session.new']?.[0]
   const newSessionKbd = newSessionCombo ? comboTokens(newSessionCombo) : []
   const [searchQuery, setSearchQuery] = useState('')
-  const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const searchScope = aggregateAllProfiles ? ALL_PROFILES : profileScope
+
+  const [serverSearch, setServerSearch] = useState<{
+    scope: string
+    results: SessionSearchResult[]
+  }>({ scope: searchScope, results: [] })
+
   const [searchPending, setSearchPending] = useState(false)
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
@@ -381,8 +390,24 @@ export function ChatSidebar({
   // profile in, grouped by profile below. Single-profile users land here with
   // scope === their only profile, so nothing is filtered out.
   const visibleSessions = useMemo(
-    () => (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
-    [sessions, showAllProfiles, profileScope]
+    () => (aggregateAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
+    [sessions, aggregateAllProfiles, profileScope]
+  )
+
+  const visibleCronSessions = useMemo(
+    () =>
+      aggregateAllProfiles
+        ? cronSessions
+        : cronSessions.filter(s => normalizeProfileKey(s.profile) === profileScope),
+    [cronSessions, aggregateAllProfiles, profileScope]
+  )
+
+  const visibleMessagingSessions = useMemo(
+    () =>
+      aggregateAllProfiles
+        ? messagingSessions
+        : messagingSessions.filter(s => normalizeProfileKey(s.profile) === profileScope),
+    [messagingSessions, aggregateAllProfiles, profileScope]
   )
 
   // Agent session order is pinned to creation time (started_at), NOT activity —
@@ -398,21 +423,15 @@ export function ChatSidebar({
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
   const sessionByAnyId = useMemo(() => {
-    const map = new Map<string, SessionInfo>()
-
-    // Cron sessions are listed separately but can still be pinned, so index
-    // them too — otherwise a pinned cron job can't resolve into the Pinned
-    // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
-      map.set(s.id, s)
-
-      if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
-        map.set(s._lineage_root_id, s)
-      }
-    }
-
-    return map
-  }, [visibleSessions, cronSessions])
+    // Recents are passed last and therefore win id collisions.
+    return buildPinnedSessionIndex(
+      profileScope,
+      aggregateAllProfiles,
+      visibleCronSessions,
+      visibleMessagingSessions,
+      visibleSessions
+    )
+  }, [profileScope, aggregateAllProfiles, visibleSessions, visibleCronSessions, visibleMessagingSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -432,26 +451,27 @@ export function ChatSidebar({
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
-  // Full-text search across *all* sessions (not just the loaded page) so 699
-  // sessions stay findable. Debounced; loaded sessions are matched instantly
-  // client-side and merged ahead of the server hits.
+  // Full-text search covers the complete selected profile, not just its loaded
+  // page. All Profiles preserves the existing aggregate/default request.
   useEffect(() => {
     if (!trimmedQuery) {
-      setServerMatches([])
+      setServerSearch({ scope: searchScope, results: [] })
       setSearchPending(false)
 
       return
     }
 
     let cancelled = false
+    const searchProfile = aggregateAllProfiles ? null : profileScope
 
+    setServerSearch({ scope: searchScope, results: [] })
     setSearchPending(true)
 
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery)
+      void searchSessions(trimmedQuery, searchProfile)
         .then(res => {
           if (!cancelled) {
-            setServerMatches(res.results)
+            setServerSearch({ scope: searchScope, results: res.results })
           }
         })
         .catch(() => undefined)
@@ -466,7 +486,7 @@ export function ChatSidebar({
       cancelled = true
       window.clearTimeout(id)
     }
-  }, [trimmedQuery])
+  }, [trimmedQuery, aggregateAllProfiles, profileScope, searchScope])
 
   const searchResults = useMemo(() => {
     if (!trimmedQuery) {
@@ -481,17 +501,22 @@ export function ChatSidebar({
       }
     }
 
+    const serverMatches = serverSearch.scope === searchScope ? serverSearch.results : []
+
     for (const match of serverMatches) {
       if (out.has(match.session_id)) {
         continue
       }
 
       const loaded = sessionByAnyId.get(match.session_id)
-      out.set(match.session_id, loaded ?? searchResultToSession(match))
+      out.set(
+        match.session_id,
+        loaded ?? searchResultToSession(match, aggregateAllProfiles ? undefined : profileScope)
+      )
     }
 
     return [...out.values()]
-  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
+  }, [trimmedQuery, sortedSessions, serverSearch, searchScope, sessionByAnyId, aggregateAllProfiles, profileScope])
 
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
@@ -863,13 +888,13 @@ export function ChatSidebar({
   // within a platform by recency. Per-platform totals (when a "load more" has
   // resolved them) drive the count + whether more remain on disk.
   const messagingGroups = useMemo<MessagingSection[]>(() => {
-    if (!messagingSessions.length) {
+    if (!visibleMessagingSessions.length) {
       return []
     }
 
     const bySource = new Map<string, SessionInfo[]>()
 
-    for (const session of messagingSessions) {
+    for (const session of visibleMessagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -884,8 +909,10 @@ export function ChatSidebar({
     return [...bySource.entries()]
       .map(([sourceId, list]) => {
         const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
+        const unpinned = ordered.filter(session => !pinnedRealIdSet.has(session.id))
         const known = messagingPlatformTotals[sourceId]
-        const total = Math.max(ordered.length, known ?? 0)
+        const pinnedLoaded = ordered.length - unpinned.length
+        const total = Math.max(unpinned.length, (known ?? ordered.length) - pinnedLoaded)
 
         return {
           // Known exact total → more exist iff total exceeds loaded; otherwise
@@ -893,13 +920,15 @@ export function ChatSidebar({
           // resolves the count.
           hasMore: known != null ? known > ordered.length : messagingTruncated,
           label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
+          sessions: unpinned,
           sourceId,
-          total
+          total,
+          sortTime: sessionTime(ordered[0])
         }
       })
-      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+      .sort((a, b) => b.sortTime - a.sortTime)
+      .map(({ sortTime: _sortTime, ...section }) => section)
+  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, pinnedRealIdSet])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -957,11 +986,11 @@ export function ChatSidebar({
   // keeps "Load more" stuck on while you browse a small one (the aggregator's
   // total sums every profile). Per-profile totals come from the aggregator
   // (children excluded); fall back to the global total / loaded count.
-  const loadedSessionCount = showAllProfiles ? sessions.length : visibleSessions.length
-  const scopedProfileTotal = showAllProfiles ? undefined : sessionProfileTotals[profileScope]
+  const loadedSessionCount = aggregateAllProfiles ? sessions.length : visibleSessions.length
+  const scopedProfileTotal = aggregateAllProfiles ? undefined : sessionProfileTotals[profileScope]
 
   const knownSessionTotal = Math.max(
-    showAllProfiles ? sessionsTotal : (scopedProfileTotal ?? loadedSessionCount),
+    aggregateAllProfiles ? sessionsTotal : (scopedProfileTotal ?? loadedSessionCount),
     loadedSessionCount
   )
 

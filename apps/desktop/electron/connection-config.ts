@@ -187,6 +187,19 @@ function connectionScopeKey(profile) {
   return String(profile ?? '').trim() || null
 }
 
+// The profile rail selects one sidebar workspace. Keep the mapping for every
+// remote session slice at this shared boundary so no caller can accidentally
+// reintroduce a cross-profile sibling while constructing one request.
+function sidebarSessionSliceProfiles(profile) {
+  const scope = connectionScopeKey(profile) ?? 'all'
+
+  return {
+    recents: scope,
+    cron: scope,
+    messaging: scope
+  }
+}
+
 // Coerce a remote auth mode to one of the two supported values ('token' default).
 function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
@@ -509,5 +522,6 @@ export {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
+  sidebarSessionSliceProfiles,
   tokenPreview
 }

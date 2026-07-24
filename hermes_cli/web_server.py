@@ -4941,9 +4941,11 @@ def get_profiles_sessions_sidebar(
 ):
     """Batched sidebar session slices — one profile-DB open per refresh.
 
-    The desktop sidebar needs three source-scoped windows per refresh: recents
-    (local chats, scoped to the active profile), cron sessions (all profiles),
-    and messaging-platform sessions (all profiles). Served as three separate
+    The desktop sidebar needs three source-scoped windows per refresh: recents,
+    cron sessions, and messaging-platform sessions. ``recents_profile`` is the
+    sidebar workspace scope for all three slices: a concrete profile is
+    isolated, while ``all`` explicitly aggregates every profile. Served as three
+    separate
     ``/api/profiles/sessions`` calls they reopened every profile's ``state.db``
     three times and re-counted each refresh. This opens each DB once and runs
     the three filtered queries together, returning the three windows in one
@@ -4959,7 +4961,6 @@ def get_profiles_sessions_sidebar(
     from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
-    # cron + messaging are cross-profile; recents is scoped to recents_profile.
     # Scan every profile once regardless (each DB opened a single time).
     try:
         infos = profiles_mod.list_profiles()
@@ -5033,10 +5034,10 @@ def get_profiles_sessions_sidebar(
                 )
                 recents_total += rtotal
                 recents_profile_totals[name] = rtotal
-            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
-            messaging_rows.extend(
-                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
-            )
+                cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
+                messaging_rows.extend(
+                    _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
+                )
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
         finally:

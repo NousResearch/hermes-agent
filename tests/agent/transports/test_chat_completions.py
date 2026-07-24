@@ -1120,6 +1120,60 @@ class TestChatCompletionsNormalize:
         assert nr.content in (None, "")
         assert nr.provider_data == {"refusal": "cannot continue"}
 
+    def test_ollama_reasoning_promoted_to_content(self, transport):
+        """Ollama reasoning models return content="" with actual output in the
+        ``reasoning`` field.  The transport must promote reasoning to content
+        so the agent loop does not treat it as an empty response."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="", tool_calls=None,
+                    reasoning="Here is the answer to your question.",
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == "Here is the answer to your question."
+        assert nr.reasoning == "Here is the answer to your question."
+
+    def test_ollama_reasoning_from_model_extra(self, transport):
+        """Ollama's reasoning field may arrive via model_extra if the OpenAI SDK
+        does not map it to a direct attribute."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None,
+                    reasoning=None, reasoning_content=None,
+                    model_extra={"reasoning": "deep thought output"},
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == "deep thought output"
+        assert nr.reasoning == "deep thought output"
+
+    def test_non_empty_content_not_overridden_by_reasoning(self, transport):
+        """When content already has text, reasoning must NOT override it."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="actual answer", tool_calls=None,
+                    reasoning="internal reasoning trace",
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == "actual answer"
+        assert nr.reasoning == "internal reasoning trace"
+
 
 class TestChatCompletionsCacheStats:
 

@@ -713,10 +713,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # so keep them apart in provider_data rather than merging.
         reasoning = getattr(msg, "reasoning", None)
         reasoning_content = getattr(msg, "reasoning_content", None)
-        if reasoning_content is None and hasattr(msg, "model_extra"):
+        if reasoning_content is None or reasoning is None:
             model_extra = getattr(msg, "model_extra", None) or {}
-            if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
-                reasoning_content = model_extra["reasoning_content"]
+            if isinstance(model_extra, dict):
+                if reasoning_content is None and "reasoning_content" in model_extra:
+                    reasoning_content = model_extra["reasoning_content"]
+                if reasoning is None and "reasoning" in model_extra:
+                    reasoning = model_extra["reasoning"]
 
         provider_data: Dict[str, Any] = {}
         if reasoning_content is not None:
@@ -758,6 +761,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 content = refusal
                 if finish_reason in (None, "stop"):
                     finish_reason = "content_filter"
+
+        # Ollama reasoning models return content="" with the actual output in
+        # the ``reasoning`` field.  Promote reasoning to content so the agent
+        # loop does not treat it as an empty response and retry 3 times.
+        if not (isinstance(content, str) and content.strip()) and isinstance(reasoning, str) and reasoning.strip():
+            content = reasoning
 
         return NormalizedResponse(
             content=content,

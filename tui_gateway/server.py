@@ -6376,11 +6376,12 @@ def _(rid, params: dict) -> dict:
     # lazily on the first prompt (see _ensure_session_db_row + prompt.submit),
     # and the AIAgent's own INSERT-OR-IGNORE persists it on the first turn too.
 
-    # Return the lightweight session immediately so Ink can paint the composer
-    # + skeleton panel, then build the real AIAgent just after this response is
-    # flushed.  This keeps startup responsive while still hydrating tools/skills
-    # without requiring the user to submit a first prompt.
-    _schedule_agent_build(sid)
+    # Return the lightweight session immediately and leave the agent unbuilt
+    # until an agent-requiring RPC calls _sess(). A 50 ms timer is not safely
+    # "after the response" on a constrained host: the build can hold the GIL
+    # before the transport writer flushes this frame, and it can starve a
+    # concurrent routed-session resume during renderer boot. The first demand
+    # still starts construction without putting it on this response path.
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
     return _ok(
@@ -6840,14 +6841,13 @@ def _(rid, params: dict) -> dict:
         )
 
     # Cold resume default: register the live session and read its stored
-    # transcript, but build the agent OFF the response path. _make_agent can
-    # block for seconds (MCP discovery, prompt/skill build, AIAgent
-    # construction), and every resume caller (desktop + Ink TUI) awaits this RPC
-    # before it paints — so building eagerly is the bulk of the multi-second
-    # "switching sessions is frozen" latency. Return the full display transcript
-    # immediately and pre-warm the agent on a short timer (the same deferred-
-    # build contract session.create uses); _sess() also builds on demand if the
-    # first prompt beats the timer. A caller that needs the agent built
+    # transcript, but leave the agent unbuilt until an agent-requiring RPC calls
+    # _sess(). _make_agent can block for seconds (MCP discovery, prompt/skill
+    # build, AIAgent construction). Scheduling it immediately after the response
+    # is still observable on constrained hosts: the build can starve the
+    # concurrent durable-history request and the transport writer before the
+    # browser paints, turning an already-completed native resume into a client
+    # timeout. A caller that needs the agent built
     # synchronously (e.g. tests of the build race) passes ``eager_build: true``
     # to fall through to the eager path below. Distinct from the lazy/watch
     # branch above: a normal resume restores the full ancestor history and the
@@ -6902,7 +6902,6 @@ def _(rid, params: dict) -> dict:
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
             return _ok(rid, _reuse_live_payload(*live))
 
-        _schedule_agent_build(sid)
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
 
         messages = _history_to_messages(display_history)

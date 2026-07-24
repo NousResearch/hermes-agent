@@ -332,6 +332,49 @@ def test_sess_found(server):
     assert err is None
 
 
+# ── session.create demand build ───────────────────────────────────────
+
+
+def test_session_create_defers_build_until_agent_is_demanded(
+    server, monkeypatch, tmp_path
+):
+    scheduled: list = []
+    demanded: list = []
+
+    monkeypatch.setattr(server, "_completion_cwd", lambda _params=None: str(tmp_path))
+    monkeypatch.setattr(
+        server, "_schedule_agent_build", lambda sid: scheduled.append(sid)
+    )
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    response = server.handle_request(
+        {
+            "id": "create-1",
+            "method": "session.create",
+            "params": {"cols": 100, "source": "desktop"},
+        }
+    )
+
+    assert "error" not in response
+    sid = response["result"]["session_id"]
+    session = server._sessions[sid]
+    assert scheduled == []
+    assert session["agent"] is None
+    assert not session["agent_ready"].is_set()
+
+    def _start_on_demand(runtime_sid, runtime_session):
+        demanded.append(runtime_sid)
+        runtime_session["agent"] = object()
+        runtime_session["agent_ready"].set()
+
+    monkeypatch.setattr(server, "_start_agent_build", _start_on_demand)
+    created_session, error = server._sess({"session_id": sid}, "create-2")
+
+    assert error is None
+    assert created_session is session
+    assert demanded == [sid]
+
+
 # ── session.resume payload ────────────────────────────────────────────
 
 
@@ -389,12 +432,12 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
-def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
+def test_session_resume_defers_build_until_agent_is_demanded(server, monkeypatch):
     """A normal cold resume (no ``eager_build``) must return the full display
     transcript immediately and register an upgradable live session WITHOUT
-    building the agent on the response path — that eager build is the
-    multi-second switch latency. Deferred is the default; ``eager_build: true``
-    opts back into the synchronous path."""
+    starting a background pre-warm that can starve the concurrent REST history
+    request on a constrained host. ``eager_build: true`` opts back into the
+    synchronous path; otherwise the first agent-requiring RPC starts the build."""
 
     target = "20260409_010101_abc123"
 
@@ -430,15 +473,22 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
                 {"role": "assistant", "content": "yo"},
             ]
 
-    builds: list = []
+    scheduled: list = []
+    demanded: list = []
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    # The response path must never call _make_agent; route the deferred timer
-    # through a recorder so a 50ms fire can't build (or crash) under the test.
+    # Neither the response path nor an unsolicited timer may build the agent.
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no eager build"))
     )
-    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: builds.append(sid))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: scheduled.append(sid))
+
+    def _start_on_demand(sid, session):
+        demanded.append(sid)
+        session["agent"] = object()
+        session["agent_ready"].set()
+
+    monkeypatch.setattr(server, "_start_agent_build", _start_on_demand)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
 
     resp = server.handle_request(
@@ -478,6 +528,14 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
     # can't drop the provider ("No LLM provider configured").
     assert session["resume_runtime_overrides"]["model_override"]["model"] == "vendor/cool-model"
     assert server._find_live_session_by_key(target) == (sid, session)
+    assert scheduled == []
+    assert demanded == []
+
+    resumed_session, error = server._sess({"session_id": sid}, "r2")
+
+    assert error is None
+    assert resumed_session is session
+    assert demanded == [sid]
 
 
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):

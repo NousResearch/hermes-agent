@@ -8,6 +8,7 @@ on.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -172,5 +173,49 @@ def test_service_status_includes_clients(mock_pyright):
         info = svc.get_status()
         assert info["enabled"] is True
         assert any(c["server_id"] == "pyright" for c in info["clients"])
+    finally:
+        svc.shutdown()
+
+
+class _FakeIdleClient:
+    def __init__(self) -> None:
+        self.state = "running"
+        self.is_running = True
+        self.shutdown_calls = 0
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+        self.state = "stopped"
+        self.is_running = False
+
+
+def test_service_reaps_only_clients_past_idle_timeout():
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+        idle_timeout=10.0,
+    )
+    stale_key = ("pyright", "/tmp/stale-workspace")
+    fresh_key = ("pyright", "/tmp/fresh-workspace")
+    stale = _FakeIdleClient()
+    fresh = _FakeIdleClient()
+    now = time.time()
+    svc._clients = {stale_key: stale, fresh_key: fresh}  # type: ignore[assignment]
+    svc._last_used = {stale_key: now - 20.0, fresh_key: now}
+
+    try:
+        result = svc._loop.run(
+            svc._get_or_spawn("/tmp/no-server.hermes-idle-reaper-test"),
+            timeout=2.0,
+        )
+
+        assert result is None
+        assert stale.shutdown_calls == 1
+        assert fresh.shutdown_calls == 0
+        assert stale_key not in svc._clients
+        assert stale_key not in svc._last_used
+        assert svc._clients[fresh_key] is fresh
     finally:
         svc.shutdown()

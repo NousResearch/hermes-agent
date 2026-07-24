@@ -342,12 +342,20 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
 
     # Try to identify our unit name and ask systemctl for its config.
     unit_name: Optional[str] = None
+    user_manager = False
     try:
         # /proc/self/cgroup gives us "0::/user.slice/.../hermes-gateway.service"
         with open("/proc/self/cgroup", encoding="utf-8") as fh:
             for line in fh:
                 # systemd cgroup line ends with the unit name
                 if ".service" in line:
+                    # User units live below user.slice/user@<uid>.service and
+                    # must be queried through the per-user manager.  System
+                    # units live below system.slice.  Do not probe both:
+                    # ``systemctl --user show missing.service`` exits 0 and
+                    # reports the manager's default TimeoutStopUSec, which can
+                    # produce a false mismatch for a real system unit.
+                    user_manager = "/user.slice/" in line
                     parts = line.strip().split("/")
                     for p in reversed(parts):
                         if p.endswith(".service"):
@@ -360,33 +368,38 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
     if not unit_name:
         return None
 
-    # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
-    # on which manager actually owns the unit.  Try user first since
-    # that's the common case for hermes.
+    # Query only the manager that owns the cgroup and require a loaded unit.
+    # systemctl's successful response for an unknown unit includes manager
+    # defaults, so return None unless LoadState confirms this exact unit.
     timeout_us: Optional[int] = None
-    for flag in (["--user"], []):
-        try:
-            result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
-                capture_output=True, text=True, timeout=2.0,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            continue
-        if result.returncode != 0:
-            continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                # Try numeric microseconds first
-                if value.isdigit():
-                    timeout_us = int(value)
-                else:
-                    timeout_us = _parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    break
-        if timeout_us is not None:
-            break
+    flag = ["--user"] if user_manager else []
+    try:
+        result = subprocess.run(
+            [
+                "systemctl", *flag, "show", unit_name,
+                "--property=LoadState", "--property=TimeoutStopUSec",
+            ],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    properties = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            properties[key] = value.strip()
+    if properties.get("LoadState") != "loaded":
+        return None
+
+    # Value is typically "1min 30s" or a numeric count of microseconds.
+    value = properties.get("TimeoutStopUSec", "")
+    if value.isdigit():
+        timeout_us = int(value)
+    else:
+        timeout_us = _parse_systemd_duration_to_us(value)
 
     if timeout_us is None:
         return None

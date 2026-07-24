@@ -4,7 +4,12 @@ import logging
 
 import pytest
 
-from agent.redact import redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import (
+    redact_cdp_url,
+    redact_phone_numbers,
+    redact_sensitive_text,
+    RedactingFormatter,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -360,6 +365,47 @@ class TestRedactingFormatter:
         result = formatter.format(record)
         assert "abc123def456" not in result
         assert "sk-pro" in result
+
+
+class TestPhoneNumbersReclassifiedAsPii:
+    """E.164 phones are PII, not secrets: masked in logs, kept in tool output."""
+
+    def test_redact_sensitive_text_keeps_phone_numbers(self):
+        text = "Message +15551234567 on Signal"
+        assert redact_sensitive_text(text) == text
+
+    def test_gateway_force_mode_keeps_phone_numbers(self):
+        text = "Reply sent to +15551234567"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_redact_phone_numbers_masks_long_number(self):
+        assert redact_phone_numbers("Call +15551234567 now") == "Call +155****4567 now"
+
+    def test_redact_phone_numbers_masks_short_number(self):
+        assert redact_phone_numbers("Short +1234567") == "Short +1****67"
+
+    def test_redact_phone_numbers_masks_eight_digit_number_long_form(self):
+        # len() counts the '+', so 8 digits takes the 4+4 branch
+        assert redact_phone_numbers("Line +12345678") == "Line +123****5678"
+
+    def test_redact_phone_numbers_ignores_hex_like_identifiers(self):
+        text = "commit +1234567abc"
+        assert redact_phone_numbers(text) == text
+
+    def test_formatter_masks_phone_numbers_in_logs(self):
+        formatter = RedactingFormatter("%(message)s")
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="Delivering to +15551234567",
+            args=(),
+            exc_info=None,
+        )
+        result = formatter.format(record)
+        assert "+15551234567" not in result
+        assert "+155****4567" in result
 
 
 class TestPrintenvSimulation:

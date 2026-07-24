@@ -961,9 +961,18 @@ def _reap_idle_sessions() -> None:
 # accumulates detached sessions (the report's ``detached_sessions=5``) whose
 # agents sit resident for the full TTL. The cap evicts the least-recently-active
 # DETACHED sessions sooner so live agents don't pile up under memory pressure.
-# Default-on but provably safe: it only touches sessions with no live client
-# (reopening re-resumes them from the DB) and never a running / pending /
-# mid-build / live-transport one. 0/null disables.
+#
+# Default-off (opt-in): _max_live_sessions() returns 0 when no explicit
+# max_live_sessions is configured, and _enforce_session_cap() bails on
+# `cap <= 0`. Set max_live_sessions to a positive integer in config.yaml
+# (top-level or under `gateway:`) to enable. 0 / null disables.
+#
+# Note: even when enabled, this cap is currently doubly inert for connected
+# clients — _session_is_lru_evictable() gates on _transport_is_dead(), which
+# is never true while a client WebSocket is alive. See #46082 / PR #63551 for
+# the same gate on the idle TTL reaper. Tracking default-on/off is a separate
+# maintainer call (see issue context); this comment matches the code as it
+# ships today.
 def _max_live_sessions() -> int:
     try:
         from hermes_cli.active_sessions import coerce_max_concurrent_sessions
@@ -2087,7 +2096,25 @@ def _ensure_session_db_row(session: dict) -> None:
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
-        logger.debug("failed to persist desktop session row", exc_info=True)
+        # #63474: was logger.debug at exc_info=True, which is invisible in
+        # production deployments (default WARN level). The original code
+        # silently dropped the row, leaving sessions that exist in the TUI
+        # gateway's in-memory dict but never land in state.db.
+        #
+        # Promote to WARNING so operators scanning logs can see the failure.
+        # We deliberately do NOT re-raise here: the 4 call sites
+        # (lines 2225, 5877, 6030, 8062 — system-message append, /title RPC,
+        # watcher setup, prompt.submit) all call this lazily to *create* a
+        # row before continuing other work. Re-raising would surface a
+        # benign "couldn't pre-create the row" as a hard error to the user
+        # in those paths. Logging at WARNING keeps the user-facing flow
+        # alive while making the failure operator-visible — the original
+        # goal of #63474. If the failure becomes recurring, the operator
+        # can grep WARNING logs and root-cause the underlying db issue.
+        logger.warning(
+            "failed to persist desktop session row — see traceback",
+            exc_info=True,
+        )
     finally:
         if close_db:
             try:

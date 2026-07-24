@@ -16,4 +16,8 @@ describe('virtual history clamp bounds', () => {
       false
     )
   })
+
+  it('does not clamp an empty viewport', () => {
+    expect(shouldSetVirtualClamp({ itemCount: 5, sticky: false, viewportHeight: 0 })).toBe(false)
+  })
 })

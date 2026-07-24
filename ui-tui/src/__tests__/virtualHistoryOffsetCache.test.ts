@@ -1,7 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
+import React, { useLayoutEffect, useRef, useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { useVirtualHistory, virtualHistorySnapshotKey } from '../hooks/useVirtualHistory.js'
@@ -56,6 +56,93 @@ const viewportIsMounted = (
 
 const itemHeightForColumns = (item: Item | undefined, columns: number) =>
   columns >= 80 ? (item?.heightAfterResize ?? item?.height ?? 1) : (item?.height ?? 1)
+
+const makeScrollHandle = () => {
+  const listeners = new Set<() => void>()
+  let clampMin: number | undefined
+  let clampMax: number | undefined
+  let scrollTop = 0
+  let pendingDelta = 0
+  const viewportHeight = 10
+  let sticky = false
+  let lastManualScrollAt = 0
+
+  return {
+    getClampBounds: () => ({ max: clampMax, min: clampMin }),
+    getLastManualScrollAt: () => lastManualScrollAt,
+    getPendingDelta: () => pendingDelta,
+    getScrollTop: () => scrollTop,
+    getViewportHeight: () => viewportHeight,
+    isSticky: () => sticky,
+    scrollBy: (delta: number) => {
+      pendingDelta += delta
+      listeners.forEach(listener => listener())
+    },
+    scrollTo: (nextTop: number) => {
+      scrollTop = nextTop
+      listeners.forEach(listener => listener())
+    },
+    setClampBounds: (min: number | undefined, max: number | undefined) => {
+      clampMin = min
+      clampMax = max
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+
+      return () => listeners.delete(listener)
+    }
+  }
+}
+
+function ClampHarness({
+  expose,
+  items,
+  measured = false
+}: {
+  expose: React.MutableRefObject<{ scroll: ReturnType<typeof makeScrollHandle>; virtualHistory: ReturnType<typeof useVirtualHistory> } | null>
+  items: readonly Item[]
+  measured?: boolean
+}) {
+  const [scrollHandle] = useState(() => makeScrollHandle())
+  const scrollRef = useRef(scrollHandle)
+
+  const virtualHistory = useVirtualHistory(scrollRef as unknown as React.RefObject<ScrollBoxHandle>, items, 80, {
+    estimateHeight: index => itemHeightForColumns(items[index], 80),
+    maxMounted: 16,
+    overscan: 2
+  })
+
+  useLayoutEffect(() => {
+    expose.current = { scroll: scrollRef.current, virtualHistory }
+  })
+
+  return React.createElement(
+    ScrollBox,
+    { flexDirection: 'column', height: 10 },
+    React.createElement(
+      Box,
+      { flexDirection: 'column' },
+      ...items.slice(virtualHistory.start, virtualHistory.end).map(item =>
+        React.createElement(
+          Box,
+          {
+            key: item.key,
+            ref: (el: unknown) => {
+              const measure = virtualHistory.measureRef(item.key)
+
+              if (measured) {
+                measure({ yogaNode: { getComputedHeight: () => itemHeightForColumns(item, 80) } })
+              } else {
+                measure({ yogaNode: { getComputedHeight: () => 0 } })
+              }
+            }
+          },
+          React.createElement(Text, null, item.key)
+        )
+      )
+    )
+  )
+}
 
 function Harness({
   columns = 80,
@@ -276,6 +363,48 @@ describe('useVirtualHistory offset cache reuse', () => {
 
       expect(scroll.getPendingDelta()).toBe(0)
       expect(viewportIsMounted(afterShrink, expose.current!.virtualHistory, scroll)).toBe(true)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
+  it('defers clamp bounds until mounted rows have measured heights, not just live nodes', async () => {
+    const items = Array.from({ length: 20 }, (_, index) => ({ height: 10, key: `item-${index}` }))
+    const expose = { current: null as { scroll: ReturnType<typeof makeScrollHandle>; virtualHistory: ReturnType<typeof useVirtualHistory> } | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(
+      React.createElement(ClampHarness, { expose, items, measured: false }),
+      {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await delay(500)
+      // Live nodes are present but their heights have not been measured (0).
+      // A node-presence-only gate would install clamps here; the measured-height
+      // gate must keep bounds cleared until real heights are committed.
+      expect(expose.current!.scroll.getClampBounds()).toEqual({ min: undefined, max: undefined })
+
+      instance.rerender(React.createElement(ClampHarness, { expose, items, measured: true }))
+      await delay(20)
+
+      // The hook's clamp effect runs only when the mounted range changes. Scrolling
+      // a few items at a time commits the measured heights and then gives the next
+      // commit a matching offset version so clamps can be installed.
+      expose.current!.scroll.scrollTo(15)
+      await delay(20)
+      expose.current!.scroll.scrollTo(25)
+      await delay(20)
+
+      const bounds = expose.current!.scroll.getClampBounds()
+      expect(bounds.min).toBeDefined()
+      expect(bounds.max).toBeDefined()
     } finally {
       instance.unmount()
       instance.cleanup()

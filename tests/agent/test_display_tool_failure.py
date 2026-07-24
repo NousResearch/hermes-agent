@@ -134,6 +134,52 @@ class TestDetectToolFailureStructured:
         assert is_failure is False
 
 
+class TestDetectToolFailureMCP:
+    """MCP tools: structuredContent wrappers should not be flagged as errors
+    when the contained error field is null / false."""
+
+    def _mcp_result(self, error_value=None, success=True):
+        """Build a realistic agent-browser MCP result string."""
+        return json.dumps({
+            "result": "Example Domain",
+            "structuredContent": {
+                "exitCode": 0,
+                "response": {
+                    "data": {"title": "Example Domain"},
+                    "error": error_value,
+                    "success": success,
+                },
+            },
+        })
+
+    def test_null_error_is_success(self):
+        # "error": null inside structuredContent → not a real failure.
+        result = self._mcp_result(error_value=None)
+        assert _detect_tool_failure("browser_open", result) == (False, "")
+
+    def test_false_error_is_success(self):
+        # Some MCP implementations use false instead of null.
+        result = self._mcp_result(error_value=False)
+        assert _detect_tool_failure("browser_open", result) == (False, "")
+
+    def test_string_error_is_failure(self):
+        # A real error string IS a failure and should be detected.
+        result = self._mcp_result(error_value="connection refused", success=False)
+        is_failure, suffix = _detect_tool_failure("browser_open", result)
+        assert is_failure is True
+        assert "connection refused" in suffix
+
+    def test_nested_error_null_in_response(self):
+        # error is inside structuredContent.response, not at top level.
+        result = json.dumps({
+            "result": "ok",
+            "structuredContent": {
+                "response": {"error": None, "success": True},
+            },
+        })
+        assert _detect_tool_failure("browser_screenshot", result) == (False, "")
+
+
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""
 

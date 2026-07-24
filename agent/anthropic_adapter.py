@@ -519,7 +519,7 @@ def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> 
     return False
 
 
-def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+def _is_deepseek_anthropic_endpoint(base_url: str | None, model: str | None = None) -> bool:
     """Return True for DeepSeek's Anthropic-compatible endpoint.
 
     DeepSeek's ``/anthropic`` route speaks the Anthropic Messages protocol
@@ -536,9 +536,17 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
     the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
     base URL (which never reaches this adapter) is not misclassified.
+
+    When the base_url does not match api.deepseek.com, fall back to
+    model-name detection so proxied endpoints (e.g. LiteLLM) that front
+    DeepSeek models preserve unsigned thinking blocks.  Model-based
+    detection follows the same pattern as Kimi's ``_model_name_is_kimi_family``.
     See hermes-agent#16748.
     """
     if not base_url_host_matches(base_url or "", "api.deepseek.com"):
+        # Fall back to model-name detection for proxied endpoints
+        if model and model.lower().startswith("deepseek"):
+            return True
         return False
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
@@ -2345,7 +2353,7 @@ def _manage_thinking_signatures(
             # Kimi does not enforce thinking signatures — replay as-is
             # (shared cleanup below still strips cache markers + the internal flag).
             pass
-        elif _is_deepseek_anthropic_endpoint(base_url):
+        elif _is_deepseek_anthropic_endpoint(base_url, model):
             # DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:

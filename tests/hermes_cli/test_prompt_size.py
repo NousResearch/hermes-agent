@@ -135,6 +135,45 @@ def test_skills_index_reflects_installed_skills(isolated_home):
     assert data["skills_index"]["bytes"] > 0
 
 
+def test_requested_platform_filters_disabled_skills(isolated_home, monkeypatch):
+    """The requested platform must scope the measured skills index."""
+    from agent.system_prompt import build_system_prompt_parts
+
+    _seed_skill(isolated_home, "shared", "available on every platform")
+    _seed_skill(
+        isolated_home,
+        "telegram-hidden",
+        "excluded from telegram prompt-size measurements",
+    )
+    (isolated_home / "config.yaml").write_text(
+        "skills:\n"
+        "  platform_disabled:\n"
+        "    telegram:\n"
+        "      - telegram-hidden\n",
+        encoding="utf-8",
+    )
+    # The explicit ``--platform`` simulation must win over ambient process scope.
+    monkeypatch.setenv("HERMES_PLATFORM", "cli")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    # Hold toolsets constant so membership can only differ via platform filtering.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda _cfg, _platform: {"skills"},
+    )
+
+    def skills_block_for(platform):
+        stable = build_system_prompt_parts(_build_inspection_agent(platform))["stable"]
+        match = _SKILLS_BLOCK_RE.search(stable)
+        assert match is not None
+        return match.group(0)
+
+    cli_skills = skills_block_for("cli")
+    telegram_skills = skills_block_for("Telegram")
+
+    assert "telegram-hidden" in cli_skills
+    assert "telegram-hidden" not in telegram_skills
+
+
 def test_memory_and_profile_are_attributed(isolated_home):
     """Memory and user-profile blocks are measured separately."""
     _seed_memory(

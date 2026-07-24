@@ -1515,6 +1515,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    platform: str | None = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1535,6 +1536,10 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``platform`` explicitly scopes per-platform disabled-skill filtering. When
+    omitted, the active session/environment platform is used for backward
+    compatibility with direct callers.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1545,7 +1550,8 @@ def build_skills_system_prompt(
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
-    _platform_hint = _current_session_platform_hint()
+    _platform_hint = platform or _current_session_platform_hint()
+    _platform_hint = _platform_hint.strip().lower() if _platform_hint else ""
     disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir),

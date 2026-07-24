@@ -7120,6 +7120,15 @@ class SessionDB:
                 return True
         return False
 
+    @staticmethod
+    def _is_cyrillic_codepoint(cp: int) -> bool:
+        return 0x0400 <= cp <= 0x04FF
+
+    @classmethod
+    def _contains_cyrillic(cls, text: str) -> bool:
+        """Check if text contains characters from the Cyrillic block."""
+        return any(cls._is_cyrillic_codepoint(ord(ch)) for ch in text)
+
     @classmethod
     def _count_cjk(cls, text: str) -> int:
         """Count CJK characters in text."""
@@ -7293,17 +7302,18 @@ class SessionDB:
             sanitized = self._sanitize_fts5_query(query or "")
             if not sanitized:
                 return "empty"
-            if not self._contains_cjk(sanitized):
+            is_cjk = self._contains_cjk(sanitized)
+            is_cyrillic = self._contains_cyrillic(sanitized)
+            if not is_cjk and not is_cyrillic:
                 return "fts5"
             raw = sanitized.strip('"').strip()
-            if self._fts_cjk_available and not self._has_lone_cjk_run(raw):
+            if (
+                is_cjk
+                and self._fts_cjk_available
+                and not self._has_lone_cjk_run(raw)
+            ):
                 return "fts_cjk"
-            tokens = [
-                t for t in raw.split()
-                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
-            ]
-            short = any(self._count_cjk(t) < 3 for t in tokens)
-            if self._count_cjk(raw) >= 3 and not short and self._trigram_available:
+            if self._trigram_available and self._trigram_eligible_tokens(raw):
                 return "trigram"
             return "like_scan"
         except Exception:
@@ -7337,9 +7347,9 @@ class SessionDB:
           - ``"newest"``: order by message timestamp DESC, then by rank.
           - ``"oldest"``: order by message timestamp ASC, then by rank.
 
-        The short-CJK LIKE fallback already orders by timestamp DESC and
-        ignores ``sort``. The trigram CJK path honours ``sort`` like the main
-        FTS5 path.
+        The short-script LIKE fallback already orders by timestamp DESC and
+        ignores ``sort``. The trigram path honours ``sort`` like the main FTS5
+        path.
 
         Rewound (``active=0``, ``compacted=0``) rows are excluded by default —
         the user took those back. Compaction-archived rows (``active=0``,
@@ -7368,7 +7378,7 @@ class SessionDB:
         else:
             sort_norm = None
 
-        # ORDER BY shared across the main FTS5 path and trigram CJK path.
+        # ORDER BY shared across the main FTS5 path and trigram path.
         # With sort set, timestamp is primary and rank is the tiebreaker.
         if sort_norm == "newest":
             order_by_sql = "ORDER BY m.timestamp DESC, rank"
@@ -7424,37 +7434,24 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
 
-        # CJK queries bypass the unicode61 FTS5 table.  The default tokenizer
-        # splits CJK characters into individual tokens, so "大别山项目" becomes
-        # "大 AND 别 AND 山 AND 项 AND 目" — producing false positives and
-        # missing exact phrase matches.
+        # CJK and Cyrillic queries bypass the unicode61 FTS5 table. The default
+        # tokenizer handles contiguous CJK runs poorly and does not stem
+        # inflected Cyrillic words, while the trigram table supports substring
+        # matching for both scripts.
         #
-        # For queries with 3+ CJK characters, we use the trigram FTS5 table
-        # (indexed substring matching with ranking and snippets).  For shorter
-        # CJK queries (1-2 chars), trigram can't match (it needs ≥9 UTF-8
-        # bytes = 3 CJK chars), so we fall back to LIKE.
+        # For queries with 3+ eligible characters per token, use the trigram
+        # FTS5 table (indexed substring matching with ranking and snippets).
+        # Trigram cannot match 1-2 character tokens, so those fall back to LIKE.
         is_cjk = self._contains_cjk(query)
-        if is_cjk:
+        is_cyrillic = self._contains_cyrillic(query)
+        if is_cjk or is_cyrillic:
             raw_query = query.strip('"').strip()
-            cjk_count = self._count_cjk(raw_query)
-
-            # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
-            # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
-            # (>=3) but each individual token is only 2 chars — trigram returns 0.
-            # Route to LIKE when any non-operator CJK token is <3 CJK chars.
-            _tokens_for_check = [
-                t for t in raw_query.split()
-                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
-            ]
-            _any_short_cjk = any(
-                self._count_cjk(t) < 3 for t in _tokens_for_check
-            )
 
             _trigram_succeeded = False
             # Tool rows are excluded from the trigram index (they're ~90% of
-            # message bytes and machine noise — see FTS_TRIGRAM_SQL). A CJK
-            # query explicitly filtering on role='tool' must therefore use
-            # the LIKE fallback, which scans the base table directly.
+            # message bytes and machine noise — see FTS_TRIGRAM_SQL). A script
+            # query explicitly filtering on role='tool' must therefore use the
+            # LIKE fallback, which scans the base table directly.
             _wants_tool_rows = bool(role_filter) and "tool" in role_filter
 
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ──────
@@ -7468,7 +7465,8 @@ class SessionDB:
             #     bigrams for runs >=2, so a single-char term can only match
             #     isolated chars — LIKE substring semantics are broader.
             if (
-                self._fts_cjk_available
+                is_cjk
+                and self._fts_cjk_available
                 and not _wants_tool_rows
                 and not self._has_lone_cjk_run(raw_query)
             ):
@@ -7553,8 +7551,7 @@ class SessionDB:
 
             if (
                 not _trigram_succeeded
-                and cjk_count >= 3
-                and not _any_short_cjk
+                and self._trigram_eligible_tokens(raw_query)
                 and self._trigram_available
                 and not _wants_tool_rows
             ):
@@ -7644,8 +7641,8 @@ class SessionDB:
                             "back to LIKE.", exc,
                         )
             if not _trigram_succeeded:
-                # Short / mixed CJK query, trigram unavailable, or trigram
-                # <3 CJK chars. Fall back to LIKE substring search.
+                # Short / mixed script query, trigram unavailable, or a token
+                # under 3 eligible chars. Fall back to LIKE substring search.
                 # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
                 # build one LIKE condition per non-operator token so each term
                 # is matched independently (#20494).
@@ -7760,7 +7757,7 @@ class SessionDB:
         # rows (v23), so a retry could never add hits.
         if (
             not matches
-            and not is_cjk
+            and not (is_cjk or is_cyrillic)
             and not (bool(role_filter) and "tool" in role_filter)
         ):
             _fb_query = query.strip('"').strip()

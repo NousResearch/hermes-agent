@@ -1,6 +1,8 @@
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
+  SYSTEM_PROMPT_RENDER_MAX_CHARS,
+  SYSTEM_PROMPT_RENDER_MAX_LINES,
   THINKING_COT_MAX,
   VERBOSE_TRAIL_MAX_CHARS,
   VERBOSE_TRAIL_MAX_LINES
@@ -172,6 +174,44 @@ const boundedRenderText = (
       : `[${labelPrefix}; omitted ${fmtK(omittedChars)} chars]\n`
 
   return `${label}${tail}`
+}
+
+export interface CappedText {
+  omittedChars: number
+  omittedLines: number
+  text: string
+  truncated: boolean
+}
+
+export const cappedSystemPromptText = (
+  text: string,
+  { maxChars = SYSTEM_PROMPT_RENDER_MAX_CHARS, maxLines = SYSTEM_PROMPT_RENDER_MAX_LINES } = {}
+): CappedText => {
+  if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
+    return { omittedChars: 0, omittedLines: 0, text, truncated: false }
+  }
+
+  let end = 0
+  let lines = 0
+
+  while (lines < maxLines && end < text.length && end < maxChars) {
+    const next = text.indexOf('\n', end)
+
+    if (next < 0 || next >= maxChars) {
+      end = Math.min(text.length, maxChars)
+
+      break
+    }
+
+    end = next + 1
+    lines++
+  }
+
+  const head = end === text.length ? text : text.slice(0, end).replace(/\n+$/, '')
+  const omittedChars = text.length - end
+  const omittedLines = countNewlines(text, text.length) - countNewlines(text, end)
+
+  return { omittedChars, omittedLines, text: head, truncated: omittedChars > 0 }
 }
 
 const countNewlines = (text: string, end: number) => {

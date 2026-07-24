@@ -20,6 +20,12 @@ export const LONG_MSG = 300
 export const MAX_HISTORY = 800
 export const THINKING_COT_MAX = 160
 
+// Cap for expanded system-prompt rendering (SessionPanel + transcript).
+// An 18k+ char system prompt as a single Text/Ansi node otherwise floods the
+// viewport faster than the user can hit the (top-only) collapse toggle.
+export const SYSTEM_PROMPT_RENDER_MAX_CHARS = 4000
+export const SYSTEM_PROMPT_RENDER_MAX_LINES = 80
+
 // Rows per wheel event (pre-accel). 1 keeps Ink's DECSTBM fast path live
 // (each scroll < viewport-1) and produces smooth motion. wheelAccel.ts
 // ramps this on sustained scrolls.

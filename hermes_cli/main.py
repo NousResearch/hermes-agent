@@ -443,6 +443,7 @@ from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
+from hermes_cli.subcommands.harness import build_harness_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.dump import build_dump_parser
@@ -14649,6 +14650,9 @@ def main():
     # hooks command  (parser built in hermes_cli/subcommands/hooks.py)
     # =========================================================================
     build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
+
+    # Model-independent managed-node control plane.
+    build_harness_parser(subparsers)
 
     # =========================================================================
     # doctor command  (parser built in hermes_cli/subcommands/doctor.py)

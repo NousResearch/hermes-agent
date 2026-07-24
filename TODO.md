@@ -81,6 +81,18 @@ changes.
 - [x] Record remaining items that truly require credentials, external services,
       hardware, or user decisions.
 
+## Milestone 7 — Harness control plane
+
+- [x] Remove inference backend selection from the control-plane development
+      critical path.
+- [x] Add durable managed-node identity and idempotent enrollment.
+- [x] Add explicit, concurrency-safe node lifecycle transitions.
+- [x] Add append-only hash-chained node audit history and verification.
+- [x] Add an operator CLI over the shared node registry.
+- [ ] Expose the same contracts through a versioned control-plane API.
+- [ ] Add authenticated enrollment and revocable node credentials.
+- [ ] Add observed-state reporting and desired-policy reconciliation.
+
 ## Evidence log
 
 - 2026-07-24: Official upstream checkout established on branch `main` at
@@ -155,3 +167,18 @@ changes.
   a true >=64K context and reliable structured tool calling, or configure a
   compatible remote provider. No model download or production credential was
   added without user approval.
+- 2026-07-24: Post-reboot security verification passed. The host booted at
+  03:35 PDT on kernel 7.0.0-28; no reboot-required marker remains; AppArmor is
+  enabled with unprivileged-user-namespace restriction set to 1; and the exact
+  Bubblewrap user/PID/network namespace probe exited 0 without a fresh denial.
+  npm audit remains at zero vulnerabilities and the Hermes high-severity OSV
+  gate remains clear (the documented setuptools 81 macOS-only moderate finding
+  remains). Live listener drift and repository state were reconciled in
+  `STATE.md`.
+- 2026-07-24: Harness control-plane development was explicitly decoupled from
+  inference selection. Added the first vertical slice: a SQLite-backed managed
+  node registry with idempotent enrollment, stable identity, role/owner and
+  capability inventory, explicit lifecycle state, optimistic revision checks,
+  and hash-chained audit events. Added `hermes harness nodes` operator commands
+  over the same registry. The focused control-plane suite passes 11 tests;
+  Ruff and a repository-isolated CLI help smoke test pass.

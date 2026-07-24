@@ -1,7 +1,7 @@
 # Hermes Agent State
 
 Snapshot date: 2026-07-24
-Last verification time: 2026-07-24 03:32:52 PDT (UTC-07:00)
+Last verification time: 2026-07-24 04:01 PDT (UTC-07:00)
 
 ## Canonical snapshot policy
 
@@ -51,18 +51,19 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 ### Listening TCP ports
 
-- `3000` and `3002`: listening on all IPv4 and IPv6 interfaces
+- `22` and `3000`: listening on all IPv4 and IPv6 interfaces
 - `11434`: Ollama, listening on all interfaces
 - `53`: local system resolver
 - `631`: local loopback printing service
-- `43791`: loopback-only ephemeral service at snapshot time
+- `37453`: loopback-only ephemeral service at verification time
 
 ### Repository
 
 - Root: `/home/len/hermes-agent`
 - Branch: `main`
-- Repository baseline at this snapshot: `662723868`
-- Upstream relation before this state update: 14 commits ahead of `origin/main`
+- Repository baseline at this snapshot: `fc5433ce7`
+- Upstream relation at this verification: 15 commits ahead of `origin/main`
+- `DESIRED.md` is an untracked user file and was left untouched
 - Python environment: repository-local `.venv`
 - Repository-local generated state: `.tmp`, `.cache`, `.tools`, and `.venv`
   are excluded from Git
@@ -108,6 +109,17 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 - Verified cron, plugin, MCP, messaging-adapter, and ACP contracts.
 - Left credential-dependent integrations disabled unless explicitly configured.
 
+### Harness control plane
+
+- Treats inference as a swappable deployment backend; local-model capability
+  and provider credentials are not development blockers.
+- Added a model-independent managed-node registry backed by
+  `control-plane.db`, with stable identity, idempotent enrollment, declared
+  role and owner, explicit lifecycle transitions, optimistic concurrency, and
+  hash-chained audit history.
+- Added the operator-facing `hermes harness nodes` CLI for enrollment,
+  inventory, lifecycle transitions, history, and audit verification.
+
 ### Packaging, security, and operations
 
 - Verified console scripts, Docker Compose configuration, clean-start behavior,
@@ -126,37 +138,26 @@ the snapshot is stale; reconcile any discovered drift back into this file.
 
 ## Outstanding blockers
 
-- Ubuntu requires a system restart to complete the AppArmor package upgrade;
-  Bubblewrap works now, but profile persistence must be verified after reboot.
-- A real local-model tool-call smoke test is blocked on selecting or downloading
-  a model that provides both a true 64K-or-larger context and reliable
-  structured tool calling, or configuring a compatible remote provider.
-- No unresolved codebase, build, test, packaging, or high-severity security
-  blocker is known at this snapshot.
-- Credentials are intentionally absent for provider- and account-dependent
-  integrations; those integrations cannot be exercised until the user chooses
-  and configures them.
+- No unresolved Harness control-plane development blocker is known.
+- Model selection and provider/account credentials are deferred deployment
+  configuration for swappable backends, not control-plane blockers.
 
 ## Active priorities
 
-1. Reboot the host, then confirm the AppArmor profile remains loaded and the
-   Bubblewrap namespace probe still exits successfully without audit denials.
-2. Select a compatible local model or remote provider.
-3. Run and record an end-to-end conversation plus structured tool-call smoke
-   test using repository-isolated state.
+1. Expose managed-node inventory and lifecycle through a versioned
+   control-plane API using the same domain registry as the CLI.
+2. Add authenticated enrollment and revocable node credentials without storing
+   plaintext secrets in control-plane state.
+3. Add observed health/capability reports and desired-policy reconciliation.
 4. Review the local commit series and decide whether to push it or open a pull
    request against the desired remote branch.
-5. Configure only the provider credentials and optional integrations that are
-   actually needed for deployment.
-6. Re-run the focused verification gates after any model, provider, dependency,
-   or deployment configuration change.
+5. Select and configure an inference backend only when deployment work requires
+   one, then run its backend contract smoke tests.
 
 ## Next recommended task
 
-Reboot the host, then repeat the Bubblewrap user/PID/network namespace probe and
-check the kernel audit log for new AppArmor denials. If persistence is verified,
-remove the reboot blocker and resume selection of a Hermes-compatible model or
-remote provider.
+Add a versioned managed-node API over the model-independent registry, retaining
+the CLI and API as consistent views of one authoritative control-plane store.
 
 ## References
 

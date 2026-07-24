@@ -297,6 +297,70 @@ def _normalize_chat_content(
         return ""
 
 
+def _conversation_history_entry_validation_error(
+    entry: Dict[str, Any], index: int,
+) -> Optional[str]:
+    """Return an OpenAI-style error message, or None if the entry is valid."""
+    if not isinstance(entry, dict):
+        return f"conversation_history[{index}] must be a message object"
+    if "role" not in entry:
+        return f"conversation_history[{index}] must have 'role' field"
+    role = str(entry["role"])
+    tool_calls = entry.get("tool_calls")
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    tool_call_id = entry.get("tool_call_id") or entry.get("call_id")
+    if role == "tool":
+        if not tool_call_id:
+            return f"conversation_history[{index}] with role=tool requires 'tool_call_id'"
+        return None
+    if has_tool_calls:
+        return None
+    if "content" not in entry:
+        return f"conversation_history[{index}] must have 'content' field"
+    return None
+
+
+def _normalize_conversation_history_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize one inbound conversation_history row for run_conversation.
+
+    Simple user/assistant rows are flattened to role+content. Native tool
+    sequences (assistant ``tool_calls``, ``role=tool`` results) keep
+    correlation fields so ``repair_message_sequence`` can validate them.
+    """
+    role = str(entry["role"])
+    tool_calls = entry.get("tool_calls")
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    tool_call_id = entry.get("tool_call_id") or entry.get("call_id")
+    is_tool_message = role == "tool"
+
+    def _normalize_content_field(raw: Any) -> Any:
+        if raw is None:
+            return ""
+        try:
+            return _normalize_multimodal_content(raw)
+        except ValueError:
+            return _normalize_chat_content(raw)
+
+    if has_tool_calls or tool_call_id or is_tool_message:
+        msg: Dict[str, Any] = {
+            "role": role,
+            "content": _normalize_content_field(entry.get("content")),
+        }
+        if has_tool_calls:
+            msg["tool_calls"] = tool_calls
+        if tool_call_id:
+            msg["tool_call_id"] = str(tool_call_id)
+        tool_name = entry.get("tool_name") or entry.get("name")
+        if tool_name:
+            msg["tool_name"] = str(tool_name)
+        return msg
+
+    return {
+        "role": role,
+        "content": _normalize_multimodal_content(entry.get("content", "")),
+    }
+
+
 # Content part type aliases used by the OpenAI Chat Completions and Responses
 # APIs.  We accept both spellings on input and emit a single canonical internal
 # shape (``{"type": "text", ...}`` / ``{"type": "image_url", ...}``) that the
@@ -4854,53 +4918,99 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
-        """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
-        def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
+    def _push_run_sse_event(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        event: Dict[str, Any],
+    ) -> None:
+        """Push a structured event onto the run's SSE queue (thread-safe)."""
+        self._set_run_status(
+            run_id,
+            self._run_statuses.get(run_id, {}).get("status", "running"),
+            last_event=event.get("event"),
+        )
+        q = self._run_streams.get(run_id)
+        if q is None:
+            return
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, event)
+        except Exception:
+            pass
 
+    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return a tool_progress_callback that forwards reasoning events to the run SSE queue.
+
+        Tool lifecycle events (``tool.started`` / ``tool.completed``) are handled
+        by ``_make_run_tool_sse_callbacks`` via structured callbacks.  Wiring
+        them here too would duplicate every emit because ``tool_executor`` fires
+        ``tool_progress_callback`` side-by-side with ``tool_start_callback``.
+        """
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-            ts = time.time()
-            if event_type == "tool.started":
-                _push({
-                    "event": "tool.started",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "preview": preview,
-                })
-            elif event_type == "tool.completed":
-                _push({
-                    "event": "tool.completed",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "tool": tool_name,
-                    "duration": round(kwargs.get("duration", 0), 3),
-                    "error": kwargs.get("is_error", False),
-                })
-            elif event_type == "reasoning.available":
-                _push({
-                    "event": "reasoning.available",
-                    "run_id": run_id,
-                    "timestamp": ts,
-                    "text": preview or "",
-                })
+            if event_type != "reasoning.available":
+                return
+            self._push_run_sse_event(run_id, loop, {
+                "event": "reasoning.available",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "text": preview or "",
+            })
             # _thinking and subagent_progress are intentionally not forwarded
 
         return _callback
 
-    @_admit_api_agent_request
+    def _make_run_tool_sse_callbacks(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return tool_start/tool_complete callbacks for /v1/runs SSE correlation.
+
+        Emits ``tool.started`` / ``tool.completed`` with ``tool_call_id`` so
+        downstream clients (e.g. sclaw chat_persist) can pair assistant
+        tool_calls with tool rows.  Matches chat-completions structured
+        callback wiring; does not use the camelCase hermes.tool.progress wire
+        format.
+
+        ``tool.completed`` carries correlation metadata only (no tool-result
+        ``preview``/body): full outputs belong in the session transcript, not
+        unbounded SSE egress.
+        """
+        started_tool_call_ids: set[str] = set()
+        tool_start_times: Dict[str, float] = {}
+
+        def _on_tool_start(tool_call_id, function_name, function_args):
+            if not tool_call_id or function_name.startswith("_"):
+                return
+            started_tool_call_ids.add(tool_call_id)
+            tool_start_times[tool_call_id] = time.time()
+            from agent.display import build_tool_preview
+            preview = build_tool_preview(function_name, function_args) or function_name
+            self._push_run_sse_event(run_id, loop, {
+                "event": "tool.started",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "tool": function_name,
+                "tool_call_id": tool_call_id,
+                "preview": preview,
+                "input": function_args or {},
+            })
+
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            if not tool_call_id or tool_call_id not in started_tool_call_ids:
+                return
+            started_tool_call_ids.discard(tool_call_id)
+            started_at = tool_start_times.pop(tool_call_id, None)
+            duration = round(time.time() - started_at, 3) if started_at else 0.0
+            from agent.display import _detect_tool_failure
+            is_error, _ = _detect_tool_failure(function_name, function_result)
+            self._push_run_sse_event(run_id, loop, {
+                "event": "tool.completed",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "tool": function_name,
+                "tool_call_id": tool_call_id,
+                "duration": duration,
+                "error": is_error,
+            })
+
+        return _on_tool_start, _on_tool_complete
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         # Long-term memory scope header (see chat_completions for details).
@@ -4932,7 +5042,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -4941,12 +5051,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
-                        status=400,
-                    )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                err = _conversation_history_entry_validation_error(entry, i)
+                if err is not None:
+                    return web.json_response(_openai_error(err), status=400)
+                try:
+                    conversation_history.append(_normalize_conversation_history_entry(entry))
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -4991,6 +5102,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
+        tool_start_cb, tool_complete_cb = self._make_run_tool_sse_callbacks(run_id, loop)
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
             """Enqueue only while this run still owns live transport state."""
@@ -5048,9 +5160,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_id=session_id,
                         stream_delta_callback=_text_cb,
                         tool_progress_callback=event_cb,
+                        tool_start_callback=tool_start_cb,
+                        tool_complete_callback=tool_complete_cb,
                         gateway_session_key=gateway_session_key,
                         route=route,
                     )
+
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:

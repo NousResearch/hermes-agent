@@ -79,6 +79,12 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
+from agent.token_telemetry import (
+    TokenEfficiencyStore,
+    build_token_efficiency_record,
+    finalize_token_efficiency_no_usage,
+    finalize_token_efficiency_record,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
@@ -1704,6 +1710,7 @@ def run_conversation(
         api_kwargs = None  # Guard against UnboundLocalError in except handler
         api_request_id = f"{turn_id}:api:{api_call_count}"
         agent._current_api_request_id = api_request_id
+        token_efficiency_record = None
 
         while retry_count < max_retries:
             # ── Nous Portal rate limit guard ──────────────────────
@@ -1805,6 +1812,31 @@ def run_conversation(
                 except Exception:
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+
+                try:
+                    _te_messages = api_kwargs.get("messages")
+                    if not isinstance(_te_messages, list):
+                        _te_messages = api_kwargs.get("input")
+                    if not isinstance(_te_messages, list):
+                        _te_messages = api_messages
+                    _te_tools = api_kwargs.get("tools") if isinstance(api_kwargs, dict) else None
+                    if not isinstance(_te_tools, list):
+                        _te_tools = agent.tools or []
+                    token_efficiency_record = build_token_efficiency_record(
+                        session_id=agent.session_id or "",
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        platform=agent.platform or "",
+                        provider=agent.provider,
+                        model=agent.model,
+                        api_mode=agent.api_mode,
+                        messages=list(_te_messages) if isinstance(_te_messages, list) else [],
+                        tools=list(_te_tools) if isinstance(_te_tools, list) else [],
+                        rough_request_tokens=approx_request_tokens,
+                    )
+                except Exception as _te_err:
+                    token_efficiency_record = None
+                    logger.debug("Token efficiency pre-call attribution failed: %s", _te_err)
 
                 try:
                     from hermes_cli.plugins import (
@@ -2944,6 +2976,20 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+                    if token_efficiency_record is not None:
+                        try:
+                            TokenEfficiencyStore().append(
+                                finalize_token_efficiency_record(token_efficiency_record, usage_dict)
+                            )
+                        except Exception as _te_err:
+                            logger.debug("Token efficiency telemetry append failed: %s", _te_err)
+                elif token_efficiency_record is not None:
+                    try:
+                        TokenEfficiencyStore().append(
+                            finalize_token_efficiency_no_usage(token_efficiency_record)
+                        )
+                    except Exception as _te_err:
+                        logger.debug("Token efficiency no-usage telemetry append failed: %s", _te_err)
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

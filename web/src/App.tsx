@@ -22,6 +22,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Bot,
   Clock,
   Code,
   Cpu,
@@ -87,10 +88,19 @@ import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import McpPage from "@/pages/McpPage";
 import PairingPage from "@/pages/PairingPage";
+import RemoteBrowserPage from "@/pages/RemoteBrowserPage";
 import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import {
+  TeamEvolutionArchivePage,
+  TeamEvolutionPage,
+  TeamOperationsArchivePage,
+  TeamOperationsPage,
+  TeamProposalsArchivePage,
+  TeamProposalsCommandPage,
+} from "@/pages/TeamCommandCenterPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -142,8 +152,17 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/plugins": PluginsPage,
   "/mcp": McpPage,
   "/pairing": PairingPage,
+  "/browser": RemoteBrowserPage,
   "/channels": ChannelsPage,
   "/webhooks": WebhooksPage,
+  "/team-work": TeamOperationsPage,
+  "/team-evolution": TeamEvolutionPage,
+  "/team-work/archive": TeamOperationsArchivePage,
+  "/team-evolution/archive": TeamEvolutionArchivePage,
+  "/team-proposals/archive": TeamProposalsArchivePage,
+  "/team-proposals": TeamProposalsCommandPage,
+  "/team-pm": RadarHermesRedirect,
+  "/radar-hermes": RadarHermesRedirect,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
   "/profiles/new": ProfileBuilderPage,
@@ -158,6 +177,10 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
 // fire when the user navigates to /chat.
 function ChatRouteSink() {
   return null;
+}
+
+function RadarHermesRedirect() {
+  return <Navigate to="/team-evolution" replace />;
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
@@ -186,7 +209,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
+  { path: "/browser", label: "Browser", icon: Globe },
   { path: "/webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/team-proposals", label: "Team & Proposte", icon: Star },
+  { path: "/team-evolution", label: "Sviluppo Hermes", icon: Sparkles },
+  { path: "/team-work", label: "Team Operativo", icon: Bot },
   { path: "/pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },

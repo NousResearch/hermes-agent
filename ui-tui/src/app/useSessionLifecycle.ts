@@ -40,6 +40,11 @@ const statusFromLiveSession = (status?: string, running = false) => {
   return running || status === 'working' ? 'running…' : 'ready'
 }
 
+export const isSessionNotFoundError = (e: unknown) =>
+  /(?:^|\b)session not found(?:\b|$)/i.test(e instanceof Error ? e.message : String(e ?? ''))
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
 export const writeActiveSessionFile = (sessionId: null | string, file = process.env.HERMES_TUI_ACTIVE_SESSION_FILE) => {
   if (!file || !sessionId) {
     return
@@ -366,44 +371,83 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+        const renderResume = (r: SessionResumeResponse) => {
+          const info = r.info ?? null
+          const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
-            if (!r) {
-              sys('error: invalid response: session.resume')
+          resetSession()
+          setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
-              return patchUiState({ status: 'ready' })
-            }
+          const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
 
-            const info = r.info ?? null
-            const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
-
-            resetSession()
-            setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
-
-            const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
-
-            setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
-            patchUiState({
-              busy: running,
-              info,
-              sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
-              usage: usageFrom(info)
-            })
-            hydrateLiveSessionInflight(r.inflight)
-            cancelResumeScrollRef.current?.()
-            cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
-
-            if (previousSid && previousSid !== r.session_id) {
-              void closeSession(previousSid)
-            }
+          setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
+          writeActiveSessionFile(r.resumed ?? r.session_id)
+          patchUiState({
+            busy: running,
+            info,
+            sid: r.session_id,
+            status: statusFromLiveSession(r.status, running),
+            usage: usageFrom(info)
           })
-          .catch((e: Error) => {
-            sys(`error: ${e.message}`)
-            patchUiState({ status: 'ready' })
+          hydrateLiveSessionInflight(r.inflight)
+          cancelResumeScrollRef.current?.()
+          cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
+
+          if (previousSid && previousSid !== r.session_id) {
+            void closeSession(previousSid)
+          }
+        }
+
+        const requestResume = async (lazy = false) => {
+          const raw = await gw.request<SessionResumeResponse>('session.resume', {
+            cols: colsRef.current,
+            lazy,
+            session_id: id
+          })
+          const r = asRpcResult<SessionResumeResponse>(raw)
+
+          if (!r) {
+            throw new Error('invalid response: session.resume')
+          }
+
+          return r
+        }
+
+        requestResume()
+          .then(renderResume)
+          .catch(async (e: Error) => {
+            if (!isSessionNotFoundError(e)) {
+              sys(`error: ${e.message}`)
+              patchUiState({ status: 'ready' })
+              return
+            }
+
+            // Dashboard task/watch windows can race a freshly spawned worker:
+            // the UI receives the session id before the child has flushed its
+            // DB row.  Do not show a false "session not found"; retry briefly
+            // and then attach in lazy/watch mode, which is explicitly designed
+            // for live child sessions that may not own an agent yet.
+            patchUiState({ status: 'attaching worker…' })
+            for (const delay of [150, 350, 700, 1200]) {
+              await sleep(delay)
+              try {
+                renderResume(await requestResume())
+                return
+              } catch (retryError) {
+                if (!isSessionNotFoundError(retryError)) {
+                  sys(`error: ${retryError instanceof Error ? retryError.message : String(retryError)}`)
+                  patchUiState({ status: 'ready' })
+                  return
+                }
+              }
+            }
+
+            try {
+              renderResume(await requestResume(true))
+            } catch (lazyError) {
+              sys(`sessione worker non ancora disponibile; riprova tra pochi secondi (${lazyError instanceof Error ? lazyError.message : String(lazyError)})`)
+              patchUiState({ status: 'ready' })
+            }
           })
       })
     },

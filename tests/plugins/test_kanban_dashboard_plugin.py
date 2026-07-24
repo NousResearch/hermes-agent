@@ -2545,3 +2545,402 @@ def test_dashboard_parent_notice_and_child_results_use_detail_links():
     assert "t.link_counts" not in detail
     assert "Child Results" in detail
     assert "props.data.child_results" in detail
+
+# ---------------------------------------------------------------------------
+# Mission Control v2 read/read-mostly contracts
+# ---------------------------------------------------------------------------
+
+
+def test_mission_control_v2_cockpit_contract_groups_low_noise_sections(client):
+    ready = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Ready Scauzi pack", "assignee": "carbon", "priority": 5},
+    ).json()["task"]
+    blocked = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Needs Daniele decision", "priority": 9, "triage": True},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (blocked["id"],))
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (ready["id"],))
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/v2/cockpit")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["version"] == "mission-control-v2"
+    assert [item["id"] for item in data["navigation"]] == [
+        "inbox",
+        "workbench",
+        "documents",
+        "teams",
+        "system",
+    ]
+    assert data["inbox"]["max_items"] <= 5
+    assert data["inbox"]["guardrail"] == {"no_auto_dispatch": True}
+    assert any(item["task_id"] == blocked["id"] for item in data["inbox"]["items"])
+    blocked_card = next(item for item in data["inbox"]["items"] if item["task_id"] == blocked["id"])
+    assert blocked_card["activation"]["state"] == "Decisione richiesta"
+    assert blocked_card["activation"]["primary_cta"]["label"] == "Accetta e chiudi"
+    assert "Preview sblocco / prepara dispatch" in [cta["label"] for cta in blocked_card["activation"]["secondary_ctas"]]
+    prepare_cta = next(cta for cta in blocked_card["activation"]["secondary_ctas"] if cta["id"] == "prepare_dispatch")
+    assert prepare_cta["requires_confirmation"] is True
+    assert "Nessun worker parte" in prepare_cta["preview_copy"]
+    assert any(task["id"] == ready["id"] for task in data["workbench"]["recent_done"]["tasks"])
+    assert data["actions_contract"]["lifecycle"] == [
+        "inspect",
+        "choose_action",
+        "preview",
+        "confirm",
+        "observe",
+    ]
+    assert data["actions_contract"]["dispatch_requires_separate_confirmation"] is True
+
+
+def test_mission_control_v2_task_drawer_separates_context_attachments_from_outputs(client, tmp_path):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Review Scauzi output", "assignee": "carbon"},
+    ).json()["task"]
+
+    client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/attachments",
+        files={"file": ("input-context.pdf", b"input", "application/pdf")},
+    )
+
+    output_dir = kb.board_dir() / "completed_outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    produced = output_dir / f"{task['id']}_Scauzi_registration_pack.docx"
+    produced.write_bytes(b"docx-placeholder")
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (task["id"],))
+    finally:
+        conn.close()
+
+    r = client.get(f"/api/plugins/kanban/v2/tasks/{task['id']}")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["version"] == "mission-control-v2"
+    assert data["state"] == "completed"
+    assert data["guardrail"]["dispatch_started"] is False
+    assert data["guardrail"]["external_send_started"] is False
+    assert {a["id"] for a in data["primary_actions"]} >= {"create_followup", "review_output"}
+    assert [a["filename"] for a in data["documents"]["input_attachments"]] == ["input-context.pdf"]
+    assert [o["filename"] for o in data["documents"]["produced_outputs"]] == [
+        "Scauzi_registration_pack.docx"
+    ]
+
+
+def test_mission_control_v2_documents_registry_lists_only_document_outputs(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Completed methodology", "assignee": "carbon"},
+    ).json()["task"]
+    output_dir = kb.board_dir() / "completed_outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / f"{task['id']}_methodology.docx").write_bytes(b"doc")
+    (output_dir / f"{task['id']}_debug.log").write_text("not a user document")
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (task["id"],))
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/v2/documents")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["version"] == "mission-control-v2"
+    filenames = [item["filename"] for item in data["items"]]
+    assert "methodology.docx" in filenames
+    assert "debug.log" not in filenames
+    doc = next(item for item in data["items"] if item["filename"] == "methodology.docx")
+    assert doc["download_url"].endswith(f"/v2/documents/{task['id']}_methodology.docx")
+    assert data["review_gate"]["external_send_started"] is False
+
+    download = client.get(doc["download_url"])
+    assert download.status_code == 200
+    assert download.content == b"doc"
+
+
+def test_mission_control_v2_documents_registry_ignores_user_vault_and_prepares_in_triage(client, tmp_path):
+    private_pack_dir = (
+        tmp_path / "HermesDocumentVault" / "01_PROJECTS" / "CO2FARM" /
+        "Progetto 1 Kania" / "Kania_CURRENT_REVIEW_PACK"
+    )
+    private_pack_dir.mkdir(parents=True)
+    (private_pack_dir / "01_PDD_TEST.docx").write_bytes(b"private-vault-doc")
+    (private_pack_dir / "manifest_current_pack.json").write_text(
+        '{"files":[{"file":"01_PDD_TEST.docx"}]}',
+        encoding="utf-8",
+    )
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Completed reviewable output", "assignee": "reviewer"},
+    ).json()["task"]
+    output_dir = kb.board_dir() / "completed_outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    produced = output_dir / f"{task['id']}_methodology.docx"
+    produced.write_bytes(b"reviewable-doc")
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (task["id"],))
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/v2/documents")
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert {item["source"] for item in data["items"]} == {"completed_outputs"}
+    filenames = [item["filename"] for item in data["items"]]
+    assert "methodology.docx" in filenames
+    assert "01_PDD_TEST.docx" not in filenames
+    item = next(item for item in data["items"] if item["filename"] == "methodology.docx")
+
+    missing_confirm = client.post(
+        "/api/plugins/kanban/v2/document-actions/prepare-followup",
+        json={"filename": "methodology.docx", "action_id": "prepare_internal_review"},
+    )
+    assert missing_confirm.status_code == 400
+
+    prepared = client.post(
+        "/api/plugins/kanban/v2/document-actions/prepare-followup",
+        json={
+            "filename": "methodology.docx",
+            "action_id": "prepare_internal_review",
+            "author": "dashboard",
+            "confirm": True,
+        },
+    )
+    assert prepared.status_code == 200, prepared.text
+    prepared_data = prepared.json()
+    assert prepared_data["mutation"] == "document_action_prepared"
+    assert prepared_data["dispatch_started"] is False
+    assert prepared_data["external_send"] is False
+    assert prepared_data["status_changed"] is False
+    assert prepared_data["task"]["status"] == "triage"
+    assert prepared_data["document"]["filename"] == "methodology.docx"
+    conn = kb.connect()
+    try:
+        prepared_task = kb.get_task(conn, prepared_data["task_id"])
+        assert prepared_task is not None
+        assert prepared_task.status == "triage"
+        assert "MISSION_CONTROL_DOCUMENT_ACTION" in (prepared_task.body or "")
+        assert "methodology.docx" in (prepared_task.body or "")
+        assert "DISPATCH_ONE_TICK" in (prepared_task.body or "")
+        comments = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ?",
+            (prepared_data["task_id"],),
+        ).fetchall()
+        assert any("dispatch_started=false" in row["body"] for row in comments)
+    finally:
+        conn.close()
+
+    download = client.get(item["download_url"])
+    assert download.status_code == 200
+    assert download.content == b"reviewable-doc"
+
+
+def test_mission_control_v2_dispatch_preview_is_inert_and_confirm_is_capped(client, monkeypatch):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "dispatch me", "assignee": "default", "priority": 9},
+    ).json()["task"]
+
+    preview = client.get("/api/plugins/kanban/v2/dispatch/preview")
+    assert preview.status_code == 200, preview.text
+    data = preview.json()
+    assert data["read_only"] is True
+    assert data["dispatch_started"] is False
+    assert data["caps"] == {
+        "max_spawn": 1,
+        "max_in_progress": 2,
+        "max_in_progress_per_profile": 1,
+    }
+    assert data["would_spawn"][0]["task_id"] == created["id"]
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, created["id"])
+        assert task is not None
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+    bad_confirm = client.post(
+        "/api/plugins/kanban/v2/dispatch/confirm-one-tick",
+        json={"confirmation": "wrong"},
+    )
+    assert bad_confirm.status_code == 400
+
+    captured = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult(spawned=[(created["id"], "default", "/tmp/workspace")])
+
+    monkeypatch.setattr(kb, "dispatch_once", fake_dispatch_once)
+    confirmed = client.post(
+        "/api/plugins/kanban/v2/dispatch/confirm-one-tick",
+        json={"confirmation": "DISPATCH_ONE_TICK", "author": "daniele"},
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    body = confirmed.json()
+    assert body["mutation"] == "dispatch_one_tick"
+    assert body["dispatch_started"] is True
+    assert body["external_send"] is False
+    assert body["auto_decompose"] is False
+    assert captured["dry_run"] is False
+    assert captured["max_spawn"] == 1
+    assert captured["max_in_progress"] == 2
+    assert captured["max_in_progress_per_profile"] == 1
+
+
+def test_mission_control_v2_team_flow_prepares_triage_task_without_dispatch(client):
+    missing_confirm = client.post(
+        "/api/plugins/kanban/v2/team-actions/prepare",
+        json={"preset_id": "team_review"},
+    )
+    assert missing_confirm.status_code == 400
+
+    r = client.post(
+        "/api/plugins/kanban/v2/team-actions/prepare",
+        json={"preset_id": "team_challenge", "author": "daniele", "confirm": True},
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["mutation"] == "team_action_prepared"
+    assert data["dispatch_started"] is False
+    assert data["external_send"] is False
+    assert data["status_changed"] is False
+    assert data["task"]["status"] == "triage"
+    assert data["preset"]["id"] == "team_challenge"
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, data["task_id"])
+        assert task is not None
+        assert task.status == "triage"
+        assert "MISSION_CONTROL_TEAM_ACTION" in (task.body or "")
+        assert "DISPATCH_ONE_TICK" in (task.body or "")
+        comments = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ?",
+            (data["task_id"],),
+        ).fetchall()
+        assert any("TEAM_ACTION_PREPARED" in row["body"] and "dispatch_started=false" in row["body"] for row in comments)
+    finally:
+        conn.close()
+
+
+def test_mission_control_v2_generic_followup_action_creates_ready_child_after_closed_parent(client):
+    parent = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Completed Scauzi pack", "assignee": "writer", "priority": 7},
+    ).json()["task"]
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (parent["id"],))
+    finally:
+        conn.close()
+
+    missing_confirm = client.post(
+        f"/api/plugins/kanban/tasks/{parent['id']}/actions/create-followup",
+        json={"title": "Next phase", "body": "Continue from the approved pack."},
+    )
+    assert missing_confirm.status_code == 400
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{parent['id']}/actions/create-followup",
+        json={
+            "author": "daniele",
+            "title": "Next Scauzi evidence pass",
+            "body": "Add missing photos and field evidence before dispatch.",
+            "confirm": True,
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    child_id = data["task_id"]
+    assert data["ok"] is True
+    assert data["mutation"] == "followup_created"
+    assert data["parent_task_id"] == parent["id"]
+    assert data["dispatch_started"] is True
+    assert data["external_send"] is False
+    assert data["parent_status_unchanged"] is True
+    assert data["task"]["status"] == "ready"
+    assert data["task"]["assignee"] == "writer"
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "ready"
+        assert "FOLLOW_UP_FROM_TASK" in (child.body or "")
+        assert "created as ready" in (child.body or "")
+        parent_row = kb.get_task(conn, parent["id"])
+        assert parent_row is not None
+        assert parent_row.status == "done"
+        links = conn.execute(
+            "SELECT parent_id, child_id FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (parent["id"], child_id),
+        ).fetchall()
+        assert len(links) == 1
+        comments = [
+            row["body"]
+            for row in conn.execute(
+                "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id",
+                (parent["id"],),
+            ).fetchall()
+        ]
+        assert any("FOLLOWUP_TASK_CREATED" in body and child_id in body for body in comments)
+    finally:
+        conn.close()
+
+
+def test_mission_control_v2_standalone_bundle_targets_v2_plugin_and_kanban_api():
+    repo_root = Path(__file__).resolve().parents[2]
+    manifest = repo_root / "plugins" / "kanban-dashboard-v2" / "dashboard" / "manifest.json"
+    bundle = repo_root / "plugins" / "kanban-dashboard-v2" / "dashboard" / "dist" / "index.js"
+
+    assert manifest.exists()
+    manifest_text = manifest.read_text(encoding="utf-8")
+    assert '"path": "/kanban-mission-v2"' in manifest_text
+
+    js = bundle.read_text(encoding="utf-8")
+    assert 'const API = "/api/plugins/kanban";' in js
+    assert 'register("kanban-dashboard-v2", MissionControlV2Page)' in js
+    assert 'register("kanban-dashboard",' not in js
+    assert "Accetta e chiudi" in js
+    assert "Preview sblocco / prepara dispatch" in js
+    assert "window.confirm" in js
+    assert "Sblocco annullato" in js
+    assert "Decisione richiesta" in js
+    assert "Azioni guidate" in js
+    assert "prepareDocumentAction" in js
+    assert "document-actions/prepare-followup" in js
+    assert "Prepara flow" in js
+    assert "prepareTeamAction" in js
+    assert "team-actions/prepare" in js
+    assert "Aggiungi contesto" in js
+    assert "Prepara richiesta modifiche" in js
+    assert "MISSION_CONTROL_CONTEXT" in js
+    assert "Dispatch controllato" in js
+    assert "Preview dispatch" in js
+    assert "DISPATCH_ONE_TICK" in js
+    assert "confirm-one-tick" in js

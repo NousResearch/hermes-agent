@@ -8,6 +8,8 @@ interface SetupOptions {
 
 export type GracefulSignal = 'SIGHUP' | 'SIGINT' | 'SIGTERM'
 
+export const dashboardIgnoredSignals = (): GracefulSignal[] => ['SIGINT', 'SIGHUP']
+
 const SIGNALS: readonly GracefulSignal[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
 const SIGNAL_EXIT_CODE: Record<GracefulSignal, number> = {

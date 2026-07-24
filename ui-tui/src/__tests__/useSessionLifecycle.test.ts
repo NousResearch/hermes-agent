@@ -9,6 +9,7 @@ import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
+  isSessionNotFoundError,
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
@@ -26,6 +27,16 @@ describe('fresh session boundary', () => {
     expect(signalFreshSessionBoundary('old-session', 'new-session')).toBe(false)
     expect(onFreshSessionStarted).toHaveBeenCalledOnce()
     expect(onFreshSessionStarted).toHaveBeenCalledWith('new-session')
+  })
+})
+
+describe('session resume error classification', () => {
+  it('recognizes only the transient not-found resume error', () => {
+    expect(isSessionNotFoundError(new Error('session not found'))).toBe(true)
+    expect(isSessionNotFoundError(new Error('Error: session not found'))).toBe(true)
+    expect(isSessionNotFoundError('SESSION NOT FOUND')).toBe(true)
+    expect(isSessionNotFoundError(new Error('session busy'))).toBe(false)
+    expect(isSessionNotFoundError(new Error('not found'))).toBe(false)
   })
 })
 

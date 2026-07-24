@@ -17,6 +17,7 @@ import atexit
 import base64
 import binascii
 import concurrent.futures
+import copy
 import functools
 from collections import deque
 from dataclasses import dataclass
@@ -96,6 +97,8 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
+from hermes_cli.autonomous_proposals import build_autonomous_proposal_records
+from hermes_cli.radar_hermes import build_radar_hermes_snapshot
 from utils import env_var_enabled
 
 try:
@@ -3330,6 +3333,3252 @@ async def get_status(profile: Optional[str] = None):
     finally:
         if status_scope is not None:
             status_scope.__exit__(*sys.exc_info())
+
+
+class RemoteBrowserOpenRequest(BaseModel):
+    url: str
+
+
+class RemoteBrowserClickRequest(BaseModel):
+    x: int
+    y: int
+
+
+class RemoteBrowserTypeRequest(BaseModel):
+    text: str
+
+
+class RemoteBrowserKeyRequest(BaseModel):
+    key: str
+
+
+class RemoteBrowserScrollRequest(BaseModel):
+    dy: int
+
+
+_TEAM_PROPOSAL_LEGACY_STATUSES = {
+    "proposta",
+    "raccomandata",
+    "approvata",
+    "standby",
+    "parcheggiata",
+    "scartata",
+    "trasformata_in_task",
+}
+_TEAM_PROPOSAL_CANONICAL_STATUSES = {
+    "signal_detected",
+    "interpreting",
+    "challenging",
+    "synthesized",
+    "needs_reliability_check",
+    "ready_for_gate",
+    "approved_min_step",
+    "blocked_by_daniele",
+    "parked",
+    "rejected",
+    "converted_to_kanban",
+    "archived",
+}
+_TEAM_PROPOSAL_STATUSES = _TEAM_PROPOSAL_LEGACY_STATUSES | _TEAM_PROPOSAL_CANONICAL_STATUSES
+_TEAM_PROPOSAL_TERMINAL_CANONICAL_STATUSES = {"converted_to_kanban", "archived", "rejected"}
+_TEAM_PROPOSAL_STATUS_TRANSITIONS = {
+    "signal_detected": {"interpreting", "archived"},
+    "interpreting": {"challenging", "archived"},
+    "challenging": {"synthesized", "archived"},
+    "synthesized": {"needs_reliability_check", "ready_for_gate", "archived"},
+    "needs_reliability_check": {"ready_for_gate", "blocked_by_daniele", "archived"},
+    "ready_for_gate": {"approved_min_step", "blocked_by_daniele", "parked", "rejected", "archived"},
+    "approved_min_step": {"converted_to_kanban", "archived"},
+    "blocked_by_daniele": {"ready_for_gate", "archived"},
+    "parked": {"interpreting", "archived"},
+    "rejected": {"archived"},
+    "converted_to_kanban": {"archived"},
+    "archived": set(),
+}
+_TEAM_PROPOSAL_LEGACY_STATUS_MAP = {
+    "standby": "parked",
+    "parcheggiata": "parked",
+    "scartata": "rejected",
+    "trasformata_in_task": "converted_to_kanban",
+}
+
+_TEAM_PROPOSAL_INACTIVE_STATUSES = {"standby", "scartata", "trasformata_in_task", "parked", "rejected", "converted_to_kanban", "archived"}
+_TEAM_PROPOSAL_KANBAN_ACTIVE_STATUSES = {"todo", "ready", "running", "scheduled", "review"}
+_TEAM_PROPOSAL_AUTO_REFILL_TARGET = 3
+_TEAM_PROPOSAL_LEGACY_SPECIALIST_PROFILE_MAP = {
+    "strategy-chief": ("hermespm", "ops", "default"),
+    "evidence-manager": ("evidence", "ops", "default"),
+    "mrv-architect": ("mrv", "agronomic", "carbon", "default"),
+    "legal-claims-guardian": ("legal", "claims", "regulatory", "default"),
+    "systems-reliability-steward": ("reliability", "ops", "default"),
+}
+
+
+class TeamProposalStatusRequest(BaseModel):
+    status: str
+
+
+class TeamProposalReviewRequest(BaseModel):
+    action: str
+    note: Optional[str] = None
+
+
+class TeamProposalConvertRequest(BaseModel):
+    board: Optional[str] = None
+    confirmed_preview_hash: Optional[str] = None
+
+
+class TeamProposalPlanConvertRequest(BaseModel):
+    board: Optional[str] = None
+    confirmed_preview_hash: Optional[str] = None
+
+
+class TeamProposalApproveMinStepRequest(BaseModel):
+    action_type: str
+    approved_by: str = "daniele"
+    board: Optional[str] = None
+    confirmed_preview_hash: str
+    note: Optional[str] = None
+
+
+class TeamProposalUpsertRequest(BaseModel):
+    title: str
+    kind: str = "operative"
+    origin: str = "chief/manual"
+    category: Optional[str] = None
+    whyNow: str = ""
+    evidence: Optional[str] = None
+    benefit: str = "medium"
+    effort: str = "medium"
+    risk: str = "low"
+    priority: str = "P2"
+    confidence: str = "medium"
+    recommendation: str = "prepare"
+    acceptance: str = ""
+    source_key: Optional[str] = None
+    source_agent: Optional[str] = None
+    suggested_next_action: Optional[str] = None
+    signal: Optional[Any] = None
+    source_signal: Optional[Any] = None
+    interpretation: Optional[Any] = None
+    supporter: Optional[Any] = None
+    critic: Optional[Any] = None
+    supporter_view: Optional[Any] = None
+    critic_view: Optional[Any] = None
+    chief_synthesis: Optional[Any] = None
+    gate: Optional[Dict[str, Any]] = None
+    gate_state: Optional[str] = None
+    suggested_profiles: Optional[List[Dict[str, Any]]] = None
+    evidence_refs: Optional[List[Any]] = None
+    canonical_status: Optional[str] = None
+    gate_status: Optional[Dict[str, Any]] = None
+    source_agent_details: Optional[Dict[str, Any]] = None
+    approval_required_before_actions: Optional[bool] = None
+
+
+class TeamProposalUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    whyNow: Optional[str] = None
+    evidence: Optional[str] = None
+    benefit: Optional[str] = None
+    effort: Optional[str] = None
+    risk: Optional[str] = None
+    priority: Optional[str] = None
+    confidence: Optional[str] = None
+    recommendation: Optional[str] = None
+    acceptance: Optional[str] = None
+    suggested_next_action: Optional[str] = None
+    signal: Optional[Any] = None
+    source_signal: Optional[Any] = None
+    interpretation: Optional[Any] = None
+    supporter: Optional[Any] = None
+    critic: Optional[Any] = None
+    supporter_view: Optional[Any] = None
+    critic_view: Optional[Any] = None
+    chief_synthesis: Optional[Any] = None
+    gate: Optional[Dict[str, Any]] = None
+    gate_state: Optional[str] = None
+    suggested_profiles: Optional[List[Dict[str, Any]]] = None
+    evidence_refs: Optional[List[Any]] = None
+    canonical_status: Optional[str] = None
+    gate_status: Optional[Dict[str, Any]] = None
+    source_agent_details: Optional[Dict[str, Any]] = None
+    approval_required_before_actions: Optional[bool] = None
+
+
+class TeamProposalCollectorRequest(BaseModel):
+    board: Optional[str] = None
+    limit: int = 10
+
+
+class TeamProposalAutonomousGenerateRequest(BaseModel):
+    limit: int = 5
+    kind: str = "evolution"
+
+
+def _team_proposals_safety_contract() -> Dict[str, Any]:
+    return {
+        "mode": "proposal_review",
+        # Proposal intake/review is gated and preview-only. Once Daniele
+        # explicitly confirms conversion/launch, created Kanban work enters
+        # ready so the dispatcher can start it according to normal caps.
+        "no_auto_dispatch": True,
+        "preview_read_only": True,
+        "conversion_requires_confirmation": True,
+        "conversion_initial_status": "ready",
+    }
+
+
+def _team_proposals_source_contract(freshness: str = "fresh") -> Dict[str, Any]:
+    return {
+        "kind": "dashboard_registry",
+        "label": "Team Proposals registry",
+        # This is a provenance persona for the registry, not the runtime
+        # profile serving the dashboard. Keep it stable so the page remains a
+        # low-noise reliability/chief-of-staff surface even when run by the
+        # default profile during local development or Kanban execution.
+        "profile": "reliability",
+        "tenant": os.environ.get("HERMES_TENANT") or "hermes-evolution",
+        "freshness": freshness,
+    }
+
+
+def _team_constitution_contracts() -> Dict[str, Dict[str, Any]]:
+    """Return the applied two-team operating constitution for the dashboard.
+
+    The durable operating constitution lives in the Chief workspace. The
+    dashboard exposes a compact contract so each page can show the team
+    identity, forbidden domain, and the state/log files that must be read at
+    the start of every cycle without rendering a wall of prompt text in the
+    first viewport.
+    """
+
+    base_dir = "/home/daniele/HermesDocumentVault/00_SYSTEM"
+    master_prompt = f"{base_dir}/Hermes_Two_Team_Constitution_Block_1.md"
+    operating_constitution = "/home/daniele/hermes-workspace/runs/chief-of-staff-control-loop/HERMES_SUBAGENT_OPERATING_CONSTITUTION.md"
+    return {
+        "evolution": {
+            "team": "Sviluppo Hermes",
+            "lead": "hermespm",
+            "mission": "Evolvere Hermes come prodotto: dashboard, Kanban, subagenti, skill, cron, affidabilità, osservabilità, memoria, governance e UX.",
+            "north_star": "Rendere Daniele più leggero, non Hermes più complesso.",
+            "must_not": [
+                "Non lavorare sui progetti reali di Daniele: carbon, agroforestazione, legale, CO2Farm, contratti.",
+                "Non sovra-ingegnerizzare: scegliere il gradino più basso che risolve il problema.",
+                "Non eseguire azioni Rosse senza OK esplicito di Daniele.",
+            ],
+            "cycle_start_reads": [
+                f"{base_dir}/stato_hermes.md",
+                f"{base_dir}/log_apprendimento_hermes.md",
+            ],
+            "prompt_sources": [
+                operating_constitution,
+                master_prompt,
+                f"{base_dir}/Hermes_Team_Sviluppo_Hermes_Block.md",
+                "/home/daniele/hermes-workspace/runs/hermes-system-specs-20260624/hermes_master_prompt.md",
+                "/home/daniele/hermes-workspace/runs/hermes-system-specs-20260624/hermes_team_sviluppo.md",
+            ],
+            "handoff": "Handoff Team Operativo: [segnale] · perché conta · fonte · proposta minima · nessuna azione presa.",
+            "mode": "proposal_mode_by_default",
+        },
+        "operative": {
+            "team": "Team Operativo",
+            "lead": "ops",
+            "mission": "Far avanzare il lavoro reale di Daniele: CO2Farm/Scauzi, carbon, MRV, evidenze, documenti, legale, finanza, mercato, regolatorio e decisioni operative.",
+            "north_star": "Far avanzare progetti reali con proposte mature fondate sui fatti, senza aumentare il carico decisionale.",
+            "must_not": [
+                "Non lavorare sullo sviluppo di Hermes: architettura, skill, plugin, gateway.",
+                "Non produrre documenti o claim verso terzi senza Evidence First ed External Use Gate.",
+                "Non proporre raccomandazioni su assunzioni non marcate e non eseguire azioni Rosse senza OK esplicito.",
+            ],
+            "cycle_start_reads": [
+                f"{base_dir}/stato_operativo.md",
+                f"{base_dir}/log_apprendimento_operativo.md",
+            ],
+            "prompt_sources": [
+                operating_constitution,
+                master_prompt,
+                f"{base_dir}/Hermes_Team_Operativo_Block.md",
+                "/home/daniele/hermes-workspace/runs/hermes-system-specs-20260624/hermes_master_prompt.md",
+                "/home/daniele/hermes-workspace/runs/hermes-system-specs-20260624/hermes_team_operativo.md",
+            ],
+            "handoff": "Handoff Sviluppo Hermes: [problema] · perché conta · dove si vede (log/sessione) · proposta minima · nessuna azione presa.",
+            "mode": "proposal_mode_by_default",
+        },
+    }
+
+
+def _team_proposal_is_active(proposal: Dict[str, Any]) -> bool:
+    if proposal.get("superseded_by_prior_conversion"):
+        return False
+    return proposal.get("canonical_status", proposal.get("status")) not in _TEAM_PROPOSAL_INACTIVE_STATUSES
+
+
+def _team_proposal_marker(proposal: Dict[str, Any]) -> Optional[str]:
+    marker = str(proposal.get("dedupe_key") or proposal.get("source_key") or "").strip()
+    return marker or None
+
+
+def _team_proposal_is_converted_or_linked(proposal: Dict[str, Any]) -> bool:
+    return (
+        proposal.get("canonical_status") == "converted_to_kanban"
+        or proposal.get("status") == "trasformata_in_task"
+        or bool(proposal.get("task_id") or proposal.get("plan_task_id") or proposal.get("plan_child_task_ids"))
+    )
+
+
+def _team_proposal_prior_converted_markers(proposals: List[Dict[str, Any]]) -> Dict[str, str]:
+    converted: Dict[str, str] = {}
+    for proposal in proposals:
+        marker = _team_proposal_marker(proposal)
+        if marker and _team_proposal_is_converted_or_linked(proposal):
+            converted.setdefault(marker, str(proposal.get("id") or "converted"))
+    return converted
+
+
+def _suppress_redeveloped_duplicate_proposals(proposals: List[Dict[str, Any]]) -> None:
+    """Hide exact-source repeats of already converted work from active queues.
+
+    The history row stays visible in archives/audit, but Team Pulse must not
+    keep re-presenting the same `source_key` as fresh work after Daniele has
+    already launched it to Kanban.
+    """
+
+    converted = _team_proposal_prior_converted_markers(proposals)
+    for proposal in proposals:
+        marker = _team_proposal_marker(proposal)
+        if not marker or marker not in converted or _team_proposal_is_converted_or_linked(proposal):
+            continue
+        if _team_proposal_is_active(proposal):
+            proposal["superseded_by_prior_conversion"] = True
+            proposal["superseded_by_proposal_id"] = converted[marker]
+            proposal["canonical_status"] = "archived"
+            proposal["status"] = "archived"
+            proposal.setdefault("chief_review_reason", "Nascosta: stessa fonte/proposta già trasformata in Kanban.")
+
+
+def _team_proposal_text(value: Any, *, preferred_keys: Optional[List[str]] = None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        keys = preferred_keys or ["summary", "rationale", "synthesis", "case_for", "case_against", "hypothesis", "acceptance"]
+        for key in keys:
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value).strip()
+
+
+def _team_proposal_real_text(value: Any, *, placeholders: Optional[List[Any]] = None, preferred_keys: Optional[List[str]] = None) -> bool:
+    text = _team_proposal_text(value, preferred_keys=preferred_keys)
+    if not text:
+        return False
+    placeholder_texts = {_team_proposal_text(item, preferred_keys=preferred_keys).strip().lower() for item in (placeholders or [])}
+    placeholder_texts.discard("")
+    return text.strip().lower() not in placeholder_texts
+
+
+def _team_proposal_has_complete_challenge(proposal: Dict[str, Any]) -> bool:
+    """Return true only for real autonomous challenge evidence, not normalized fallbacks."""
+    challenge = proposal.get("challenge") if isinstance(proposal.get("challenge"), dict) else {}
+    interpretation = proposal.get("interpretation") if isinstance(proposal.get("interpretation"), dict) else {}
+    signal = proposal.get("signal")
+    signal_placeholders = [proposal.get("title")]
+    signal_ok = any(
+        _team_proposal_real_text(proposal.get(key), placeholders=signal_placeholders, preferred_keys=["summary", "rationale"])
+        for key in ("source_signal", "evidence", "whyNow")
+    ) or _team_proposal_real_text(signal, placeholders=signal_placeholders, preferred_keys=["summary", "rationale"])
+    supporter = challenge.get("support") or proposal.get("supporter") or proposal.get("supporter_view")
+    supporter_placeholders = [
+        proposal.get("benefit"),
+        proposal.get("interpretation"),
+        interpretation.get("hypothesis"),
+        "Beneficio da validare.",
+        "Interpretazione da validare in review.",
+    ]
+    supporter_ok = _team_proposal_real_text(
+        supporter,
+        placeholders=supporter_placeholders,
+        preferred_keys=["rationale", "case_for", "summary"],
+    )
+    critic = challenge.get("challenge") or proposal.get("critic") or proposal.get("critic_view")
+    critic_placeholders = [proposal.get("risk"), "Verificare rischio, rumore e gate no-auto-dispatch."]
+    critic_ok = _team_proposal_real_text(
+        critic,
+        placeholders=critic_placeholders,
+        preferred_keys=["rationale", "case_against", "summary"],
+    )
+    chief = challenge.get("chief_synthesis") or proposal.get("chief_synthesis")
+    chief_placeholders = [
+        proposal.get("acceptance"),
+        proposal.get("recommendation"),
+        "Sintesi Chief da completare.",
+        "Daniele: approvare, modificare, indirizzare o scartare?",
+    ]
+    chief_ok = _team_proposal_real_text(
+        chief,
+        placeholders=chief_placeholders,
+        preferred_keys=["synthesis", "summary", "recommendation"],
+    )
+    return signal_ok and supporter_ok and critic_ok and chief_ok
+
+
+def _team_proposal_canonical_status(proposal: Dict[str, Any]) -> str:
+    explicit = str(proposal.get("canonical_status") or "").strip()
+    if explicit in _TEAM_PROPOSAL_CANONICAL_STATUSES:
+        return explicit
+    status = str(proposal.get("status") or "").strip()
+    if status in _TEAM_PROPOSAL_CANONICAL_STATUSES:
+        return status
+    if status in _TEAM_PROPOSAL_LEGACY_STATUS_MAP:
+        return _TEAM_PROPOSAL_LEGACY_STATUS_MAP[status]
+    gate_status = proposal.get("gate_status") if isinstance(proposal.get("gate_status"), dict) else {}
+    if status in {"approvata", "raccomandata"} and gate_status.get("status") == "approved" and gate_status.get("approved_by"):
+        return "approved_min_step"
+    if status in {"proposta", "raccomandata", "approvata"}:
+        return "ready_for_gate" if _team_proposal_has_complete_challenge(proposal) else "synthesized"
+    return "signal_detected"
+
+
+def _validate_team_proposal_transition(before: str, after: str) -> None:
+    if after not in _TEAM_PROPOSAL_CANONICAL_STATUSES:
+        raise ValueError(f"Unsupported proposal status: {after}")
+    if before == after:
+        return
+    if before not in _TEAM_PROPOSAL_CANONICAL_STATUSES:
+        raise ValueError(f"Unsupported proposal status: {before}")
+    if after not in _TEAM_PROPOSAL_STATUS_TRANSITIONS.get(before, set()):
+        raise ValueError(f"Invalid proposal status transition: {before} -> {after}")
+
+
+def _team_proposal_default_gate_status(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    canonical = _team_proposal_canonical_status(proposal)
+    gate = proposal.get("gate_status") if isinstance(proposal.get("gate_status"), dict) else {}
+    status = str(gate.get("status") or "")
+    if not status:
+        status = "converted" if canonical == "converted_to_kanban" else "approved" if canonical == "approved_min_step" else "rejected" if canonical == "rejected" else "parked" if canonical == "parked" else "blocked" if canonical == "blocked_by_daniele" else "pending"
+    allowed = ["preview_task", "preview_plan", "approve_min_step", "park", "reject", "request_info"]
+    if canonical == "approved_min_step":
+        allowed = ["convert_to_task", "convert_to_plan", "archive"]
+    return {
+        "approval_required_before_actions": True,
+        "ready_for_daniele": canonical in {"ready_for_gate", "synthesized", "needs_reliability_check"},
+        "status": status,
+        "approved_by": gate.get("approved_by"),
+        "approved_at": gate.get("approved_at"),
+        "approved_action": gate.get("approved_action"),
+        "approved_preview_hash": gate.get("approved_preview_hash"),
+        "allowed_next_actions": gate.get("allowed_next_actions") or allowed,
+        "forbidden_without_approval": gate.get("forbidden_without_approval") or ["kanban_create", "dispatch", "cron_create", "webhook_create", "external_send"],
+    }
+
+
+def _team_proposal_source_agent_details(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    available = set(_team_proposal_available_profiles())
+    profile = str(proposal.get("source_agent") or "").strip() or None
+    legacy = proposal.get("source_agent_legacy") or proposal.get("source_agent_contract", {}).get("legacy_label") if isinstance(proposal.get("source_agent_contract"), dict) else proposal.get("source_agent_legacy")
+    profile_verified = bool(profile and profile in available)
+    return {
+        "profile": profile,
+        "profile_verified": profile_verified,
+        "logical_role": legacy if legacy and legacy != profile else None,
+        "legacy_persona": legacy,
+        "mapping_status": "verified_profile" if profile_verified else "missing_blocked",
+        "mapping_reason": "Real Hermes profile verified on disk." if profile_verified else "Source agent is not mapped to a configured Hermes profile; keep proposal gated.",
+    }
+
+
+def _append_team_proposal_audit_v3(
+    proposal: Dict[str, Any],
+    event: str,
+    *,
+    actor_type: str,
+    actor_id: str,
+    detail: Optional[str] = None,
+    before_status: Optional[str] = None,
+    after_status: Optional[str] = None,
+    side_effects: Optional[Dict[str, Any]] = None,
+    request_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    effects = {
+        "kanban_created": False,
+        "tasks_created_count": 0,
+        "initial_status": None,
+        "dispatch_started": False,
+        "cron_created": False,
+        "external_send": False,
+    }
+    if side_effects:
+        effects.update(side_effects)
+    log = proposal.setdefault("audit_log", [])
+    log.append({
+        "at": _utc_now_iso(),
+        "actor_type": actor_type,
+        "actor_id": actor_id,
+        "event": event,
+        "detail": detail,
+        "before_status": before_status,
+        "after_status": after_status,
+        "side_effects": effects,
+        "request_id": request_id,
+        "idempotency_key": idempotency_key,
+    })
+    if len(log) > 50:
+        del log[:-50]
+
+
+def _set_team_proposal_status(proposal: Dict[str, Any], after: str, *, actor_type: str, actor_id: str, detail: Optional[str] = None) -> None:
+    before = _team_proposal_canonical_status(proposal)
+    _validate_team_proposal_transition(before, after)
+    proposal["canonical_status"] = after
+    if after == "converted_to_kanban":
+        proposal["status"] = "trasformata_in_task"
+    elif after == "parked":
+        proposal["status"] = "parcheggiata"
+    elif after == "rejected":
+        proposal["status"] = "scartata"
+    elif after == "approved_min_step":
+        proposal["status"] = "approvata"
+    elif after == "ready_for_gate":
+        proposal["status"] = "raccomandata"
+    else:
+        proposal["status"] = after
+    proposal["status_updated_at"] = _utc_now_iso()
+    _append_team_proposal_audit_v3(proposal, "status_changed", actor_type=actor_type, actor_id=actor_id, detail=detail, before_status=before, after_status=after)
+
+
+def _stable_preview_hash(preview: Dict[str, Any]) -> str:
+    def stable(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: stable(v) for k, v in sorted(obj.items()) if k not in {"preview_hash", "created_at", "updated_at", "formulated_at"}}
+        if isinstance(obj, list):
+            return [stable(v) for v in obj]
+        return obj
+    payload = json.dumps(stable(preview), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _team_proposal_formulated_at(proposal: Dict[str, Any]) -> Optional[str]:
+    """Return the original proposal formulation timestamp for display.
+
+    New records persist ``formulated_at``. Older registries did not, so we
+    derive a stable read-only fallback from the first available creation-like
+    timestamp instead of showing the latest signal/update time as if it were the
+    proposal's birth date.
+    """
+
+    for key in ("formulated_at", "created_at"):
+        value = proposal.get(key)
+        if value:
+            return str(value)
+    audit_log = proposal.get("audit_log")
+    if isinstance(audit_log, list):
+        audit_times = [str(event.get("at")) for event in audit_log if isinstance(event, dict) and event.get("at")]
+        if audit_times:
+            return sorted(audit_times)[0]
+    for key in ("status_updated_at", "last_signal_at", "updated_at", "transformed_at"):
+        value = proposal.get(key)
+        if value:
+            return str(value)
+    signal = proposal.get("signal")
+    if isinstance(signal, dict) and signal.get("observed_at"):
+        return str(signal.get("observed_at"))
+    return None
+
+
+def _normalise_team_proposal_for_response(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    item = copy.deepcopy(proposal)
+    _normalise_team_proposal_contract(item)
+    formulated_at = _team_proposal_formulated_at(item)
+    if formulated_at:
+        item["formulated_at"] = formulated_at
+    return item
+
+
+def _require_team_proposal_approved_for_conversion(proposal: Dict[str, Any], *, action_type: str, preview_hash: str) -> None:
+    canonical = _team_proposal_canonical_status(proposal)
+    gate = proposal.get("gate_status") if isinstance(proposal.get("gate_status"), dict) else {}
+    approved_action = gate.get("approved_action") if isinstance(gate.get("approved_action"), dict) else {}
+    if canonical != "approved_min_step":
+        raise HTTPException(status_code=409, detail="Proposal must be approved_min_step before Kanban conversion")
+    requires_complete_challenge = bool(proposal.get("autonomy_level") or proposal.get("record_type") == "autonomous_proposal_candidate")
+    if requires_complete_challenge and not _team_proposal_has_complete_challenge(proposal):
+        raise HTTPException(status_code=409, detail="Proposal lacks complete signal/supporter/critic/Chief synthesis gate")
+    if not gate.get("approved_by") or not gate.get("approved_at"):
+        raise HTTPException(status_code=409, detail="Missing Daniele approval audit")
+    if approved_action.get("type") != action_type:
+        raise HTTPException(status_code=409, detail="Approved action does not match requested conversion")
+    if gate.get("approved_preview_hash") != preview_hash:
+        raise HTTPException(status_code=409, detail="Preview changed after approval; approve again before conversion")
+
+
+def _team_proposal_linked_task_ids(proposal: Dict[str, Any]) -> List[str]:
+    ids: List[str] = []
+    for key in ("task_id", "plan_task_id"):
+        value = proposal.get(key)
+        if value:
+            ids.append(str(value))
+    for child_id in proposal.get("plan_child_task_ids") or []:
+        if child_id:
+            ids.append(str(child_id))
+    return list(dict.fromkeys(ids))
+
+
+def _team_proposals_path() -> Path:
+    return get_hermes_home() / "dashboard" / "team_proposals.json"
+
+
+def _team_proposal_available_profiles() -> List[str]:
+    """Return real Kanban worker profiles available on this Hermes install."""
+    try:
+        from hermes_cli import kanban_db
+
+        profiles = kanban_db.list_profiles_on_disk()
+    except Exception:
+        profiles = []
+    cleaned = [str(name).strip() for name in profiles if str(name).strip()]
+    return cleaned or ["default"]
+
+
+def _team_proposal_pick_profile(candidates: List[str], available: List[str]) -> str:
+    available_set = set(available)
+    for candidate in candidates:
+        if candidate in available_set:
+            return candidate
+    if "default" in available_set:
+        return "default"
+    return available[0]
+
+
+def _team_proposal_real_specialist_profile(specialist: Dict[str, Any], available: List[str]) -> str:
+    """Return the real profile id used by a displayed specialist card.
+
+    Historic Team & Proposte registries stored UI personas such as
+    ``strategy-chief`` as specialist ids. Those labels are useful as logical
+    roles but must not be exposed as executable/assignable agent ids in the
+    growth contract. Map known personas to verified profiles when available;
+    otherwise fall back to a real profile discovered on disk.
+    """
+    raw_id = str(specialist.get("id") or "").strip()
+    if raw_id in set(available):
+        return raw_id
+    candidates = list(_TEAM_PROPOSAL_LEGACY_SPECIALIST_PROFILE_MAP.get(raw_id, ()))
+    return _team_proposal_pick_profile(candidates or ["default"], available)
+
+
+def _team_proposal_normalize_specialists_for_response(data: Dict[str, Any]) -> None:
+    """Expose specialist cards as real Hermes profiles while preserving legacy role metadata."""
+    available = _team_proposal_available_profiles()
+    available_set = set(available)
+    normalized: List[Dict[str, Any]] = []
+    for specialist in data.get("specialists", []):
+        item = dict(specialist)
+        raw_id = str(item.get("id") or "").strip()
+        profile_id = _team_proposal_real_specialist_profile(item, available)
+        aliases = [str(value).strip() for value in item.get("aliases", []) if str(value).strip()] if isinstance(item.get("aliases"), list) else []
+        if raw_id and raw_id != profile_id:
+            item["logical_role"] = item.get("logical_role") or raw_id
+            item["legacy_id"] = raw_id
+            aliases.append(raw_id)
+        name = str(item.get("name") or "").strip()
+        if name:
+            aliases.append(name)
+        item["id"] = profile_id
+        item["profile_verified"] = profile_id in available_set
+        item["aliases"] = list(dict.fromkeys(alias for alias in aliases if alias and alias != profile_id))
+        item["mapping_status"] = "verified_profile" if item["profile_verified"] else "missing_blocked"
+        item["mapping_reason"] = "Displayed agent card uses a real Hermes profile; legacy persona is kept only as logical_role/alias." if item["profile_verified"] else "No verified profile found; card is gated and not suggested for execution."
+        normalized.append(item)
+    data["specialists"] = normalized
+
+
+def _team_proposal_real_source_agent(proposal: Dict[str, Any], available: Optional[List[str]] = None) -> str:
+    """Return a real configured Hermes profile while preserving legacy/persona provenance."""
+    available = available or _team_proposal_available_profiles()
+    raw = str(proposal.get("source_agent") or "").strip()
+    if raw in set(available):
+        proposal["source_agent_status"] = "verified_profile"
+        return raw
+    if raw:
+        proposal.setdefault("source_agent_legacy", raw)
+        proposal["source_agent_status"] = "normalized_from_legacy_persona"
+    else:
+        proposal["source_agent_status"] = "legacy_missing"
+    kind = str(proposal.get("kind") or "")
+    origin = str(proposal.get("origin") or "").lower()
+    text = "\n".join(str(proposal.get(key) or "") for key in ("title", "category", "whyNow", "evidence", "acceptance")).lower()
+    if kind == "evolution" or any(word in text or word in origin for word in ("hermes", "dashboard", "kanban", "mission control", "frontend", "backend", "code", "codice")):
+        return _team_proposal_pick_profile(["ops", "reliability", "default", "hermespm"], available)
+    return _team_proposal_pick_profile(["ops", "default", "evidence", "hermespm"], available)
+
+
+def _team_proposal_view(value: Any, *, role: str, actor: str, fallback: str) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        result = dict(value)
+        result.setdefault("role", role)
+        result.setdefault("actor", result.get("agent") or actor)
+        result.setdefault("rationale", result.get("case_for") or result.get("case_against") or result.get("rationale") or fallback)
+        return result
+    text = str(value or "").strip() or fallback
+    return {"role": role, "actor": actor, "rationale": text}
+
+
+def _team_proposal_gate(proposal: Dict[str, Any], gate: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    result = dict(gate or {})
+    safe_actions = ["show proposal", "edit copy", "prepare ready task preview"]
+    required_forbidden = ["dispatch task", "start worker", "start cron", "send external message", "modify production config", "create ready executable tasks"]
+    existing_forbidden = [str(item) for item in (result.get("forbidden_without_approval") or []) if item]
+    merged_forbidden = existing_forbidden + [item for item in required_forbidden if item not in existing_forbidden]
+    result["requires_daniele"] = True
+    result.setdefault("decision_needed", "approve | reject | request_changes | defer")
+    result["safe_actions_without_approval"] = safe_actions
+    result["forbidden_without_approval"] = merged_forbidden
+    result.setdefault("approved_by", None)
+    result.setdefault("approved_at", None)
+    result.setdefault("state", proposal.get("gate_state") or "review_required")
+    result["no_auto_dispatch"] = True
+    return result
+
+def _team_proposal_suggested_profiles(proposal: Dict[str, Any], available: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    available = available or _team_proposal_available_profiles()
+    available_set = set(available)
+    existing = proposal.get("suggested_profiles")
+    if isinstance(existing, list) and existing:
+        verified = []
+        for item in existing:
+            profile = str((item or {}).get("profile") if isinstance(item, dict) else item).strip()
+            if profile in available_set:
+                payload = dict(item) if isinstance(item, dict) else {"profile": profile}
+                payload["exists_verified"] = True
+                payload.setdefault("reason", "Profilo reale verificato nel registry Hermes.")
+                payload.setdefault("confidence", "medium")
+                verified.append(payload)
+        if verified:
+            return verified
+    assignment = _team_proposal_auto_assignment(proposal)
+    seen = set()
+    suggestions = []
+    candidates = [(assignment.get("parent_assignee"), "coordinator", "coordina piano/preview controllata")]
+    candidates += [(task.get("assignee"), "worker", task.get("assignment_reason") or "esecuzione controllata") for task in assignment.get("tasks", [])]
+    for profile, role, reason in candidates:
+        if not profile or profile in seen or profile not in available_set:
+            continue
+        seen.add(profile)
+        suggestions.append({
+            "profile": profile,
+            "exists_verified": True,
+            "reason": reason,
+            "role": role,
+            "confidence": "high" if role == "coordinator" else "medium",
+        })
+    return suggestions
+
+
+def _normalise_team_proposal_contract(proposal: Dict[str, Any], payload: Optional[TeamProposalUpsertRequest] = None) -> bool:
+    """Normalize autonomous/challenge contract fields without losing audit trail."""
+    before = json.dumps(proposal, sort_keys=True, default=str)
+    available = _team_proposal_available_profiles()
+    if payload is not None:
+        for key in (
+            "signal",
+            "source_signal",
+            "interpretation",
+            "supporter",
+            "critic",
+            "supporter_view",
+            "critic_view",
+            "chief_synthesis",
+            "gate",
+            "gate_state",
+            "suggested_profiles",
+            "evidence_refs",
+            "canonical_status",
+            "gate_status",
+            "source_agent_details",
+            "approval_required_before_actions",
+        ):
+            value = getattr(payload, key, None)
+            if value is not None:
+                proposal[key] = value
+    source_agent = _team_proposal_real_source_agent(proposal, available)
+    source_agent_status = proposal.get("source_agent_status")
+    if proposal.get("source_agent") != source_agent:
+        proposal["source_agent"] = source_agent
+    is_autonomous = bool(proposal.get("autonomy_level") or proposal.get("record_type") == "autonomous_proposal_candidate")
+    if is_autonomous:
+        proposal["schema_version"] = "autonomous_proposal.v3"
+        proposal.setdefault("record_type", "autonomous_proposal_candidate")
+        is_generated_candidate = proposal.get("record_type") == "autonomous_proposal_candidate"
+        if is_generated_candidate and source_agent in set(available) and source_agent_status in {"legacy_missing", "normalized_from_legacy_persona"}:
+            audit = proposal.get("audit")
+            if not isinstance(audit, dict):
+                legacy_audit = audit
+                audit = {}
+                if legacy_audit not in (None, [], {}):
+                    audit["legacy_audit"] = legacy_audit
+                proposal["audit"] = audit
+            audit.setdefault("source_agent_normalization", {
+                "status": source_agent_status,
+                "legacy_source_agent": proposal.get("source_agent_legacy"),
+                "normalized_profile": source_agent,
+                "note": "Autonomous proposal engine normalized the seed/persona label to a real existing profile before exposing the proposal.",
+            })
+            proposal["source_agent_status"] = "verified_profile"
+    proposal.setdefault("signal", proposal.get("source_signal") or proposal.get("evidence") or proposal.get("whyNow") or proposal.get("title"))
+    proposal.setdefault("source_signal", proposal.get("signal"))
+    proposal.setdefault("interpretation", proposal.get("whyNow") or proposal.get("acceptance") or "Interpretazione da validare in review.")
+    challenge = proposal.get("challenge") if isinstance(proposal.get("challenge"), dict) else {}
+    proposal["supporter"] = _team_proposal_view(
+        proposal.get("supporter") or proposal.get("supporter_view") or challenge.get("support"),
+        role="supporter",
+        actor=str(challenge.get("supporter") or proposal.get("source_agent") or source_agent),
+        fallback=str(proposal.get("benefit") or proposal.get("interpretation") or "Beneficio da validare."),
+    )
+    proposal["critic"] = _team_proposal_view(
+        proposal.get("critic") or proposal.get("critic_view") or challenge.get("challenge"),
+        role="critic",
+        actor=str(challenge.get("critic") or "reliability"),
+        fallback=str(proposal.get("risk") or "Verificare rischio, rumore e gate no-auto-dispatch."),
+    )
+    proposal.setdefault("supporter_view", proposal["supporter"])
+    proposal.setdefault("critic_view", proposal["critic"])
+    proposal.setdefault("chief_synthesis", challenge.get("chief_synthesis") or proposal.get("acceptance") or proposal.get("recommendation") or "Sintesi Chief da completare.")
+    if isinstance(proposal.get("signal"), str):
+        proposal["signal"] = {
+            "summary": proposal["signal"],
+            "source_type": "registry",
+            "source_ref": str(proposal.get("source_key") or proposal.get("id") or "legacy"),
+            "observed_at": str(proposal.get("last_signal_at") or proposal.get("updated_at") or proposal.get("created_at") or _utc_now_iso()),
+        }
+    if isinstance(proposal.get("interpretation"), str):
+        proposal["interpretation"] = {
+            "hypothesis": proposal["interpretation"],
+            "expected_benefit": str(proposal.get("benefit") or "medium"),
+            "effort": str(proposal.get("effort") or "medium"),
+            "risk": str(proposal.get("risk") or "low"),
+        }
+    if isinstance(proposal.get("chief_synthesis"), str):
+        proposal["chief_synthesis"] = {
+            "recommendation": str(proposal.get("recommendation") or "prepare"),
+            "synthesis": proposal["chief_synthesis"],
+            "decision_needed": "Daniele: approvare, modificare, indirizzare o scartare?",
+            "acceptance": str(proposal.get("acceptance") or proposal["chief_synthesis"]),
+            "unresolved_questions": [],
+        }
+    proposal["gate_state"] = str(proposal.get("gate_state") or "review_required")
+    proposal["gate"] = _team_proposal_gate(proposal, proposal.get("gate") if isinstance(proposal.get("gate"), dict) else None)
+    proposal["approval_required_before_actions"] = True
+    proposal["canonical_status"] = _team_proposal_canonical_status(proposal)
+    proposal["gate_status"] = _team_proposal_default_gate_status(proposal)
+    details = proposal.get("source_agent_details") if isinstance(proposal.get("source_agent_details"), dict) else {}
+    merged_details = _team_proposal_source_agent_details(proposal)
+    merged_details.update({key: value for key, value in details.items() if value not in (None, "")})
+    proposal["source_agent_details"] = merged_details
+    proposal["suggested_profiles"] = _team_proposal_suggested_profiles(proposal, available)
+    if not isinstance(proposal.get("evidence_refs"), list):
+        refs = [proposal.get("source_key") or proposal.get("id")]
+        proposal["evidence_refs"] = [str(ref) for ref in refs if ref]
+    proposal["evidence_contract"] = {
+        "refs": [str(ref) for ref in proposal.get("evidence_refs") or []],
+        "excerpts": [str(proposal.get("evidence") or proposal.get("source_signal") or proposal.get("title") or "")[:180]],
+        "confidence": str(proposal.get("confidence") or "medium"),
+    }
+    for key, expected in (
+        ("no_auto_dispatch", True),
+        ("external_send", False),
+        ("auto_spawned", False),
+        ("cron_created", False),
+        ("kanban_mutated", False),
+        ("subagent_spawned", False),
+    ):
+        proposal[key] = expected
+    if proposal.get("source_agent_status") in {"legacy_missing", "normalized_from_legacy_persona"}:
+        audit = proposal.get("audit")
+        if not isinstance(audit, dict):
+            legacy_audit = audit
+            audit = {}
+            if legacy_audit not in (None, [], {}):
+                audit["legacy_audit"] = legacy_audit
+            proposal["audit"] = audit
+        audit.setdefault("source_agent_normalization", {
+            "status": proposal.get("source_agent_status"),
+            "legacy_source_agent": proposal.get("source_agent_legacy"),
+            "normalized_profile": proposal.get("source_agent"),
+            "note": "Seed/static or legacy proposal normalized to a real existing profile without deleting original provenance.",
+        })
+        proposal["autonomous_contract_status"] = "legacy_or_static_marked"
+    elif is_autonomous:
+        proposal["autonomous_contract_status"] = "complete"
+    return json.dumps(proposal, sort_keys=True, default=str) != before
+
+
+def _team_proposal_auto_assignment(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    """Choose concrete worker profiles for a proposal plan.
+
+    Daniele wants Team & Proposte to route plan tasks without asking him to
+    pick agents. This assigns work to configured profiles only; it does not
+    force an immediate dispatch tick or perform external side effects.
+    """
+    available = _team_proposal_available_profiles()
+    text = "\n".join(
+        str(proposal.get(key) or "")
+        for key in ("title", "kind", "origin", "category", "whyNow", "evidence", "acceptance")
+    ).lower()
+
+    if any(word in text for word in ("legal", "contratto", "firma", "claim", "claims", "docx")):
+        lanes = [
+            (["legal", "claims", "ops", "default"], "scope/regole legali e claim"),
+            (["evidence", "legal", "claims", "default"], "evidenze e documenti a supporto"),
+            (["drafting", "legal", "claims", "default"], "deliverable testuale/legal-review"),
+            (["claims", "legal", "reliability", "default"], "QA claim-sensitive"),
+        ]
+        coordinator = ["legal", "claims", "default"]
+    elif any(word in text for word in ("mrv", "soc", "carbon", "campion", "crcf", "metodologia")):
+        lanes = [
+            (["mrv", "ops", "default"], "scope MRV e criteri verificabili"),
+            (["evidence", "mrv", "regulatory", "default"], "raccolta evidenze tecniche/regolatorie"),
+            (["mrv", "carbon", "drafting", "default"], "output MRV operativo"),
+            (["regulatory", "evidence", "reliability", "default"], "verifica audit-ready"),
+        ]
+        coordinator = ["mrv", "ops", "default"]
+    elif any(word in text for word in ("dashboard", "kanban", "mission control", "hermes", "ui", "frontend", "backend", "bug", "codice", "code")):
+        lanes = [
+            (["ops", "reliability", "default"], "Hermes development team: scope prodotto/sistema"),
+            (["reliability", "ops", "default"], "Hermes development team: dipendenze tecniche e rischi runtime"),
+            (["default", "reliability", "ops"], "Hermes development team: implementazione nel codice Hermes"),
+            (["reliability", "default", "ops"], "Hermes development team: QA, build e chiusura"),
+        ]
+        coordinator = ["ops", "reliability", "default"]
+    elif str(proposal.get("kind") or "") == "evolution":
+        lanes = [
+            (["ops", "default", "reliability"], "scope evoluzione"),
+            (["reliability", "evidence", "default"], "dipendenze e fattibilità"),
+            (["default", "ops", "drafting"], "output evolutivo"),
+            (["reliability", "default"], "verifica finale"),
+        ]
+        coordinator = ["ops", "default"]
+    else:
+        lanes = [
+            (["ops", "default"], "scope operativo"),
+            (["evidence", "ops", "default"], "raccolta evidenze operative"),
+            (["ops", "drafting", "default"], "deliverable operativo"),
+            (["reliability", "evidence", "default"], "verifica e chiusura"),
+        ]
+        coordinator = ["ops", "default"]
+
+    available_set = set(available)
+    tasks = []
+    for candidates, reason in lanes:
+        tasks.append(
+            {
+                "assignee": _team_proposal_pick_profile(candidates, available),
+                "assignment_reason": reason,
+                "candidate_profiles": [name for name in candidates if name in available_set],
+            }
+        )
+    return {
+        "available_profiles": available,
+        "parent_assignee": _team_proposal_pick_profile(coordinator, available),
+        "strategy": "hermes_development_team_auto_assign_existing_profiles_ready_launch",
+        "tasks": tasks,
+    }
+
+
+def _team_proposal_challenge_pack(
+    *,
+    supporter: str,
+    critic: str,
+    support: str,
+    challenge: str,
+    synthesis: str,
+    veto_risk: str = "none",
+) -> Dict[str, Any]:
+    return {
+        "supporter": supporter,
+        "critic": critic,
+        "support": support,
+        "challenge": challenge,
+        "chief_synthesis": synthesis,
+        "veto_risk": veto_risk,
+    }
+
+
+def _autonomous_team_proposal_seeds(data: Dict[str, Any], kind: str = "evolution") -> List[Tuple[TeamProposalUpsertRequest, Dict[str, Any]]]:
+    active = [
+        p for p in data.get("proposals", [])
+        if _team_proposal_is_active(p)
+    ]
+    operative_active = [p for p in active if p.get("kind") == "operative"]
+    static_count = sum(1 for p in active if not p.get("source_agent"))
+    pending_count = sum(1 for p in active if p.get("chief_review_status") in {None, "pending"})
+    operative_seeds = [
+        (
+            TeamProposalUpsertRequest(
+                title="Chief operativo: trasformare segnali di lavoro in prossime mosse",
+                kind="operative",
+                origin="Operational Team Pulse: Strategy Chief + Evidence Manager",
+                category="Operational cockpit / Work triage",
+                whyNow="Daniele vuole che il team lavori anche sulle task operative senza mescolare rumore evolutivo: servono proposte operative grounded e sfidate.",
+                evidence=f"Vista operativa con {len(operative_active)} proposte attive e {pending_count} review pending nel registro condiviso: serve filtro Chief sul lavoro reale.",
+                benefit="high",
+                effort="medium",
+                risk="low",
+                priority="P1",
+                confidence="high",
+                recommendation="do_now",
+                acceptance="La pagina operativa mostra proposte autonome con segnale, challenge e sintesi Chief senza creare task/dispatch automatici.",
+                source_key="operational-team:work-signal-chief-loop",
+                source_agent="strategy-chief",
+                suggested_next_action="Usare Team Pulse operativo per selezionare poche prossime mosse operative ad alto valore.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Daniele ha chiesto lo stesso comportamento vivo anche per task operative, ma su pagina separata.",
+                "interpretation": "Il team operativo deve osservare task, evidenze e blocker e proporre decisioni senza diventare sviluppo Hermes.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Evidence Manager",
+                    critic="Systems Reliability Steward",
+                    support="Le proposte operative aiutano a non perdere follow-up, evidenze e decisioni concrete nel rumore della chat.",
+                    challenge="Se il collector diventa generico genera backlog; deve restare su poche proposte con evidenza e prossimo gate chiaro.",
+                    synthesis="Attivare solo proposal-only, con dedupe stabile e nessuna esecuzione senza conferma.",
+                    veto_risk="noise",
+                ),
+            },
+        ),
+        (
+            TeamProposalUpsertRequest(
+                title="Evidence lane operativa: cosa manca per chiudere dossier e decisioni",
+                kind="operative",
+                origin="Operational Team Pulse: Evidence Manager + Legal Claims Guardian",
+                category="Evidence / Documents / CO2Farm",
+                whyNow="Le attività operative di Daniele dipendono spesso da documenti, firme, fonti e allegati: il team deve proporre cosa serve prima che diventi blocker.",
+                evidence="Segnali stabili: pre-reading documenti, evidenze firmate, PDD/Evidence Register, legal/claims review e task operative CO2Farm.",
+                benefit="high",
+                effort="medium",
+                risk="medium",
+                priority="P1",
+                confidence="medium",
+                recommendation="prepare",
+                acceptance="Ogni proposta operativa evidenzia documento/segnale, rischio se manca, owner suggerito e decisione richiesta a Daniele.",
+                source_key="operational-team:evidence-lane",
+                source_agent="evidence-manager",
+                suggested_next_action="Mostrare una lane operativa per evidenze mancanti e decisioni documentali.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Le task operative richiedono spesso evidenze concrete e documenti allegati.",
+                "interpretation": "Evidence Manager deve proporre gap e follow-up operativi, non solo registrare documenti.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Evidence Manager",
+                    critic="Legal & Claims Guardian",
+                    support="Una evidence lane riduce missing item e rende auditabile perché una task va avanti o resta ferma.",
+                    challenge="Non basta indicare un documento: serve distinguere uso interno, claim esterno e rischio legale.",
+                    synthesis="Procedere con proposte operative source-grounded e wording prudente per ogni richiesta documentale.",
+                    veto_risk="claims_risk",
+                ),
+            },
+        ),
+        (
+            TeamProposalUpsertRequest(
+                title="Blocker debate operativo prima della conversione in piano",
+                kind="operative",
+                origin="Operational Team Pulse: Ops + MRV + Legal",
+                category="Operational blockers / Decision gates",
+                whyNow="Il team operativo deve sfidare le proposte prima di trasformarle in task, così Daniele vede rischi, dipendenze e owner consigliati.",
+                evidence="Segnali operativi ricorrenti: task blocked, dipendenze MRV/SOC, comodati, decisioni su documenti e assegnazione subagenti.",
+                benefit="medium",
+                effort="low",
+                risk="low",
+                priority="P2",
+                confidence="medium",
+                recommendation="prepare",
+                acceptance="La pagina operativa mostra almeno una proposta con supporter/critic e Chief synthesis prima di trasformarla in piano Kanban.",
+                source_key="operational-team:blocker-debate",
+                source_agent="ops",
+                suggested_next_action="Aggiungere una controversy lane anche operativa per decisioni bloccanti.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Le proposte operative possono sembrare urgenti ma avere dipendenze tecniche, legali o MRV non viste.",
+                "interpretation": "Il team deve dibattere il blocker prima di creare un piano operativo.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Strategy Chief of Staff",
+                    critic="MRV Architect",
+                    support="Un debate operativo previene task create senza decisione o senza evidenza sufficiente.",
+                    challenge="Se il rischio riguarda SOC/boundary o claim, non basta assegnare a Ops: serve gate MRV/legal.",
+                    synthesis="Mostrare blocker debate in pagina operativa e convertire in piano solo con preview e assignee motivati.",
+                ),
+            },
+        ),
+    ]
+    evolution_seeds = [
+        (
+            TeamProposalUpsertRequest(
+                title="Team vivo: proposal engine autonomo con challenge interna",
+                kind="evolution",
+                origin="Autonomous Team Pulse: Strategy Chief + Systems Reliability Steward",
+                category="Team autonomy / Mission Control",
+                whyNow=(
+                    "Team & Proposte oggi funziona come registro, ma Daniele ha chiesto un team vivo: "
+                    "subagenti che osservano, propongono, si sfidano e fanno crescere Hermes senza attendere sempre un prompt."
+                ),
+                evidence=f"Registro attivo con {len(active)} proposte, {static_count} senza vero source_agent e {pending_count} in review pending: segnale di passività/seed statici.",
+                benefit="high",
+                effort="medium",
+                risk="medium",
+                priority="P0",
+                confidence="high",
+                recommendation="do_now",
+                acceptance="Ogni proposta autonoma espone segnale, interpretazione, supporter, critic, Chief synthesis, gate e nessun dispatch automatico.",
+                source_key="autonomous-team:living-proposal-engine",
+                source_agent="strategy-chief",
+                suggested_next_action="Implementare un Team Pulse che genera proposte e challenge interne idempotenti.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Daniele ha corretto il brief: il team deve essere vivo, propositivo e sfidante.",
+                "interpretation": "La UI attuale governa approvazioni ma non produce iniziativa collettiva.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Systems Reliability Steward",
+                    critic="Strategy Chief of Staff",
+                    support="Serve un motore autonomo perché i problemi ricorrenti diventino proposte prima che Daniele li nomini.",
+                    challenge="Se genera troppo rumore tradisce il cockpit low-noise: deve limitarsi a poche proposte ad alto score e dedupe stabile.",
+                    synthesis="Procedere con proposta-only, massimo top segnali, nessun cron/dispatch fino a nuova approvazione.",
+                    veto_risk="noise",
+                ),
+            },
+        ),
+        (
+            TeamProposalUpsertRequest(
+                title="Radar evolutivo Hermes: top idee di sviluppo dal team",
+                kind="evolution",
+                origin="Autonomous Team Pulse: Systems Reliability Steward",
+                category="Hermes development radar",
+                whyNow="Daniele non vede proposte interessanti di sviluppo Hermes: manca una corsia dedicata che trasformi frizioni, bug e opportunità in micro-slice di prodotto.",
+                evidence="Segnali recenti: Team & Proposte troppo statico, bisogno di assegnazione automatica, necessità di challenge interna e low-noise governance.",
+                benefit="high",
+                effort="medium",
+                risk="low",
+                priority="P1",
+                confidence="high",
+                recommendation="prepare",
+                acceptance="La dashboard mostra una sezione Radar Hermes con top proposte evolutive, proposta controversa e proposta parcheggiabile, tutte approval-gated.",
+                source_key="autonomous-team:hermes-development-radar",
+                source_agent="systems-reliability-steward",
+                suggested_next_action="Aggiungere radar evolutivo integrato in Team Pulse e Chief review.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Assenza di idee evolutive fresche visibili nella pagina.",
+                "interpretation": "Serve una lente separata per miglioramento sistema/team, distinta dalle proposte operative CO2Farm.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Systems Reliability Steward",
+                    critic="Evidence Manager",
+                    support="Una radar lane rende Hermes capace di proporre sviluppo prodotto senza aspettare incidenti o richieste esplicite.",
+                    challenge="Ogni proposta deve indicare quale segnale reale la giustifica, altrimenti diventa brainstorming decorativo.",
+                    synthesis="Accettare solo micro-slice con evidence/signal, effort, rischio e gate di approvazione.",
+                ),
+            },
+        ),
+        (
+            TeamProposalUpsertRequest(
+                title="Score di crescita dei singoli subagenti",
+                kind="evolution",
+                origin="Autonomous Team Pulse: Strategy Chief",
+                category="Subagent development",
+                whyNow="I ruoli oggi sono card descrittive: non crescono davvero come singolarità con punti di forza, errori, challenge e traiettoria propria.",
+                evidence="Le metriche attuali misurano conteggi proposte/trust, ma non mostrano cosa ogni agente ha imparato, dove è forte o dove è stato contestato.",
+                benefit="medium",
+                effort="medium",
+                risk="low",
+                priority="P1",
+                confidence="medium",
+                recommendation="prepare",
+                acceptance="Ogni card agente espone ultimo segnale osservato, proposta propria, challenge ricevute, learning note e prossimo sviluppo del ruolo.",
+                source_key="autonomous-team:subagent-growth-score",
+                source_agent="strategy-chief",
+                suggested_next_action="Estendere metriche specialisti con learning loop e challenge stats.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Daniele vuole sviluppo del team nella sua interezza e nelle singolarità.",
+                "interpretation": "Serve una memoria operativa per ruolo, non solo un registro centrale.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Strategy Chief of Staff",
+                    critic="Systems Reliability Steward",
+                    support="La crescita dei ruoli rende il team credibile e migliora routing/assegnazioni future.",
+                    challenge="Non introdurre metriche vanity: usare solo proposte accettate/scartate, challenge e output convertiti.",
+                    synthesis="Partire con poche metriche derivate e note di apprendimento ispezionabili.",
+                ),
+            },
+        ),
+        (
+            TeamProposalUpsertRequest(
+                title="Controversy lane: una proposta contestata prima della shortlist",
+                kind="evolution",
+                origin="Autonomous Team Pulse: Legal & Claims Guardian + Reliability",
+                category="Internal challenge",
+                whyNow="Daniele ha chiesto challenge tra subagenti: la pagina deve mostrare conflitto utile, non solo consenso filtrato dal Chief.",
+                evidence="Nessuna proposta corrente rende visibile chi la contesta e perché; questo indebolisce decisioni e fiducia nel team.",
+                benefit="high",
+                effort="low",
+                risk="medium",
+                priority="P1",
+                confidence="high",
+                recommendation="do_now",
+                acceptance="Ogni ciclo Team Pulse espone almeno una proposta controversa con critic, rischio veto e Chief synthesis.",
+                source_key="autonomous-team:controversy-lane",
+                source_agent="legal-claims-guardian",
+                suggested_next_action="Renderizzare challenge pack e proposta controversa in cima a Team & Proposte.",
+            ),
+            {
+                "autonomy_level": "proposal_only",
+                "source_signal": "Manca una dinamica visibile di opposizione/critica tra ruoli.",
+                "interpretation": "Il Chief deve orchestrare dissenso utile prima della conversione in task.",
+                "challenge": _team_proposal_challenge_pack(
+                    supporter="Legal & Claims Guardian",
+                    critic="Systems Reliability Steward",
+                    support="Una controversy lane impedisce consenso fittizio e fa emergere rischi prima che Daniele approvi.",
+                    challenge="La controversia non deve diventare teatro: serve un criterio d'azione e una sintesi Chief breve.",
+                    synthesis="Mostrare una sola controversia ad alto valore per ciclo, con decisione consigliata.",
+                    veto_risk="decision_noise",
+                ),
+            },
+        ),
+    ]
+    return operative_seeds if kind == "operative" else evolution_seeds
+
+
+_CONTROVERSY_POLICY_VERSION = "controversy_lane_v1"
+_CONTROVERSY_RISK_ORDER = {
+    "L0_none": 0,
+    "L1_objection": 1,
+    "L2_material_risk": 2,
+    "L3_blocking_veto": 3,
+    "L4_stop_escalate": 4,
+}
+_CONTROVERSY_RISK_LABELS = {
+    "L0_none": "No material objection",
+    "L1_objection": "Non-blocking objection",
+    "L2_material_risk": "Material unresolved risk",
+    "L3_blocking_veto": "Blocking veto",
+    "L4_stop_escalate": "Stop and escalate",
+}
+
+
+def _team_pulse_source_ref(proposal: Dict[str, Any], *, excerpt: Optional[str] = None) -> Dict[str, Any]:
+    ref = {
+        "kind": "manual_entry" if proposal.get("source_key") else "run_metadata",
+        "id": str(proposal.get("source_key") or proposal.get("id") or "unknown-proposal"),
+    }
+    if excerpt:
+        ref["excerpt"] = excerpt[:500]
+    return ref
+
+
+def _team_pulse_actor(value: Any, proposal: Dict[str, Any], role: str) -> Dict[str, Any]:
+    label = str(value or "").strip()
+    if not label and role == "proposer":
+        label = str(proposal.get("origin") or proposal.get("source_agent") or "Unknown proposer").strip()
+    if not label:
+        label = "Unknown critic" if role == "critic" else "Unknown proposer"
+    subagent_id = str(proposal.get("source_agent") or label).strip().lower()
+    subagent_id = re.sub(r"[^a-z0-9]+", "-", subagent_id).strip("-") or f"unknown-{role}"
+    return {
+        "subagent_id": subagent_id,
+        "subagent_label": label,
+        "source_task_id": proposal.get("source_task_id"),
+        "source_run_id": proposal.get("source_run_id"),
+    }
+
+
+def _team_pulse_controversy_risk(proposal: Dict[str, Any]) -> Tuple[str, str, List[str]]:
+    challenge = proposal.get("challenge") or {}
+    veto = str(challenge.get("veto_risk") or "none").strip().lower()
+    risk = str(proposal.get("risk") or "low").strip().lower()
+    text = "\n".join(
+        str(value or "")
+        for value in (
+            veto,
+            challenge.get("challenge"),
+            challenge.get("chief_synthesis"),
+            proposal.get("whyNow"),
+            proposal.get("evidence"),
+            proposal.get("acceptance"),
+        )
+    ).lower()
+    if any(word in text for word in ("stop", "escalate", "privacy", "security", "serious harm")):
+        level = "L4_stop_escalate"
+    elif any(word in text for word in ("blocking", "veto", "non-compliant", "misleading")):
+        level = "L3_blocking_veto"
+    elif veto not in {"", "none", "no", "false"} or risk in {"medium", "high"}:
+        level = "L2_material_risk"
+    elif veto in {"", "none", "no", "false"} and any(
+        phrase in text for phrase in ("wording preference", "no material", "no decision impact", "safe to proceed")
+    ):
+        level = "L0_none"
+    elif challenge.get("critic") and challenge.get("challenge"):
+        level = "L1_objection"
+    else:
+        level = "L0_none"
+
+    domains: List[str] = []
+    if any(word in text for word in ("legal", "claim", "claims", "greenwashing", "compliance")):
+        domains.append("claims")
+        domains.append("legal")
+    if any(word in text for word in ("mrv", "soc", "carbon", "crcf", "evidence")):
+        domains.append("mrv")
+    if any(word in text for word in ("runtime", "dashboard", "backend", "reliability", "dispatch", "cron")):
+        domains.append("reliability")
+    if any(word in text for word in ("ops", "operativ", "blocker", "owner")):
+        domains.append("ops")
+    if not domains:
+        domains.append("other")
+    domains = list(dict.fromkeys(domains))
+    rationale = str(challenge.get("challenge") or proposal.get("evidence") or proposal.get("whyNow") or "Critic/review note requires Chief attention.").strip()
+    return level, rationale, domains
+
+
+def _team_pulse_recommended_action(level: str, proposal: Dict[str, Any]) -> Dict[str, Any]:
+    next_step = str(proposal.get("suggested_next_action") or proposal.get("acceptance") or "Resolve the objection before shortlist.").strip()
+    if level in {"L4_stop_escalate", "L3_blocking_veto"}:
+        action = "route_to_specialist" if level == "L4_stop_escalate" else "defer"
+    elif level == "L2_material_risk":
+        action = "request_evidence"
+    elif proposal.get("recommendation") == "do_now":
+        action = "include_with_caveat"
+    else:
+        action = "revise_before_shortlist"
+    return {
+        "action": action,
+        "owner": proposal.get("source_agent") or "chief",
+        "next_step": next_step,
+    }
+
+
+def _team_pulse_controversy_item(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    challenge = proposal.get("challenge") or {}
+    source_ref = _team_pulse_source_ref(proposal, excerpt=str(challenge.get("challenge") or proposal.get("evidence") or ""))
+    level, risk_rationale, domains = _team_pulse_controversy_risk(proposal)
+    chief_summary = str(challenge.get("chief_synthesis") or proposal.get("chief_review_reason") or "Chief synthesis pending.").strip()
+    decision_state = "needs_more_evidence" if level == "L2_material_risk" else "unresolved" if level in {"L3_blocking_veto", "L4_stop_escalate"} else "accepted_with_caveats"
+    critic_rationale = str(challenge.get("challenge") or risk_rationale).strip()
+    evidence_gap = str(proposal.get("evidence") or proposal.get("acceptance") or "Need source-grounded evidence or review note to resolve this objection.").strip()
+    return {
+        "proposal_id": str(proposal.get("id") or "unknown-proposal"),
+        "proposal_title": str(proposal.get("title") or proposal.get("id") or "Untitled proposal"),
+        "proposal_summary": proposal.get("whyNow"),
+        "proposer": _team_pulse_actor(challenge.get("supporter") or proposal.get("source_agent"), proposal, "proposer"),
+        "critic": _team_pulse_actor(challenge.get("critic"), proposal, "critic"),
+        "contested": {
+            "type": "evidence" if "evidence" in evidence_gap.lower() else "implementation" if proposal.get("kind") == "evolution" else "decision",
+            "text": str(proposal.get("acceptance") or proposal.get("whyNow") or proposal.get("title") or "Contested proposal").strip(),
+            "source_quote": challenge.get("challenge"),
+            "source_ref": source_ref,
+        },
+        "critic_rationale": {
+            "summary": critic_rationale,
+            "details": challenge.get("challenge"),
+            "source_refs": [source_ref],
+        },
+        "evidence_gap": {
+            "summary": evidence_gap,
+            "required_evidence": [evidence_gap] if evidence_gap else [],
+            "current_evidence_refs": [source_ref],
+        },
+        "risk": {
+            "level": level,
+            "label": _CONTROVERSY_RISK_LABELS[level],
+            "rationale": risk_rationale,
+            "domains": domains,
+            "veto_owner": challenge.get("critic") if level in {"L3_blocking_veto", "L4_stop_escalate"} else None,
+        },
+        "chief_synthesis": {
+            "summary": chief_summary,
+            "decision_state": decision_state,
+            "unresolved_decision": None if decision_state == "accepted_with_caveats" else "Chief must decide whether this proposal can reach the shortlist.",
+            "rationale": chief_summary,
+        },
+        "recommended_action": _team_pulse_recommended_action(level, proposal),
+        "provenance": {
+            "created_from": [source_ref],
+            "last_updated_at": str(proposal.get("updated_at") or proposal.get("last_signal_at") or _utc_now_iso()),
+            "confidence": proposal.get("confidence") if proposal.get("confidence") in {"high", "medium", "low"} else "medium",
+            "notes": "Derived from Team Pulse challenge metadata; no synthetic controversy is created.",
+        },
+    }
+
+
+def _team_pulse_controversy_lane(data: Dict[str, Any], active: List[Dict[str, Any]], kind: Optional[str]) -> Dict[str, Any]:
+    generated_at = str(
+        (data.get(f"team_pulse_{kind}_last_run_at") if kind else data.get("team_pulse_last_run_at"))
+        or data.get("updated_at")
+        or _utc_now_iso()
+    )
+    challenged = [p for p in active if isinstance(p.get("challenge"), dict)]
+    items = [_team_pulse_controversy_item(p) for p in challenged]
+    meaningful = [item for item in items if item["risk"]["level"] != "L0_none"]
+    meaningful.sort(
+        key=lambda item: (
+            _CONTROVERSY_RISK_ORDER.get(item["risk"]["level"], 0),
+            item["chief_synthesis"].get("decision_state") == "unresolved",
+            bool(item["evidence_gap"].get("summary")),
+            len(item["risk"].get("domains") or []),
+            item["provenance"].get("last_updated_at") or "",
+        ),
+        reverse=True,
+    )
+    if meaningful:
+        return {
+            "cycle_id": f"team-pulse-{kind or 'all'}",
+            "generated_at": generated_at,
+            "status": "has_controversy",
+            "selection_policy_version": _CONTROVERSY_POLICY_VERSION,
+            "items": meaningful,
+        }
+    if challenged:
+        return {
+            "cycle_id": f"team-pulse-{kind or 'all'}",
+            "generated_at": generated_at,
+            "status": "no_meaningful_controversy",
+            "selection_policy_version": _CONTROVERSY_POLICY_VERSION,
+            "items": [],
+            "empty_state": {
+                "title": "No meaningful controversy surfaced this cycle",
+                "message": "Reviewed proposals did not contain material objections, veto risks, or unresolved evidence gaps. This is an explicit empty state, not hidden consensus.",
+                "reviewed_proposal_count": len(challenged),
+                "review_completeness": "complete" if len(challenged) == len(active) else "partial",
+            },
+        }
+    return {
+        "cycle_id": f"team-pulse-{kind or 'all'}",
+        "generated_at": generated_at,
+        "status": "insufficient_review_data",
+        "selection_policy_version": _CONTROVERSY_POLICY_VERSION,
+        "items": [],
+        "empty_state": {
+            "title": "Controversy review incomplete",
+            "message": "No controversy is shown because critic/review data is missing or incomplete, not because consensus was established.",
+            "reviewed_proposal_count": 0,
+            "review_completeness": "unknown",
+        },
+    }
+
+
+def _team_pulse_summary(data: Dict[str, Any], kind: Optional[str] = None) -> Dict[str, Any]:
+    proposals = data.get("proposals", [])
+    active = [
+        p for p in proposals
+        if _team_proposal_is_active(p)
+        and (kind is None or p.get("kind") == kind)
+    ]
+    challenged = [p for p in active if p.get("challenge")]
+    autonomous = [p for p in active if p.get("autonomy_level")]
+    mature = [p for p in active if p.get("recommendation") in {"do_now", "prepare"}]
+    standby = [p for p in proposals if p.get("kind") == kind and p.get("status") == "standby"] if kind else []
+    controversial = [p for p in challenged if (p.get("challenge") or {}).get("veto_risk") not in {None, "", "none"}]
+    top = sorted(autonomous, key=lambda p: int(p.get("chief_review_score") or 0), reverse=True)[:3]
+    mature_top = sorted(mature, key=lambda p: int(p.get("chief_review_score") or 0), reverse=True)[:3]
+    cycles = data.get("team_pulse_cycles") if isinstance(data.get("team_pulse_cycles"), dict) else {}
+    last_cycle = cycles.get(kind or "all") if isinstance(cycles, dict) else None
+    last_run_at = data.get(f"team_pulse_{kind}_last_run_at") if kind else data.get("team_pulse_last_run_at")
+    return {
+        "summary": (
+            "Team Pulse operativo: proposte autonome sulle task di lavoro + challenge interna, senza task/cron/dispatch automatici."
+            if kind == "operative"
+            else "Team Pulse evolutivo: proposte autonome su Hermes/team/sistema + challenge interna, senza task/cron/dispatch automatici."
+        ),
+        "kind": kind,
+        "last_run_at": last_run_at,
+        "last_cycle": last_cycle,
+        "visibility_state": "fresh" if last_run_at else "not_recorded",
+        "active_count": len(active),
+        "autonomous_count": len(autonomous),
+        "challenged_count": len(challenged),
+        "controversial_count": len(controversial),
+        "top_autonomous": top,
+        "mature_proposals": mature_top,
+        "standby_proposals": sorted(standby, key=lambda p: str(p.get("status_updated_at") or p.get("updated_at") or ""), reverse=True)[:6],
+        "controversial": controversial[:1],
+        "controversy_lane": _team_pulse_controversy_lane(data, active, kind),
+        "guardrails": {
+            "no_auto_dispatch": True,
+            "external_send": False,
+            "auto_spawned": False,
+            "cron_created": False,
+            "kanban_mutated": False,
+            "approval_required": True,
+        },
+    }
+
+
+def _record_team_pulse_cycle(
+    data: Dict[str, Any],
+    *,
+    kind: str,
+    cycle_type: str,
+    source: str,
+    created_count: int = 0,
+    updated_count: int = 0,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist a visible Team Pulse heartbeat without creating tasks/dispatch."""
+    kind = kind.strip().lower()
+    if kind not in {"operative", "evolution"}:
+        raise ValueError(f"Unsupported Team Pulse kind: {kind}")
+    now = _utc_now_iso()
+    proposals = data.get("proposals", [])
+    active = [p for p in proposals if p.get("kind") == kind and _team_proposal_is_active(p)]
+    mature = [p for p in active if p.get("recommendation") in {"do_now", "prepare"}]
+    parked = [p for p in proposals if p.get("kind") == kind and p.get("status") in {"parcheggiata", "scartata"}]
+    cycle = {
+        "kind": kind,
+        "cycle_type": cycle_type,
+        "ran_at": now,
+        "source": source,
+        "active_count": len(active),
+        "mature_count": len(mature),
+        "parked_count": len(parked),
+        "created_count": int(created_count or 0),
+        "updated_count": int(updated_count or 0),
+        "summary": note or (
+            "Ciclo eseguito: nessuna proposta nuova matura oltre il gate review-required."
+            if not created_count and not updated_count
+            else "Ciclo eseguito: registry aggiornato in Proposal Mode."
+        ),
+        "guardrails": {
+            "no_auto_dispatch": True,
+            "external_send": False,
+            "auto_spawned": False,
+            "cron_created": False,
+            "kanban_mutated": False,
+            "approval_required": True,
+        },
+    }
+    cycles = data.setdefault("team_pulse_cycles", {})
+    cycles[kind] = cycle
+    history = data.setdefault("team_pulse_cycle_history", [])
+    history.append(cycle)
+    data["team_pulse_cycle_history"] = history[-80:]
+    data[f"team_pulse_{kind}_last_run_at"] = now
+    data["team_pulse_last_run_at"] = now
+    return cycle
+
+
+def _autonomous_seed_to_signal(payload: TeamProposalUpsertRequest, extras: Dict[str, Any]) -> Dict[str, Any]:
+    challenge = extras.get("challenge") or {}
+    signal = dict(payload.__dict__)
+    signal.update(extras)
+    signal["signal"] = extras.get("source_signal") or signal.get("evidence") or signal.get("whyNow")
+    signal["supporter"] = challenge.get("supporter")
+    signal["supporter_view"] = challenge.get("support")
+    signal["critic"] = challenge.get("critic")
+    signal["critic_view"] = challenge.get("challenge")
+    signal["chief_synthesis"] = challenge.get("chief_synthesis")
+    signal["veto_risk"] = challenge.get("veto_risk", "none")
+    signal["evidence_refs"] = extras.get("evidence_refs") or [payload.source_key or payload.title]
+    return signal
+
+
+def _autonomous_record_to_upsert(record: Dict[str, Any]) -> TeamProposalUpsertRequest:
+    return TeamProposalUpsertRequest(
+        title=record["title"],
+        kind=record["kind"],
+        origin=record["origin"],
+        category=record.get("category"),
+        whyNow=record["whyNow"],
+        evidence=record["evidence"],
+        benefit=record["benefit"],
+        effort=record["effort"],
+        risk=record["risk"],
+        priority=record["priority"],
+        confidence=record["confidence"],
+        recommendation=record["recommendation"],
+        acceptance=record["acceptance"],
+        source_key=record.get("source_key"),
+        source_agent=record.get("source_agent"),
+        suggested_next_action=record.get("suggested_next_action"),
+    )
+
+
+def _apply_autonomous_record_to_proposal(proposal: Dict[str, Any], record: Dict[str, Any]) -> None:
+    """Persist v2 autonomous proposal fields without changing legacy IDs."""
+
+    for key in (
+        "record_type",
+        "schema_version",
+        "signal",
+        "source_signal",
+        "interpretation",
+        "supporter",
+        "critic",
+        "supporter_view",
+        "critic_view",
+        "chief_synthesis",
+        "gate_state",
+        "gate",
+        "source_agent_contract",
+        "evidence_refs",
+        "evidence_contract",
+        "challenge",
+        "autonomy_level",
+        "autonomy_gate",
+        "no_auto_dispatch",
+        "external_send",
+        "auto_spawned",
+        "cron_created",
+        "kanban_mutated",
+        "subagent_spawned",
+        "conversion",
+        "engine",
+    ):
+        proposal[key] = record[key]
+
+
+def _generate_autonomous_team_proposals(req: TeamProposalAutonomousGenerateRequest) -> Dict[str, Any]:
+    data = _load_team_proposals()
+    created: List[Dict[str, Any]] = []
+    updated: List[Dict[str, Any]] = []
+    kind = str(getattr(req, "kind", "evolution") or "evolution").strip().lower()
+    if kind not in {"operative", "evolution"}:
+        raise HTTPException(status_code=400, detail="Unsupported Team Pulse kind")
+    seeds = _autonomous_team_proposal_seeds(data, kind=kind)
+    signals = [_autonomous_seed_to_signal(payload, extras) for payload, extras in seeds]
+    records = build_autonomous_proposal_records(signals, kind=kind, limit=max(1, min(int(req.limit), 10)))
+    for record in records:
+        payload = _autonomous_record_to_upsert(record)
+        proposal, was_created = _upsert_team_proposal(data, payload)
+        if _team_proposal_is_converted_or_linked(proposal) and not was_created:
+            updated.append(proposal)
+            continue
+        _apply_autonomous_record_to_proposal(proposal, record)
+        _normalise_team_proposal_contract(proposal)
+        _refresh_chief_review_fields(proposal)
+        _append_team_proposal_audit(
+            proposal,
+            f"autonomous_team_pulse_{kind}_generated" if was_created else f"autonomous_team_pulse_{kind}_refreshed",
+            str(record.get("signal") or "Team Pulse"),
+        )
+        (created if was_created else updated).append(proposal)
+    _suppress_redeveloped_duplicate_proposals(data.setdefault("proposals", []))
+    _record_team_pulse_cycle(
+        data,
+        kind=kind,
+        cycle_type="manual_autonomous_generate",
+        source="/api/team-proposals/autonomous/generate",
+        created_count=len(created),
+        updated_count=len(updated),
+        note="Team Pulse generato manualmente/API in Proposal Mode; nessun task, dispatch o invio esterno.",
+    )
+    _save_team_proposals(data)
+    return {
+        "ok": True,
+        "created": created,
+        "updated": updated,
+        "created_count": len(created),
+        "updated_count": len(updated),
+        "team_pulse": _team_pulse_summary(data, kind=kind),
+    }
+
+
+def _sync_transformed_team_proposals_from_kanban(data: Dict[str, Any]) -> bool:
+    """Record when converted proposals' linked Kanban tasks have all closed.
+
+    Converted proposals are already inactive for Chief/Pulse purposes. This sync
+    adds closure metadata once all linked tasks are no longer executable, so the
+    page can stay clean while retaining an auditable archive.
+    """
+    transformed = [
+        proposal for proposal in data.get("proposals", [])
+        if proposal.get("status") == "trasformata_in_task" and _team_proposal_linked_task_ids(proposal)
+    ]
+    if not transformed:
+        return False
+    try:
+        from hermes_cli import kanban_db
+
+        conn = kanban_db.connect()
+    except Exception:
+        return False
+    changed = False
+    try:
+        for proposal in transformed:
+            states: Dict[str, str] = {}
+            for task_id in _team_proposal_linked_task_ids(proposal):
+                try:
+                    task = kanban_db.get_task(conn, task_id)
+                except Exception:
+                    task = None
+                if task is not None:
+                    states[task_id] = str(getattr(task, "status", "") or "unknown")
+            if not states:
+                continue
+            active_ids = [
+                task_id for task_id, status in states.items()
+                if status in _TEAM_PROPOSAL_KANBAN_ACTIVE_STATUSES
+            ]
+            plan_state = "active" if active_ids else "closed"
+            if proposal.get("kanban_task_statuses") != states or proposal.get("kanban_plan_status") != plan_state:
+                proposal["kanban_task_statuses"] = states
+                proposal["kanban_plan_status"] = plan_state
+                proposal["kanban_active_task_ids"] = active_ids
+                proposal["kanban_synced_at"] = _utc_now_iso()
+                changed = True
+            if plan_state == "closed" and not proposal.get("kanban_closed_at"):
+                proposal["kanban_closed_at"] = _utc_now_iso()
+                _append_team_proposal_audit(
+                    proposal,
+                    "kanban_plan_closed",
+                    ", ".join(f"{task_id}:{status}" for task_id, status in states.items()),
+                )
+                changed = True
+    finally:
+        conn.close()
+    return changed
+
+
+def _auto_refill_team_proposals(data: Dict[str, Any], *, kind: str = "evolution") -> Dict[str, Any]:
+    """Proposal-only refill when the active Team Pulse lane falls below target."""
+    target = _TEAM_PROPOSAL_AUTO_REFILL_TARGET
+    active_count = sum(
+        1 for proposal in data.get("proposals", [])
+        if proposal.get("kind") == kind and _team_proposal_is_active(proposal)
+    )
+    if active_count >= target:
+        _record_team_pulse_cycle(
+            data,
+            kind=kind,
+            cycle_type="maintenance_auto_refill",
+            source="team_proposals_auto_refill.py",
+            note="Ciclo eseguito: lane già sopra soglia, nessuna nuova proposta generata.",
+        )
+        return {"created_count": 0, "updated_count": 0, "active_count": active_count, "target": target}
+
+    created: List[Dict[str, Any]] = []
+    updated: List[Dict[str, Any]] = []
+    seeds = _autonomous_team_proposal_seeds(data, kind=kind)
+    signals = [_autonomous_seed_to_signal(payload, extras) for payload, extras in seeds]
+    records = build_autonomous_proposal_records(signals, kind=kind, limit=10)
+    for record in records:
+        payload = _autonomous_record_to_upsert(record)
+        proposal, was_created = _upsert_team_proposal(data, payload)
+        _apply_autonomous_record_to_proposal(proposal, record)
+        proposal["auto_refill"] = True
+        proposal["auto_refill_reason"] = "active_lane_below_target"
+        _refresh_chief_review_fields(proposal)
+        _append_team_proposal_audit(
+            proposal,
+            f"auto_refill_team_pulse_{kind}_created" if was_created else f"auto_refill_team_pulse_{kind}_refreshed",
+            f"active_count={active_count}; target={target}",
+        )
+        (created if was_created else updated).append(proposal)
+        active_count = sum(
+            1 for item in data.get("proposals", [])
+            if item.get("kind") == kind and _team_proposal_is_active(item)
+        )
+        if active_count >= target:
+            break
+
+    if created or updated:
+        now = _utc_now_iso()
+        data["auto_refill"] = {
+            "kind": kind,
+            "target_active": target,
+            "created_count": len(created),
+            "updated_count": len(updated),
+            "ran_at": now,
+            "guardrails": {
+                "external_send": False,
+                "auto_spawned": False,
+                "cron_created": False,
+                "kanban_created": False,
+            },
+        }
+    _record_team_pulse_cycle(
+        data,
+        kind=kind,
+        cycle_type="maintenance_auto_refill",
+        source="team_proposals_auto_refill.py",
+        created_count=len(created),
+        updated_count=len(updated),
+    )
+    return {"created_count": len(created), "updated_count": len(updated), "active_count": active_count, "target": target}
+
+
+def _backfill_autonomous_proposal_contract(data: Dict[str, Any]) -> bool:
+    """Keep older/seed records on the same explicit no-dispatch contract."""
+    changed = False
+    for proposal in data.get("proposals", []):
+        changed = _normalise_team_proposal_contract(proposal) or changed
+    return changed
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _default_team_proposals() -> Dict[str, Any]:
+    now = _utc_now_iso()
+    return {
+        "version": 1,
+        "updated_at": now,
+        "specialists": [
+            {
+                "id": "strategy-chief",
+                "name": "Strategy Chief of Staff",
+                "status": "active",
+                "mission": "Aggrega segnali, elimina rumore e propone la prossima mossa ad alto valore.",
+                "observes": "Decisioni, blocchi, output rifiutati, opportunità di sistema e priorità CO2Farm.",
+                "currentSignal": "Daniele vuole proattività controllata, non solo task reattivi.",
+                "nextProposal": "Governare le proposte prima della conversione in Kanban o dispatch.",
+                "confidence": "high",
+            },
+            {
+                "id": "evidence-manager",
+                "name": "Evidence Manager",
+                "status": "watching",
+                "mission": "Collega fatti, documenti firmati, email, Drive e fonti a decisioni e dossier.",
+                "observes": "Documenti agronomici inviati in pre-reading e futuri file firmati.",
+                "currentSignal": "Quando arrivano firme, il PDD deve assorbire evidenze forti.",
+                "nextProposal": "Preparare flusso post-firma: archiviazione, Evidence Register, PDD update.",
+                "confidence": "high",
+            },
+            {
+                "id": "mrv-architect",
+                "name": "MRV Architect",
+                "status": "watching",
+                "mission": "Traduce progetto agricolo e metodologia in requisiti MRV verificabili.",
+                "observes": "SOC, superficie netta, specie validate, incertezza, boundary e campionabilità.",
+                "currentSignal": "La firma agronomica non sostituisce SOC/lab e superficie netta.",
+                "nextProposal": "Predisporre SOC sampling plan appena il perimetro è confermato.",
+                "confidence": "medium",
+            },
+            {
+                "id": "legal-claims-guardian",
+                "name": "Legal & Claims Guardian",
+                "status": "watching",
+                "mission": "Previene claim prematuri, ambiguità carbon rights e comunicazioni rischiose.",
+                "observes": "Comodati, claim, no-double-counting, registry status, wording esterno.",
+                "currentSignal": "Le particelle in comodato richiedono addendum carbon rights.",
+                "nextProposal": "Preparare schema addendum Acquadolce–Scauzi da revisione legale.",
+                "confidence": "medium",
+            },
+            {
+                "id": "systems-reliability-steward",
+                "name": "Systems Reliability Steward",
+                "status": "active",
+                "mission": "Fa crescere Hermes come sistema stabile, osservabile e meno passivo.",
+                "observes": "Dashboard, Drive, cron noise, subagenti, qualità output e friction ricorrenti.",
+                "currentSignal": "Mancava una pagina autonoma per subagenti e proposte evolutive.",
+                "nextProposal": "Creare Team & Proposte come superficie autonoma del dashboard.",
+                "confidence": "high",
+            },
+        ],
+        "proposals": [
+            {
+                "id": "team-proposals-page",
+                "title": "Pagina autonoma Team & Proposte",
+                "kind": "evolution",
+                "origin": "Chief + Systems Reliability Steward",
+                "priority": "P0",
+                "benefit": "high",
+                "effort": "medium",
+                "risk": "low",
+                "confidence": "high",
+                "status": "raccomandata",
+                "whyNow": "Daniele ha chiarito che i subagenti devono proporre evoluzioni e che Mission Control non è il posto concettuale giusto.",
+                "acceptance": "Route autonoma, nav dedicata, team roles, proposte operative/evolutive, Chief recommendation e nessun auto-dispatch.",
+                "recommendation": "do_now",
+            },
+            {
+                "id": "hermes-evolution-registry",
+                "title": "Registro Hermes Evolution Proposals",
+                "kind": "evolution",
+                "origin": "Chief",
+                "priority": "P0",
+                "benefit": "high",
+                "effort": "medium",
+                "risk": "low",
+                "confidence": "high",
+                "status": "proposta",
+                "whyNow": "Gli errori ricorrenti — output non nel formato atteso, pagina subagenti mancante, tool utili — devono diventare proposte tracciate, non chat perse.",
+                "acceptance": "Ogni proposta evolutiva espone problema, beneficio, effort, rischio, dipendenze e gate approvazione.",
+                "recommendation": "prepare",
+            },
+            {
+                "id": "post-signature-agronomist-flow",
+                "title": "Flusso post-firma agronomo",
+                "kind": "operative",
+                "origin": "Evidence Manager + MRV Architect",
+                "priority": "P1",
+                "benefit": "high",
+                "effort": "medium",
+                "risk": "low",
+                "confidence": "medium",
+                "status": "proposta",
+                "whyNow": "I documenti sono in pre-reading: appena tornano firmati devono aggiornare PDD, Evidence Register e readiness.",
+                "acceptance": "Nuovo pack firmato archiviato, prove indicizzate, PDD aggiornato e checklist residui ridotta.",
+                "recommendation": "prepare",
+            },
+            {
+                "id": "docx-claims-kill-switch",
+                "title": "Claim-kill-switch per DOCX prima dell’upload",
+                "kind": "evolution",
+                "origin": "Legal & Claims Guardian",
+                "priority": "P1",
+                "benefit": "high",
+                "effort": "medium",
+                "risk": "medium",
+                "confidence": "medium",
+                "status": "parcheggiata",
+                "whyNow": "CO2Farm produce molti documenti claim-sensitive; serve intercettare wording vietato prima che esca dal sistema.",
+                "acceptance": "Scanner locale segnala tCO2e, crediti, carbon neutral, CRCF certified e superficie definitiva non supportata.",
+                "recommendation": "park",
+            },
+            {
+                "id": "kania-soc-sampling-plan",
+                "title": "SOC sampling plan per Kania",
+                "kind": "operative",
+                "origin": "MRV Architect",
+                "priority": "P1",
+                "benefit": "high",
+                "effort": "medium",
+                "risk": "medium",
+                "confidence": "medium",
+                "status": "parcheggiata",
+                "whyNow": "Dopo validazione agronomica, il collo di bottiglia tecnico diventa SOC/laboratorio e superficie campionabile.",
+                "acceptance": "Disegno strati, punti, profondità, CoC, laboratorio, dataset e responsabilità pronti per agronomo/lab.",
+                "recommendation": "park",
+            },
+        ],
+    }
+
+
+def _load_team_proposals(*, seed_if_missing: bool = True) -> Dict[str, Any]:
+    path = _team_proposals_path()
+    if not path.exists():
+        data = _default_team_proposals()
+        if seed_if_missing:
+            _save_team_proposals(data)
+        return data
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Team proposals registry unreadable: {exc}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="Team proposals registry must be a JSON object")
+    data.setdefault("version", 1)
+    data.setdefault("specialists", [])
+    data.setdefault("proposals", [])
+    return data
+
+
+def _save_team_proposals(data: Dict[str, Any]) -> None:
+    data["updated_at"] = _utc_now_iso()
+    path = _team_proposals_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _find_team_proposal(data: Dict[str, Any], proposal_id: str) -> Dict[str, Any]:
+    for proposal in data.get("proposals", []):
+        if proposal.get("id") == proposal_id:
+            return proposal
+    raise HTTPException(status_code=404, detail="Proposal not found")
+
+
+def _team_proposal_slug(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower())
+    slug = slug.strip("-")[:48]
+    return slug or "proposal"
+
+
+def _team_proposal_dedupe_key(payload: TeamProposalUpsertRequest) -> str:
+    if payload.source_key and payload.source_key.strip():
+        return payload.source_key.strip()
+    raw = "|".join(
+        [
+            payload.kind.strip().lower(),
+            (payload.category or "").strip().lower(),
+            payload.title.strip().lower(),
+        ]
+    )
+    return "fingerprint:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _score_team_proposal(payload: TeamProposalUpsertRequest) -> Dict[str, str]:
+    benefit = payload.benefit if payload.benefit in {"high", "medium", "low"} else "medium"
+    effort = payload.effort if payload.effort in {"high", "medium", "low"} else "medium"
+    risk = payload.risk if payload.risk in {"high", "medium", "low"} else "low"
+    priority = payload.priority if payload.priority in {"P0", "P1", "P2", "P3"} else "P2"
+    confidence = payload.confidence if payload.confidence in {"high", "medium", "low"} else "medium"
+    recommendation = payload.recommendation if payload.recommendation in {"do_now", "prepare", "park", "reject"} else "prepare"
+    if priority == "P2" and benefit == "high" and effort != "high" and risk != "high":
+        priority = "P1"
+    return {
+        "benefit": benefit,
+        "effort": effort,
+        "risk": risk,
+        "priority": priority,
+        "confidence": confidence,
+        "recommendation": recommendation,
+    }
+
+
+def _chief_review_score(proposal: Dict[str, Any]) -> int:
+    priority_points = {"P0": 40, "P1": 30, "P2": 18, "P3": 8}
+    benefit_points = {"high": 25, "medium": 14, "low": 5}
+    confidence_points = {"high": 15, "medium": 9, "low": 3}
+    effort_penalty = {"low": 0, "medium": 6, "high": 14}
+    risk_penalty = {"low": 0, "medium": 8, "high": 18}
+    signal_bonus = min(int(proposal.get("signals_count") or 0) * 3, 12)
+    score = (
+        priority_points.get(str(proposal.get("priority")), 10)
+        + benefit_points.get(str(proposal.get("benefit")), 8)
+        + confidence_points.get(str(proposal.get("confidence")), 5)
+        + signal_bonus
+        - effort_penalty.get(str(proposal.get("effort")), 6)
+        - risk_penalty.get(str(proposal.get("risk")), 8)
+    )
+    if proposal.get("recommendation") == "do_now" or proposal.get("status") == "raccomandata":
+        score += 10
+    if proposal.get("status") in {"scartata", "trasformata_in_task"}:
+        score -= 40
+    return max(0, min(100, score))
+
+
+def _refresh_chief_review_fields(proposal: Dict[str, Any]) -> None:
+    proposal["chief_review_score"] = _chief_review_score(proposal)
+    proposal.setdefault("chief_review_status", "pending")
+    proposal.setdefault("chief_review_reason", "In attesa di filtro Chief.")
+
+
+def _append_team_proposal_audit(proposal: Dict[str, Any], event: str, detail: Optional[str] = None) -> None:
+    log = proposal.setdefault("audit_log", [])
+    log.append({"at": _utc_now_iso(), "event": event, "detail": detail})
+    if len(log) > 25:
+        del log[:-25]
+
+
+def _chief_review_queue(data: Dict[str, Any], *, limit: int = 5) -> List[Dict[str, Any]]:
+    queue = []
+    for proposal in data.get("proposals", []):
+        _refresh_chief_review_fields(proposal)
+        if proposal.get("status") in _TEAM_PROPOSAL_INACTIVE_STATUSES:
+            continue
+        if proposal.get("chief_review_status") == "rejected":
+            continue
+        queue.append(proposal)
+    queue.sort(key=lambda p: (int(p.get("chief_review_score") or 0), str(p.get("last_signal_at") or p.get("updated_at") or "")), reverse=True)
+    return queue[:limit]
+
+
+def _team_proposals_strategic_review(data: Dict[str, Any]) -> Dict[str, Any]:
+    for proposal in data.get("proposals", []):
+        _refresh_chief_review_fields(proposal)
+    active = [p for p in data.get("proposals", []) if _team_proposal_is_active(p)]
+    active.sort(key=lambda p: int(p.get("chief_review_score") or 0), reverse=True)
+    operative = [p for p in active if p.get("kind") == "operative"][:3]
+    evolution = [p for p in active if p.get("kind") == "evolution"][:3]
+    parked = [p for p in data.get("proposals", []) if p.get("status") == "parcheggiata"][:3]
+    return {
+        "summary": "Review strategica low-noise: poche proposte operative, poche evolutive, parcheggi espliciti.",
+        "top_operative": operative,
+        "top_evolution": evolution,
+        "parked": parked,
+        "counts": {
+            "active": len(active),
+            "operative": sum(1 for p in active if p.get("kind") == "operative"),
+            "evolution": sum(1 for p in active if p.get("kind") == "evolution"),
+            "parked": len(parked),
+            "rejected": sum(1 for p in data.get("proposals", []) if p.get("status") == "scartata"),
+        },
+    }
+
+
+def _attach_specialist_metrics(data: Dict[str, Any]) -> None:
+    proposals = data.get("proposals", [])
+    _team_proposal_normalize_specialists_for_response(data)
+    for specialist in data.get("specialists", []):
+        sid = str(specialist.get("id") or "").lower()
+        name = str(specialist.get("name") or "").lower()
+        aliases = [str(alias).lower() for alias in specialist.get("aliases", []) if str(alias).strip()] if isinstance(specialist.get("aliases"), list) else []
+        logical_role = str(specialist.get("logical_role") or specialist.get("legacy_id") or "").lower()
+        match_terms = [term for term in [sid, name, logical_role, *aliases] if term]
+        related = []
+        for proposal in proposals:
+            source_agent = str(proposal.get("source_agent") or "").lower()
+            source_agent_legacy = str(proposal.get("source_agent_legacy") or "").lower()
+            origin = str(proposal.get("origin") or "").lower()
+            if source_agent == sid or source_agent_legacy in match_terms or any(term in origin for term in match_terms):
+                related.append(proposal)
+        approved = sum(1 for p in related if p.get("status") in {"approvata", "raccomandata", "trasformata_in_task"})
+        rejected = sum(1 for p in related if p.get("status") == "scartata" or p.get("chief_review_status") == "rejected")
+        transformed = sum(1 for p in related if p.get("status") == "trasformata_in_task")
+        total = len(related)
+        trust = 50
+        if total:
+            trust += approved * 12 + transformed * 15 - rejected * 18
+            trust += min(sum(int(p.get("signals_count") or 0) for p in related), 8)
+        specialist["metrics"] = {
+            "proposal_count": total,
+            "approved_count": approved,
+            "rejected_count": rejected,
+            "transformed_count": transformed,
+            "trust_score": max(0, min(100, trust)),
+        }
+        specialist["growth_profile"] = _specialist_growth_profile(specialist, related)
+
+
+def _growth_provenance(
+    kind: str,
+    *,
+    field_path: str,
+    proposal: Optional[Dict[str, Any]] = None,
+    source_id: str = "S001",
+) -> Dict[str, Any]:
+    ref: Dict[str, Any] = {
+        "kind": kind,
+        "source_id": source_id,
+        "path": str(_team_proposals_path()),
+        "field_path": field_path,
+    }
+    if proposal:
+        ref["proposal_id"] = proposal.get("id")
+        ref["observed_at"] = proposal.get("last_signal_at") or proposal.get("updated_at") or proposal.get("created_at")
+    return ref
+
+
+def _growth_field(
+    *,
+    state: str,
+    display: str,
+    confidence: str = "medium",
+    value: Any = None,
+    missing_reason: Optional[str] = None,
+    provenance: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    field: Dict[str, Any] = {
+        "state": state,
+        "display": display,
+        "confidence": confidence if confidence in {"high", "medium", "low"} else "medium",
+        "provenance": provenance or [],
+    }
+    if value is not None:
+        field["value"] = value
+    if state != "present":
+        field["missing_reason"] = missing_reason or "not_recorded"
+    return field
+
+
+def _proposal_attribution_matches(specialist: Dict[str, Any], proposal: Dict[str, Any]) -> bool:
+    sid = str(specialist.get("id") or "").lower()
+    name = str(specialist.get("name") or "").lower()
+    source_agent = str(proposal.get("source_agent") or "").lower()
+    origin = str(proposal.get("origin") or "").lower()
+    return source_agent == sid or sid in origin or (bool(name) and name in origin)
+
+
+def _growth_readiness_band(score: int, present_components: int) -> str:
+    if present_components < 3:
+        return "insufficient_data"
+    if score >= 78:
+        return "trusted_for_preview"
+    if score >= 58:
+        return "operational"
+    return "emerging"
+
+
+def _specialist_growth_profile(specialist: Dict[str, Any], related: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Derive agent_growth.v1 from existing Team & Proposte data, read-only.
+
+    The profile is per-card only: no global sorting key, no opaque ranking, no
+    action trigger. Missing data is explicit and every present field carries
+    source provenance back to the registry/proposal that produced it.
+    """
+    metrics = specialist.get("metrics") or {}
+    trust = int(metrics.get("trust_score") or 50)
+    role_name = str(specialist.get("name") or "Specialist").strip() or "Specialist"
+    sid = str(specialist.get("id") or role_name).strip() or "specialist"
+    confidence = specialist.get("confidence") if specialist.get("confidence") in {"high", "medium", "low"} else "medium"
+
+    latest = sorted(related, key=lambda p: str(p.get("last_signal_at") or p.get("updated_at") or p.get("created_at") or ""), reverse=True)
+    latest_proposal = latest[0] if latest else None
+    challenged = [p for p in related if isinstance(p.get("challenge"), dict)]
+    approved = [p for p in related if p.get("status") in {"approvata", "raccomandata", "trasformata_in_task"}]
+    rejected = [p for p in related if p.get("status") == "scartata" or p.get("chief_review_status") == "rejected"]
+    transformed = [p for p in related if p.get("status") == "trasformata_in_task"]
+    signals = sum(int(p.get("signals_count") or 0) for p in related)
+
+    signal_field = _growth_field(
+        state="present",
+        confidence=confidence,
+        value={
+            "at": str(latest_proposal.get("last_signal_at") or latest_proposal.get("updated_at") or latest_proposal.get("created_at") or _utc_now_iso()),
+            "signal_type": "proposal_signal" if latest_proposal.get("source_signal") else "audit_event" if latest_proposal.get("audit_log") else "role_config",
+            "title": str(latest_proposal.get("title") or "Segnale Team & Proposte"),
+            "summary": str(latest_proposal.get("source_signal") or latest_proposal.get("whyNow") or latest_proposal.get("evidence") or "Segnale registrato nella proposta."),
+            "source_status": latest_proposal.get("status"),
+        },
+        display=f"Ultimo segnale: {str(latest_proposal.get('title') or 'proposta registrata')}. Fonte: {latest_proposal.get('id')}.",
+        provenance=[_growth_provenance("team_proposal", field_path="proposals[]", proposal=latest_proposal)],
+    ) if latest_proposal else _growth_field(
+        state="missing",
+        display="Nessun segnale recente registrato per questo ruolo.",
+        confidence="low",
+        missing_reason="not_recorded",
+        provenance=[],
+    )
+
+    own_field = _growth_field(
+        state="present",
+        confidence=confidence,
+        value={
+            "proposal_id": str(latest_proposal.get("id")),
+            "title": str(latest_proposal.get("title") or "Proposta senza titolo"),
+            "status": str(latest_proposal.get("status") or "unknown"),
+            "suggested_next_action": latest_proposal.get("suggested_next_action"),
+            "source_signal": latest_proposal.get("source_signal"),
+            "transformed_task_id": latest_proposal.get("plan_task_id") or latest_proposal.get("task_id"),
+            "transformed_child_task_ids": latest_proposal.get("plan_child_task_ids") or [],
+            "co_proposed": "+" in str(latest_proposal.get("origin") or ""),
+        },
+        display=f"Proposta attribuita: {str(latest_proposal.get('title') or 'senza titolo')}. Stato: {latest_proposal.get('status') or 'unknown'}.",
+        provenance=[_growth_provenance("team_proposal", field_path="proposals[]", proposal=latest_proposal)],
+    ) if latest_proposal else _growth_field(
+        state="missing",
+        display="Nessuna proposta propria attribuibile nelle fonti lette.",
+        confidence="low",
+        missing_reason="not_recorded",
+        provenance=[],
+    )
+
+    challenge_values = []
+    challenge_refs = []
+    for proposal in challenged[:3]:
+        challenge = proposal.get("challenge") or {}
+        veto = str(challenge.get("veto_risk") or "none")
+        challenge_values.append(
+            {
+                "proposal_id": proposal.get("id"),
+                "critic": str(challenge.get("critic") or "critic sconosciuto"),
+                "challenge": str(challenge.get("challenge") or "Challenge registrata senza sintesi."),
+                "chief_synthesis": challenge.get("chief_synthesis"),
+                "veto_risk": veto,
+                "status": "needs_review" if veto not in {"", "none"} else "open",
+                "target_confidence": confidence,
+            }
+        )
+        challenge_refs.append(_growth_provenance("team_proposal", field_path="proposals[].challenge", proposal=proposal))
+    challenges_field = _growth_field(
+        state="present",
+        confidence=confidence,
+        value=challenge_values,
+        display=f"{len(challenge_values)} challenge registrate; mantenere il gate aperto finché non sono indirizzate.",
+        provenance=challenge_refs,
+    ) if challenge_values else _growth_field(
+        state="missing",
+        display="Nessuna challenge registrata; non equivale ad assenza di rischio o consenso.",
+        confidence="low",
+        missing_reason="not_recorded",
+        provenance=[],
+    )
+
+    learning_values: List[Dict[str, Any]] = []
+    learning_refs: List[Dict[str, Any]] = []
+    if transformed:
+        learning_values.append({"note": "Ha trasformato un segnale in lavoro tracciato: preservare provenance e test reali.", "trigger": "approved_or_transformed", "tone": "positive", "linked_quality_check": "handoff_quality"})
+        learning_refs.append(_growth_provenance("team_proposal", field_path="proposals[].status", proposal=transformed[0]))
+    if challenged:
+        learning_values.append({"note": "Sta imparando a esplicitare rischio, effort e sintesi Chief prima del gate.", "trigger": "challenge", "tone": "calibration", "linked_quality_check": "challenge_maturity"})
+        learning_refs.append(_growth_provenance("team_proposal", field_path="proposals[].challenge", proposal=challenged[0]))
+    if rejected:
+        learning_values.append({"note": "Tarare meglio evidenza, effort o timing prima del prossimo suggerimento.", "trigger": "rejected_or_deferred", "tone": "caution", "linked_quality_check": "evidence_quality"})
+        learning_refs.append(_growth_provenance("team_proposal", field_path="proposals[].chief_review_status", proposal=rejected[0]))
+    if related and not learning_values:
+        learning_values.append({"note": "Handoff strutturato con summary/metadata aumenta riuso e verificabilità.", "trigger": "handoff_quality", "tone": "positive", "linked_quality_check": "traceability"})
+        learning_refs.append(_growth_provenance("team_proposal", field_path="proposals[]", proposal=related[0]))
+    learning_field = _growth_field(
+        state="present",
+        confidence=confidence,
+        value=learning_values[:3],
+        display="; ".join(item["note"] for item in learning_values[:2]),
+        provenance=learning_refs[:3],
+    ) if learning_values else _growth_field(
+        state="missing",
+        display="Learning non inferibile: servono outcome, challenge o handoff strutturati.",
+        confidence="low",
+        missing_reason="insufficient_signals",
+        provenance=[],
+    )
+
+    if trust >= 75:
+        recommendation = "Può proporre micro-slice con preview e gate; non dispatchare automaticamente."
+        micro_capability = "proposal preview source-grounded"
+        exercise = "Preparare una micro-proposta con segnale, challenge e criteri di accettazione verificabili."
+    elif trust >= 55 or related:
+        recommendation = "Produrre una proposta controllata e farla sfidare da un critic prima del gate."
+        micro_capability = "challenge-aware proposal drafting"
+        exercise = "Scrivere una proposta con rischio, effort e fonte primaria, poi farla criticare da Reliability/Legal/MRV."
+    else:
+        recommendation = "Dargli un caso piccolo e source-grounded prima di fidarsi della raccomandazione."
+        micro_capability = "role grounding"
+        exercise = "Collegare una sola evidenza al perimetro del ruolo e dichiarare cosa resta unknown."
+    next_field = _growth_field(
+        state="present",
+        confidence=confidence,
+        value={
+            "recommendation": recommendation,
+            "micro_capability": micro_capability,
+            "suggested_exercise": exercise,
+            "approval_gate": "daniele_review_required",
+            "forbidden_actions": ["no external send", "no cron", "no auto-spawn", "no automatic dispatch"],
+        },
+        display=f"Prossimo sviluppo consigliato: {recommendation} Gate: review Daniele richiesta.",
+        provenance=[_growth_provenance("role_foundation", source_id="S001", field_path="specialists[]")],
+    )
+
+    components = []
+    def _component(key: str, points: int, max_points: int, present: bool, reason: str, prov: List[Dict[str, Any]]) -> None:
+        components.append({
+            "key": key,
+            "points": points if present else 0,
+            "max_points": max_points,
+            "state": "present" if present else "missing",
+            "reason_code": reason,
+            "display": reason,
+            "provenance": prov if present else [],
+        })
+
+    _component("signal_recency", 14, 14, bool(latest_proposal), "segnale recente tracciato" if latest_proposal else "nessun segnale recente", signal_field.get("provenance", []))
+    _component("proposal_trace", 16, 16, bool(related), "proposta attribuita" if related else "nessuna proposta attribuibile", own_field.get("provenance", []))
+    _component("challenge_maturity", 12, 16, bool(challenged), "challenge registrata" if challenged else "challenge non registrata", challenge_refs)
+    _component("learning_velocity", 12, 14, bool(learning_values), "learning note derivata" if learning_values else "learning non inferibile", learning_refs)
+    _component("outcome_traceability", 14, 16, bool(approved or transformed), "outcome approvato/trasformato" if (approved or transformed) else "outcome non tracciato", [_growth_provenance("team_proposal", field_path="proposals[].status", proposal=(approved or transformed)[0])] if (approved or transformed) else [])
+    _component("role_fit", 12, 12, True, "fondazione ruolo disponibile", [_growth_provenance("role_foundation", source_id="S001", field_path="specialists[]")])
+    _component("source_reliability", 12, 12, True, "fonte registro Team & Proposte", [_growth_provenance("team_proposal", field_path="team_proposals.json")])
+    growth_score = max(0, min(100, sum(int(component["points"]) for component in components)))
+    present_components = sum(1 for component in components if component["state"] == "present")
+    readiness_band = _growth_readiness_band(growth_score, present_components)
+    scoring_confidence = "high" if present_components >= 5 else "medium" if present_components >= 3 else "low"
+
+    scoring_state = "computed" if present_components >= 3 else "not_computed"
+    scoring_growth_score = growth_score if scoring_state == "computed" else None
+    legacy_readiness = "high" if readiness_band == "trusted_for_preview" else "medium" if readiness_band == "operational" else "low"
+    legacy_challenge_notes = [f"{item['critic']}: {item['status']}" for item in challenge_values] or ["Nessuna challenge registrata: serve confronto prima di aumentare autonomia."]
+    legacy_learning_notes = [item["note"] for item in learning_values] or ["Primo apprendimento atteso: formulare proposte con segnale, evidenza e decisione richiesta."]
+    legacy_strengths = []
+    if approved:
+        legacy_strengths.append("Ha proposte già promosse dal Chief o approvate.")
+    if challenged:
+        legacy_strengths.append("Lavora dentro il loop supporter/critic, non solo come card statica.")
+    if signals:
+        legacy_strengths.append(f"Ha assorbito {signals} segnali/deduped updates dal registro.")
+    if not legacy_strengths:
+        legacy_strengths.append("Ruolo definito ma ancora poco esercitato: utile come lente specialistica controllata.")
+
+    return {
+        "schema_version": "agent_growth.v1",
+        "generated_at": _utc_now_iso(),
+        "agent": {
+            "agent_id": sid,
+            "display_name": role_name,
+            "logical_role": specialist.get("logical_role"),
+            "aliases": list(dict.fromkeys([sid, role_name, *([str(alias) for alias in specialist.get("aliases", [])] if isinstance(specialist.get("aliases"), list) else [])])),
+            "source_ids": [sid],
+            "mapping_confidence": confidence,
+            "mapping_notes": ["Mapping derivato da profilo Hermes verificato; eventuali legacy personas restano solo come logical_role/aliases."],
+            "provenance": [_growth_provenance("team_proposal", field_path="specialists[]")],
+        },
+        "role_foundation": _growth_field(
+            state="present",
+            confidence=confidence,
+            value={
+                "does": str(specialist.get("mission") or ""),
+                "expected_output": str(specialist.get("nextProposal") or ""),
+                "failure_modes": ["Sovrainterpretare dati mancanti", "Trasformare score in ranking"],
+                "quality_checklist": ["provenance", "fallback missing data", "approval gate"],
+            },
+            display=str(specialist.get("mission") or "Fondazione ruolo disponibile."),
+            provenance=[_growth_provenance("role_foundation", source_id="S001", field_path="specialists[]")],
+        ),
+        "last_observed_signal": signal_field,
+        "own_proposal": own_field,
+        "challenges_received": challenges_field,
+        "learning_notes": learning_field,
+        "next_role_development": next_field,
+        "scoring": {
+            "state": scoring_state,
+            "growth_score": scoring_growth_score,
+            "readiness_band": readiness_band,
+            "confidence": scoring_confidence,
+            "components": components,
+            "explainers": [component["display"] for component in components if component["state"] == "present"][:3],
+            "non_punitive_notes": [
+                "Questo score misura la maturità del loop osservabile, non il valore dell’agente e non è una classifica tra ruoli diversi.",
+                "Dati mancanti riducono confidence: non provano assenza di rischio, consenso o qualità.",
+            ],
+            "provenance": [_growth_provenance("computed", field_path="specialists[].growth_profile")],
+        },
+        "privacy": {
+            "pii_detected": False,
+            "redactions_applied": [],
+            "max_raw_chars_per_evidence": 180,
+            "raw_logs_included": False,
+            "secrets_included": False,
+        },
+        "invariants": {
+            "read_only": True,
+            "approval_gated": True,
+            "no_cron_created": True,
+            "no_external_send": True,
+            "no_auto_spawn": True,
+            "no_auto_dispatch": True,
+            "no_leaderboard": True,
+        },
+        # Backward-compatible summary fields consumed by the first UI pass.
+        # Mirror the canonical scoring contract so insufficient-data cards do
+        # not expose a numeric fallback as if growth had been computed.
+        "growth_score": scoring_growth_score,
+        "readiness": legacy_readiness,
+        "strengths": legacy_strengths[:3],
+        "learning_note_summaries": legacy_learning_notes[:3],
+        "challenge_notes": legacy_challenge_notes[:3],
+        "needs_context": [str(specialist.get("observes") or "Decisioni recenti, priorità e outcome delle proposte precedenti.")],
+        "latest_proposal": str(latest_proposal.get("title")) if latest_proposal else None,
+        "next_growth_step": recommendation,
+    }
+
+
+def _upsert_team_proposal(data: Dict[str, Any], payload: TeamProposalUpsertRequest) -> Tuple[Dict[str, Any], bool]:
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    kind = payload.kind if payload.kind in {"operative", "evolution"} else "operative"
+    now = _utc_now_iso()
+    dedupe_key = _team_proposal_dedupe_key(payload)
+    score = _score_team_proposal(payload)
+    proposals = data.setdefault("proposals", [])
+    converted_markers = _team_proposal_prior_converted_markers(proposals)
+    if dedupe_key in converted_markers:
+        historical = next(
+            (proposal for proposal in proposals if _team_proposal_marker(proposal) == dedupe_key and _team_proposal_is_converted_or_linked(proposal)),
+            None,
+        )
+        if historical is not None:
+            _append_team_proposal_audit(
+                historical,
+                "duplicate_signal_suppressed_after_conversion",
+                payload.origin.strip() or "chief/manual",
+            )
+            return historical, False
+
+    for proposal in proposals:
+        if proposal.get("dedupe_key") == dedupe_key or proposal.get("source_key") == dedupe_key:
+            if not _team_proposal_is_active(proposal):
+                continue
+            proposal.update(
+                {
+                    "title": title,
+                    "kind": kind,
+                    "origin": payload.origin.strip() or "chief/manual",
+                    "category": (payload.category or "").strip() or None,
+                    "whyNow": payload.whyNow.strip(),
+                    "evidence": (payload.evidence or "").strip() or None,
+                    "acceptance": payload.acceptance.strip(),
+                    "source_agent": (payload.source_agent or "").strip() or proposal.get("source_agent"),
+                    "suggested_next_action": (payload.suggested_next_action or "").strip() or None,
+                    **score,
+                    "updated_at": now,
+                    "last_signal_at": now,
+                    "signals_count": int(proposal.get("signals_count") or 0) + 1,
+                }
+            )
+            proposal.setdefault("formulated_at", _team_proposal_formulated_at(proposal) or now)
+            _normalise_team_proposal_contract(proposal, payload)
+            _refresh_chief_review_fields(proposal)
+            _append_team_proposal_audit(proposal, "signal_upserted", payload.origin.strip() or "chief/manual")
+            return proposal, False
+
+    digest = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[:8]
+    base_id = f"{_team_proposal_slug(title)}-{digest}"
+    proposal_id = base_id
+    existing_ids = {str(p.get("id")) for p in proposals}
+    suffix = 2
+    while proposal_id in existing_ids:
+        proposal_id = f"{base_id}-{suffix}"
+        suffix += 1
+    proposal = {
+        "id": proposal_id,
+        "title": title,
+        "kind": kind,
+        "origin": payload.origin.strip() or "chief/manual",
+        "category": (payload.category or "").strip() or None,
+        "whyNow": payload.whyNow.strip(),
+        "evidence": (payload.evidence or "").strip() or None,
+        "acceptance": payload.acceptance.strip(),
+        "status": "proposta",
+        "source_key": (payload.source_key or "").strip() or None,
+        "source_agent": (payload.source_agent or "").strip() or None,
+        "suggested_next_action": (payload.suggested_next_action or "").strip() or None,
+        "dedupe_key": dedupe_key,
+        "signals_count": 1,
+        "formulated_at": now,
+        "created_at": now,
+        "updated_at": now,
+        "last_signal_at": now,
+        **score,
+    }
+    _normalise_team_proposal_contract(proposal, payload)
+    _refresh_chief_review_fields(proposal)
+    _append_team_proposal_audit(proposal, "proposal_created", payload.origin.strip() or "chief/manual")
+    proposals.append(proposal)
+    return proposal, True
+
+
+def _collect_kanban_blocker_proposals(req: TeamProposalCollectorRequest) -> Dict[str, Any]:
+    try:
+        from hermes_cli import kanban_db
+
+        board = req.board or kanban_db.get_current_board()
+        db_path = kanban_db.kanban_db_path(board=board)
+        if not db_path.exists():
+            return {"ok": True, "collector": "kanban_blockers", "board": board, "blocked_count": 0, "proposals": []}
+        conn = kanban_db.connect(board=board)
+        try:
+            blocked = kanban_db.list_tasks(conn, status="blocked", limit=max(1, min(int(req.limit), 25)))
+        finally:
+            conn.close()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to collect Kanban blockers: {exc}")
+
+    if not blocked:
+        return {"ok": True, "collector": "kanban_blockers", "board": board, "blocked_count": 0, "proposals": []}
+
+    task_lines = [
+        f"- {task.id}: {task.title} (assignee={task.assignee or 'unassigned'}, priority={task.priority})"
+        for task in blocked
+    ]
+    payload = TeamProposalUpsertRequest(
+        title=f"Sbloccare {len(blocked)} task Kanban bloccati",
+        kind="operative",
+        origin="Kanban blocker collector",
+        category="Mission Control / Kanban",
+        whyNow="Il board Kanban contiene task in stato blocked: il Chief deve trasformarli in poche decisioni operative invece di lasciarli sepolti nel backlog.",
+        evidence="\n".join(task_lines),
+        benefit="high",
+        effort="medium",
+        risk="low",
+        priority="P2",
+        confidence="high" if len(blocked) >= 3 else "medium",
+        recommendation="prepare",
+        acceptance="Per ogni task blocked: causa chiarita, owner/decisione assegnata, oppure task parcheggiato/scartato esplicitamente.",
+        source_key=f"collector:kanban-blockers:{board}",
+    )
+    data = _load_team_proposals()
+    proposal, created = _upsert_team_proposal(data, payload)
+    _save_team_proposals(data)
+    return {
+        "ok": True,
+        "collector": "kanban_blockers",
+        "board": board,
+        "blocked_count": len(blocked),
+        "created": created,
+        "proposals": [proposal],
+    }
+
+
+def _team_proposal_plan_preview(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    kind = str(proposal.get("kind") or "operative")
+    priority_label = str(proposal.get("priority") or "P2")
+    priority_map = {"P0": 100, "P1": 75, "P2": 50, "P3": 25}
+    title = str(proposal.get("title") or "Team proposal")
+    assignment = _team_proposal_auto_assignment(proposal)
+    base_body = "\n".join(
+        [
+            "# Team & Proposte → Kanban plan",
+            "",
+            f"Origine proposta: {proposal.get('origin') or 'Team & Proposte'}",
+            f"Subagente: {proposal.get('source_agent') or 'n/a'}",
+            f"Tipo: {'Evoluzione Hermes' if kind == 'evolution' else 'Operativa'}",
+            f"Priorità: {priority_label}",
+            "",
+            "## Perché ora",
+            str(proposal.get("whyNow") or ""),
+            "",
+            "## Evidenza",
+            str(proposal.get("evidence") or ""),
+            "",
+            "## Criteri di accettazione",
+            str(proposal.get("acceptance") or ""),
+            "",
+            "## Auto-assegnazione agenti",
+            "Hermes suggerisce automaticamente solo profili reali verificati nel registry e prepara task ready dopo conferma esplicita di Daniele.",
+            f"Coordinatore piano: {assignment['parent_assignee']}",
+            "",
+            "## Gate operativo",
+            "Questo piano viene creato solo dopo preview e conferma esplicita. Parent e task figli entrano ready: il dispatcher li avvia secondo priorità e limiti di concorrenza. Nessun cron o invio esterno viene avviato.",
+        ]
+    )
+    steps = [
+        ("Chiarire scope e criteri", "Confermare decisione, owner, confini e criteri di accettazione prima di eseguire."),
+        ("Raccogliere evidenze e dipendenze", "Raccogliere file, segnali, dati, autorizzazioni o contesto tecnico necessari."),
+        ("Produrre output operativo", "Realizzare il deliverable principale o la modifica prevista dalla proposta."),
+        ("Verificare e chiudere", "Eseguire QA, aggiornare registro/evidenze e preparare nota di chiusura per revisione umana."),
+    ]
+    return {
+        "title": f"[{priority_label}] Piano — {title}"[:200],
+        "body": base_body,
+        "priority": priority_map.get(priority_label, 50),
+        "tenant": "hermes-evolution" if kind == "evolution" else "operations",
+        "workspace_kind": "scratch",
+        "idempotency_key": f"team-proposal-plan:{proposal.get('id')}:parent",
+        "initial_status": "ready",
+        "assignee": assignment["parent_assignee"],
+        "assignment_strategy": assignment["strategy"],
+        "available_profiles": assignment["available_profiles"],
+        "tasks": [
+            {
+                "title": f"[{idx}/4] {step_title}: {title}"[:200],
+                "body": "\n".join(
+                    [
+                        f"# Step {idx}/4 — {step_title}",
+                        "",
+                        step_body,
+                        "",
+                        f"Proposta origine: {proposal.get('id')}",
+                        "",
+                        "## Auto-assegnazione",
+                        f"Profilo assegnato: {assignment['tasks'][idx - 1]['assignee']}",
+                        f"Motivo: {assignment['tasks'][idx - 1]['assignment_reason']}",
+                        "",
+                        "## Criteri",
+                        str(proposal.get("acceptance") or ""),
+                    ]
+                ),
+                "priority": priority_map.get(priority_label, 50) - idx,
+                "tenant": "hermes-evolution" if kind == "evolution" else "operations",
+                "workspace_kind": "scratch",
+                "idempotency_key": f"team-proposal-plan:{proposal.get('id')}:step:{idx}",
+                "initial_status": "ready",
+                "assignee": assignment["tasks"][idx - 1]["assignee"],
+                "assignment_reason": assignment["tasks"][idx - 1]["assignment_reason"],
+                "candidate_profiles": assignment["tasks"][idx - 1]["candidate_profiles"],
+            }
+            for idx, (step_title, step_body) in enumerate(steps, start=1)
+        ],
+    }
+
+
+def _team_proposal_task_preview(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    kind = str(proposal.get("kind") or "operative")
+    priority_label = str(proposal.get("priority") or "P2")
+    priority_map = {"P0": 100, "P1": 75, "P2": 50, "P3": 25}
+    title = f"[{priority_label}] {proposal.get('title') or 'Team proposal'}"
+    body = "\n".join(
+        [
+            "# Team & Proposte → Kanban task",
+            "",
+            f"Origine proposta: {proposal.get('origin') or 'Team & Proposte'}",
+            f"Tipo: {'Evoluzione Hermes' if kind == 'evolution' else 'Operativa'}",
+            f"Priorità: {priority_label}",
+            f"Benefit: {proposal.get('benefit') or 'n/a'}",
+            f"Effort: {proposal.get('effort') or 'n/a'}",
+            f"Rischio: {proposal.get('risk') or 'n/a'}",
+            f"Confidenza: {proposal.get('confidence') or 'n/a'}",
+            "",
+            "## Perché ora",
+            str(proposal.get("whyNow") or ""),
+            "",
+            "## Criteri di accettazione",
+            str(proposal.get("acceptance") or ""),
+            "",
+            "## Gate operativo",
+            "Questa card è stata creata solo dopo approvazione esplicita nella pagina Team & Proposte. "
+            "Dopo la conferma entra ready e il dispatcher la avvia secondo priorità e limiti di concorrenza. Nessun cron o invio esterno viene avviato.",
+        ]
+    )
+    return {
+        "title": title[:200],
+        "body": body,
+        "priority": priority_map.get(priority_label, 50),
+        "assignee": _team_proposal_auto_assignment(proposal)["parent_assignee"],
+        "tenant": "hermes-evolution" if kind == "evolution" else "operations",
+        "workspace_kind": "scratch",
+        "idempotency_key": f"team-proposal:{proposal.get('id')}",
+        "initial_status": "ready",
+    }
+
+
+def _kanban_initial_status_kwargs(status: Optional[str]) -> Dict[str, str]:
+    """Return only supported create_task initial_status overrides.
+
+    `kanban_db.create_task` creates ready tasks by default. Team Proposals omits
+    the status override for confirmed ready launches because create_task only
+    accepts special overrides such as blocked/running.
+    """
+    if status in {"blocked", "running"}:
+        return {"initial_status": status}
+    return {}
+
+
+@app.get("/api/team-proposals")
+async def get_team_proposals():
+    """Read-only governance surface for subagents and Chief proposals."""
+    data = _load_team_proposals(seed_if_missing=False)
+    data = copy.deepcopy(data)
+    data["proposals"] = [_normalise_team_proposal_for_response(proposal) for proposal in data.get("proposals", [])]
+    _suppress_redeveloped_duplicate_proposals(data["proposals"])
+    _attach_specialist_metrics(data)
+    data["chief_review"] = {
+        "queue": _chief_review_queue(data, limit=5),
+        "summary": "Shortlist Chief ordinata per score, segnali, priorità e rischio.",
+    }
+    data["strategic_review"] = _team_proposals_strategic_review(data)
+    data["team_pulses"] = {
+        "operative": _team_pulse_summary(data, kind="operative"),
+        "evolution": _team_pulse_summary(data, kind="evolution"),
+    }
+    data["source"] = _team_proposals_source_contract("fresh")
+    data["safety"] = _team_proposals_safety_contract()
+    data["team_constitutions"] = _team_constitution_contracts()
+    data["team_pulse"] = data["team_pulses"]["evolution"]
+    return data
+
+
+@app.get("/api/team-proposals/chief-review")
+async def get_team_proposals_chief_review():
+    data = _load_team_proposals()
+    return {"queue": _chief_review_queue(data, limit=10)}
+
+
+@app.get("/api/team-proposals/strategic-review")
+async def get_team_proposals_strategic_review():
+    data = _load_team_proposals()
+    return _team_proposals_strategic_review(data)
+
+
+@app.get("/api/radar-hermes")
+@app.get("/api/team-proposals/radar-hermes")
+async def get_radar_hermes():
+    """Read-only Radar Hermes snapshot; no task, cron, dispatch, file seed, or send side effects."""
+    data = _load_team_proposals(seed_if_missing=False)
+    return build_radar_hermes_snapshot(data, source_path=str(_team_proposals_path()))
+
+
+@app.post("/api/team-proposals")
+async def upsert_team_proposal(req: TeamProposalUpsertRequest):
+    """Create or update a proposal from a Chief/subagent/manual signal."""
+    data = _load_team_proposals()
+    proposal, created = _upsert_team_proposal(data, req)
+    _save_team_proposals(data)
+    return {"ok": True, "created": created, "proposal": proposal}
+
+
+@app.patch("/api/team-proposals/{proposal_id}")
+async def update_team_proposal(proposal_id: str, req: TeamProposalUpdateRequest):
+    """Edit proposal text/metadata before development; no execution side effects."""
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    allowed = {
+        "title",
+        "whyNow",
+        "evidence",
+        "benefit",
+        "effort",
+        "risk",
+        "priority",
+        "confidence",
+        "recommendation",
+        "acceptance",
+        "suggested_next_action",
+        "signal",
+        "source_signal",
+        "interpretation",
+        "supporter",
+        "critic",
+        "supporter_view",
+        "critic_view",
+        "chief_synthesis",
+        "gate",
+        "gate_state",
+        "suggested_profiles",
+        "evidence_refs",
+    }
+    updates = {key: value for key, value in req.__dict__.items() if key in allowed and value is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No proposal fields supplied")
+    for key, value in updates.items():
+        proposal[key] = value.strip() if isinstance(value, str) else value
+    now = _utc_now_iso()
+    proposal["updated_at"] = now
+    proposal["status_updated_at"] = now
+    _normalise_team_proposal_contract(proposal)
+    _refresh_chief_review_fields(proposal)
+    _append_team_proposal_audit(proposal, "edited_before_development", ", ".join(sorted(updates)))
+    _save_team_proposals(data)
+    return {"ok": True, "proposal": proposal}
+
+
+@app.post("/api/team-proposals/subagent")
+async def submit_subagent_team_proposal(req: TeamProposalUpsertRequest):
+    """Structured proposal channel for subagents; intake only, no execution side effects."""
+    if not (req.source_agent or "").strip():
+        raise HTTPException(status_code=400, detail="source_agent is required")
+    if not req.origin or req.origin == "chief/manual":
+        req.origin = f"Subagent: {req.source_agent.strip()}"
+    data = _load_team_proposals()
+    proposal, created = _upsert_team_proposal(data, req)
+    _save_team_proposals(data)
+    return {"ok": True, "created": created, "proposal": proposal}
+
+
+@app.post("/api/team-proposals/{proposal_id}/chief-review")
+async def review_team_proposal_as_chief(proposal_id: str, req: TeamProposalReviewRequest):
+    """Chief review gate: shortlist/defer/reject without executing the proposal."""
+    action = req.action.strip().lower()
+    if action not in {"shortlist", "defer", "reject"}:
+        raise HTTPException(status_code=400, detail="Unsupported chief review action")
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    now = _utc_now_iso()
+    if action == "shortlist":
+        proposal["chief_review_status"] = "shortlisted"
+        proposal["status"] = "standby"
+        proposal["recommendation"] = "park"
+        proposal["chief_review_reason"] = req.note or "Accettata in standby da Daniele: interessante, non da sviluppare ora."
+    elif action == "defer":
+        proposal["chief_review_status"] = "deferred"
+        proposal["status"] = "parcheggiata"
+        proposal["recommendation"] = "park"
+        proposal["chief_review_reason"] = req.note or "Parcheggiata dal Chief."
+    else:
+        proposal["chief_review_status"] = "rejected"
+        proposal["status"] = "scartata"
+        proposal["recommendation"] = "reject"
+        proposal["chief_review_reason"] = req.note or "Scartata dal Chief."
+    proposal["chief_reviewed_at"] = now
+    proposal["status_updated_at"] = now
+    _refresh_chief_review_fields(proposal)
+    _append_team_proposal_audit(proposal, f"chief_review_{action}", req.note)
+    _save_team_proposals(data)
+    return {"ok": True, "proposal": proposal, "chief_review": {"queue": _chief_review_queue(data, limit=5)}}
+
+
+@app.post("/api/team-proposals/collectors/kanban-blockers")
+async def collect_kanban_blocker_proposals(req: TeamProposalCollectorRequest):
+    """Collect blocked Kanban tasks into a proposal; no task/dispatch side effects."""
+    return _collect_kanban_blocker_proposals(req)
+
+
+@app.post("/api/team-proposals/autonomous/generate")
+async def generate_autonomous_team_proposals(req: TeamProposalAutonomousGenerateRequest):
+    """Generate/update autonomous proposal-only Team Pulse items with internal challenge."""
+    return _generate_autonomous_team_proposals(req)
+
+
+@app.post("/api/team-proposals/{proposal_id}/status")
+async def set_team_proposal_status(proposal_id: str, req: TeamProposalStatusRequest):
+    """Update proposal state only; no task/cron/dispatch side effects."""
+    status = req.status.strip()
+    if status not in _TEAM_PROPOSAL_STATUSES:
+        raise HTTPException(status_code=400, detail="Unsupported proposal status")
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    if status in _TEAM_PROPOSAL_CANONICAL_STATUSES:
+        try:
+            _set_team_proposal_status(proposal, status, actor_type="api", actor_id="dashboard", detail="status endpoint")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    else:
+        proposal["status"] = status
+        proposal["canonical_status"] = _team_proposal_canonical_status(proposal)
+        proposal["gate_status"] = _team_proposal_default_gate_status(proposal)
+        proposal["status_updated_at"] = _utc_now_iso()
+    _save_team_proposals(data)
+    return {"ok": True, "proposal": proposal}
+
+
+@app.get("/api/team-proposals/{proposal_id}/task-preview")
+async def preview_team_proposal_task(proposal_id: str):
+    """Preview the Kanban card a proposal would create; no side effects."""
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    proposal = _normalise_team_proposal_for_response(proposal)
+    task = _team_proposal_task_preview(proposal)
+    return {"proposal_id": proposal_id, "task": task, "preview_hash": _stable_preview_hash(task)}
+
+
+@app.get("/api/team-proposals/{proposal_id}/plan-preview")
+async def preview_team_proposal_plan(proposal_id: str):
+    """Preview a multi-task Kanban plan for a proposal; no side effects."""
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    _normalise_team_proposal_contract(proposal)
+    plan = _team_proposal_plan_preview(proposal)
+    return {"proposal_id": proposal_id, "plan": plan, "preview_hash": _stable_preview_hash(plan)}
+
+
+@app.post("/api/team-proposals/{proposal_id}/approve-min-step")
+async def approve_team_proposal_min_step(proposal_id: str, req: TeamProposalApproveMinStepRequest):
+    action_type = req.action_type.strip().lower()
+    if action_type not in {"task", "plan", "spec"}:
+        raise HTTPException(status_code=400, detail="Unsupported approval action_type")
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    _normalise_team_proposal_contract(proposal)
+    preview = _team_proposal_task_preview(proposal) if action_type in {"task", "spec"} else _team_proposal_plan_preview(proposal)
+    preview_hash = _stable_preview_hash(preview)
+    if preview_hash != req.confirmed_preview_hash:
+        raise HTTPException(status_code=409, detail="Preview changed after approval; approve again before conversion")
+    current = _team_proposal_canonical_status(proposal)
+    if current not in {"ready_for_gate", "synthesized"}:
+        raise HTTPException(status_code=409, detail="Proposal is not ready for Daniele approval")
+    requires_complete_challenge = bool(proposal.get("autonomy_level") or proposal.get("record_type") == "autonomous_proposal_candidate")
+    if requires_complete_challenge and not _team_proposal_has_complete_challenge(proposal):
+        raise HTTPException(status_code=409, detail="Proposal lacks complete signal/supporter/critic/Chief synthesis gate")
+    now = _utc_now_iso()
+    before = current
+    proposal["canonical_status"] = "approved_min_step"
+    proposal["status"] = "approvata"
+    proposal["status_updated_at"] = now
+    proposal["gate_status"] = _team_proposal_default_gate_status(proposal)
+    proposal["gate_status"].update({
+        "status": "approved",
+        "approved_by": (req.approved_by or "daniele").strip() or "daniele",
+        "approved_at": now,
+        "approved_action": {
+            "type": action_type,
+            "board": req.board,
+            "max_tasks": 1 if action_type != "plan" else len(preview.get("tasks", [])),
+            "assignees": [preview.get("assignee")] if action_type != "plan" else [preview.get("assignee"), *[task.get("assignee") for task in preview.get("tasks", [])]],
+            "initial_status": "ready",
+        },
+        "approved_preview_hash": preview_hash,
+    })
+    _append_team_proposal_audit_v3(
+        proposal,
+        "daniele_approved_min_step",
+        actor_type="ui",
+        actor_id=proposal["gate_status"]["approved_by"],
+        detail=req.note,
+        before_status=before,
+        after_status="approved_min_step",
+        side_effects={"kanban_created": False, "tasks_created_count": 0, "dispatch_started": False},
+    )
+    _save_team_proposals(data)
+    return {
+        "ok": True,
+        "proposal": proposal,
+        "approval": {
+            "action_type": action_type,
+            "preview_hash": preview_hash,
+            "side_effect_after_conversion": "creates ready kanban task/plan for dispatcher",
+        },
+    }
+
+
+@app.post("/api/team-proposals/{proposal_id}/convert-to-plan")
+async def convert_team_proposal_to_plan(
+    proposal_id: str,
+    req: TeamProposalPlanConvertRequest,
+):
+    """Create an idempotent ready Kanban plan after explicit confirmation."""
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    _normalise_team_proposal_contract(proposal)
+    plan = _team_proposal_plan_preview(proposal)
+    preview_hash = _stable_preview_hash(plan)
+    if not req.confirmed_preview_hash:
+        raise HTTPException(status_code=409, detail="Missing Daniele approval audit")
+    if req.confirmed_preview_hash != preview_hash:
+        raise HTTPException(status_code=409, detail="Preview changed after approval; approve again before conversion")
+    if _team_proposal_canonical_status(proposal) == "converted_to_kanban" and proposal.get("plan_task_id") and proposal.get("plan_child_task_ids"):
+        gate = proposal.get("gate_status") if isinstance(proposal.get("gate_status"), dict) else {}
+        if gate.get("approved_preview_hash") != preview_hash:
+            raise HTTPException(status_code=409, detail="Preview changed after approval; approve again before conversion")
+        return {
+            "ok": True,
+            "proposal": proposal,
+            "plan": {
+                "parent_task_id": proposal.get("plan_task_id"),
+                "child_task_ids": proposal.get("plan_child_task_ids") or [],
+                "title": plan["title"],
+                "parent_assignee": plan.get("assignee"),
+                "child_assignees": [task.get("assignee") for task in plan["tasks"]],
+                "idempotent": True,
+            },
+        }
+    _require_team_proposal_approved_for_conversion(proposal, action_type="plan", preview_hash=preview_hash)
+    try:
+        from hermes_cli import kanban_db
+
+        conn = kanban_db.connect(board=req.board)
+        try:
+            parent_id = kanban_db.create_task(
+                conn,
+                title=plan["title"],
+                body=plan["body"],
+                assignee=plan.get("assignee"),
+                created_by="team-proposals-plan",
+                workspace_kind=plan["workspace_kind"],
+                tenant=plan["tenant"],
+                priority=plan["priority"],
+                idempotency_key=plan["idempotency_key"],
+                board=req.board,
+                **_kanban_initial_status_kwargs(plan.get("initial_status")),
+            )
+            task_ids = []
+            for step in plan["tasks"]:
+                task_id = kanban_db.create_task(
+                    conn,
+                    title=step["title"],
+                    body=f"Parent plan: {parent_id}\n\n{step['body']}",
+                    assignee=step.get("assignee"),
+                    created_by="team-proposals-plan",
+                    workspace_kind=step["workspace_kind"],
+                    tenant=step["tenant"],
+                    priority=step["priority"],
+                    idempotency_key=step["idempotency_key"],
+                    board=req.board,
+                    **_kanban_initial_status_kwargs(step.get("initial_status")),
+                )
+                task_ids.append(task_id)
+        finally:
+            conn.close()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create Kanban plan: {exc}")
+
+    now = _utc_now_iso()
+    proposal["status"] = "trasformata_in_task"
+    proposal["canonical_status"] = "converted_to_kanban"
+    gate_status = proposal.setdefault("gate_status", {})
+    gate_status["status"] = "converted"
+    proposal["plan_task_id"] = parent_id
+    proposal["plan_child_task_ids"] = task_ids
+    proposal["plan_auto_assignment"] = {
+        "strategy": plan.get("assignment_strategy"),
+        "parent_assignee": plan.get("assignee"),
+        "task_assignees": [task.get("assignee") for task in plan["tasks"]],
+    }
+    proposal["conversion"] = {
+        "plan_task_id": parent_id,
+        "child_task_ids": task_ids,
+        "created_by": "team-proposals-plan",
+        "board": req.board,
+        "initial_status": plan.get("initial_status"),
+        "converted_at": now,
+    }
+    proposal["status_updated_at"] = now
+    proposal["transformed_at"] = now
+    _append_team_proposal_audit_v3(
+        proposal,
+        "converted_to_ready_plan",
+        actor_type="api",
+        actor_id="dashboard",
+        detail=f"{parent_id}; auto-assigned: {', '.join(str(task.get('assignee')) for task in plan['tasks'])}",
+        before_status="approved_min_step",
+        after_status="converted_to_kanban",
+        side_effects={
+            "kanban_created": True,
+            "tasks_created_count": 1 + len(task_ids),
+            "initial_status": "ready",
+            "dispatch_started": False,
+            "cron_created": False,
+            "external_send": False,
+        },
+        idempotency_key=plan.get("idempotency_key"),
+    )
+    _save_team_proposals(data)
+    return {
+        "ok": True,
+        "proposal": proposal,
+        "plan": {
+            "parent_task_id": parent_id,
+            "child_task_ids": task_ids,
+            "title": plan["title"],
+            "parent_assignee": plan.get("assignee"),
+            "child_assignees": [task.get("assignee") for task in plan["tasks"]],
+        },
+    }
+
+
+@app.post("/api/team-proposals/{proposal_id}/convert-to-task")
+async def convert_team_proposal_to_task(
+    proposal_id: str,
+    req: TeamProposalConvertRequest,
+):
+    """Create one idempotent Kanban task after the UI confirmation step."""
+    data = _load_team_proposals()
+    proposal = _find_team_proposal(data, proposal_id)
+    preview = _team_proposal_task_preview(proposal)
+    preview_hash = _stable_preview_hash(preview)
+    if not req.confirmed_preview_hash:
+        raise HTTPException(status_code=409, detail="Missing Daniele approval audit")
+    if req.confirmed_preview_hash != preview_hash:
+        raise HTTPException(status_code=409, detail="Preview changed after approval; approve again before conversion")
+    if _team_proposal_canonical_status(proposal) == "converted_to_kanban" and proposal.get("task_id"):
+        gate = proposal.get("gate_status") if isinstance(proposal.get("gate_status"), dict) else {}
+        if gate.get("approved_preview_hash") != preview_hash:
+            raise HTTPException(status_code=409, detail="Preview changed after approval; approve again before conversion")
+        return {
+            "ok": True,
+            "proposal": proposal,
+            "task": {
+                "id": proposal.get("task_id"),
+                "title": preview["title"],
+                "status": preview.get("initial_status"),
+                "idempotent": True,
+            },
+        }
+    _require_team_proposal_approved_for_conversion(proposal, action_type="task", preview_hash=preview_hash)
+    try:
+        from hermes_cli import kanban_db
+
+        conn = kanban_db.connect(board=req.board)
+        try:
+            task_id = kanban_db.create_task(
+                conn,
+                title=preview["title"],
+                body=preview["body"],
+                assignee=preview["assignee"],
+                created_by="team-proposals",
+                workspace_kind=preview["workspace_kind"],
+                tenant=preview["tenant"],
+                priority=preview["priority"],
+                idempotency_key=preview["idempotency_key"],
+                board=req.board,
+                **_kanban_initial_status_kwargs(preview.get("initial_status")),
+            )
+            task = kanban_db.get_task(conn, task_id)
+        finally:
+            conn.close()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create Kanban task: {exc}")
+
+    proposal["status"] = "trasformata_in_task"
+    proposal["canonical_status"] = "converted_to_kanban"
+    gate_status = proposal.setdefault("gate_status", {})
+    gate_status["status"] = "converted"
+    proposal["task_id"] = task_id
+    proposal["status_updated_at"] = _utc_now_iso()
+    proposal["transformed_at"] = proposal["status_updated_at"]
+    proposal["conversion"] = {
+        "plan_task_id": None,
+        "child_task_ids": [task_id],
+        "created_by": "team-proposals",
+        "board": req.board,
+        "initial_status": preview.get("initial_status"),
+        "converted_at": proposal["transformed_at"],
+    }
+    _append_team_proposal_audit_v3(
+        proposal,
+        "converted_to_ready_task",
+        actor_type="api",
+        actor_id="dashboard",
+        detail=task_id,
+        before_status="approved_min_step",
+        after_status="converted_to_kanban",
+        side_effects={
+            "kanban_created": True,
+            "tasks_created_count": 1,
+            "initial_status": "ready",
+            "dispatch_started": False,
+            "cron_created": False,
+            "external_send": False,
+        },
+        idempotency_key=preview.get("idempotency_key"),
+    )
+    _save_team_proposals(data)
+    return {
+        "ok": True,
+        "proposal": proposal,
+        "task": {
+            "id": task_id,
+            "title": getattr(task, "title", preview["title"]),
+            "status": getattr(task, "status", None),
+        },
+    }
+
+
+@app.get("/api/remote-browser/status")
+async def remote_browser_status():
+    """Metadata-only status for the human hand-off browser session."""
+    from hermes_cli import remote_browser
+
+    return remote_browser.status()
+
+
+@app.post("/api/remote-browser/open")
+async def remote_browser_open(req: RemoteBrowserOpenRequest):
+    from hermes_cli import remote_browser
+
+    result = await asyncio.to_thread(remote_browser.open_url, req.url)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "browser open failed")
+    return result
+
+
+@app.get("/api/remote-browser/screenshot")
+async def remote_browser_screenshot():
+    from hermes_cli import remote_browser
+
+    result = await asyncio.to_thread(remote_browser.screenshot)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "browser screenshot failed")
+    return result
+
+
+@app.post("/api/remote-browser/click")
+async def remote_browser_click(req: RemoteBrowserClickRequest):
+    from hermes_cli import remote_browser
+
+    result = await asyncio.to_thread(remote_browser.click, req.x, req.y)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "browser click failed")
+    return result
+
+
+@app.post("/api/remote-browser/type")
+async def remote_browser_type(req: RemoteBrowserTypeRequest):
+    from hermes_cli import remote_browser
+
+    result = await asyncio.to_thread(remote_browser.type_text, req.text)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "browser type failed")
+    return result
+
+
+@app.post("/api/remote-browser/key")
+async def remote_browser_key(req: RemoteBrowserKeyRequest):
+    from hermes_cli import remote_browser
+
+    result = await asyncio.to_thread(remote_browser.press_key, req.key)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "browser key failed")
+    return result
+
+
+@app.post("/api/remote-browser/scroll")
+async def remote_browser_scroll(req: RemoteBrowserScrollRequest):
+    from hermes_cli import remote_browser
+
+    result = await asyncio.to_thread(remote_browser.scroll, req.dy)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "browser scroll failed")
+    return result
+
 
 
 _WINDOWS_11_MIN_BUILD = 22000

@@ -7,7 +7,7 @@ import type { FrameEvent } from '@hermes/ink'
 
 import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
-import { setupGracefulExit } from './lib/gracefulExit.js'
+import { dashboardIgnoredSignals, setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
@@ -106,8 +106,11 @@ setupGracefulExit({
   // The dashboard chat tab has no in-page restart path after the PTY child
   // exits. Ignore SIGINT there so Ctrl+C cannot kill the embedded TUI if raw
   // mode briefly drops and the terminal driver turns the keystroke into a
-  // signal instead of input bytes. SIGTERM/SIGHUP still cleanly shut down.
-  ignoredSignals: DASHBOARD_TUI_MODE ? ['SIGINT'] : []
+  // signal instead of input bytes. Ignore SIGHUP as well: the dashboard PTY can
+  // briefly hang up during reconnect/navigation while the embedded TUI is still
+  // valid, and treating that as a real exit kills the gateway mid-turn.
+  // SIGTERM still cleanly shuts down.
+  ignoredSignals: DASHBOARD_TUI_MODE ? dashboardIgnoredSignals() : []
 })
 
 const stopMemoryMonitor = startMemoryMonitor({

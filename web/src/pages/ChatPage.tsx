@@ -19,7 +19,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -119,6 +118,17 @@ function buildTerminalTheme(background: string, foreground: string) {
   };
 }
 
+function visibleTerminalText(term: Terminal): string {
+  const buffer = term.buffer.active;
+  const start = Math.max(0, buffer.viewportY);
+  const end = Math.min(buffer.length, buffer.viewportY + term.rows);
+  const lines: string[] = [];
+  for (let index = start; index < end; index += 1) {
+    lines.push(buffer.getLine(index)?.translateToString(true) ?? "");
+  }
+  return lines.join("\n").replace(/[\s\n]+$/g, "");
+}
+
 /**
  * CSS width for xterm font tiers.
  *
@@ -186,6 +196,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [copyVisibleState, setCopyVisibleState] = useState<"idle" | "copied">(
+    "idle",
+  );
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -203,6 +216,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
+  const copyVisibleResetRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -317,7 +333,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
   const handleSessionTitleChange = useCallback(
-    (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
+    (title: string | null) =>
+      setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
 
@@ -439,6 +456,52 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
+  const sendTmuxWheel = useCallback((button: 64 | 65, repeat = 1) => {
+    const ws = wsRef.current;
+    const term = termRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !term) return;
+    const col = Math.max(1, Math.floor((term.cols || 80) / 2));
+    const row = Math.max(1, Math.floor((term.rows || 24) / 2));
+    for (let i = 0; i < repeat; i += 1) {
+      ws.send(`\x1b[<${button};${col};${row}M`);
+    }
+    term.focus();
+  }, []);
+
+  const scrollMobileOutput = useCallback(
+    (direction: "older" | "newer") => {
+      const term = termRef.current;
+      if (term) {
+        try {
+          // First scroll the browser-visible xterm buffer directly. This is the
+          // most reliable path on iOS/Android where touch/click events may never
+          // become terminal wheel reports.
+          term.scrollPages(direction === "older" ? -1 : 1);
+        } catch {
+          try {
+            term.scrollLines(direction === "older" ? -24 : 24);
+          } catch {
+            /* ignore */
+          }
+        }
+        term.focus();
+      }
+
+      // Also nudge tmux's durable pane history for deployments where the real
+      // scrollback lives in tmux rather than xterm's local buffer.
+      sendTmuxWheel(direction === "older" ? 64 : 65, 16);
+    },
+    [sendTmuxWheel],
+  );
+
+  const handleMobileScrollOlder = useCallback(() => {
+    scrollMobileOutput("older");
+  }, [scrollMobileOutput]);
+
+  const handleMobileScrollNewer = useCallback(() => {
+    scrollMobileOutput("newer");
+  }, [scrollMobileOutput]);
+
   const handleCopyLast = () => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -457,6 +520,101 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  const handleCopyVisible = () => {
+    const term = termRef.current;
+    if (!term) return;
+    const text = term.getSelection() || visibleTerminalText(term);
+    if (!text) return;
+    navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopyVisibleState("copied");
+        if (copyVisibleResetRef.current)
+          clearTimeout(copyVisibleResetRef.current);
+        copyVisibleResetRef.current = setTimeout(
+          () => setCopyVisibleState("idle"),
+          1500,
+        );
+        if (term.getSelection()) term.clearSelection();
+      })
+      .catch((err) => {
+        console.warn("[dashboard clipboard] copy visible failed:", err.message);
+      });
+    term.focus();
+  };
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+
+    // Mobile browsers do not emit wheel events, and the page/body are locked
+    // to 100dvh to keep the terminal layout stable. A one-finger vertical
+    // swipe inside the terminal therefore needs to be translated into tmux
+    // SGR wheel reports so phone users can read older durable chat output.
+    // Button 64 = wheel up (older output), 65 = wheel down (newer output).
+    let lastTouchY: number | null = null;
+    let accumulatedTouchDelta = 0;
+    const pixelsPerWheelTick = 28;
+    const maxTicksPerMove = 8;
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        lastTouchY = null;
+        accumulatedTouchDelta = 0;
+        return;
+      }
+      lastTouchY = event.touches[0]?.clientY ?? null;
+      accumulatedTouchDelta = 0;
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 1 || lastTouchY === null) return;
+      const y = event.touches[0]?.clientY;
+      if (typeof y !== "number") return;
+      const delta = y - lastTouchY;
+      lastTouchY = y;
+      accumulatedTouchDelta += delta;
+
+      let ticks = 0;
+      while (
+        Math.abs(accumulatedTouchDelta) >= pixelsPerWheelTick &&
+        ticks < maxTicksPerMove
+      ) {
+        if (accumulatedTouchDelta > 0) {
+          // Finger moving down means the user wants to move the viewport up
+          // into older output, equivalent to mouse-wheel up.
+          sendTmuxWheel(64);
+          accumulatedTouchDelta -= pixelsPerWheelTick;
+        } else {
+          sendTmuxWheel(65);
+          accumulatedTouchDelta += pixelsPerWheelTick;
+        }
+        ticks += 1;
+      }
+
+      if (ticks > 0) {
+        event.preventDefault();
+      }
+    };
+
+    const onTouchEnd = () => {
+      lastTouchY = null;
+      accumulatedTouchDelta = 0;
+    };
+
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
+    return () => {
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [sendTmuxWheel]);
 
   useEffect(() => {
     // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
@@ -511,12 +669,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //
     // Four independent paths all route to the system clipboard:
     //
-    //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
-    //      in useInputHandlers.ts turns Ctrl+C into a copy when the
-    //      terminal has a selection, then emits an OSC 52 escape.  Our
-    //      OSC 52 handler below decodes that escape and writes to the
-    //      browser clipboard — so the flow works just like it does in
-    //      `hermes --tui`.
+    //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  The dashboard copies
+    //      directly from xterm's selection when text is selected. If there is
+    //      no selection, bare Ctrl+C still passes through to the TUI as SIGINT.
     //
     //   2. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
     //      operates directly on xterm's selection, useful if the TUI
@@ -532,6 +687,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //   4. **DOM paste / drop on the host.**  Bare Ctrl+V and context-menu
     //      paste fire a ClipboardEvent; drag-drop lands files. Image
     //      payloads upload to HERMES_HOME/images then drive `/image`.
+
     //
     // OSC 52 reads (terminal asking to read the clipboard) are not
     // supported — that would let any content the TUI renders exfiltrate
@@ -550,7 +706,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // Most common reason: the Clipboard API requires a user gesture.
           // This can fail when the OSC 52 response arrives outside the
           // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
+          console.warn(
+            "[dashboard clipboard] OSC 52 write failed:",
+            err.message,
+          );
         });
       } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
@@ -631,37 +790,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      // Copy: Cmd+C on macOS, Ctrl+C on other platforms when a selection exists.
+      // With no selection, bare Ctrl+C passes through as SIGINT. Ctrl+Shift+C
+      // remains a terminal-style copy fallback.
+      // Paste: Cmd+V on macOS, Ctrl+V on other platforms. Ctrl+Shift+V also
+      // works for terminal muscle memory.
+      const isCopyKey = ev.key.toLowerCase() === "c";
+      const isPasteKey = ev.key.toLowerCase() === "v";
+      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
+      const terminalCopyModifier = !isMac && ev.ctrlKey && ev.shiftKey;
+      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
 
-      if (copyModifier && ev.key.toLowerCase() === "c") {
+      if ((copyModifier || terminalCopyModifier) && isCopyKey) {
         const sel = term.getSelection();
         if (sel) {
           // Direct writeText inside the keydown handler preserves the user
           // gesture — async round-trips through OSC 52 can lose activation
           // and fail with "Document is not focused".
           navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
+            console.warn(
+              "[dashboard clipboard] direct copy failed:",
+              err.message,
+            );
           });
           // Clear xterm.js's highlight after copy (matches gnome-terminal).
           term.clearSelection();
           ev.preventDefault();
           return false;
         }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
+        // No selection → fall through so the TUI receives Ctrl+C / Ctrl+Shift+C.
       }
 
-      if (pasteModifier && ev.key.toLowerCase() === "v") {
+      if (pasteModifier && isPasteKey) {
         // preventDefault suppresses the DOM paste event, so image paste must
         // be handled here via clipboard.read() — readText() alone misses
         // image-only clipboards (the Discord / #24860 failure mode).
+
         ev.preventDefault();
         void (async () => {
           try {
@@ -705,21 +869,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
+    // Let xterm/tmux handle wheel events normally. In durable dashboard chat
+    // xterm is attached to a tmux client, so consuming wheel events here only
+    // scrolls the browser buffer and prevents tmux from receiving the real
+    // scrollback navigation events for older task output.
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -764,24 +917,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       };
     }
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
+    // Use xterm's DOM renderer for the dashboard chat.  The WebGL renderer is
+    // faster, but in real dashboard sessions it can fail as a black/blank
+    // canvas after GPU context loss, browser sleep, or remote-display changes —
+    // exactly the failure mode where users see a black chat and cannot read the
+    // agent response.  Chat correctness/legibility matters more than renderer
+    // throughput here, and the DOM renderer preserves selectable/copyable text.
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -814,7 +955,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // display:none hosts have clientWidth/Height = 0, which fit() turns
       // into a 1x1 terminal.  Skip entirely while hidden; the visibility
       // effect below runs another fit as soon as the tab is shown again.
-      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+      if (
+        !host.isConnected ||
+        host.clientWidth <= 0 ||
+        host.clientHeight <= 0
+      ) {
         return;
       }
       const w = terminalTierWidthPx(host);
@@ -861,7 +1006,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ro.observe(host);
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
+    window.visualViewport?.addEventListener(
+      "resize",
+      scheduleSyncTerminalMetrics,
+    );
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -912,6 +1060,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setBanner(null);
       setLastCloseCode(code);
       setPtyState("reconnecting");
+
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null;
         setReconnectNonce((n) => n + 1);
@@ -990,13 +1139,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          term.write(ev.data);
+        } else {
+          term.write(new Uint8Array(ev.data as ArrayBuffer));
+        }
+      };
 
     ws.onclose = (ev) => {
       wsRef.current = null;
@@ -1083,28 +1233,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setPtyState("ended");
     };
 
-    // Keystrokes → PTY.
-    //
-    // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
+
+      // Keystrokes → PTY.
+      //
+      // IMPORTANT:
+      // The embedded web chat has occasionally surfaced stray letters/digits
+      // in the input line after a turn completes. The most likely culprit is
+      // browser-side terminal control traffic being forwarded back into the
+      // PTY as if it were user text. SGR mouse tracking is the highest-risk
+      // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
+      // ordinary bytes to the backend.
+      //
+      // Durable dashboard chat is backed by tmux. To let the user scroll older
+      // task output, tmux must receive SGR wheel reports (button codes 64–67).
+      // We still drop ordinary click/drag reports so raw mouse-control bytes do
+      // not leak into the Hermes prompt.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+      const isSgrWheelReport = (data: string) => {
+        const match = SGR_MOUSE_RE.exec(data);
+        if (!match) return false;
+        const button = Number.parseInt(match[1] ?? "", 10);
+        return Number.isFinite(button) && button >= 64 && button <= 67;
+      };
       onDataDisposable = term.onData((data) => {
-        // Mouse reports (scroll wheel etc.) are not typed input — swallow
-        // them before the blocked-input check so scrolling a disconnected
-        // terminal doesn't trip the "reconnecting" notice.
+        // Mouse reports are not typed input. Preserve tmux wheel reports only
+        // while the PTY is open; drop ordinary click/drag reports and all mouse
+        // traffic during reconnect/closed states.
         if (SGR_MOUSE_RE.test(data)) {
-          return;
+          if (!isSgrWheelReport(data) || ws.readyState !== WebSocket.OPEN) {
+            return;
+          }
         }
 
         if (
@@ -1218,9 +1377,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         raf2 = 0;
         syncMetricsRef.current?.();
         const host = hostRef.current;
-        const active = typeof document !== "undefined"
-          ? document.activeElement
-          : null;
+        const active =
+          typeof document !== "undefined" ? document.activeElement : null;
         const focusIsElsewhereInChatPage =
           active !== null &&
           active !== document.body &&
@@ -1294,6 +1452,36 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!term) return;
     term.options.theme = terminalTheme;
   }, [terminalTheme]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      return !!target.closest(
+        'input, textarea, select, [contenteditable="true"], [contenteditable=""]',
+      );
+    };
+
+    const onPasteCapture = (event: ClipboardEvent) => {
+      if (!hostRef.current || !termRef.current) return;
+      if (
+        isEditableTarget(event.target) &&
+        !hostRef.current.contains(event.target as Node)
+      ) {
+        return;
+      }
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      termRef.current.paste(text);
+      termRef.current.focus();
+    };
+
+    document.addEventListener("paste", onPasteCapture, true);
+    return () => document.removeEventListener("paste", onPasteCapture, true);
+  }, [isActive]);
 
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
@@ -1430,6 +1618,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            tabIndex={0}
+            role="textbox"
+            aria-label="Hermes chat terminal. Paste text with Ctrl or Cmd V. Copy selected text with Ctrl or Cmd C."
+            onPointerDown={() => termRef.current?.focus()}
+            onFocus={() => termRef.current?.focus()}
           />
 
           {showReconnectOverlay && (
@@ -1470,6 +1663,78 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </Button>
             </div>
           )}
+
+          {narrow && (
+            <div
+              className={cn(
+                "absolute left-2 bottom-2 z-20 flex flex-col gap-1 sm:left-3 sm:bottom-3",
+                "select-none",
+              )}
+              aria-label="Mobile output scroll controls"
+            >
+              <Button
+                ghost
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  handleMobileScrollOlder();
+                }}
+                onClick={handleMobileScrollOlder}
+                className={cn(
+                  "h-10 min-w-14 rounded border border-current/40 px-3 text-base font-bold",
+                  "bg-black/55 backdrop-blur-sm text-white opacity-90",
+                )}
+                style={{ color: terminalFg }}
+                aria-label="Scroll older output"
+                title="Scroll older output"
+              >
+                ↑
+              </Button>
+              <Button
+                ghost
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  handleMobileScrollNewer();
+                }}
+                onClick={handleMobileScrollNewer}
+                className={cn(
+                  "h-10 min-w-14 rounded border border-current/40 px-3 text-base font-bold",
+                  "bg-black/55 backdrop-blur-sm text-white opacity-90",
+                )}
+                style={{ color: terminalFg }}
+                aria-label="Scroll newer output"
+                title="Scroll newer output"
+              >
+                ↓
+              </Button>
+            </div>
+          )}
+
+          <Button
+            ghost
+            onClick={handleCopyVisible}
+            title="Copy selected text, or the currently visible chat text if nothing is selected"
+            aria-label="Copy visible chat text"
+            className={cn(
+              "absolute z-10",
+              "normal-case tracking-normal font-normal",
+              "rounded border border-current/30",
+              "bg-black/20 backdrop-blur-sm",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150",
+              "bottom-10 right-2 px-2 py-1 text-xs sm:bottom-12 sm:right-3 sm:px-2.5 sm:py-1.5",
+              "lg:bottom-14 lg:right-4",
+            )}
+            style={{ color: terminalFg }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Copy className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {copyVisibleState === "copied" ? "copied" : "copy visible"}
+              </span>
+            </span>
+          </Button>
 
           <Button
             ghost

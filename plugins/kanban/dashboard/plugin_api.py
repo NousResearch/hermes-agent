@@ -590,6 +590,664 @@ def get_task(
 
 
 # ---------------------------------------------------------------------------
+# Mission Control v2 — read/read-mostly cockpit contracts
+# ---------------------------------------------------------------------------
+
+_DOCUMENT_OUTPUT_SUFFIXES = {
+    ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".csv", ".md", ".txt", ".rtf", ".odt", ".ods", ".odp",
+}
+
+
+def _v2_task_preview(task: kanban_db.Task, *, latest_summary: Optional[str] = None) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "assignee": task.assignee,
+        "priority": task.priority,
+        "tenant": task.tenant,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "latest_summary": latest_summary,
+    }
+
+
+def _v2_state_for_status(status: str) -> str:
+    if status in {"triage", "todo", "scheduled"}:
+        return "needs_setup"
+    if status == "ready":
+        return "ready_to_dispatch"
+    if status == "running":
+        return "running"
+    if status in {"blocked", "review"}:
+        return "needs_review"
+    if status == "done":
+        return "completed"
+    return "needs_setup"
+
+
+def _v2_review_activation(task: kanban_db.Task) -> Optional[dict[str, Any]]:
+    if task.status not in {"blocked", "review"}:
+        return None
+    return {
+        "state": "Decisione richiesta",
+        "why_it_matters": "La task è ferma per review/approvazione: non riparte da sola e non viene dispatchata automaticamente.",
+        "recommended_next_action": "Apri la task, scegli Accetta e chiudi se l'output va bene, oppure Chiedi modifiche / Preview sblocco. Lo sblocco prepara soltanto il dispatch: non avvia worker.",
+        "primary_cta": {"id": "accept_close", "label": "Accetta e chiudi", "status": "done"},
+        "secondary_ctas": [
+            {"id": "request_changes", "label": "Chiedi modifiche"},
+            {
+                "id": "prepare_dispatch",
+                "label": "Preview sblocco / prepara dispatch",
+                "status": "ready",
+                "requires_confirmation": True,
+                "preview_copy": "La task passerà da blocked/review a ready. Nessun worker parte: il dispatch richiede ancora DISPATCH_ONE_TICK separato.",
+            },
+            {"id": "park", "label": "Parcheggia"},
+        ],
+        "guardrail_copy": "Lo sblocco non dispatcha e non invia nulla. Dispatch one tick resta un comando separato con conferma DISPATCH_ONE_TICK.",
+    }
+
+
+def _v2_primary_actions(task: kanban_db.Task) -> list[dict[str, Any]]:
+    base = [
+        {
+            "id": "add_context",
+            "label": "Aggiungi contesto",
+            "mutation_endpoint": f"/api/plugins/kanban/tasks/{task.id}/comments",
+            "dispatch_started": False,
+        },
+        {
+            "id": "upload_context",
+            "label": "Carica documenti / foto",
+            "mutation_endpoint": f"/api/plugins/kanban/tasks/{task.id}/attachments",
+            "dispatch_started": False,
+        },
+    ]
+    if task.status in {"done", "review", "blocked", "running", "ready"}:
+        base.append({
+            "id": "create_followup",
+            "label": "Crea follow-up",
+            "mutation_endpoint": f"/api/plugins/kanban/tasks/{task.id}/followup",
+            "dispatch_started": False,
+        })
+    if task.status in {"done", "review"}:
+        base.append({
+            "id": "review_output",
+            "label": "Review output",
+            "mutation_endpoint": None,
+            "dispatch_started": False,
+        })
+        base.append({
+            "id": "request_changes",
+            "label": "Chiedi modifiche",
+            "mutation_endpoint": f"/api/plugins/kanban/tasks/{task.id}/request-output-changes",
+            "dispatch_started": False,
+        })
+    if task.status == "ready":
+        base.extend([
+            {
+                "id": "dispatch_preview",
+                "label": "Preview dispatch",
+                "mutation_endpoint": "/api/plugins/kanban/dispatch/dry-run",
+                "dispatch_started": False,
+            },
+            {
+                "id": "dispatch_confirm_separate",
+                "label": "Dispatch one tick separato",
+                "mutation_endpoint": "/api/plugins/kanban/dispatch",
+                "requires_confirmation": True,
+                "dispatch_started": False,
+            },
+        ])
+    return base
+
+
+def _v2_output_filename(task_id: str, path: Path) -> str:
+    prefix = f"{task_id}_"
+    name = path.name
+    return name[len(prefix):] if name.startswith(prefix) else name
+
+
+def _v2_document_outputs(board: Optional[str], task_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+    out_dir = kanban_db.board_dir(board=board) / "completed_outputs"
+    if not out_dir.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    patterns = [f"{task_id}_*"] if task_id else ["t_*_*"]
+    for pattern in patterns:
+        for path in sorted(out_dir.glob(pattern), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+            if not path.is_file() or path.suffix.lower() not in _DOCUMENT_OUTPUT_SUFFIXES:
+                continue
+            tid = task_id
+            if tid is None:
+                parts = path.name.split("_", 2)
+                if len(parts) >= 3 and parts[0] == "t":
+                    tid = f"{parts[0]}_{parts[1]}"
+                else:
+                    continue
+            items.append({
+                "task_id": tid,
+                "filename": _v2_output_filename(tid, path),
+                "entry_name": path.name,
+                "path": str(path),
+                "size": path.stat().st_size,
+                "source": "completed_outputs",
+                "review_status": "needs_review",
+                "next_action": "review_output",
+                "download_url": f"/api/plugins/kanban/v2/documents/{path.name}",
+            })
+            if len(items) >= limit:
+                return items
+    return items
+
+
+def _v2_document_registry(board: Optional[str], task_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+    return _v2_document_outputs(board=board, task_id=task_id, limit=limit)
+
+
+def _v2_team_presets() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "single_worker",
+            "label": "Single worker",
+            "description": "Una sola profile esegue la task: utile per lavori piccoli e ben specificati.",
+            "requires_confirmation": True,
+        },
+        {
+            "id": "team_review",
+            "label": "Team review",
+            "description": "Più specialisti revisionano un output esistente; chiusura con sintesi Chief.",
+            "requires_confirmation": True,
+        },
+        {
+            "id": "team_writing",
+            "label": "Team writing",
+            "description": "Scrittura coordinata di documenti complessi con contributi specialistici.",
+            "requires_confirmation": True,
+        },
+        {
+            "id": "team_challenge",
+            "label": "Team challenge",
+            "description": "Stress test: evidenza, legal/claims, MRV e rischi cercano buchi prima dell'uso.",
+            "requires_confirmation": True,
+        },
+        {
+            "id": "chief_synthesis",
+            "label": "Chief synthesis",
+            "description": "Una sintesi finale decide stato, rischi, next step e gate di rilascio.",
+            "requires_confirmation": True,
+        },
+    ]
+
+
+@router.get("/v2/actions")
+def mission_control_v2_actions():
+    return {
+        "version": "mission-control-v2",
+        "lifecycle": ["inspect", "choose_action", "preview", "confirm", "observe"],
+        "guardrail": {
+            "no_auto_dispatch": True,
+            "external_send_started": False,
+            "hidden_work_started": False,
+        },
+        "dispatch_requires_separate_confirmation": True,
+        "allowed_read_mostly_actions": [
+            "add_context",
+            "upload_context",
+            "create_followup",
+            "request_changes",
+            "review_output",
+            "dispatch_preview",
+            "dispatch_confirm_separate",
+        ],
+    }
+
+
+class MissionControlDocumentActionBody(BaseModel):
+    filename: str
+    action_id: str
+    title: Optional[str] = None
+    body: Optional[str] = None
+    assignee: Optional[str] = "default"
+    author: Optional[str] = "dashboard"
+    confirm: bool = False
+
+
+class MissionControlTeamActionBody(BaseModel):
+    preset_id: str
+    title: Optional[str] = None
+    body: Optional[str] = None
+    assignee: Optional[str] = "default"
+    author: Optional[str] = "dashboard"
+    confirm: bool = False
+
+
+class MissionControlDispatchConfirmBody(BaseModel):
+    confirmation: Optional[str] = None
+    author: Optional[str] = "dashboard"
+
+
+def _v2_dispatch_counts(conn) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+    ).fetchall()
+    return {row["status"]: int(row["n"]) for row in rows}
+
+
+def _v2_dispatch_preview_payload(conn, *, max_spawn: int = 1, max_in_progress: int = 2, max_in_progress_per_profile: int = 1) -> dict[str, Any]:
+    counts = _v2_dispatch_counts(conn)
+    running_count = int(counts.get("running", 0))
+    available_global = max(0, min(max_spawn, max_in_progress - running_count))
+    ready_rows = conn.execute(
+        "SELECT id, title, assignee, priority FROM tasks "
+        "WHERE status = 'ready' AND claim_lock IS NULL "
+        "ORDER BY priority DESC, created_at ASC"
+    ).fetchall()
+    per_profile_running = {
+        row["assignee"]: int(row["n"])
+        for row in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ).fetchall()
+    }
+    would_spawn: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in ready_rows:
+        assignee = (row["assignee"] or "").strip()
+        if not assignee:
+            skipped.append({"task_id": row["id"], "reason": "unassigned"})
+            continue
+        current_profile = int(per_profile_running.get(assignee, 0))
+        if current_profile >= max_in_progress_per_profile:
+            skipped.append({"task_id": row["id"], "assignee": assignee, "reason": "profile_at_cap"})
+            continue
+        if len(would_spawn) >= available_global:
+            skipped.append({"task_id": row["id"], "assignee": assignee, "reason": "global_cap"})
+            continue
+        would_spawn.append({
+            "task_id": row["id"],
+            "title": row["title"],
+            "assignee": assignee,
+            "priority": int(row["priority"] or 0),
+        })
+    return {
+        "version": "mission-control-v2",
+        "read_only": True,
+        "mutation_endpoint_available": True,
+        "dispatch_started": False,
+        "external_send": False,
+        "auto_decompose": False,
+        "caps": {
+            "max_spawn": max_spawn,
+            "max_in_progress": max_in_progress,
+            "max_in_progress_per_profile": max_in_progress_per_profile,
+        },
+        "counts": counts,
+        "ready_count": len(ready_rows),
+        "running_count": running_count,
+        "would_spawn": would_spawn,
+        "skipped": skipped,
+        "confirmation_phrase": "DISPATCH_ONE_TICK",
+        "sequence": ["inspect", "preview", "confirm", "one_tick", "observe"],
+    }
+
+
+@router.get("/v2/documents")
+def mission_control_v2_documents(
+    board: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    board = _resolve_board(board)
+    items = _v2_document_registry(board=board, limit=limit)
+    return {
+        "version": "mission-control-v2",
+        "items": items,
+        "source": "completed_outputs",
+        "review_gate": {
+            "external_send_started": False,
+            "requires_daniele_review": True,
+        },
+        "open_folder_available": bool(items),
+    }
+
+
+@router.get("/v2/documents/{entry_name}")
+def mission_control_v2_download_document(entry_name: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    if "/" in entry_name or "\\" in entry_name or entry_name.startswith("."):
+        raise HTTPException(status_code=400, detail="invalid document entry name")
+    if Path(entry_name).suffix.lower() not in _DOCUMENT_OUTPUT_SUFFIXES:
+        raise HTTPException(status_code=404, detail="document output not found")
+    root = (kanban_db.board_dir(board=board) / "completed_outputs").resolve()
+    target = (root / entry_name).resolve()
+    try:
+        target.relative_to(root)
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="document output unavailable")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="document output not found")
+    filename = _v2_output_filename("_".join(entry_name.split("_", 2)[:2]), target)
+    return FileResponse(path=str(target), filename=filename, media_type="application/octet-stream")
+
+
+@router.post("/v2/document-actions/prepare-followup")
+def mission_control_v2_prepare_document_action(
+    payload: MissionControlDocumentActionBody,
+    board: Optional[str] = Query(None),
+):
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true is required")
+    filename = (payload.filename or "").strip()
+    action_id = (payload.action_id or "").strip()
+    if not filename or "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="valid filename is required")
+    if not action_id:
+        raise HTTPException(status_code=400, detail="action_id is required")
+
+    board = _resolve_board(board)
+    doc = next((item for item in _v2_document_registry(board=board, limit=200) if item.get("filename") == filename), None)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="document not found in Mission Control registry")
+    templates = doc.get("action_templates") or [{
+        "id": "prepare_internal_review",
+        "title": f"Review documento — {filename}",
+        "body": f"Rivedere il documento {filename}. Guardrail: no dispatch automatico; no invio esterno.",
+    }]
+    template = next((t for t in templates if t.get("id") == action_id), None)
+    if template is None:
+        raise HTTPException(status_code=400, detail="action template not available for this document")
+
+    title = (payload.title or template.get("title") or f"Review documento — {filename}").strip()
+    body = (payload.body or template.get("body") or "").strip()
+    if not title or not body:
+        raise HTTPException(status_code=400, detail="template title/body unavailable")
+
+    conn = _conn(board=board)
+    try:
+        task_body = (
+            "MISSION_CONTROL_DOCUMENT_ACTION\n"
+            f"Action: {action_id}\n"
+            f"Document: {filename}\n"
+            f"Source: {doc.get('source')}\n"
+            f"Pack: {doc.get('pack') or ''}\n"
+            f"Project: {doc.get('project') or ''}\n"
+            f"Review status: {doc.get('review_status') or ''}\n"
+            f"Download URL: {doc.get('download_url') or ''}\n\n"
+            f"{body}\n\n"
+            "Guardrail: prepared as non-dispatchable triage work; dispatch requires separate DISPATCH_ONE_TICK confirmation; no external send."
+        )
+        task_id = kanban_db.create_task(
+            conn,
+            title=title,
+            body=task_body,
+            assignee=payload.assignee or "default",
+            created_by=payload.author or "dashboard",
+            priority=8,
+            triage=True,
+        )
+        task = kanban_db.get_task(conn, task_id)
+        kanban_db.add_comment(
+            conn,
+            task_id,
+            author=payload.author or "dashboard",
+            body=(
+                "DOCUMENT_ACTION_PREPARED\n"
+                f"Document: {filename}\n"
+                f"Action: {action_id}\n"
+                "Guardrail: dispatch_started=false; prepared task remains non-dispatchable until explicit dispatch confirmation."
+            ),
+        )
+        return {
+            "ok": True,
+            "mutation": "document_action_prepared",
+            "task_id": task_id,
+            "task": _task_dict(task) if task else None,
+            "document": doc,
+            "action_id": action_id,
+            "dispatch_started": False,
+            "external_send": False,
+            "status_changed": False,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/v2/team-actions/prepare")
+def mission_control_v2_prepare_team_action(
+    payload: MissionControlTeamActionBody,
+    board: Optional[str] = Query(None),
+):
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true is required")
+    preset_id = (payload.preset_id or "").strip()
+    preset = next((p for p in _v2_team_presets() if p.get("id") == preset_id), None)
+    if preset is None:
+        raise HTTPException(status_code=400, detail="team preset not available")
+
+    board = _resolve_board(board)
+    label = str(preset.get("label") or preset_id)
+    default_title = f"Mission Control team flow — {label}"
+    default_body = (
+        "Preparare il flusso team selezionato da Mission Control v2.\n"
+        f"Preset: {preset_id} — {label}\n"
+        f"Descrizione: {preset.get('description') or ''}\n\n"
+        "Obiettivo: preparare il prossimo passo operativo come task non-dispatchable, ispezionabile da Daniele prima dell'esecuzione.\n"
+        "Guardrail: nessun dispatch automatico; dispatch solo tramite conferma separata DISPATCH_ONE_TICK; no external send; no cron."
+    )
+    title = (payload.title or default_title).strip()
+    body = (payload.body or default_body).strip()
+    if not title or not body:
+        raise HTTPException(status_code=400, detail="title/body unavailable")
+
+    conn = _conn(board=board)
+    try:
+        task_id = kanban_db.create_task(
+            conn,
+            title=title,
+            body="MISSION_CONTROL_TEAM_ACTION\n" + body,
+            assignee=payload.assignee or "default",
+            created_by=payload.author or "dashboard",
+            priority=7,
+            triage=True,
+        )
+        task = kanban_db.get_task(conn, task_id)
+        kanban_db.add_comment(
+            conn,
+            task_id,
+            author=payload.author or "dashboard",
+            body=(
+                "TEAM_ACTION_PREPARED\n"
+                f"Preset: {preset_id}\n"
+                "Guardrail: dispatch_started=false; prepared task remains non-dispatchable until explicit dispatch confirmation."
+            ),
+        )
+        return {
+            "ok": True,
+            "mutation": "team_action_prepared",
+            "task_id": task_id,
+            "task": _task_dict(task) if task else None,
+            "preset": preset,
+            "dispatch_started": False,
+            "external_send": False,
+            "status_changed": False,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/v2/dispatch/preview")
+def mission_control_v2_dispatch_preview(board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        return _v2_dispatch_preview_payload(conn)
+    finally:
+        conn.close()
+
+
+@router.post("/v2/dispatch/confirm-one-tick")
+def mission_control_v2_dispatch_confirm_one_tick(
+    payload: MissionControlDispatchConfirmBody,
+    board: Optional[str] = Query(None),
+):
+    if (payload.confirmation or "").strip() != "DISPATCH_ONE_TICK":
+        raise HTTPException(status_code=400, detail="confirmation phrase DISPATCH_ONE_TICK is required")
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        before = _v2_dispatch_preview_payload(conn)
+        result = kanban_db.dispatch_once(
+            conn,
+            dry_run=False,
+            max_spawn=1,
+            max_in_progress=2,
+            max_in_progress_per_profile=1,
+            board=board,
+        )
+        try:
+            result_payload = asdict(result)
+        except TypeError:
+            result_payload = {"result": str(result)}
+        return {
+            "version": "mission-control-v2",
+            "ok": True,
+            "mutation": "dispatch_one_tick",
+            "confirmation_phrase": "DISPATCH_ONE_TICK",
+            "dispatch_started": bool(result_payload.get("spawned")),
+            "external_send": False,
+            "auto_decompose": False,
+            "caps": {
+                "max_spawn": 1,
+                "max_in_progress": 2,
+                "max_in_progress_per_profile": 1,
+            },
+            "before_preview": before,
+            "dispatch_result": result_payload,
+            "observation": {
+                "counts": _v2_dispatch_counts(conn),
+            },
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/v2/tasks/{task_id}")
+def mission_control_v2_task(task_id: str, board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        attachments = [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)]
+        outputs = _v2_document_outputs(board=board, task_id=task_id, limit=50)
+        return {
+            "version": "mission-control-v2",
+            "task": _v2_task_preview(task, latest_summary=kanban_db.latest_summary(conn, task_id)),
+            "state": _v2_state_for_status(task.status),
+            "primary_actions": _v2_primary_actions(task),
+            "review_activation": _v2_review_activation(task),
+            "documents": {
+                "input_attachments": attachments,
+                "produced_outputs": outputs,
+            },
+            "team_recommendations": _v2_team_presets(),
+            "guardrail": {
+                "dispatch_started": False,
+                "external_send_started": False,
+                "hidden_work_started": False,
+                "dispatch_requires_separate_confirmation": True,
+            },
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/v2/cockpit")
+def mission_control_v2_cockpit(board: Optional[str] = Query(None)):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        tasks = kanban_db.list_tasks(conn, include_archived=False)
+        summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        by_status: dict[str, list[kanban_db.Task]] = {status: [] for status in BOARD_COLUMNS}
+        for task in tasks:
+            by_status.setdefault(task.status, []).append(task)
+
+        def previews(statuses: list[str], limit: int = 10) -> list[dict[str, Any]]:
+            selected: list[kanban_db.Task] = []
+            for status_name in statuses:
+                selected.extend(by_status.get(status_name, []))
+            selected = sorted(selected, key=lambda t: (-int(t.priority or 0), int(t.created_at or 0)))[:limit]
+            return [_v2_task_preview(t, latest_summary=summary_map.get(t.id)) for t in selected]
+
+        inbox_tasks = sorted(
+            by_status.get("blocked", []) + by_status.get("review", []) + by_status.get("triage", []),
+            key=lambda t: (-int(t.priority or 0), int(t.created_at or 0)),
+        )[:5]
+        inbox_items = [
+            {
+                "task_id": t.id,
+                "title": t.title,
+                "status": t.status,
+                "why_it_matters": (_v2_review_activation(t) or {}).get("why_it_matters") or "Richiede decisione o review prima di procedere.",
+                "recommended_action": "open_task_drawer",
+                "activation": _v2_review_activation(t),
+            }
+            for t in inbox_tasks
+        ]
+        documents = _v2_document_registry(board=board, limit=10)
+        return {
+            "version": "mission-control-v2",
+            "navigation": [
+                {"id": "inbox", "label": "Inbox decisioni"},
+                {"id": "workbench", "label": "Workbench operativo"},
+                {"id": "documents", "label": "Documents"},
+                {"id": "teams", "label": "Teams"},
+                {"id": "system", "label": "System"},
+            ],
+            "inbox": {
+                "max_items": 5,
+                "items": inbox_items,
+                "empty_state": "Nessuna decisione urgente per Daniele.",
+                "guardrail": {"no_auto_dispatch": True},
+            },
+            "workbench": {
+                "setup": {"tasks": previews(["triage", "todo", "scheduled"])},
+                "ready": {"tasks": previews(["ready"])},
+                "running": {"tasks": previews(["running"])},
+                "review": {"tasks": previews(["blocked", "review"])},
+                "recent_done": {"tasks": previews(["done"])},
+            },
+            "documents": {
+                "items": documents,
+                "source": "completed_outputs",
+                "review_gate": {"external_send_started": False, "requires_daniele_review": True},
+                "open_folder_available": bool(documents),
+            },
+            "teams": {
+                "presets": _v2_team_presets(),
+                "confirmation_note": "La scelta del team prepara il lavoro; il dispatch resta separato.",
+            },
+            "system": {
+                "diagnostics_collapsed": True,
+                "counts": {status: len(items) for status, items in by_status.items()},
+            },
+            "actions_contract": mission_control_v2_actions(),
+        }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # POST /tasks
 # ---------------------------------------------------------------------------
 
@@ -1114,6 +1772,14 @@ class CommentBody(BaseModel):
     author: Optional[str] = "dashboard"
 
 
+class CreateFollowupBody(BaseModel):
+    title: str
+    body: Optional[str] = None
+    assignee: Optional[str] = None
+    author: Optional[str] = "dashboard"
+    confirm: bool = False
+
+
 @router.post("/tasks/{task_id}/comments")
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
@@ -1127,6 +1793,88 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
             conn, task_id, author=payload.author or "dashboard", body=payload.body,
         )
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/actions/create-followup")
+@router.post("/tasks/{task_id}/followup")
+def create_followup_task(
+    task_id: str,
+    payload: CreateFollowupBody,
+    board: Optional[str] = Query(None),
+):
+    """Create a linked child task without dispatching or sending externally.
+
+    Mission Control v2 uses this as the generic post-output/post-review
+    continuation path. It intentionally parks the child in ``todo`` even when
+    the parent is already ``done`` so Daniele can inspect/add context before a
+    separate explicit dispatch step.
+    """
+    title = (payload.title or "").strip()
+    body = (payload.body or "").strip()
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true is required")
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    if not body:
+        raise HTTPException(status_code=400, detail="body is required")
+
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        parent = kanban_db.get_task(conn, task_id)
+        if parent is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+
+        child_body = (
+            "FOLLOW_UP_FROM_TASK\n"
+            f"Parent task: {parent.id}\n"
+            f"Parent title: {parent.title}\n"
+            f"Parent status at creation: {parent.status}\n\n"
+            "Daniele request:\n"
+            f"{body}\n\n"
+            "Guardrail: created as ready for automatic Kanban dispatch; no external send."
+        )
+        child_id = kanban_db.create_task(
+            conn,
+            title=title,
+            body=child_body,
+            assignee=payload.assignee or parent.assignee,
+            created_by=payload.author or "dashboard",
+            tenant=parent.tenant,
+            priority=parent.priority,
+            parents=[parent.id],
+        )
+        child = kanban_db.get_task(conn, child_id)
+        if child and parent.status == "done" and child.status != "ready":
+            _set_status_direct(conn, child_id, "ready")
+            child = kanban_db.get_task(conn, child_id)
+
+        kanban_db.add_comment(
+            conn,
+            parent.id,
+            author=payload.author or "dashboard",
+            body=(
+                "FOLLOWUP_TASK_CREATED\n"
+                f"Child task: {child_id}\n"
+                f"Title: {title}\n"
+                f"Dispatch: {'started via ready queue' if child and child.status == 'ready' else 'waiting for parent dependency'}; external_send=false; parent_status_unchanged=true"
+            ),
+        )
+        return {
+            "ok": True,
+            "mutation": "followup_created",
+            "parent_task_id": parent.id,
+            "task_id": child_id,
+            "task": _task_dict(child) if child else None,
+            "dispatch_started": bool(child and child.status == "ready"),
+            "external_send": False,
+            "status_changed": bool(child and child.status == "ready"),
+            "parent_status_unchanged": True,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
 

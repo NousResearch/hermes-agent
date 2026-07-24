@@ -32,6 +32,7 @@ loop detection, which is a different concern.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -65,6 +66,7 @@ class FileStateRegistry:
         self._path_locks: Dict[str, threading.Lock] = {}
         self._meta_lock = threading.Lock()  # guards _path_locks
         self._state_lock = threading.Lock()  # guards _reads + _last_writer
+        self._write_hashes: Dict[str, Dict[str, str]] = defaultdict(dict)  # task_id -> path -> sha256
 
     # ── Path lock management ────────────────────────────────────────
     def _lock_for(self, resolved: str) -> threading.Lock:
@@ -248,12 +250,49 @@ class FileStateRegistry:
         with self._state_lock:
             return list(self._reads.get(task_id, {}).keys())
 
+    # ── Idempotency detection ─────────────────────────────────────
+    @staticmethod
+    def _hash_content(content: str) -> str:
+        """SHA-256 hex digest of content bytes."""
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def check_idempotent(self, task_id: str, resolved: str, content: str) -> Optional[str]:
+        """Check if this write is identical to the previous write by this task.
+
+        Returns a warning string if the content is identical, None otherwise.
+        """
+        with self._state_lock:
+            prev_hash = self._write_hashes.get(task_id, {}).get(resolved)
+            if prev_hash is None:
+                return None
+            current_hash = self._hash_content(content)
+            if current_hash == prev_hash:
+                return (
+                    "WARNING: Identical content written to "
+                    f"{resolved} as the previous write by this agent. "
+                    "You are repeating yourself. Stop writing and deliver your response."
+                )
+            return None
+
+    def note_write_with_hash(
+        self,
+        task_id: str,
+        resolved: str,
+        content: str,
+    ) -> None:
+        """Record a write with its content hash for idempotency detection."""
+        with self._state_lock:
+            self._write_hashes[task_id][resolved] = self._hash_content(content)
+            # Cap per-task entries to prevent unbounded growth in long sessions.
+            _cap_dict(self._write_hashes[task_id], _MAX_PATHS_PER_AGENT)
+
     # ── Testing hooks ───────────────────────────────────────────────
     def clear(self) -> None:
         """Reset all state.  Intended for tests only."""
         with self._state_lock:
             self._reads.clear()
             self._last_writer.clear()
+            self._write_hashes.clear()
         with self._meta_lock:
             self._path_locks.clear()
 
@@ -300,6 +339,14 @@ def note_write(task_id: str, resolved_or_path: str | Path) -> None:
     _registry.note_write(task_id, str(resolved_or_path))
 
 
+def check_idempotent(task_id: str, resolved_or_path: str | Path, content: str) -> Optional[str]:
+    return _registry.check_idempotent(task_id, str(resolved_or_path), content)
+
+
+def note_write_with_hash(task_id: str, resolved_or_path: str | Path, content: str) -> None:
+    _registry.note_write_with_hash(task_id, str(resolved_or_path), content)
+
+
 def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
     return _registry.check_stale(task_id, str(resolved_or_path))
 
@@ -329,4 +376,6 @@ __all__ = [
     "lock_path",
     "writes_since",
     "known_reads",
+    "check_idempotent",
+    "note_write_with_hash",
 ]

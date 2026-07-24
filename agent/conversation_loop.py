@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -949,6 +950,8 @@ def run_conversation(
     failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
+    length_continue_last_hash: str = ""
+    length_continue_same_content_count = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
@@ -2557,6 +2560,56 @@ def run_conversation(
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
+
+                            # ── Regeneration loop detection ─────────────
+                            # When the model hits the output token limit,
+                            # Hermes sends a "continue" prompt.  But if the
+                            # model ignores that instruction and regenerates
+                            # the same content from scratch, we end up in an
+                            # infinite loop of truncation → retry →
+                            # truncation.  Detect this by hashing the full
+                            # response content.  If two consecutive truncated
+                            # responses have the same hash, the model is
+                            # regenerating the same content instead of
+                            # continuing from where it left off.
+                            _new_content = assistant_message.content or ""
+                            if _new_content and length_continue_last_hash:
+                                _new_hash = hashlib.sha256(_new_content.encode()).hexdigest()
+                                if _new_hash == length_continue_last_hash:
+                                    length_continue_same_content_count += 1
+                                else:
+                                    length_continue_same_content_count = 1
+                            else:
+                                length_continue_same_content_count = 1
+
+                            length_continue_last_hash = (
+                                hashlib.sha256(_new_content.encode()).hexdigest()
+                                if _new_content
+                                else ""
+                            )
+
+                            if length_continue_same_content_count >= 2:
+                                # We've seen the same truncated content twice
+                                # in a row — the model is stuck regenerating.
+                                # Stop retrying and return what we have.
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  Model appears stuck in a "
+                                    f"regeneration loop after truncation — stopping "
+                                    f"continuation retries.",
+                                    force=True,
+                                )
+                                partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
+                                agent._cleanup_task_resources(effective_task_id)
+                                agent._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": partial_response or None,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "partial": True,
+                                    "error": "Model stuck in regeneration loop after truncation",
+                                }
+
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)
                             if assistant_message.content:
@@ -6196,6 +6249,8 @@ def run_conversation(
                     final_response = "".join(truncated_response_parts) + final_response
                     truncated_response_parts = []
                     length_continue_retries = 0
+                    length_continue_last_hash = ""
+                    length_continue_same_content_count = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 

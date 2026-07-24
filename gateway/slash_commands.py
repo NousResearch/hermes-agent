@@ -1695,6 +1695,7 @@ class GatewaySlashCommandsMixin:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "request_overrides": dict(result.request_overrides or {}),
                         }
 
                         # Write-through the non-secret parts to the session
@@ -2003,6 +2004,7 @@ class GatewaySlashCommandsMixin:
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
+                "request_overrides": dict(result.request_overrides or {}),
             }
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):

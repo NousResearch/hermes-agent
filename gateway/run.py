@@ -2304,6 +2304,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_tokens": max_tokens,
     }
 
@@ -2327,7 +2328,21 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
     }
+
+
+def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:
+    """Merge request_overrides dicts, deep-merging nested dictionaries."""
+    from hermes_cli.config import _deep_merge
+
+    base_dict = dict(base or {})
+    override_dict = dict(override or {})
+    if not base_dict:
+        return override_dict
+    if not override_dict:
+        return base_dict
+    return _deep_merge(base_dict, override_dict)
 
 
 def _credential_pool_for_provider(provider: Optional[str]):
@@ -2387,6 +2402,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "request_overrides": dict(runtime.get("request_overrides") or {}),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -3277,7 +3293,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_model_overrides: Dict[str, Dict[str, Any]] = {}
     _pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _session_service_tier_overrides: Dict[str, Optional[str]] = {}
@@ -3490,7 +3506,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
         self._pending_one_turn_model_restores: Dict[str, Dict[str, Any]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
@@ -4505,6 +4521,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+        base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
         route = {
             "model": model,
             "runtime": runtime,
@@ -4521,14 +4538,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
+            route["request_overrides"] = base_request_overrides
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route["model"])
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides or {}
+        route["request_overrides"] = _deep_merge_request_overrides(
+            base_request_overrides,
+            overrides or {},
+        )
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -18499,6 +18519,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
+                override["request_overrides"] = dict(
+                    runtime.get("request_overrides") or {}
+                )
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -18532,6 +18555,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        override_request_overrides = override.get("request_overrides")
+        if isinstance(override_request_overrides, dict):
+            runtime_kwargs["request_overrides"] = _deep_merge_request_overrides(
+                runtime_kwargs.get("request_overrides"),
+                override_request_overrides,
+            )
         if (
             runtime_kwargs.get("api_key")
             and runtime_kwargs.get("credential_pool") is None

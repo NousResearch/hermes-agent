@@ -1977,27 +1977,27 @@ class TestOpenRouterUpstreamRateLimit:
     different model, NOT mark the credential exhausted.
     """
 
-    def test_openrouter_upstream_429_classified_as_upstream_rate_limit(self):
-        """OpenRouter 429 with 'Provider returned error' → upstream_rate_limit."""
+    def test_openrouter_upstream_403_classified_as_upstream_rate_limit(self):
+        """OpenRouter 403 with 'Provider returned error' → upstream_rate_limit."""
         e = MockAPIError(
             "Provider returned error",
-            status_code=429,
+            status_code=403,
             body={
                 "error": {
                     "message": "Provider returned error",
-                    "code": 429,
+                    "code": 403,
                     "metadata": {
-                        "provider_name": "DeepSeek",
+                        "provider_name": "Anthropic",
                         "raw": '{"error":{"message":"Rate limit exceeded"}}',
                     },
                 }
             },
         )
-        result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-3-opus")
         assert result.reason == FailoverReason.upstream_rate_limit
         assert result.should_rotate_credential is False
         assert result.should_fallback is True
-        assert result.error_context.get("upstream_provider") == "DeepSeek"
+        assert result.error_context.get("upstream_provider") == "Anthropic"
 
     def test_upstream_429_metadata_shape_without_explicit_provider(self):
         """metadata.raw shape alone (provider != openrouter literal) still detected."""

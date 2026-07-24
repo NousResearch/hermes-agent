@@ -968,6 +968,19 @@ def _classify_by_status(
                 should_rotate_credential=True,
                 should_fallback=True,
             )
+        # Check for OpenRouter-aggregator upstream 403 (e.g. DeepSeek, Anthropic, etc.)
+        # wraps upstream errors with the outer message "Provider returned error"
+        # and the real error nested in metadata.raw.
+        if _is_openrouter_upstream_error(body, provider):
+            upstream_provider = _extract_upstream_provider_name(body)
+            ctx = {"upstream_provider": upstream_provider} if upstream_provider else {}
+            return result_fn(
+                FailoverReason.upstream_rate_limit,
+                retryable=True,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context=ctx,
+            )
         return result_fn(
             FailoverReason.auth,
             retryable=False,

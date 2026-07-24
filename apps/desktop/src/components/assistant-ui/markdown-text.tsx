@@ -362,7 +362,7 @@ const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
-  'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
+  'aui-md prose w-full min-w-0 max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
   'prose-a:break-words prose-p:[overflow-wrap:anywhere]',
@@ -477,10 +477,10 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
         ),
         table: ({ className, ...props }: ComponentProps<'table'>) => (
-          <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">
+          <div className="aui-md-table my-2 max-w-full overflow-hidden rounded-[0.375rem] border border-border">
             <table
               className={cn(
-                'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
+                'm-0 w-full table-fixed border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-border last:[&_tr]:border-0',
                 className
               )}
               {...props}
@@ -493,14 +493,17 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
         th: ({ className, ...props }: ComponentProps<'th'>) => (
           <th
             className={cn(
-              'whitespace-nowrap px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+              'px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground wrap-anywhere',
               className
             )}
             {...props}
           />
         ),
         td: ({ className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
+          <td
+            className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug wrap-anywhere', className)}
+            {...props}
+          />
         ),
         img: MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; every other

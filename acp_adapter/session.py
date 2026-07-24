@@ -619,6 +619,12 @@ class SessionManager:
             for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        agent_config = config.get("agent")
+        max_turns = (
+            agent_config.get("max_turns")
+            if isinstance(agent_config, dict)
+            else None
+        )
 
         kwargs = {
             "platform": "acp",
@@ -631,6 +637,12 @@ class SessionManager:
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+        if (
+            isinstance(max_turns, int)
+            and not isinstance(max_turns, bool)
+            and max_turns > 0
+        ):
+            kwargs["max_iterations"] = max_turns
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

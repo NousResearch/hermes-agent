@@ -162,6 +162,29 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_dependency_block_refuses_after_successor_creation(kanban_home: Path) -> None:
+    """A parent with a created successor must complete, not dependency-park."""
+    with kb.connect_closing() as conn:
+        parent = _running_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", assignee="worker", parents=[parent])
+
+        with pytest.raises(ValueError, match="complete parent task .* successor"):
+            kb.block_task(conn, parent, reason="wait", kind="dependency")
+
+        parent_task = kb.get_task(conn, parent)
+        child_task = kb.get_task(conn, child)
+        assert parent_task is not None
+        assert child_task is not None
+        assert parent_task.status == "running"
+        assert child_task.status == "todo"
+
+        kb.complete_task(conn, parent, result="done")
+        kb.recompute_ready(conn)
+        child_task = kb.get_task(conn, child)
+        assert child_task is not None
+        assert child_task.status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------

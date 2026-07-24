@@ -429,6 +429,7 @@
                   timeout = mkOption { type = types.nullOr types.int; default = null; description = "LLM call timeout in seconds."; };
                   max_rpm = mkOption { type = types.nullOr types.int; default = null; description = "Max requests per minute."; };
                   max_tool_rounds = mkOption { type = types.nullOr types.int; default = null; description = "Max tool-use rounds per sampling request."; };
+                  expose_client_tools = mkOption { type = types.bool; default = false; description = "Advertise the extended sampling.tools client capability."; };
                   allowed_models = mkOption { type = types.listOf types.str; default = [ ]; description = "Models the server is allowed to request."; };
                   log_level = mkOption {
                     type = types.nullOr (types.enum [ "debug" "info" "warning" ]);
@@ -638,7 +639,7 @@
           // lib.optionalAttrs (srv.sampling != null) {
             sampling = lib.filterAttrs (_: v: v != null && v != [ ]) {
               inherit (srv.sampling) enabled model max_tokens_cap timeout max_rpm
-                max_tool_rounds allowed_models log_level;
+                max_tool_rounds expose_client_tools allowed_models log_level;
             };
           }
         ) cfg.mcpServers;

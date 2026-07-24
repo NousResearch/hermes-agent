@@ -223,6 +223,8 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self._config = dict(config) if config is not None else _load_plugin_config()
         self._auto_extract = _coerce_bool(self._config.get("auto_extract"), True)
+        _tq = self._config.get("timeout_query")
+        self._timeout_query = float(_tq) if _tq is not None else _QUERY_TIMEOUT
         self._cwd = ""
         self._session_id = ""
         self._turn_count = 0
@@ -251,6 +253,12 @@ class ByteRoverMemoryProvider(MemoryProvider):
                 "default": "true",
                 "choices": ["true", "false"],
             },
+            {
+                "key": "timeout_query",
+                "description": "Max seconds for brv query calls (prefetch + tool); increase if model cold-start exceeds default",
+                "default": str(_QUERY_TIMEOUT),
+                "type": "number",
+            },
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
@@ -272,14 +280,15 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Run brv query synchronously before the agent's first LLM call.
 
-        Blocks until the query completes (up to _QUERY_TIMEOUT seconds), ensuring
-        the result is available as context before the model is called.
-        """
+        Blocks until the query completes (up to the configured timeout_query
+        seconds, default %ds), ensuring the result is available as context
+        before the model is called.
+        """ % _QUERY_TIMEOUT
         if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],
-            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
+            timeout=self._timeout_query, cwd=self._cwd,
         )
         if result["success"] and result.get("output"):
             output = result["output"].strip()
@@ -402,7 +411,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],
-            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
+            timeout=self._timeout_query, cwd=self._cwd,
         )
 
         if not result["success"]:

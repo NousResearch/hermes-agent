@@ -282,6 +282,31 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 - Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.
 - Ephemeral overlays such as `HERMES_EPHEMERAL_SYSTEM_PROMPT` or prefill messages — add turn-scoped guidance that should not become part of the cached prompt prefix.
 
+### Per-fragment overrides (`agent.prompt_overrides`)
+
+When you need to reshape a *specific* built-in guidance fragment — not your identity, not project rules, but one of the stable-tier blocks Hermes ships (e.g. the "Finishing the job" or "Tool-use enforcement" guidance) — use `agent.prompt_overrides` in `config.yaml`. Every named stable-tier fragment carries a stable key, and you can `replace`, `append`, `prepend`, or `remove` it without editing source:
+
+```yaml
+agent:
+  prompt_overrides:
+    # Append a stop-on-friction caveat to the universal completion guidance:
+    task_completion:
+      mode: append
+      text: >-
+        Exception — environment friction: if a tool, filesystem, dependency,
+        credential, integration, or environment problem blocks the real path,
+        STOP immediately, report the exact failure, and wait for the user to
+        fix it at the source. Do NOT work around it unless the user approves.
+    google_operational: { mode: remove }
+    steer_channel: "Use the steer channel only for urgent corrections."   # bare string = replace
+```
+
+This is **pure data, resolved once at prompt-build time** — there is no callable hook and no conditional logic, by design. The assembled prompt stays a deterministic function of (agent, config), so it remains byte-stable across turns and the provider prefix cache stays warm. With no overrides configured, the prompt is byte-identical to the default. An override only takes effect when the fragment is actually emitted this session, and `append`/`prepend` to an absent fragment is a no-op.
+
+Fragment keys (stable tier): `identity`, `hermes_help`, `task_completion`, `tool_guidance`, `steer_channel`, `computer_use`, `nous_subscription`, `tool_use_enforcement`, `google_operational`, `execution_discipline`, `skills`, `model_identity`, `environment_hints`, `environment_probe`, `active_profile`, `platform_hints`. The canonical registry (with one-line descriptions) lives in `agent/prompt_overrides.py` (`FRAGMENT_KEYS`).
+
+Prefer the higher-level surfaces above for identity and project rules; reach for `prompt_overrides` when you specifically need to reshape one of Hermes's own guidance blocks in place.
+
 ### When to edit code instead
 
 Edit `agent/prompt_builder.py` only if you are intentionally maintaining a fork or contributing upstream behavior changes. That file assembles the prompt plumbing, cache boundaries, and injection order for every session. Direct edits there are global product changes, not per-user prompt customization.

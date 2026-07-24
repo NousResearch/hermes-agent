@@ -939,6 +939,35 @@ dashboard:
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
 
+The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
+WebSocket `Origin` value. This supports a reverse proxy that preserves the
+browser-facing hostname while forwarding to a dashboard bound to
+`127.0.0.1`. Wildcards and suffix matches are not allowed, so an attacker host
+such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
+guard.
+
+Declaring a non-loopback `public_url` always engages the dashboard auth gate,
+even when the backend binds to loopback. Configure a password or OAuth provider
+first; without one, Hermes fails closed at startup. This prevents the local SPA
+session token from becoming a remote authentication mechanism through the
+proxy. Uvicorn also enables trusted proxy-header processing in this mode so a
+local TLS terminator can supply `X-Forwarded-Proto: https` for secure cookies.
+
+```bash
+# Backend remains reachable only on this machine.
+hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+```
+
+Point the TLS reverse proxy at `http://127.0.0.1:9119` and use
+the same external origin in `dashboard.public_url`.
+
+Tailscale Serve is one example of this deployment shape: it can terminate
+tailnet-only HTTPS on a `https://<machine>.<tailnet>.ts.net` hostname while
+proxying to the loopback dashboard. Use that exact HTTPS origin as
+`dashboard.public_url`. It is still treated as a non-loopback browser-facing
+origin and therefore requires a dashboard auth provider; this does not require
+making the service reachable from the public internet.
+
 Same precedence as the other dashboard settings — env wins over `config.yaml`:
 
 | Surface | Override path | When to use |

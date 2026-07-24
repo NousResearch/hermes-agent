@@ -11215,28 +11215,29 @@ def _dashboard_listening(host: str, port: int) -> bool:
 
 
 def _maybe_setup_dashboard_auth_interactively(args) -> None:
-    """Offer to configure dashboard auth when a non-loopback bind has none.
+    """Offer to configure dashboard auth when the gate engages and none exists.
 
     Called from ``cmd_dashboard`` just before ``start_server``. The auth
     gate engages on every non-loopback bind (``--insecure`` is a no-op since
-    the June 2026 hardening), and ``start_server`` fails closed when no
+    the June 2026 hardening) and whenever ``dashboard.public_url`` declares a
+    non-loopback browser-facing hostname. ``start_server`` fails closed when no
     ``DashboardAuthProvider`` is registered. Rather than greet an interactive
-    operator with that hard error, prompt them to set up the bundled
-    username/password provider on the spot — or point them at
-    ``hermes dashboard register`` for OAuth.
+    operator with that hard error, prompt them to set up the bundled password
+    provider on the spot — or point them at ``hermes dashboard register`` for
+    OAuth.
 
     No-ops (so the existing fail-closed ``SystemExit`` remains the backstop)
     when:
-      * the bind is loopback (gate never engages), or
+      * neither the bind nor configured public URL engages the gate, or
       * a provider is already registered, or
       * stdin/stdout isn't a TTY (Docker/s6, CI, piped ``--no-open`` runs).
     """
     host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
 
     try:
-        from hermes_cli.web_server import should_require_auth
-        if not should_require_auth(host):
-            return  # loopback bind — gate never engages
+        from hermes_cli.web_server import should_require_dashboard_auth
+        if not should_require_dashboard_auth(host):
+            return  # local-only bind and URL — gate does not engage
     except Exception:
         return  # if we can't tell, defer to start_server's own gate
 
@@ -11253,13 +11254,10 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         return
 
     print()
+    print(f"⚠ Dashboard authentication is required for this configuration ({host}).")
     print(
-        f"⚠ The dashboard is binding to a non-loopback address ({host}) and "
-        f"needs an auth provider."
-    )
-    print(
-        "  Non-loopback binds always require authentication "
-        "(--insecure no longer bypasses this)."
+        "  Non-loopback binds and configured external dashboard.public_url "
+        "values require authentication (--insecure does not bypass this)."
     )
     print()
     print("  How do you want to authenticate the dashboard?")

@@ -71,6 +71,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
+DEFAULT_NESTED_TERMINAL_TIMEOUT = 60
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
@@ -336,9 +337,9 @@ _TOOL_STUBS = {
     ),
     "terminal": (
         "terminal",
-        "command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}',
+        f"command: str, timeout: int = {DEFAULT_NESTED_TERMINAL_TIMEOUT}, workdir: str = None",
+        '"""Run a shell command (foreground only; defaults to a 60s timeout inside execute_code). Returns dict with "output" and "exit_code"."""',
+        f'{{"command": command, "timeout": timeout if timeout is not None else {DEFAULT_NESTED_TERMINAL_TIMEOUT}, "workdir": workdir}}',
     ),
 }
 
@@ -655,6 +656,8 @@ def _rpc_server_loop(
                 if tool_name == "terminal" and isinstance(tool_args, dict):
                     for param in _TERMINAL_BLOCKED_PARAMS:
                         tool_args.pop(param, None)
+                    if tool_args.get("timeout") is None:
+                        tool_args["timeout"] = DEFAULT_NESTED_TERMINAL_TIMEOUT
 
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
@@ -942,6 +945,8 @@ def _rpc_poll_loop(
                     if tool_name == "terminal" and isinstance(tool_args, dict):
                         for param in _TERMINAL_BLOCKED_PARAMS:
                             tool_args.pop(param, None)
+                        if tool_args.get("timeout") is None:
+                            tool_args["timeout"] = DEFAULT_NESTED_TERMINAL_TIMEOUT
 
                     # Dispatch through the standard tool handler
                     try:
@@ -1890,8 +1895,8 @@ _TOOL_DOC_LINES = [
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),
     ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     f"  terminal(command: str, timeout={DEFAULT_NESTED_TERMINAL_TIMEOUT}, workdir=None) -> dict\n"
+     f"    Foreground only (no background/pty). Defaults to {DEFAULT_NESTED_TERMINAL_TIMEOUT}s inside execute_code. Returns {{\"output\": \"...\", \"exit_code\": N}}"),
 ]
 
 
@@ -1954,7 +1959,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        f"terminal() is foreground-only (no background or pty) and defaults to {DEFAULT_NESTED_TERMINAL_TIMEOUT}s; "
+        "split long remote scans into bounded chunks with explicit timeouts.\n\n"
         f"{cwd_note}\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"

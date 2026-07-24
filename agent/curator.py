@@ -1928,7 +1928,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             # API calls against hundreds of candidate skills. The
             # single-session review path caps itself at a much smaller
             # number because it's not doing a curation sweep.
-            max_iterations=9999,
+            max_iterations=200,
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

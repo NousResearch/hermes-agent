@@ -295,7 +295,7 @@ def _linux_x11_active_window_id() -> Optional[int]:
         proc = subprocess.run(
             ["xprop", "-root", "_NET_ACTIVE_WINDOW"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=2,
             check=False,
         )
@@ -379,7 +379,7 @@ def _resolve_mcp_invocation(
         from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "manifest"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
             stdin=subprocess.DEVNULL,
             # cua-driver is a third-party binary — never hand it provider
             # API keys via inherited env (same policy as the MCP and CLI
@@ -445,7 +445,7 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
         from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "--help"],
-            capture_output=True, text=True, timeout=3.0,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
             env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
@@ -576,7 +576,7 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
         from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "check-update", "--json"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
             # Some older drivers don't have the verb and fall through to a
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
             # so they exit fast instead of blocking until the timeout.
@@ -1256,7 +1256,7 @@ class _CuaDriverSession:
             for attempt in range(attempts):
                 try:
                     proc = _subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=max(15.0, timeout),
+                        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=max(15.0, timeout),
                         env=_sanitize_subprocess_env(cua_driver_child_env()),
                     )
                 except Exception as e:  # pragma: no cover - subprocess spawn failure

@@ -7271,7 +7271,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     out = subprocess.run(
                         [systemctl, *scope_flags, "show", service_name,
                          "--property=MainPID", "--value"],
-                        capture_output=True, text=True, timeout=2,
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
                     )
                     return (out.stdout or "").strip()
                 except Exception:

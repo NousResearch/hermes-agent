@@ -1377,7 +1377,7 @@ class DockerEnvironment(BaseEnvironment):
                         subprocess.run(
                             [self._docker_exe, "rm", "-f", container_id],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=30,
                             check=False,
                             stdin=subprocess.DEVNULL,
@@ -1701,7 +1701,7 @@ class DockerEnvironment(BaseEnvironment):
                     container_id,
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
                 check=False,
                 stdin=subprocess.DEVNULL,

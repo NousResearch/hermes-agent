@@ -131,7 +131,7 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
             [sys.executable, "-m", "pip", "install", "--force-reinstall", *specs],
             cwd=project_root,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
     except Exception as exc:
         print(f"  ✗ Early venv repair could not run pip: {exc}", file=sys.stderr)

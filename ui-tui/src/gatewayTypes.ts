@@ -395,6 +395,32 @@ export interface VoiceRecordResponse {
   text?: string
 }
 
+// ── Wake word ────────────────────────────────────────────────────────
+
+export interface WakeStartResponse {
+  hint?: string
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
+  reason?: string
+  started?: boolean
+}
+
+export interface WakeStopResponse {
+  reason?: null | string
+  stopped?: boolean
+}
+
+export interface WakeStatusResponse {
+  available?: boolean
+  hint?: string
+  listening?: boolean
+  owned_by_caller?: boolean
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
+}
+
 // ── Tools (TS keeps configure since it resets local history) ─────────
 
 export interface ToolsConfigureResponse {

@@ -32,6 +32,7 @@ import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
@@ -621,7 +622,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     // Arm "Hey Hermes" if this surface owns it (server gates on config).
     // Fire-and-forget + idempotent server-side, so reconnects are harmless.
-    void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
+    // Skipped when the user explicitly ran `/wake off` this session — an
+    // explicit opt-out must survive gateway reconnects (see wakeState.ts).
+    if (!isWakeUserDisabled()) {
+      void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
+    }
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {

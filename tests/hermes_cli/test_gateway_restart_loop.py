@@ -219,21 +219,31 @@ class TestCronCreateLifecycleBlock:
 class TestGatewaySelfTargetingGuard:
     """Verify hermes gateway stop/restart refuse when _HERMES_GATEWAY=1."""
 
-    def test_stop_refuses_inside_gateway(self, monkeypatch):
+    def test_stop_refuses_inside_gateway(self, monkeypatch, capsys):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="stop", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
             gateway_command(args)
         assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "separate shell outside the running gateway" in out
+        assert "legacy installation or an explicit `--force` launch" in out
+        assert "platform-specific steps" in out
+        assert "systemctl" not in out
 
-    def test_restart_refuses_inside_gateway(self, monkeypatch):
+    def test_restart_refuses_inside_gateway(self, monkeypatch, capsys):
         monkeypatch.setenv("_HERMES_GATEWAY", "1")
         from hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="restart", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
             gateway_command(args)
         assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "separate shell outside the running gateway" in out
+        assert "legacy installation or an explicit `--force` launch" in out
+        assert "platform-specific steps" in out
+        assert "systemctl" not in out
 
     def test_stop_allows_outside_gateway(self, monkeypatch):
         # With the gateway marker unset, the self-targeting guard must NOT
@@ -326,6 +336,10 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
+        assert "separate shell outside the running gateway" in result["error"]
+        assert "legacy installation or an explicit `--force` launch" in result["error"]
+        assert "platform-specific steps" in result["error"]
+        assert "systemctl" not in result["error"]
 
     def test_force_true_cannot_bypass_block(self, monkeypatch):
         import tools.terminal_tool as tt

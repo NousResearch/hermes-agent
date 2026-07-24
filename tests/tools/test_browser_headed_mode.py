@@ -202,7 +202,11 @@ class TestHeadedFlagInjection:
 
         captured = self._run_and_capture(bt)
         assert len(captured) == 1
-        assert "--headed" in captured[0]
+        cmd = captured[0]
+        assert "--headed" in cmd
+        headed_at = cmd.index("--headed")
+        # Must not contradict the opt-in with a forced false (#64867 follow-up).
+        assert headed_at + 1 >= len(cmd) or cmd[headed_at + 1] != "false"
 
     @patch("tools.browser_tool._get_session_info")
     @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
@@ -221,7 +225,21 @@ class TestHeadedFlagInjection:
 
         captured = self._run_and_capture(bt)
         assert len(captured) == 1
-        assert "--headed" not in captured[0]
+        cmd = captured[0]
+        # Must not get the bare --headed opt-in from _is_headed_mode().
+        # Local blank-window guards (#64867) may still pin "--headed false".
+        if "--headed" in cmd:
+            headed_at = cmd.index("--headed")
+            assert headed_at + 1 < len(cmd)
+            assert cmd[headed_at + 1] == "false"
+        # And never a bare --headed with no value / non-false neighbor before --json.
+        json_at = cmd.index("--json")
+        bare = [
+            i
+            for i, part in enumerate(cmd[:json_at])
+            if part == "--headed" and (i + 1 >= json_at or cmd[i + 1] != "false")
+        ]
+        assert bare == []
 
     @patch("tools.browser_tool._get_session_info")
     @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")

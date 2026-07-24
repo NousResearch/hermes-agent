@@ -2,12 +2,21 @@
 // read a page <title> (bot walls, JS-rendered pages), we briefly load the URL
 // in an offscreen window and read its title. That window loads arbitrary
 // user-linked pages, so it must never emit sound or trigger real downloads.
+//
+// On Windows Desktop it must also never paint a visible top-level frame: bot
+// walls (e.g. GitHub) fail curl tier-1 and fall through here during browser
+// tool turns, which is the blank-window report in #64867.
 
 export function linkTitleWindowOptions(partitionSession) {
   return {
     show: false,
     width: 1280,
     height: 800,
+    // Park far off-screen so a show:false leak cannot cover the chat window.
+    x: -20000,
+    y: -20000,
+    skipTaskbar: true,
+    focusable: false,
     webPreferences: {
       backgroundThrottling: false,
       contextIsolation: true,
@@ -25,6 +34,14 @@ export function linkTitleWindowOptions(partitionSession) {
 // audio every time a session containing such links is re-rendered. See #49505.
 export function createLinkTitleWindow(BrowserWindow, partitionSession) {
   const window = new BrowserWindow(linkTitleWindowOptions(partitionSession))
+
+  try {
+    // Belt-and-suspenders with show:false / off-screen bounds (#64867).
+    window.setOpacity?.(0)
+    window.hide?.()
+  } catch {
+    // Best-effort; title fetch still works if hide/opacity are unavailable.
+  }
 
   try {
     window.webContents.setAudioMuted(true)

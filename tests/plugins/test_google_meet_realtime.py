@@ -83,7 +83,8 @@ def _install_fake_websockets(monkeypatch, fake_ws):
 # ---------------------------------------------------------------------------
 
 
-def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
+@pytest.mark.parametrize("model_id", ["gpt-realtime", "gpt-realtime-2"])
+def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch, model_id):
     from plugins.google_meet.realtime.openai_client import RealtimeSession
 
     ws = _FakeWS(recv_frames=[])
@@ -91,7 +92,7 @@ def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
 
     sess = RealtimeSession(
         api_key="sk-test",
-        model="gpt-realtime",
+        model=model_id,
         voice="verse",
         instructions="Be brief.",
     )
@@ -99,7 +100,7 @@ def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
 
     # Auth + beta headers set.
     assert captured["url"].startswith("wss://api.openai.com/v1/realtime")
-    assert "model=gpt-realtime" in captured["url"]
+    assert f"model={model_id}" in captured["url"]
     headers = captured["headers"] or []
     hdict = dict(headers)
     assert hdict.get("Authorization") == "Bearer sk-test"

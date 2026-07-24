@@ -96,6 +96,34 @@ On macOS, hermes will **not** switch your system audio input automatically — t
 user has to do it. This is deliberate: switching default input on a whim would
 be a surprising side effect.
 
+### Configuring the OpenAI Realtime model
+
+Realtime mode uses the OpenAI Realtime API. By default the bot connects with
+`gpt-realtime`. Override the model via env var:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `HERMES_MEET_REALTIME_MODEL` | `gpt-realtime` | OpenAI Realtime model identifier passed in the WebSocket URL |
+| `HERMES_MEET_REALTIME_VOICE` | `alloy` | Voice id (e.g. `alloy`, `verse`, `marin`, `cedar`) |
+| `HERMES_MEET_REALTIME_KEY` | falls back to `OPENAI_API_KEY` | API key for the Realtime WS |
+| `HERMES_MEET_REALTIME_INSTRUCTIONS` | none | System instructions string |
+
+Supported model identifiers (as of the 2026-05-07 OpenAI Realtime API GA):
+
+| Identifier | When to use |
+|---|---|
+| `gpt-realtime` | Default. Stable baseline. |
+| `gpt-realtime-2` | Recommended for new agents. GPT-5-class reasoning, 128K context. |
+| `gpt-realtime-2025-08-28` | Pinned snapshot for `gpt-realtime-2`. Use when you want pinned behavior. |
+
+Hermes does not validate the value, so any current or future identifier OpenAI
+ships will pass straight through. Example:
+
+```bash
+echo 'HERMES_MEET_REALTIME_MODEL=gpt-realtime-2' >> ~/.hermes/.env
+hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
+```
+
 ## Remote node host
 
 On the node machine (e.g. user's Mac with a signed-in Chrome):

@@ -231,6 +231,16 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
+**Realtime mode (optional):** the bot can speak back into the call via the OpenAI Realtime API when joined with `mode='realtime'` (see `plugins/google_meet/README.md` for the audio bridge setup). The model identifier is configurable:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HERMES_MEET_REALTIME_MODEL` | `gpt-realtime` | OpenAI Realtime model identifier passed in the WebSocket URL |
+| `HERMES_MEET_REALTIME_KEY` | falls back to `OPENAI_API_KEY` | API key for the Realtime WebSocket |
+| `HERMES_MEET_REALTIME_VOICE` | `alloy` | Voice id (`alloy`, `verse`, `marin`, `cedar`) |
+
+Supported model identifiers (as of the 2026-05-07 OpenAI Realtime API GA): `gpt-realtime` (stable baseline), `gpt-realtime-2` (recommended for new agents; GPT-5-class reasoning, 128K context window), and the pinned snapshot `gpt-realtime-2025-08-28`. Hermes does not validate the value, so future identifiers OpenAI ships work without a Hermes upgrade.
+
 **Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
 
 ### hermes-achievements

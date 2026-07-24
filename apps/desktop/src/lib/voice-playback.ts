@@ -20,6 +20,12 @@ let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
 
+function unloadAudio(audio: HTMLAudioElement) {
+  audio.pause()
+  audio.src = ''
+  audio.load()
+}
+
 function currentState(
   status: VoicePlaybackState['status'],
   options?: VoicePlaybackOptions,
@@ -45,9 +51,7 @@ export function stopVoicePlayback() {
   currentStop = null
 
   if (currentAudio) {
-    currentAudio.pause()
-    currentAudio.src = ''
-    currentAudio.load()
+    unloadAudio(currentAudio)
     currentAudio = null
   }
 
@@ -124,6 +128,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   const pendingSends: string[] = []
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
+  let stop: (() => void) | null = null
 
   const done = new Promise<'done' | 'fallback'>(resolve => {
     settle = value => {
@@ -132,7 +137,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       }
 
       settled = true
-      currentStop = null
+
+      if (currentStop === stop) {
+        currentStop = null
+      }
 
       try {
         ws.close()
@@ -158,7 +166,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   // stopVoicePlayback() → immediate barge-in: kill the socket (the server
   // aborts synthesis on disconnect) and the audio context (cuts sound now).
-  currentStop = () => settle('done')
+  stop = () => settle('done')
+  currentStop = stop
 
   const finishWhenDrained = () => {
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
@@ -284,9 +293,10 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
   setVoicePlaybackState(currentState('preparing', options))
 
   const session = openSpeechStream(wsUrl, options)
+  const ownSequence = sequence
 
   void session.done.then(outcome => {
-    if (outcome === 'done') {
+    if (outcome === 'done' && ownSequence === sequence) {
       setVoicePlaybackState(currentState('idle'))
     }
   })
@@ -320,6 +330,7 @@ async function playSpeechDataUrl(
 
   await new Promise<void>((resolve, reject) => {
     let stall: number | null = null
+    let stop: (() => void) | null = null
 
     const cleanup = () => {
       if (stall !== null) {
@@ -330,7 +341,10 @@ async function playSpeechDataUrl(
       audio.removeEventListener('ended', onEnded)
       audio.removeEventListener('error', onError)
       audio.removeEventListener('timeupdate', armStall)
-      currentStop = null
+
+      if (currentStop === stop) {
+        currentStop = null
+      }
     }
 
     const armStall = () => {
@@ -340,6 +354,7 @@ async function playSpeechDataUrl(
 
       stall = window.setTimeout(() => {
         cleanup()
+        unloadAudio(audio)
         reject(new Error('Playback stalled'))
       }, PLAYBACK_STALL_MS)
     }
@@ -351,13 +366,16 @@ async function playSpeechDataUrl(
 
     const onError = () => {
       cleanup()
+      unloadAudio(audio)
       reject(new Error('Playback failed'))
     }
 
-    currentStop = () => {
+    stop = () => {
       cleanup()
       resolve()
     }
+
+    currentStop = stop
 
     audio.addEventListener('ended', onEnded, { once: true })
     audio.addEventListener('error', onError, { once: true })
@@ -370,7 +388,9 @@ async function playSpeechDataUrl(
     return false
   }
 
-  currentAudio = null
+  if (currentAudio === audio) {
+    currentAudio = null
+  }
 
   return true
 }

@@ -2003,6 +2003,7 @@ def list_authenticated_providers(
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
+    from hermes_cli.auth import _is_provider_enabled
 
     # Build reverse mapping: models.dev ID → Hermes provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
@@ -2018,6 +2019,10 @@ def list_authenticated_providers(
         if hermes_slug.lower() in seen_slugs:
             continue
         if pid.lower() in _excluded or hermes_slug.lower() in _excluded:
+            continue
+
+        # Skip providers explicitly disabled via config
+        if not _is_provider_enabled(hermes_slug):
             continue
 
         # Check if credentials exist

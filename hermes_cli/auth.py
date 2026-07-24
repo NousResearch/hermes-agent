@@ -576,10 +576,37 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _is_provider_enabled(provider_id: str) -> bool:
+    """Return False when config.yaml has ``providers.<id>.enabled`` set to false.
+
+    Lets users suppress a built-in provider's credential probe entirely
+    (and the startup warnings that come with it) without removing it from
+    the registry.  For example::
+
+        providers:
+          copilot:
+            enabled: false
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        config = read_raw_config()
+        providers_cfg = config.get("providers")
+        if isinstance(providers_cfg, dict):
+            entry = providers_cfg.get(provider_id)
+            if isinstance(entry, dict) and entry.get("enabled") is False:
+                return False
+    except Exception:
+        pass
+    return True
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
+    if not _is_provider_enabled(provider_id):
+        return "", ""
+
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
@@ -6862,6 +6889,14 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     Returns dict with: provider, api_key, base_url, source.
     """
+    if not _is_provider_enabled(provider_id):
+        return {
+            "provider": provider_id,
+            "api_key": "",
+            "base_url": "",
+            "source": "disabled",
+        }
+
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         raise AuthError(
@@ -6933,6 +6968,16 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
+    if not _is_provider_enabled(provider_id):
+        return {
+            "provider": provider_id,
+            "base_url": "",
+            "api_key": "",
+            "command": "",
+            "args": [],
+            "source": "disabled",
+        }
+
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(

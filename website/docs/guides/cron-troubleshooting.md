@@ -200,7 +200,7 @@ Scripts that dump megabytes of output will slow down the agent and may hit token
 
 ```bash
 hermes cron list                    # Show all jobs, states, next_run times
-hermes cron run <job_id>            # Schedule for next tick (for testing)
+hermes cron run <job_id>            # Execute the job immediately (for testing)
 hermes cron edit <job_id>           # Fix configuration issues
 hermes logs                         # View recent Hermes logs
 hermes skills list                  # Verify installed skills
@@ -212,7 +212,7 @@ hermes skills list                  # Verify installed skills
 
 If you've worked through this guide and the issue persists:
 
-1. Run the job with `hermes cron run <job_id>` (fires on next gateway tick) and watch for errors in the chat output
+1. Run the job with `hermes cron run <job_id>` (executes immediately, even without a running gateway) and watch for errors in the chat output
 2. Check `~/.hermes/logs/agent.log` for scheduler messages and `~/.hermes/logs/errors.log` for warnings
 3. Open an issue at [github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) with:
    - The job ID and schedule

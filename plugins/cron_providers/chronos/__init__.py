@@ -19,7 +19,8 @@ Design constraints (see the plan's DQ-1):
     on a fire), never as a periodic wake of a sleeping machine.
 
 Inert unless ``cron.provider: chronos``. ``resolve_cron_scheduler`` falls back
-to the built-in if Chronos is unavailable, so cron never loses its trigger.
+to the built-in if Chronos is unavailable, so cron never silently loses its
+trigger (only the reserved ``none`` provider disables it).
 
 Wire contract: ``docs/chronos-managed-cron-contract.md``.
 """

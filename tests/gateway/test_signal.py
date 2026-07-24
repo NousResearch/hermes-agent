@@ -25,7 +25,7 @@ def _reset_signal_scheduler():
 
 def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
     """Create a SignalAdapter with sensible test defaults."""
-    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
+    monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", extra.pop("group_allowed", ""))
     from gateway.platforms.signal import SignalAdapter
     config = PlatformConfig()
     config.enabled = True
@@ -87,11 +87,11 @@ class TestSignalAdapterInit:
         adapter = _make_signal_adapter(monkeypatch, group_allowed="group123,group456")
         assert adapter.http_url == "http://localhost:8080"
         assert adapter.account == "+15551234567"
-        assert "group123" in adapter.group_allow_from
+        assert "group123" in adapter.group_chat_allow_from
 
     def test_init_empty_allowlist(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
-        assert len(adapter.group_allow_from) == 0
+        assert len(adapter.group_chat_allow_from) == 0
 
     def test_init_strips_trailing_slash(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch, http_url="http://localhost:8080/")
@@ -100,6 +100,462 @@ class TestSignalAdapterInit:
     def test_self_message_filtering(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         assert adapter._account_normalized == "+15551234567"
+
+
+class TestSignalGroupConfigParsing:
+    """Parsing of per-group YAML allowlists from PlatformConfig.extra.groups"""
+
+    def test_no_groups_key_is_noop(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter._per_group_allow_users == {}
+
+    def test_groups_key_not_a_dict_is_noop(self, monkeypatch):
+        # If someone hand-edits YAML to a list, we shouldn't crash.
+        adapter = _make_signal_adapter(monkeypatch, groups=["groupId1"])
+        assert adapter._per_group_allow_users == {}
+
+    def test_well_formed_per_group_allowlist(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "+111,+222"},
+            "groupB": {"allow_users": "+333"},
+        })
+        assert adapter._per_group_allow_users == {
+            "groupA": {"+111", "+222"},
+            "groupB": {"+333"},
+        }
+
+    def test_per_group_wildcard_catch_all(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "*"},
+        })
+        assert adapter._per_group_allow_users == {"groupA": {"*"}}
+
+    def test_invalid_group_entry_skipped(self, monkeypatch):
+        # Non-dict values for a group key should be silently skipped, not crash.
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": "+111,+222",   # forgot the `allow_users:` nesting
+            "groupB": {"allow_users": "+333"},
+        })
+        assert "groupA" not in adapter._per_group_allow_users
+        assert adapter._per_group_allow_users == {"groupB": {"+333"}}
+
+    def test_empty_allow_users_denies_all(self, monkeypatch):
+        """Empty / whitespace-only string is equivalent to an empty list:
+        the operator wrote an allowlist with nothing in it → deny everyone
+        in that group, rather than silently falling through to the global
+        default."""
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "   "},
+            "groupB": {"allow_users": "+333"},
+        })
+        assert adapter._per_group_allow_users == {
+            "groupA": set(),
+            "groupB": {"+333"},
+        }
+        assert adapter._is_group_user_allowed("groupA", "+anyone") is False
+
+    def test_none_allow_users_denies_all(self, monkeypatch):
+        """`allow_users:` with no value (or explicit `null`) is also deny-all
+        — the key was clearly set with restrictive intent, so don't fall
+        through to the global default."""
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": None},
+        })
+        assert adapter._per_group_allow_users == {"groupA": set()}
+        assert adapter._is_group_user_allowed("groupA", "+anyone") is False
+
+    def test_warns_when_group_not_in_chats_allowlist(self, monkeypatch, caplog):
+        # groupZ is in YAML but not in SIGNAL_ALLOWED_GROUPS — unreachable.
+        import logging
+        with caplog.at_level(logging.WARNING):
+            _make_signal_adapter(
+                monkeypatch,
+                group_allowed="groupA",
+                groups={
+                    "groupA": {"allow_users": "+111"},
+                    "groupZ": {"allow_users": "+222"},  # typo'd / orphan
+                },
+            )
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "groupZ" in r.message and "SIGNAL_ALLOWED_GROUPS" in r.message
+            for r in warnings
+        )
+        # groupA is in scope — no warning for it
+        assert not any(
+            "groupA" in r.message and "SIGNAL_ALLOWED_GROUPS" in r.message
+            for r in warnings
+        )
+
+    def test_no_warning_when_chats_wildcard(self, monkeypatch, caplog):
+        # With "*" in SIGNAL_ALLOWED_GROUPS, every group is in scope —
+        # no orphan-entry warnings should fire.
+        import logging
+        with caplog.at_level(logging.WARNING):
+            _make_signal_adapter(
+                monkeypatch,
+                group_allowed="*",
+                groups={"groupX": {"allow_users": "+111"}},
+            )
+        assert not any(
+            "SIGNAL_ALLOWED_GROUPS" in r.message
+            for r in caplog.records if r.levelno == logging.WARNING
+        )
+
+    # ── Backward-compat: legacy SIGNAL_GROUP_ALLOWED_USERS alias
+    #
+    # The pre-revamp variable used to hold group IDs.  We keep it working as
+    # an alias for the new SIGNAL_ALLOWED_GROUPS so existing deployments
+    # don't break on upgrade, but log a one-shot deprecation warning at
+    # adapter init.
+
+    def test_legacy_var_routes_to_chat_allowlist(self, monkeypatch):
+        """Setting only the legacy var populates the new chat allowlist."""
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "groupA,groupB")
+        adapter = _make_signal_adapter(monkeypatch)  # no group_allowed → new var empty
+        assert adapter.group_chat_allow_from == {"groupA", "groupB"}
+
+    def test_legacy_var_emits_deprecation_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "groupA")
+        import logging
+        with caplog.at_level(logging.WARNING):
+            _make_signal_adapter(monkeypatch)
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "SIGNAL_GROUP_ALLOWED_USERS is deprecated" in m
+            and "SIGNAL_ALLOWED_GROUPS" in m
+            for m in warnings
+        ), f"Expected deprecation warning, got: {warnings}"
+
+    def test_new_var_takes_precedence_over_legacy(self, monkeypatch, caplog):
+        """When both are set, the new var wins and the legacy one is ignored
+        (with a separate 'ignored' warning)."""
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "groupLEGACY")
+        import logging
+        with caplog.at_level(logging.WARNING):
+            adapter = _make_signal_adapter(monkeypatch, group_allowed="groupNEW")
+        assert adapter.group_chat_allow_from == {"groupNEW"}
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "SIGNAL_GROUP_ALLOWED_USERS is deprecated and ignored" in m
+            for m in warnings
+        ), f"Expected 'ignored' warning, got: {warnings}"
+
+    def test_no_deprecation_warning_when_only_new_var_set(self, monkeypatch, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            _make_signal_adapter(monkeypatch, group_allowed="groupA")
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert not any(
+            "SIGNAL_GROUP_ALLOWED_USERS is deprecated" in m for m in warnings
+        )
+
+    def test_no_deprecation_warning_when_legacy_unset(self, monkeypatch, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            _make_signal_adapter(monkeypatch)  # nothing set
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert not any(
+            "SIGNAL_GROUP_ALLOWED_USERS is deprecated" in m for m in warnings
+        )
+
+
+class TestSignalIsGroupUserAllowed:
+    """Resolution order: per-group config > global SIGNAL_ALLOWED_GROUP_USERS."""
+
+    def test_per_group_specific_user_match(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "+111,+222"},
+        })
+        assert adapter._is_group_user_allowed("groupA", "+111") is True
+        assert adapter._is_group_user_allowed("groupA", "+222") is True
+
+    def test_per_group_rejects_unlisted_user(self, monkeypatch):
+        # Even if the global default is "*", per-group config overrides it.
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "+111"},
+        })
+        assert adapter._is_group_user_allowed("groupA", "+999") is False
+
+    def test_per_group_catch_all_authorizes_anyone(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "*"},
+        })
+        assert adapter._is_group_user_allowed("groupA", "+anyone") is True
+
+    def test_fallback_to_global_when_group_not_in_config(self, monkeypatch):
+        # groupB has no per-group config → global env var (default "*") applies.
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "+111"},
+        })
+        assert adapter._is_group_user_allowed("groupB", "+anyone") is True
+
+    def test_global_specific_users_rejects_outsider(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+111,+222")
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter._is_group_user_allowed("groupA", "+111") is True
+        assert adapter._is_group_user_allowed("groupA", "+999") is False
+
+    def test_per_group_config_does_not_leak_to_other_groups(self, monkeypatch):
+        # Restricting groupA should not affect groupB (which falls through to global).
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "+111"},
+        })
+        assert adapter._is_group_user_allowed("groupA", "+999") is False
+        assert adapter._is_group_user_allowed("groupB", "+999") is True
+
+
+class TestSignalAliasExpansion:
+    """signal-cli reports senders as either phone or UUID; allowlists must
+    match across forms.  The adapter caches the number↔UUID mapping as
+    envelopes arrive (_remember_recipient_identifiers); expand_user_aliases
+    surfaces both representations to the allowlist checks."""
+
+    _UUID = "12345678-1234-1234-1234-123456789abc"
+
+    def test_expand_returns_both_forms_when_mapping_known(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_recipient_identifiers("+15551234567", self._UUID)
+        assert adapter.expand_user_aliases("+15551234567") == {
+            "+15551234567", self._UUID,
+        }
+        assert adapter.expand_user_aliases(self._UUID) == {
+            "+15551234567", self._UUID,
+        }
+
+    def test_expand_returns_just_input_when_mapping_unknown(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.expand_user_aliases("+15559999999") == {"+15559999999"}
+
+    def test_expand_empty_input_returns_empty_set(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.expand_user_aliases("") == set()
+        assert adapter.expand_user_aliases(None) == set()
+
+    def test_group_allowlist_matches_phone_when_sender_is_uuid(self, monkeypatch):
+        """Allowlist holds the phone; sender arrives as UUID. Must authorize."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+15551234567")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_recipient_identifiers("+15551234567", self._UUID)
+        # Sender reported under the UUID form
+        assert adapter._is_group_user_allowed("groupA", self._UUID) is True
+
+    def test_group_allowlist_matches_uuid_when_sender_is_phone(self, monkeypatch):
+        """Inverse: allowlist holds UUID; sender arrives as phone."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", self._UUID)
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_recipient_identifiers("+15551234567", self._UUID)
+        assert adapter._is_group_user_allowed("groupA", "+15551234567") is True
+
+    def test_per_group_allowlist_matches_alias(self, monkeypatch):
+        """Per-group YAML allowlist also honors alias expansion."""
+        adapter = _make_signal_adapter(monkeypatch, groups={
+            "groupA": {"allow_users": "+15551234567"},
+        })
+        adapter._remember_recipient_identifiers("+15551234567", self._UUID)
+        assert adapter._is_group_user_allowed("groupA", self._UUID) is True
+
+    def test_no_match_without_recorded_mapping(self, monkeypatch):
+        """If the mapping was never observed, only the literal form matches."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+15551234567")
+        adapter = _make_signal_adapter(monkeypatch)
+        # No _remember_recipient_identifiers call — UUID form is unmapped
+        assert adapter._is_group_user_allowed("groupA", self._UUID) is False
+
+
+class TestSignalReactionsAliasExpansion:
+    """DM reaction gate also honors phone↔UUID expansion."""
+
+    _UUID = "12345678-1234-1234-1234-123456789abc"
+
+    def _make_dm_event(self, *, user_id):
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+        return MessageEvent(
+            text="hi",
+            source=SessionSource(
+                platform=Platform.SIGNAL,
+                user_id=user_id,
+                chat_id=user_id,
+                user_name="tester",
+                chat_type="dm",
+            ),
+        )
+
+    def test_dm_allowlist_matches_phone_when_sender_is_uuid(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15551234567")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._remember_recipient_identifiers("+15551234567", self._UUID)
+        assert adapter._reactions_enabled(self._make_dm_event(user_id=self._UUID)) is True
+
+    def test_dm_allowlist_rejects_unknown_uuid_sender(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15551234567")
+        adapter = _make_signal_adapter(monkeypatch)
+        # No mapping recorded — the UUID is just an unknown stranger
+        assert adapter._reactions_enabled(self._make_dm_event(user_id=self._UUID)) is False
+
+
+class TestSignalGroupEnvelopeFiltering:
+    """Verify _handle_envelope routes group messages through the inner fence."""
+
+    @pytest.mark.asyncio
+    async def test_per_group_allowlist_authorizes_sender_excluded_globally(self, monkeypatch):
+        """Per-group allow_users wins over a stricter global SIGNAL_ALLOWED_GROUP_USERS.
+
+        Regression coverage for the resolution order: sender +111 is NOT in the
+        global allowlist, but the per-group YAML config explicitly authorizes
+        them — message must still reach the handler.
+        """
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+999")  # excludes +111
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="groupA",
+            groups={"groupA": {"allow_users": "+111"}},
+        )
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+111",
+                "sourceName": "Per-group user",
+                "timestamp": 1000,
+                "dataMessage": {
+                    "message": "hi",
+                    "groupInfo": {"groupId": "groupA"},
+                },
+            }
+        })
+
+        assert "event" in captured, "Per-group allowlist should override global gate"
+        assert captured["event"].text == "hi"
+
+    @pytest.mark.asyncio
+    async def test_global_allowlist_rejects_sender_outside_per_group(self, monkeypatch):
+        """When a group has no per-group config, the global allowlist applies."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+999")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="groupA")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+111",  # not in global allowlist
+                "sourceName": "Outsider",
+                "timestamp": 1000,
+                "dataMessage": {
+                    "message": "hi",
+                    "groupInfo": {"groupId": "groupA"},
+                },
+            }
+        })
+
+        assert "event" not in captured, "Sender not in any allowlist must be filtered out"
+
+
+class TestSignalReactionsAuthorization:
+    """_reactions_enabled is a third gate that fires before run.py auth — so
+    unauthorized senders must not get a 👀 reaction (which would otherwise
+    confirm to a stranger that the bot is listening)."""
+
+    def _make_event(self, *, user_id, chat_id, chat_type, chat_id_alt=None):
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+        return MessageEvent(
+            text="hi",
+            source=SessionSource(
+                platform=Platform.SIGNAL,
+                user_id=user_id,
+                chat_id=chat_id,
+                chat_id_alt=chat_id_alt,
+                user_name="tester",
+                chat_type=chat_type,
+            ),
+        )
+
+    def test_returns_false_for_unauthorized_group_sender(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+999")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="groupA")
+
+        event = self._make_event(
+            user_id="+111",  # not in group allowlist
+            chat_id="group:groupA",
+            chat_id_alt="groupA",
+            chat_type="group",
+        )
+        assert adapter._reactions_enabled(event) is False
+
+    def test_returns_true_for_authorized_group_sender(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+111")
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="groupA")
+
+        event = self._make_event(
+            user_id="+111",
+            chat_id="group:groupA",
+            chat_id_alt="groupA",
+            chat_type="group",
+        )
+        assert adapter._reactions_enabled(event) is True
+
+    def test_returns_true_when_chats_wildcard(self, monkeypatch):
+        """SIGNAL_ALLOWED_GROUPS='*' must let reactions fire — the
+        wildcard is the explicit 'monitor all groups' opt-in."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+
+        event = self._make_event(
+            user_id="+111",
+            chat_id="group:someGroup",
+            chat_id_alt="someGroup",
+            chat_type="group",
+        )
+        assert adapter._reactions_enabled(event) is True
+
+    def test_returns_false_when_group_id_missing(self, monkeypatch):
+        """Fail closed: a malformed group event with no chat_id_alt must
+        not get a 👀 reaction (it would leak the bot's presence)."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+
+        event = self._make_event(
+            user_id="+111",
+            chat_id="group:?",
+            chat_id_alt=None,
+            chat_type="group",
+        )
+        assert adapter._reactions_enabled(event) is False
+
+    def test_per_group_override_authorizes_for_reactions(self, monkeypatch):
+        """A per-group allow_users entry should also gate reactions, not just messages."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUP_USERS", "+999")  # excludes +111
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="groupA",
+            groups={"groupA": {"allow_users": "+111"}},
+        )
+
+        event = self._make_event(
+            user_id="+111",
+            chat_id="group:groupA",
+            chat_id_alt="groupA",
+            chat_type="group",
+        )
+        assert adapter._reactions_enabled(event) is True
+
+    def test_dm_gate_still_applies(self, monkeypatch):
+        """DM allowlist (SIGNAL_ALLOWED_USERS) still gates reactions for DMs."""
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+999")
+        adapter = _make_signal_adapter(monkeypatch)
+
+        event = self._make_event(user_id="+111", chat_id="+111", chat_type="dm")
+        assert adapter._reactions_enabled(event) is False
 
 
 class TestSignalConnectCleanup:
@@ -476,25 +932,95 @@ class TestSignalPhoneRedaction:
 # ---------------------------------------------------------------------------
 
 class TestSignalAuthorization:
-    def test_signal_in_allowlist_maps(self):
-        """Signal should be in the platform auth maps."""
-        from gateway.run import GatewayRunner
-        from gateway.config import GatewayConfig
+    @staticmethod
+    def _signal_source(*, chat_type, chat_id, user_id, chat_id_alt=None):
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_id,
+            chat_id_alt=chat_id_alt,
+        )
 
+    @pytest.fixture
+    def gw_runner(self):
+        """GatewayRunner with pairing_store rejecting unapproved users."""
+        from gateway.run import GatewayRunner
         gw = GatewayRunner.__new__(GatewayRunner)
-        gw.config = GatewayConfig()
         gw.pairing_store = MagicMock()
         gw.pairing_store.is_approved.return_value = False
+        return gw
 
+    def test_signal_in_allowlist_maps(self, gw_runner):
+        """Signal should be in the platform auth maps."""
         source = MagicMock()
         source.platform = Platform.SIGNAL
         source.user_id = "+15559999999"
 
         # No allowlists set — should check GATEWAY_ALLOW_ALL_USERS
         with patch.dict("os.environ", {}, clear=True):
-            result = gw._is_user_authorized(source)
+            result = gw_runner._is_user_authorized(source)
             assert result is False
 
+    def test_group_allowlist_authorizes_non_dm_sender(self, gw_runner, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "abc123==,def456==")
+        monkeypatch.delenv("SIGNAL_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("SIGNAL_ALLOW_ALL_USERS", raising=False)
+
+        # Signal adapter sets chat_id="group:<id>" and chat_alt_id=<id>.
+        source = self._signal_source(
+            chat_type="group",
+            chat_id="group:abc123==",
+            chat_id_alt="abc123==",
+            user_id="+15559999999",
+        )
+        assert gw_runner._is_user_authorized(source) is True
+
+    def test_group_allowlist_matches_raw_id_via_chat_id_alt(self, gw_runner, monkeypatch):
+        """Regression guard: authorization must compare against the raw group
+        id (chat_id_alt), not the ``group:``-prefixed chat_id used by signal
+        send paths. Entries in SIGNAL_ALLOWED_GROUPS are always unprefixed.
+        """
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "abc123==")
+        monkeypatch.delenv("SIGNAL_ALLOWED_USERS", raising=False)
+
+        source = self._signal_source(
+            chat_type="group",
+            chat_id="group:abc123==",
+            chat_id_alt="abc123==",
+            user_id="+15559999999",
+        )
+        assert gw_runner._is_user_authorized(source) is True
+
+    def test_group_wildcard_authorizes_any_group(self, gw_runner, monkeypatch):
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "*")
+        monkeypatch.delenv("SIGNAL_ALLOWED_USERS", raising=False)
+
+        source = self._signal_source(
+            chat_type="group",
+            chat_id="group:whatever==",
+            chat_id_alt="whatever==",
+            user_id="+15559999999",
+        )
+        assert gw_runner._is_user_authorized(source) is True
+
+    def test_group_allowlist_does_not_leak_to_dm(self, gw_runner, monkeypatch):
+        """SIGNAL_GROUP_ALLOWED_USERS must only affect group traffic.
+        A DM sender without an entry in SIGNAL_ALLOWED_USERS must still
+        be denied.
+        """
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "*")
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15551111111")
+
+        dm_source = self._signal_source(
+            chat_type="dm",
+            chat_id="+15559999999",
+            user_id="+15559999999",
+        )
+        assert gw_runner._is_user_authorized(dm_source) is False
 
 # ---------------------------------------------------------------------------
 # Send Message Tool

@@ -107,7 +107,8 @@ SIGNAL_ACCOUNT=+1234567890
 SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers or UUIDs
 
 # Optional
-SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
+SIGNAL_ALLOWED_GROUPS=groupId1,groupId2           # Enable groups (omit to disable, * for all)
+SIGNAL_ALLOWED_GROUP_USERS=*                      # Who in groups can interact (* for all, default)
 SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
 ```
 
@@ -133,13 +134,45 @@ DM access follows the same pattern as all other Hermes platforms:
 
 ### Group Access
 
-Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
+Group access uses two environment variables for fine-grained control:
+
+**Which groups the bot monitors** — controlled by `SIGNAL_ALLOWED_GROUPS`:
 
 | Configuration | Behavior |
 |---------------|----------|
 | Not set (default) | All group messages are ignored. The bot only responds to DMs. |
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
+
+**Who can talk inside those groups** — controlled by `SIGNAL_ALLOWED_GROUP_USERS` (default `*`):
+
+| Configuration | Behavior |
+|---------------|----------|
+| Not set or `*` (default) | All members of authorized groups can interact with the bot. |
+| Set with phone numbers/UUIDs | Only those users can interact in authorized groups. |
+
+For per-group user allowlists, use `config.yaml`:
+
+```yaml
+platforms:
+  signal:
+    extra:
+      groups:
+        groupId1:
+          allow_users: "+123456789,+987654321"
+        groupId2:
+          allow_users: "*"
+```
+
+Per-group `allow_users` overrides the global `SIGNAL_ALLOWED_GROUP_USERS` (for each group in the config file).
+
+:::note SIGNAL_ALLOW_ALL_USERS scope
+`SIGNAL_ALLOW_ALL_USERS=true` is a DM-only escape hatch — it bypasses `SIGNAL_ALLOWED_USERS` and the pairing flow, but it does **not** override the in-group user gate. Group messages are still filtered by `SIGNAL_ALLOWED_GROUP_USERS` and any per-group `allow_users`. To open up group access, set `SIGNAL_ALLOWED_GROUP_USERS=*` explicitly (this is also the default if the variable is unset).
+:::
+
+:::caution Renamed variable
+`SIGNAL_GROUP_ALLOWED_USERS` was renamed to `SIGNAL_ALLOWED_GROUPS` (and a new `SIGNAL_ALLOWED_GROUP_USERS` was introduced for the in-group user whitelist). The old variable still works as an alias and is treated as group IDs, but the adapter logs a deprecation warning on startup. Update your `.env` to silence the warning.
+:::
 
 ---
 
@@ -226,7 +259,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's number in E.164 format (with `+` prefix) |
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH, or use Docker |
 | **Connection keeps dropping** | Check signal-cli logs for errors. Ensure Java 17+ is installed. |
-| **Group messages ignored** | Configure `SIGNAL_GROUP_ALLOWED_USERS` with specific group IDs, or `*` to allow all groups. |
+| **Group messages ignored** | Configure `SIGNAL_ALLOWED_GROUPS` with specific group IDs, or `*` to allow all groups. Check that the sender is also authorized by `SIGNAL_ALLOWED_GROUP_USERS`. |
 | **Bot responds to no one** | Configure `SIGNAL_ALLOWED_USERS`, use DM pairing, or explicitly allow all users through gateway policy if you want broader access. |
 | **Duplicate messages** | Ensure only one signal-cli instance is listening on your phone number |
 
@@ -252,7 +285,9 @@ The adapter monitors the SSE connection and automatically reconnects if:
 |----------|----------|---------|-------------|
 | `SIGNAL_HTTP_URL` | Yes | — | signal-cli HTTP endpoint |
 | `SIGNAL_ACCOUNT` | Yes | — | Bot phone number (E.164) |
-| `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs |
-| `SIGNAL_GROUP_ALLOWED_USERS` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIGNAL_ALLOWED_USERS` | No | — | Comma-separated phone numbers/UUIDs — DM access whitelist |
+| `SIGNAL_ALLOWED_GROUPS` | No | — | Comma-separated group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIGNAL_ALLOWED_GROUP_USERS` | No | `*` | Comma-separated phone numbers/UUIDs — user whitelist inside authorized groups, or `*` for all |
+| `SIGNAL_GROUP_ALLOWED_USERS` | No | — | **Deprecated.** Legacy alias for `SIGNAL_ALLOWED_GROUPS` — group IDs only. Logs a deprecation warning on startup. |
 | `SIGNAL_ALLOW_ALL_USERS` | No | `false` | Allow any user to interact (skip allowlist) |
 | `SIGNAL_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |

@@ -448,14 +448,14 @@ class TestSignalStreamingPatch:
 
     def test_signal_does_not_support_editing(self, monkeypatch):
         """SignalAdapter.SUPPORTS_MESSAGE_EDITING must be False."""
-        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "")
         from gateway.platforms.signal import SignalAdapter
         assert SignalAdapter.SUPPORTS_MESSAGE_EDITING is False
 
     @pytest.mark.asyncio
     async def test_send_returns_no_message_id(self, monkeypatch):
         """send() returns message_id=None so stream consumer uses no-edit path."""
-        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        monkeypatch.setenv("SIGNAL_ALLOWED_GROUPS", "")
         from gateway.platforms.signal import SignalAdapter
 
         config = PlatformConfig(enabled=True)

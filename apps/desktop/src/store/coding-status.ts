@@ -56,11 +56,11 @@ async function loadWorktrees(target: string): Promise<void> {
   try {
     const worktrees = await list(target)
 
-    if (inflightCwd === target) {
+    if (inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoWorktrees.set(worktrees)
     }
   } catch {
-    if (inflightCwd === target) {
+    if (inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoWorktrees.set([])
     }
   }
@@ -84,6 +84,16 @@ let repoStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
 
+// A result only belongs in the global rail while it still describes the active
+// workspace. The debounce below deliberately delays the next probe; without
+// this live check, an old probe can land during that gap and briefly make a new
+// session look like it is on the previous worktree's branch.
+const statusStillBelongsToActiveCwd = (target: string): boolean => {
+  const active = normalizeCwd($currentCwd.get())
+
+  return !active || active === target
+}
+
 /**
  * Re-probe the working tree for `cwd` (defaults to the active session's cwd).
  * Best-effort: a non-repo, a remote backend, or a missing probe clears the
@@ -95,7 +105,7 @@ async function runRepoStatusRefresh({ probe, seq, target }: RepoStatusRefreshReq
 
     // Drop the result if the cwd moved on while we were probing (a fast session
     // switch) — the newer probe owns the atom.
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
+    if (seq === repoStatusRefreshSeq && inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoStatus.set(status)
 
       // Worktrees only matter inside a repo; clear them otherwise.
@@ -106,7 +116,7 @@ async function runRepoStatusRefresh({ probe, seq, target }: RepoStatusRefreshReq
       }
     }
   } catch {
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
+    if (seq === repoStatusRefreshSeq && inflightCwd === target && statusStillBelongsToActiveCwd(target)) {
       $repoStatus.set(null)
       $repoWorktrees.set([])
     }
@@ -169,8 +179,15 @@ function scheduleRepoStatusRefresh(cwd?: null | string): void {
 // Wired once at module load (mirrors projects.ts's module-scope subscriptions).
 // Each is a structural edge where the working tree may have changed under us.
 
-// The active session's cwd changed (session switch / new chat) → re-probe.
-$currentCwd.subscribe(cwd => scheduleRepoStatusRefresh(cwd))
+// The active session's cwd changed (session switch / new chat) → immediately
+// hide the old repo's facts, then re-probe after the small debounce. This makes
+// keyboard actions safe in the switch-to-probe gap: Ctrl+Shift+B cannot use a
+// still-painted branch label from the previous worktree.
+$currentCwd.subscribe(cwd => {
+  $repoStatus.set(null)
+  $repoWorktrees.set([])
+  scheduleRepoStatusRefresh(cwd)
+})
 
 // Switching sessions can land on the same cwd but a different checked-out
 // branch (the agent ran `git checkout` in another session's terminal). The cwd

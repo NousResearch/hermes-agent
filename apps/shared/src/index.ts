@@ -6,6 +6,7 @@ export {
 } from './billing-policy'
 export type {
   BillingAutoReload,
+  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,

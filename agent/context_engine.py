@@ -53,6 +53,39 @@ def sanitize_memory_context(memory_context: str) -> str:
     )
 
 
+def automatic_compaction_status_message(
+    engine: Any,
+    *,
+    phase: str,
+    default_message: str,
+    **context: Any,
+) -> str | None:
+    """Resolve host-visible status for an automatic compaction event.
+
+    Engines can suppress routine automatic status with
+    ``emit_automatic_compaction_status = False`` or customize it by defining
+    ``get_automatic_compaction_status_message(...)``. Empty strings and
+    ``None`` mean "do not emit a lifecycle status".
+    """
+    if not getattr(engine, "emit_automatic_compaction_status", True):
+        return None
+
+    formatter = getattr(engine, "get_automatic_compaction_status_message", None)
+    if callable(formatter):
+        message = formatter(
+            phase=phase,
+            default_message=default_message,
+            **context,
+        )
+    else:
+        message = default_message
+
+    if message is None:
+        return None
+    message = str(message).strip()
+    return message or None
+
+
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 
@@ -89,6 +122,12 @@ class ContextEngine(ABC):
     protect_first_n: int = 3
     protect_last_n: int = 6
 
+    # User-visible lifecycle status for automatic host-triggered compaction.
+    # Alternative engines that treat compaction as routine background
+    # maintenance can set this false to keep successful automatic passes silent;
+    # warnings, errors, and explicit manual commands should still surface.
+    emit_automatic_compaction_status: bool = True
+
     # -- Core interface ----------------------------------------------------
 
     @abstractmethod
@@ -106,6 +145,19 @@ class ContextEngine(ABC):
     @abstractmethod
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
+
+    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+        """Return ``(should_compress, reason)``.
+
+        The base implementation is backward-compatible: engines that only
+        implement ``should_compress`` get ``(should_compress(prompt_tokens),
+        None)``. Concrete engines with richer block reasons (e.g. a
+        summary-LLM cooldown or an anti-thrashing guard) override this to
+        surface a human-readable reason so callers can warn the user instead
+        of silently skipping compression. Added for the silent-overflow
+        warning fix (#62625) so plugin engines don't raise AttributeError.
+        """
+        return self.should_compress(prompt_tokens), None
 
     @abstractmethod
     def compress(
@@ -137,6 +189,144 @@ class ContextEngine(ABC):
                 host filters unsupported optional arguments by signature.
         """
 
+    # -- Optional: proactive tool-result prune -----------------------------
+
+    def prune_tool_results_only(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: int | None = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Deterministically trim old tool-result payloads without an LLM call.
+
+        Runs on a low, cost-oriented trigger independent of ``should_compress``
+        so large-window engines can reclaim re-sent tool output long before full
+        compaction would fire. Returns ``(messages, n_pruned)``.
+
+        Default is a safe no-op: the list is returned unchanged with ``0``
+        pruned. Engines that don't implement a cheap prune — and any engine that
+        predates this hook — inherit this default, so the agent loop's
+        post-tool-call prune path never raises ``AttributeError`` on them. The
+        built-in ContextCompressor overrides this with the real implementation.
+        """
+        return messages, 0
+
+    # -- Optional: per-turn context selection (distinct from compression) --
+
+    def select_context(
+        self,
+        request_messages: List[Dict[str, Any]],
+        *,
+        conversation_messages: List[Dict[str, Any]] = None,
+        incoming_message: Dict[str, Any] = None,
+        budget_tokens: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Optionally choose/replace the context for THIS request, pre-generation.
+
+        Called every turn after the request message list is assembled and
+        before it is dispatched to the provider — independent of
+        ``should_compress()``. This lets an engine *select* which context
+        enters the prompt (retrieval, topic routing, role/branch switching)
+        rather than *shrink* context that is already there. The two verbs are
+        orthogonal:
+
+          - ``compress()``      : context is too long  -> make it shorter.
+          - ``select_context()``: this turn belongs to a different context
+                                  -> use that one instead.
+
+        Without this hook, engines that need per-turn access to the message
+        list have to force ``should_compress()`` to return ``True`` so that
+        ``compress()`` is invoked every turn purely as a callback — which
+        conflates selection with compression and degrades behaviour when the
+        engine's backend is unavailable. ``select_context()`` removes the need
+        for that workaround.
+
+        The returned list is request-only: it replaces the messages sent to
+        the provider for this single call and MUST NOT be treated as persisted
+        transcript state. The conversation history in the session DB is left
+        untouched, so nothing leaks across turns. Return ``None`` to leave the
+        request unchanged.
+
+        Unlike the ``pre_llm_call`` plugin hook (which appends to the user
+        message and intentionally never rewrites the list, to preserve the
+        cache prefix), ``select_context()`` may *replace* the message list.
+
+        Ordering / cache contract: the host runs this hook **before** prompt
+        cache-control and **before** every request sanitizer (orphaned-tool
+        cleanup, thinking-only/role normalization, whitespace/JSON
+        normalization). So (a) whatever the hook returns still passes through
+        the same validation as any request — a malformed replacement cannot
+        reach the provider — and (b) prompt-cache stability (an AGENTS.md
+        invariant) is preserved: the default no-op leaves the request
+        byte-identical, so cache behaviour is unchanged for the built-in
+        compressor and any non-implementing engine. An engine that *does*
+        replace the list changes its own cache prefix by definition; that is
+        the engine's concern, and cache-control breakpoints are re-derived on
+        the selected list. The hook is evaluated per provider request (so it
+        re-runs on retries within a turn), consistent with "select the context
+        for THIS request".
+
+        Args:
+            request_messages: The assembled request message list (system
+                prompt + history + any ephemeral prefill), in OpenAI format.
+            conversation_messages: The unmodified persisted conversation
+                history, for reference only (do not mutate).
+            incoming_message: The current turn's user message, if available.
+            budget_tokens: The active model's context length, or 0 if unknown.
+
+        Default returns ``None`` (no-op) — zero impact on the built-in
+        compressor or any existing engine.
+        """
+        return None
+
+    def on_turn_complete(
+        self,
+        messages: List[Dict[str, Any]],
+        usage: Dict[str, Any] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Observe a finished user turn (post-turn ingestion / observation).
+
+        Called from the standard turn-finalization path once the assistant/tool
+        loop completes, with the finalized in-memory transcript snapshot. This
+        is the complement to ``select_context()``: selection happens *before*
+        the request, while observation happens *after* the turn. It lets an
+        engine ingest, index, summarize, or update routing / topic / session
+        state from what actually happened — so the next ``select_context()``
+        can act on it.
+
+        Coverage: this fires from the normal finalization seam. Some abnormal
+        early-return paths in the loop (e.g. a content-policy block or a
+        provider terminal failure) persist and return without routing through
+        finalization, and therefore do not currently emit this hook. Treat it
+        as a best-effort post-turn observation for completed turns, not a
+        guaranteed callback for every possible early exit; unifying all
+        terminal paths behind one finalization seam is a separate follow-up.
+
+        Together the two hooks remove the need to abuse ``should_compress()`` /
+        ``compress()`` as a generic per-turn callback just to observe history,
+        and they cover the case where a turn finishes and there may be no next
+        request from which to infer the previous turn.
+
+        ``messages`` is a shallow copy and should be treated as read-only:
+        return values are ignored and this hook must not rely on transcript
+        mutation for persistence. ``kwargs`` may include ``turn_id``,
+        ``task_id``, ``api_call_count``, ``interrupted``, ``failed``, and
+        ``turn_exit_reason``.
+
+        ``usage`` carries the completed turn's canonical token usage (the same
+        dict shape passed to ``update_from_response`` — ``prompt_tokens`` /
+        ``completion_tokens`` / ``total_tokens`` plus the canonical
+        ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
+        ``cache_write_tokens`` / ``reasoning_tokens`` buckets) so an engine can
+        weigh how large/expensive the selected context actually was when
+        deciding the next ``select_context()``. It is ``None`` on finalized
+        turns that never reached a provider response (e.g. interrupt); engines
+        must treat it as optional.
+
+        Default is a no-op.
+        """
+        return None
+
     # -- Optional: pre-flight check ----------------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
@@ -155,6 +345,27 @@ class ContextEngine(ABC):
         engines can ignore it safely.
         """
         return False
+
+    def get_automatic_compaction_status_message(
+        self,
+        *,
+        phase: str,
+        default_message: str,
+        **context: Any,
+    ) -> str | None:
+        """Return user-visible status for automatic host-triggered compaction.
+
+        Return ``None`` to suppress successful automatic lifecycle status for
+        this compaction event. ``phase`` identifies the host call site (for
+        example ``"preflight"`` or ``"compress"``). ``context`` contains
+        best-effort fields such as ``approx_tokens`` and ``threshold_tokens``.
+
+        This hook does not control warning/error messages or explicit manual
+        commands such as ``/compress``.
+        """
+        if not self.emit_automatic_compaction_status:
+            return None
+        return default_message
 
     # -- Optional: manual /compress preflight ------------------------------
 
@@ -260,4 +471,19 @@ class ContextEngine(ABC):
         (e.g. recalculate DAG budgets, switch summary models).
         """
         self.context_length = context_length
+        # Apply per-model threshold overrides if set (longest substring match).
+        # Falls back to _config_threshold_percent (the raw config value) when
+        # no override matches. Plugin engines that override update_model() can
+        # call resolve_model_threshold() for the same logic.
+        from agent.context_compressor import resolve_model_threshold
+        if not hasattr(self, "_config_threshold_percent"):
+            # Snapshot the pre-override percent ONCE so repeated model
+            # switches fall back to the engine's configured value, not the
+            # previous model's override.
+            self._config_threshold_percent = self.threshold_percent
+        self._base_threshold_percent = resolve_model_threshold(
+            model, getattr(self, "model_thresholds", {}),
+            self._config_threshold_percent,
+        )
+        self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)

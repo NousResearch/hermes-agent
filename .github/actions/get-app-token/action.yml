@@ -5,22 +5,30 @@ description: >-
   5,000 req/hr per installation (vs 1,000 for the default GITHUB_TOKEN)
   and are scoped to the App's installation permissions, not a user account.
 
-  Falls back to the built-in GITHUB_TOKEN when APP_CLIENT_ID is not set —
-  this happens on fork PRs where repo secrets are unavailable. The fallback
-  ensures classification, timings, and review comments still work on
-  forks (with the lower GITHUB_TOKEN rate limit).
+  Callers must source App credentials from a protected, main-only environment.
+  Never pass an App private key to a pull_request job, a local action, or a
+  reusable workflow resolved from an untrusted PR ref. The fallback keeps a
+  trusted caller functional when its protected environment is misconfigured.
 
-  Composite actions cannot access the secrets context directly, so the
-  calling workflow must pass secrets.APP_CLIENT_ID and secrets.APP_PRIVATE_KEY
-  as inputs. When both are empty (fork PRs), the fallback fires.
+  Composite actions cannot access contexts directly, so callers pass the
+  public vars.APP_CLIENT_ID and protected secrets.APP_PRIVATE_KEY as inputs.
+  When the private key is empty, the fallback fires.
 
 inputs:
   client-id:
-    description: GitHub App Client ID. Pass secrets.APP_CLIENT_ID from the calling workflow.
+    description: GitHub App Client ID. Pass vars.APP_CLIENT_ID from the calling workflow.
     required: false
     default: ''
   private-key:
     description: GitHub App private key PEM. Pass secrets.APP_PRIVATE_KEY from the calling workflow.
+    required: false
+    default: ''
+  owner:
+    description: GitHub App installation owner. Empty scopes the token to the current repository.
+    required: false
+    default: ''
+  repositories:
+    description: Comma- or newline-separated repositories to scope within the installation owner.
     required: false
     default: ''
 
@@ -51,6 +59,8 @@ runs:
       with:
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.private-key }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
 
     - name: Fall back to GITHUB_TOKEN
       id: fallback

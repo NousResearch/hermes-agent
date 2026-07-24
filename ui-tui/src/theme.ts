@@ -788,6 +788,28 @@ export function defaultThemeForCurrentBackground(env: NodeJS.ProcessEnv = proces
 
 // ── Skin → Theme ─────────────────────────────────────────────────────
 
+/** The skin's authored canvas as a #-prefixed hex, or null when absent/junk. */
+const authoredBackground = (raw: string | undefined): null | string => {
+  const v = (raw ?? '').trim()
+
+  return backgroundLuminance(v) === null ? null : v.startsWith('#') ? v : `#${v}`
+}
+
+/**
+ * A skin that authors a background OWNS its polarity: the TUI paints the
+ * terminal with it (applySkin → OSC-11), so contrast adaptation, the derived
+ * tone ladder, and ANSI light-terminal normalization must all run against the
+ * skin's canvas — not the host profile the skin just covered. (A pure-black
+ * skin on a light Apple Terminal otherwise gets its text remapped for a light
+ * background it painted over: invisible.) Host detection still governs skins
+ * without a background — they render on the terminal's own surface.
+ */
+export function skinIsLight(colors: SkinColors, env: NodeJS.ProcessEnv = process.env): boolean {
+  const authored = backgroundLuminance(colors['background'] ?? '')
+
+  return authored === null ? detectLightMode(env) : authored >= LUMA_LIGHT_THRESHOLD
+}
+
 export function fromSkin(
   colors: SkinColors,
   branding: SkinBranding,
@@ -796,11 +818,13 @@ export function fromSkin(
   toolPrefix = '',
   helpHeader = ''
 ): Theme {
-  // Live detection (not the module-load snapshot): by the time the gateway
-  // skin arrives, the OSC-11 background probe has usually answered and cached
-  // itself into HERMES_TUI_BACKGROUND. See #applySkin / syncThemeToTerminalBackground.
-  const isLight = detectLightMode()
-  const bg = referenceBackground(isLight)
+  // Polarity: the skin's own canvas when it authors one (see skinIsLight);
+  // otherwise live host detection (not the module-load snapshot — by the time
+  // the gateway skin arrives, the OSC-11 probe has usually answered and cached
+  // itself into HERMES_TUI_BACKGROUND. See #applySkin / syncThemeToTerminalBackground).
+  const skinBg = authoredBackground(colors['background'])
+  const isLight = skinIsLight(colors)
+  const bg = skinBg ?? referenceBackground(isLight)
   const base = isLight ? LIGHT_SEEDS : DARK_SEEDS
   const d = isLight ? LIGHT_THEME : DARK_THEME
   const c = (k: string) => colors[k]

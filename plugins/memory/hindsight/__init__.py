@@ -505,7 +505,14 @@ def _load_simple_env(path) -> dict[str, str]:
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
-    """Build the profile-scoped env file that standalone hindsight-embed consumes."""
+    """Build the profile-scoped env file that standalone hindsight-embed consumes.
+
+    Workstation-jpp: also emit embeddings/reranker/dedup/port/timeouts from
+    config.json. Stock Hermes only wrote LLM keys, so nomic OpenAI-compat +
+    flashrank were dropped on every spawn → LocalST fallback → crash loop
+    (sentence-transformers / huggingface-hub skew). Re-applied 2026-07-14 after
+    hermes update wiped the prior patch (mtime 2026-07-14 18:53).
+    """
     current_key = llm_api_key
     if current_key is None:
         current_key = (
@@ -539,6 +546,46 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # --- durable workstation keys from config.json (SSoT) ---
+    emb_provider = config.get("embeddings_provider") or "openai"
+    env_values["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] = str(emb_provider)
+    if emb_provider == "openai":
+        env_values["HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL"] = str(
+            config.get("embeddings_openai_model") or "nomic-embed-text"
+        )
+        env_values["HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL"] = str(
+            config.get("embeddings_openai_base_url") or "http://localhost:11434/v1"
+        )
+        env_values["HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"] = str(
+            config.get("embeddings_openai_api_key")
+            or os.environ.get("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY")
+            or "ollama"
+        )
+        dims = config.get("embeddings_openai_dimensions")
+        if dims is not None and dims != "":
+            env_values["HINDSIGHT_API_EMBEDDINGS_OPENAI_DIMENSIONS"] = str(dims)
+
+    env_values["HINDSIGHT_API_RERANKER_PROVIDER"] = str(
+        config.get("reranker_provider") or "flashrank"
+    )
+
+    dedup = config.get("consolidation_dedup_threshold")
+    if dedup is not None and dedup != "":
+        env_values["HINDSIGHT_API_CONSOLIDATION_DEDUP_THRESHOLD"] = str(dedup)
+
+    api_port = config.get("api_port")
+    if api_port is not None and api_port != "":
+        env_values["HINDSIGHT_API_PORT"] = str(api_port)
+
+    for cfg_key, env_key in (
+        ("llm_timeout", "HINDSIGHT_API_LLM_TIMEOUT"),
+        ("retain_llm_timeout", "HINDSIGHT_API_RETAIN_LLM_TIMEOUT"),
+    ):
+        val = config.get(cfg_key)
+        if val is not None and val != "":
+            env_values[env_key] = str(val)
+
     return env_values
 
 
@@ -1707,6 +1754,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
+                if self._shutting_down.is_set():
+                    return tool_error(
+                        "Failed to store memory: Hindsight is shutting down"
+                    )
                 item = self._build_retain_kwargs(
                     content,
                     context=context,
@@ -1715,16 +1766,52 @@ class HindsightMemoryProvider(MemoryProvider):
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
                 item.pop("bank_id", None)
                 item.pop("retain_async", None)
-                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                             self._bank_id, len(content), context)
-                self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                bank_id = self._bank_id
+                retain_async_flag = self._retain_async
+                logger.debug(
+                    "Tool hindsight_retain: bank=%s, content_len=%d, context=%s, async=%s",
+                    bank_id,
+                    len(content),
+                    context,
+                    retain_async_flag,
                 )
-                logger.debug("Tool hindsight_retain: success")
-                return json.dumps({"result": "Memory stored successfully."})
+
+                # Match sync_turn: enqueue on the serial writer and let the
+                # server process extraction async. Blocking the tool on full
+                # retain_extract_facts (often 150-400s) races the client
+                # timeout (historically 120s) and surfaces empty TimeoutError.
+                def _do_tool_retain() -> None:
+                    self._run_hindsight_operation(
+                        lambda client: client.aretain_batch(
+                            bank_id=bank_id,
+                            items=[item],
+                            retain_async=retain_async_flag,
+                        )
+                    )
+                    logger.debug("Tool hindsight_retain: writer finished enqueue/HTTP")
+
+                self._ensure_writer()
+                self._register_atexit()
+                self._retain_queue.put(_do_tool_retain)
+                return json.dumps(
+                    {
+                        "result": (
+                            "Memory queued for storage "
+                            f"(async={bool(retain_async_flag)})."
+                        )
+                    }
+                )
             except Exception as e:
-                logger.warning("hindsight_retain failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to store memory: {e}")
+                detail = str(e).strip() or f"timed out or failed after {self._timeout}s"
+                logger.warning(
+                    "hindsight_retain failed: %s: %s",
+                    type(e).__name__,
+                    detail,
+                    exc_info=True,
+                )
+                return tool_error(
+                    f"Failed to store memory: {type(e).__name__}: {detail}"
+                )
 
         elif tool_name == "hindsight_recall":
             query = args.get("query", "")

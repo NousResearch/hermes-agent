@@ -758,9 +758,15 @@ def _rmtree_writable(path: Path) -> None:
     def _on_error(func, fpath, exc_info):
         # Unlinking a child requires the parent dir to be writable, so chmod
         # the parent as well as the failing path, then retry.
+        # Merge owner-write into the existing mode instead of replacing it,
+        # so group/other permissions survive (#67496).
         for target in (os.path.dirname(fpath), fpath):
+            # Never widen the skills root itself — it must not need mode
+            # changes to delete a child's contents (#67496).
+            if Path(target).resolve() == skills_root:
+                continue
             try:
-                os.chmod(target, stat.S_IRWXU)
+                os.chmod(target, os.stat(target).st_mode | stat.S_IRWXU)
             except OSError:
                 pass
         func(fpath)

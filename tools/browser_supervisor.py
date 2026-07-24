@@ -737,7 +737,12 @@ class CDPSupervisor:
         """Find a page target, attach flattened session, enable domains, install dialog bridge."""
         resp = await self._cdp("Target.getTargets")
         targets = resp.get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        # Prefer an existing about:blank to avoid accumulating tabs on reconnect;
+        # create one if none exists.  Never reuse a random user page — SPA / docs
+        # pages routinely reject flattened CDP sessions, which hangs Page.enable.
+        page_target = next((t for t in targets
+                            if t.get("type") == "page"
+                            and t.get("url") == "about:blank"), None)
         if page_target is None:
             created = await self._cdp("Target.createTarget", {"url": "about:blank"})
             target_id = created["result"]["targetId"]
@@ -751,11 +756,17 @@ class CDPSupervisor:
         self._page_session_id = attach["result"]["sessionId"]
         await self._cdp("Page.enable", session_id=self._page_session_id)
         await self._cdp("Runtime.enable", session_id=self._page_session_id)
-        await self._cdp(
-            "Target.setAutoAttach",
-            {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
-            session_id=self._page_session_id,
-        )
+        try:
+            await self._cdp(
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+                session_id=self._page_session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Target.setAutoAttach rejected on initial page (Chrome 150+) — "
+                "continuing with flatten session only"
+            )
         # Install the dialog bridge — overrides native alert/confirm/prompt with
         # a synchronous XHR we intercept via Fetch domain. This is how we make
         # dialog response work on Browserbase (whose CDP proxy auto-dismisses

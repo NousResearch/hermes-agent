@@ -100,6 +100,20 @@ class TestPlatformTokenPlaceholderGuard:
             _validate_and_return(config)
         assert config.platforms[Platform.TELEGRAM].enabled is False
 
+    def test_placeholder_error_does_not_expose_raw_token_slice(self, caplog):
+        """Startup errors must use the shared mask instead of a raw prefix."""
+        from agent.redact import mask_secret
+
+        token = "your_api_key"
+        config = _make_gateway_config(Platform.TELEGRAM, token)
+        with caplog.at_level(logging.ERROR):
+            _validate_and_return(config)
+
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+        assert token not in caplog.text
+        assert token[:6] not in caplog.text
+        assert mask_secret(token) in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Integration test: API server placeholder key on network-accessible host

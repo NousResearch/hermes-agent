@@ -91,7 +91,9 @@ def consume_ticket(ticket: str) -> Dict[str, Any]:
         if entry is None:
             # Truncate ticket value in the error so misuse never logs the
             # secret in full.
-            truncated = (ticket[:8] + "…") if ticket else "<empty>"
+            from agent.redact import mask_secret
+
+            truncated = mask_secret(ticket, empty="<empty>")
             raise TicketInvalid(f"unknown ticket: {truncated}")
         expires_at, info = entry
         if expires_at < now:

@@ -298,8 +298,10 @@ def run_whatsapp_cloud_setup() -> int:
     print("─" * 50)
     print("STEP 2 — Access Token")
     print("─" * 50)
+    from agent.redact import mask_secret
+
     current_token = get_env_value("WHATSAPP_CLOUD_ACCESS_TOKEN") or None
-    current_display = (current_token[:15] + "...") if current_token else None
+    current_display = mask_secret(current_token) if current_token else None
     token = _prompt_validated(
         "Access Token",
         _validate_access_token,
@@ -340,7 +342,7 @@ def run_whatsapp_cloud_setup() -> int:
     print("STEP 3 — App Secret (required for webhook signature verification)")
     print("─" * 50)
     current_secret = get_env_value("WHATSAPP_CLOUD_APP_SECRET") or None
-    current_secret_display = (current_secret[:8] + "...") if current_secret else None
+    current_secret_display = mask_secret(current_secret) if current_secret else None
     app_secret = _prompt_validated(
         "App Secret",
         _validate_app_secret,
@@ -411,7 +413,7 @@ def run_whatsapp_cloud_setup() -> int:
     print("─" * 50)
     current_verify = get_env_value("WHATSAPP_CLOUD_VERIFY_TOKEN") or None
     if current_verify:
-        print(f"  An existing verify token is already set ({current_verify[:8]}...).")
+        print(f"  An existing verify token is already set ({mask_secret(current_verify)}).")
         try:
             regen = input("  Generate a new one? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):

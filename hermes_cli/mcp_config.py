@@ -750,12 +750,10 @@ def cmd_mcp_test(args):
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
                 # Mask the value (accepts ${VAR} and Cursor-style ${env:VAR})
+                from agent.redact import mask_secret
+
                 resolved = _ENV_VAR_PATTERN.sub(lambda m: os.getenv(_env_ref_name(m.group(1)), ""), v)
-                if len(resolved) > 8:
-                    masked = resolved[:4] + "***" + resolved[-4:]
-                else:
-                    masked = "***"
-                print(f"    {k}: {masked}")
+                print(f"    {k}: {mask_secret(resolved, empty='***')}")
     else:
         _info("Auth: none")
 

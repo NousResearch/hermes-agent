@@ -836,6 +836,8 @@ def _model_flow_custom(config):
     from hermes_cli.config import get_env_value, load_config, save_config
     from hermes_cli.secret_prompt import masked_secret_prompt
 
+    from agent.redact import mask_secret
+
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
 
@@ -843,7 +845,8 @@ def _model_flow_custom(config):
     if current_url:
         print(f"  Current URL: {current_url}")
     if current_key:
-        print(f"  Current key: {current_key[:8]}...")
+        # print() bypasses RedactingFormatter — use mask_secret.
+        print(f"  Current key: {mask_secret(current_key)}")
     print()
 
     try:
@@ -851,7 +854,7 @@ def _model_flow_custom(config):
             f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: "
         ).strip()
         api_key = masked_secret_prompt(
-            f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
+            f"API key [{mask_secret(current_key) if current_key else 'optional'}]: "
         ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
@@ -1129,7 +1132,10 @@ def _model_flow_azure_foundry(config, current_model=""):
     if current_auth_mode == "entra_id":
         print("  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
-        print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
+        from agent.redact import mask_secret
+
+        # print() bypasses RedactingFormatter — use mask_secret.
+        print(f"  Current auth mode: API key ({mask_secret(current_api_key)})")
     print()
 
     # ── Step 1: endpoint URL ─────────────────────────────────────────
@@ -1252,11 +1258,12 @@ def _model_flow_azure_foundry(config, current_model=""):
             token_provider = None
     else:
         print()
+        from agent.redact import mask_secret
         from hermes_cli.secret_prompt import masked_secret_prompt
 
         try:
             api_key = masked_secret_prompt(
-                f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
+                f"API key [{mask_secret(current_api_key) if current_api_key else 'required'}]: "
             ).strip()
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled.")
@@ -1706,9 +1713,11 @@ def _model_flow_copilot(config, current_model=""):
         source = creds.get("source", "")
     else:
         if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
+            from agent.redact import mask_secret
             from hermes_cli.env_loader import format_secret_source_suffix
             bw_suffix = format_secret_source_suffix(source)
-            print(f"  GitHub token: {api_key[:8]}... ✓ ({source}{bw_suffix})")
+            # print() bypasses RedactingFormatter — use mask_secret.
+            print(f"  GitHub token: {mask_secret(api_key)} ✓ ({source}{bw_suffix})")
         elif source == "gh auth token":
             print("  GitHub token: ✓ (from `gh auth token`)")
         else:
@@ -2158,7 +2167,9 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
         source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
-        print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
+        from agent.redact import mask_secret
+
+        print(f"  Bedrock API Key: {mask_secret(existing_key)} ✓{source_suffix}")
     else:
         print(f"  Endpoint: {mantle_base_url}")
         print()
@@ -2969,8 +2980,10 @@ def _model_flow_anthropic(config, current_model=""):
                     source_suffix = format_secret_source_suffix(var)
                     if source_suffix:
                         break
+            from agent.redact import mask_secret
+
             print(
-                f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}"
+                f"  Anthropic credentials: {mask_secret(existing_key)} ✓{source_suffix}"
             )
         elif cc_available:
             print("  Claude Code credentials: ✓ (auto-detected)")

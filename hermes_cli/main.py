@@ -4268,10 +4268,12 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         return new_key, False
 
     # Already configured — offer K / R / C ────────────────────────────────
+    from agent.redact import mask_secret
     from hermes_cli.env_loader import format_secret_source_suffix
 
     source_suffix = format_secret_source_suffix(key_env) if key_env else ""
-    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
+    # print() bypasses RedactingFormatter — use mask_secret.
+    print(f"  {pconfig.name} API key: {mask_secret(existing_key)} ✓{source_suffix}")
     if not key_env:
         # Nothing we can rewrite; just acknowledge and move on.
         print()

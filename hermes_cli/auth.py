@@ -650,7 +650,8 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
         for model in probe_models:
             try:
-                resp = httpx.post(
+                with httpx.stream(
+                    "POST",
                     f"{base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -663,8 +664,9 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
                         "messages": [{"role": "user", "content": "ping"}],
                     },
                     timeout=timeout,
-                )
-                if resp.status_code == 200:
+                ) as resp:
+                    status_code = resp.status_code
+                if status_code == 200:
                     logger.debug("Z.AI endpoint probe: %s (%s) model=%s OK", ep_id, base_url, model)
                     return {
                         "id": ep_id,
@@ -672,7 +674,7 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
                         "model": model,
                         "label": label,
                     }
-                logger.debug("Z.AI endpoint probe: %s model=%s returned %s", ep_id, model, resp.status_code)
+                logger.debug("Z.AI endpoint probe: %s model=%s returned %s", ep_id, model, status_code)
             except Exception as exc:
                 logger.debug("Z.AI endpoint probe: %s model=%s failed: %s", ep_id, model, exc)
     return None

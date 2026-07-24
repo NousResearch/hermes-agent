@@ -1201,6 +1201,101 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(config_file)) is None
 
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            ".env",
+            "auth.json",
+            "auth.lock",
+            "config.yaml",
+            ".anthropic_oauth.json",
+            "google_token.json",
+            "google_oauth_pending.json",
+            "auth/google_oauth.json",
+            "webhook_subscriptions.json",
+            "credentials/x",
+            "cache/bws_cache.json",
+            "cache/bws_cache.enc.json",
+            "mcp-tokens/t.json",
+            "pairing/x.json",
+        ],
+    )
+    def test_denylist_blocks_sibling_profile_credentials(
+        self, tmp_path, monkeypatch, rel,
+    ):
+        """Active profile alice must not deliver bob's credential stores.
+
+        Default mode accepts any non-denied regular file. The denylist must
+        therefore cover every <root>/profiles/<name>/ entry with the same
+        credential file/dir policy as the active home and shared root —
+        otherwise MEDIA:<root>/profiles/bob/.env (etc.) exfiltrates as a
+        chat attachment. Supersedes the incomplete four-file list in #47220.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_root = fake_home / ".hermes"
+        alice = hermes_root / "profiles" / "alice"
+        bob = hermes_root / "profiles" / "bob"
+        alice.mkdir(parents=True)
+        secret = bob / rel
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_text("SECRET=1")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", alice)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_denylist_blocks_sibling_profile_when_home_is_root(
+        self, tmp_path, monkeypatch,
+    ):
+        """Default (non-profile) HERMES_HOME==root must still deny profiles/*.
+
+        The hole also exists for a root-home gateway that coexists with
+        profile directories on disk — not only when the active home is itself
+        under profiles/<name>/.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_root = fake_home / ".hermes"
+        bob = hermes_root / "profiles" / "bob"
+        secret = bob / ".env"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("SECRET=1")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_sibling_profile_non_credential_still_delivers(
+        self, tmp_path, monkeypatch,
+    ):
+        """Non-credential files under a sibling profile remain deliverable.
+
+        The denylist is per-credential-store, not a whole-tree deny of
+        profiles/<other>/ (same #32090/#34425 posture as the active home).
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_root = fake_home / ".hermes"
+        alice = hermes_root / "profiles" / "alice"
+        bob = hermes_root / "profiles" / "bob"
+        alice.mkdir(parents=True)
+        notes = bob / "notes.md"
+        notes.parent.mkdir(parents=True)
+        notes.write_text("# shared notes\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", alice)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(notes)) == str(
+            notes.resolve()
+        )
+
     def test_denylist_blocks_google_token_default_mode(self, tmp_path, monkeypatch):
         """Integration credentials at the HERMES_HOME root (google_token.json)
         must never be deliverable, even though they aren't the historically

@@ -229,6 +229,14 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     This prevents arbitrary slash-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
     ``zai/glm-5.1`` for the ``zai`` provider.
+
+    ``custom`` is a generic bucket for arbitrary user-defined endpoints, not
+    a vendor identity like ``zai``/``gemini``/``xai``. An alias that merely
+    *resolves to* ``custom`` (e.g. ``ollama``, via ``_PROVIDER_ALIASES``)
+    does not mean a ``ollama/`` prefix is redundant -- it may be the actual
+    routing prefix a proxy in front of the custom endpoint (e.g. LiteLLM)
+    requires, as in ``ollama/glm-5.2``. Only a literal ``custom/`` prefix --
+    the bucket's own name -- is treated as redundant here.
     """
     if "/" not in model_name:
         return model_name
@@ -237,8 +245,13 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     if not prefix.strip() or not remainder.strip():
         return model_name
 
-    normalized_prefix = _normalize_provider_alias(prefix)
     normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_target == "custom":
+        if prefix.strip().lower() == "custom":
+            return remainder.strip()
+        return model_name
+
+    normalized_prefix = _normalize_provider_alias(prefix)
     if normalized_prefix and normalized_prefix == normalized_target:
         return remainder.strip()
     return model_name

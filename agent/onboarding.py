@@ -39,32 +39,14 @@ def busy_input_hint_gateway(mode: str) -> str:
     ``mode`` is the effective busy_input_mode that was just applied, so the
     message matches reality ("I just interrupted…" vs "I just queued…").
     """
-    if mode == "queue":
-        return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
-        )
-    if mode == "steer":
-        return (
-            "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
-        )
-    if mode == "redirect":
-        return (
-            "💡 First-time tip — I redirected the current run using your message. "
-            "Completed work stays in context, and `/stop` still cancels the task. "
-            "Send `/busy queue` to wait for a separate turn, or `/busy status` "
-            "to check. This notice won't appear again."
-        )
-    return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
-    )
+    from agent.i18n import t
+
+    key = {
+        "queue": "gateway.busy.first_touch_queue",
+        "steer": "gateway.busy.first_touch_steer",
+        "redirect": "gateway.busy.first_touch_redirect",
+    }.get(mode, "gateway.busy.first_touch_interrupt")
+    return t(key)
 
 
 def busy_input_hint_cli(mode: str) -> str:

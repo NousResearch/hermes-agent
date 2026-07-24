@@ -166,6 +166,33 @@ class TestBusyHandlerDemotesInterruptForCompression:
         assert "/stop" in content
         assert "Interrupting" not in content
 
+    def test_ack_explains_compression_demotion_in_gateway_locale(
+        self, monkeypatch
+    ) -> None:
+        from agent import i18n
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+        i18n.reset_language_cache()
+        try:
+            details = i18n.t("gateway.busy.status_separator").join(
+                [
+                    i18n.t("gateway.busy.status_elapsed_min", minutes=2),
+                    i18n.t("gateway.busy.status_iteration", iteration=3, max=60),
+                    i18n.t("gateway.busy.status_running_tool", tool="terminal"),
+                ]
+            )
+            status = i18n.t("gateway.busy.status_detail", details=details)
+            content = i18n.t("gateway.busy.compression_queue_ack", status=status)
+
+            assert "正在压缩上下文" in content
+            assert "已排队" in content
+            assert "正在压缩上下文（已用 2 分钟，第 3/60 轮，正在运行：terminal）" in content
+            assert " (" not in content
+            assert "/stop" in content
+            assert "Compressing context" not in content
+        finally:
+            i18n.reset_language_cache()
+
     @pytest.mark.asyncio
     async def test_interrupt_still_fires_without_compression_lock(self) -> None:
         runner = _make_runner()

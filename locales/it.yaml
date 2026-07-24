@@ -409,6 +409,54 @@ Future messages in this room will use that transcript until `/reset` or another 
     disabled:                   "⚠️ Modalità YOLO **OFF** per questa sessione — i comandi pericolosi richiederanno approvazione."
     enabled:                    "⚡ Modalità YOLO **ON** per questa sessione — tutti i comandi auto-approvati. Usa con cautela."
 
+  queue:
+    usage:                 "Usage: /queue <prompt>"
+    queued:                "Queued for the next turn."
+    queued_with_depth:     "Queued for the next turn. ({depth} queued)"
+
+  steer:
+    usage:                 "Usage: /steer <prompt>"
+    agent_starting_queued: "Agent still starting — /steer queued for the next turn."
+    failed:                "⚠️ Steer failed: {error}"
+    queued_after_tool:     "⏩ Steer queued — arrives after the next tool call: '{preview}'"
+    rejected_empty:        "Steer rejected (empty payload)."
+    no_active_queued:      "No active agent — /steer queued for the next turn."
+    usage_no_agent:        "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+
+  busy:
+    action_restarting:          "restarting"
+    action_shutting_down:       "shutting down"
+    draining_queued:            "⏳ Gateway {action} — queued for the next turn after it comes back."
+    draining_reject:            "⏳ Gateway is {action} and is not accepting another turn right now."
+    draining_new_work_reject:   "⏳ Gateway is {action} and is not accepting new work right now."
+    status_elapsed_min:         "{minutes} min elapsed"
+    status_iteration:           "iteration {iteration}/{max}"
+    status_running_tool:        "running: {tool}"
+    status_separator:           ", "
+    status_detail:              " ({details})"
+    steer_ack:                  "⏩ Steered into current run{status}. Your message arrives after the next tool call."
+    redirect_ack:               "↪ Redirected current run{status}. I'll adjust using your correction."
+    subagent_queue_ack:         "⏳ Subagent working{status} — your message is queued for when it finishes (use /stop to cancel everything)."
+    compression_queue_ack:      "⏳ Compressing context{status} — your message is queued for when it finishes (use /stop to cancel everything)."
+    queue_ack:                  "⏳ Queued for the next turn{status}. I'll respond once the current task finishes."
+    interrupt_ack:              "⚡ Interrupting current task{status}. I'll respond to your message shortly."
+    first_touch_queue:          "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages stop the current task immediately, or `/busy status` to check. This notice won't appear again."
+    first_touch_steer:          "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't appear again."
+    first_touch_interrupt:      "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check. This notice won't appear again."
+    first_touch_redirect:       "💡 First-time tip — I redirected the current run using your message. Completed work stays in context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or `/busy status` to check. This notice won't appear again."
+    wait_stop_switch_model:     "Agent is running — wait or /stop first, then switch models."
+    wait_stop_change_runtime:   "Agent is running — wait or /stop first, then change runtime."
+    wait_stop_run_moa:          "Agent is running — wait or /stop first, then run /moa."
+    goal_mid_run:               "Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal."
+    command_mid_turn:           "⏳ Agent is running — `/{command}` can't run mid-turn. Wait for the current response or `/stop` first."
+
+  shutdown:
+    notice:                "⚠️ Gateway {action} — {hint}"
+    interrupt:             "Your current task will be interrupted."
+    interrupt_resume:      "Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off."
+    restart_success:       "♻ Gateway restarted successfully. Your session continues."
+    online_ready:          "♻️ Gateway online — Hermes is back and ready."
+
   shared:
     session_db_unavailable:      "Database delle sessioni non disponibile."
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"

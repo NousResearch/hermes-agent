@@ -89,6 +89,33 @@ async def test_draining_rejects_new_session_messages():
     assert result == "⏳ Gateway is restarting and is not accepting new work right now."
 
 
+@pytest.mark.asyncio
+async def test_draining_rejects_new_session_messages_in_gateway_locale(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    i18n.reset_language_cache()
+    try:
+        runner, _adapter = make_restart_runner()
+        runner._draining = True
+        runner._restart_requested = True
+
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=make_restart_source("fresh"),
+            message_id="m3",
+        )
+
+        result = await runner._handle_message(event)
+
+        assert "网关正在重启" in result
+        assert "暂不接受新的工作" in result
+        assert "Gateway is restarting" not in result
+    finally:
+        i18n.reset_language_cache()
+
+
 def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)

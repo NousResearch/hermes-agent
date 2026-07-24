@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 from agent.image_routing import (
@@ -300,6 +300,62 @@ class TestLookupSupportsVisionOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None), \
              patch("agent.image_routing._should_probe_ollama_vision", return_value=False):
             assert _lookup_supports_vision("custom", "my-llava", {}) is None
+
+    def test_nous_resolves_vendor_prefixed_model_capabilities(self):
+        """Nous is an aggregator; the model prefix identifies its vendor catalog."""
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            side_effect=lambda provider, model: (
+                fake_caps if (provider, model) == ("openai", "gpt-5.6-sol") else None
+            ),
+        ) as mock_caps:
+            assert _lookup_supports_vision(
+                "nous", "openai/gpt-5.6-sol", {}
+            ) is True
+
+        assert mock_caps.call_args_list == [
+            call("nous", "openai/gpt-5.6-sol"),
+            call("openai", "gpt-5.6-sol"),
+        ]
+
+    def test_nous_vendor_prefixed_vision_model_routes_native_in_auto_mode(self):
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            side_effect=lambda provider, model: (
+                fake_caps if (provider, model) == ("openai", "gpt-5.6-sol") else None
+            ),
+        ):
+            assert decide_image_input_mode(
+                "nous",
+                "openai/gpt-5.6-sol",
+                {"agent": {"image_input_mode": "auto"}},
+            ) == "native"
+
+    def test_nous_vendor_prefixed_text_only_model_stays_text_only(self):
+        fake_caps = type("Caps", (), {"supports_vision": False})()
+        with patch(
+            "agent.models_dev.get_model_capabilities",
+            side_effect=lambda provider, model: (
+                fake_caps if (provider, model) == ("xiaomi", "mimo-v2.5-pro") else None
+            ),
+        ):
+            assert _lookup_supports_vision(
+                "nous", "xiaomi/mimo-v2.5-pro", {}
+            ) is False
+
+    def test_non_aggregator_does_not_reinterpret_model_prefix_as_provider(self):
+        with patch(
+            "agent.models_dev.get_model_capabilities", return_value=None
+        ) as mock_caps, patch(
+            "agent.image_routing._should_probe_ollama_vision", return_value=False
+        ):
+            assert _lookup_supports_vision(
+                "custom", "openai/gpt-5.6-sol", {}
+            ) is None
+
+        mock_caps.assert_called_once_with("custom", "openai/gpt-5.6-sol")
 
     def test_ollama_probe_when_models_dev_missing(self):
         cfg = {"model": {"base_url": "http://localhost:11434/v1"}}

@@ -12391,9 +12391,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._reasoning_shown_this_turn = False
 
             # --- Streaming TTS setup ---
-            # Any working TTS provider streams sentence-by-sentence as the agent
-            # generates tokens: PCM-streaming providers (ElevenLabs, OpenAI) play
-            # chunks as they arrive, everything else synthesizes per sentence.
+            # Providers with chunked PCM APIs stream sentence-by-sentence as the
+            # agent generates tokens. Synchronous providers use batch TTS after
+            # the response completes to avoid pauses between synthesis requests.
             use_streaming_tts = False
             _streaming_box_opened = False
             text_queue = None
@@ -12405,11 +12405,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     from tools.tts_tool import (
                         _import_sounddevice,
-                        check_tts_requirements,
+                        supports_realtime_streaming_tts,
                         stream_tts_to_speaker,
                     )
                     _import_sounddevice()
-                    use_streaming_tts = check_tts_requirements()
+                    use_streaming_tts = supports_realtime_streaming_tts()
                 except Exception:
                     pass
 

@@ -8,7 +8,7 @@ the chunked-streamer playback path, and the universal per-sentence sync fallback
 
 import queue
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -123,16 +123,138 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
 # ── Built-in provider availability ───────────────────────────────────────
 
 
-def test_elevenlabs_available_reflects_key(monkeypatch):
+def test_elevenlabs_available_requires_key_and_sdk(monkeypatch):
+    from tools import tts_tool
+
     monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "ELEVENLABS_API_KEY" else None)
+    monkeypatch.setattr(tts_tool, "_import_elevenlabs", lambda: MagicMock())
     assert ts.ElevenLabsStreamer.available() is True
     monkeypatch.setattr(ts, "get_env_value", lambda k, *a: None)
     assert ts.ElevenLabsStreamer.available() is False
 
 
-def test_openai_available_reflects_key(monkeypatch):
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "OPENAI_API_KEY" else None)
+def test_elevenlabs_unavailable_when_sdk_import_fails(monkeypatch):
+    from tools import tts_tool
+
+    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "ELEVENLABS_API_KEY" else None)
+    monkeypatch.setattr(
+        tts_tool,
+        "_import_elevenlabs",
+        MagicMock(side_effect=ImportError("missing elevenlabs")),
+    )
+
+    assert ts.ElevenLabsStreamer.available() is False
+
+
+def test_openai_available_requires_resolved_audio_credentials_and_sdk(monkeypatch):
+    from tools import tts_tool
+
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: MagicMock())
+    monkeypatch.setattr(
+        tts_tool,
+        "_resolve_openai_audio_client_config",
+        lambda: ("voice-key", "https://api.openai.com/v1", False),
+    )
     assert ts.OpenAIStreamer.available() is True
+
+
+def test_openai_unavailable_when_sdk_import_fails(monkeypatch):
+    from tools import tts_tool
+
+    monkeypatch.setattr(
+        tts_tool,
+        "_resolve_openai_audio_client_config",
+        lambda: ("voice-key", "https://api.openai.com/v1", False),
+    )
+    monkeypatch.setattr(
+        tts_tool,
+        "_import_openai_client",
+        MagicMock(side_effect=ImportError("missing openai")),
+    )
+
+    assert ts.OpenAIStreamer.available() is False
+
+
+def test_openai_unavailable_when_audio_credentials_cannot_resolve(monkeypatch):
+    from tools import tts_tool
+
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: MagicMock())
+    monkeypatch.setattr(
+        tts_tool,
+        "_resolve_openai_audio_client_config",
+        MagicMock(side_effect=ValueError("missing credentials")),
+    )
+
+    assert ts.OpenAIStreamer.available() is False
+
+
+def test_openai_stream_uses_resolved_audio_credentials_and_config_base_url(monkeypatch):
+    from tools import tts_tool
+
+    client_class = MagicMock()
+    client = client_class.return_value
+    response = client.audio.speech.with_streaming_response.create.return_value
+    response.__enter__.return_value.iter_bytes.return_value = iter([b"pcm"])
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: client_class)
+    monkeypatch.setattr(
+        tts_tool,
+        "_resolve_openai_audio_client_config",
+        lambda: ("voice-key", "https://resolved.example/v1", False),
+    )
+    streamer = ts.OpenAIStreamer(
+        {},
+        {
+            "base_url": "https://configured.example/v1",
+            "model": "custom-tts",
+            "voice": "nova",
+        },
+    )
+
+    assert list(streamer.stream("hello")) == [b"pcm"]
+    client_class.assert_called_once_with(
+        api_key="voice-key",
+        base_url="https://configured.example/v1",
+    )
+    client.audio.speech.with_streaming_response.create.assert_called_once_with(
+        model="custom-tts",
+        voice="nova",
+        input="hello",
+        response_format="pcm",
+        extra_headers={"x-idempotency-key": ANY},
+    )
+    client.close.assert_called_once_with()
+
+
+def test_openai_stream_keeps_managed_token_on_managed_gateway(monkeypatch):
+    from tools import tts_tool
+
+    client_class = MagicMock()
+    client = client_class.return_value
+    response = client.audio.speech.with_streaming_response.create.return_value
+    response.__enter__.return_value.iter_bytes.return_value = iter([b"pcm"])
+    monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: client_class)
+    monkeypatch.setattr(
+        tts_tool,
+        "_resolve_openai_audio_client_config",
+        lambda: ("managed-token", "https://managed.example/v1", True),
+    )
+    streamer = ts.OpenAIStreamer(
+        {},
+        {
+            "base_url": "https://untrusted.example/v1",
+            "model": "unsupported-model",
+        },
+    )
+
+    assert list(streamer.stream("hello")) == [b"pcm"]
+    client_class.assert_called_once_with(
+        api_key="managed-token",
+        base_url="https://managed.example/v1",
+    )
+    request = client.audio.speech.with_streaming_response.create
+    assert request.call_args.kwargs["model"] == tts_tool.DEFAULT_OPENAI_MODEL
+    assert request.call_args.kwargs["extra_headers"]["x-idempotency-key"]
+    client.close.assert_called_once_with()
 
 
 # ── Dispatch: chunked streamer path ──────────────────────────────────────

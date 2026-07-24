@@ -11,9 +11,9 @@ Two provider shapes, one contract (int16 mono PCM at ``sample_rate``):
 * **True streamers** (`StreamingTTSProvider.stream`) — chunked APIs
   (ElevenLabs pcm_24000, OpenAI pcm, …) that yield audio as it synthesizes.
   Lowest time-to-first-audio.
-* **Everyone else** — providers with no chunked API still get per-*sentence*
-  playback via the proven sync `text_to_speech_tool` path (handled by the
-  dispatcher, not here), so edge (the default) is conversational too.
+* **Everyone else** — direct dispatcher callers retain per-*sentence* sync
+  playback. The CLI instead routes these providers through whole-response batch
+  TTS so separate synthesis requests cannot introduce inter-sentence pauses.
 
 Adding a streamer is `@register("name")` on a `StreamingTTSProvider` subclass;
 the dispatcher, config gate (`tts.<name>.streaming`), and resolver come free.
@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
 from typing import Callable, Dict, Iterator, List, Optional
 
@@ -144,9 +145,9 @@ def resolve_streaming_provider(
 ) -> Optional[StreamingTTSProvider]:
     """Return a ready streamer for the *configured* provider, else ``None``.
 
-    ``None`` means "no chunked API for this provider" — the dispatcher then
-    speaks per-sentence via the sync path, preserving the user's chosen voice.
-    We never silently swap to a different provider just to get streaming.
+    ``None`` means "no chunked API for this provider". Direct dispatcher callers
+    retain the sync path, while the CLI uses whole-response batch TTS. We never
+    silently swap to a different provider just to get streaming.
     """
     name = (preferred or _get_provider(tts_config)).lower().strip()
     cls = _REGISTRY.get(name)
@@ -171,7 +172,15 @@ class ElevenLabsStreamer(StreamingTTSProvider):
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("ELEVENLABS_API_KEY"))
+        if not get_env_value("ELEVENLABS_API_KEY"):
+            return False
+        try:
+            from tools.tts_tool import _import_elevenlabs
+
+            _import_elevenlabs()
+            return True
+        except ImportError:
+            return False
 
     def stream(self, text: str) -> Iterator[bytes]:
         from tools.tts_tool import (
@@ -202,21 +211,43 @@ class OpenAIStreamer(StreamingTTSProvider):
 
     @staticmethod
     def available() -> bool:
-        return bool(get_env_value("OPENAI_API_KEY"))
+        try:
+            from tools.tts_tool import (
+                _import_openai_client,
+                _resolve_openai_audio_client_config,
+            )
+
+            _import_openai_client()
+            _resolve_openai_audio_client_config()
+            return True
+        except (ImportError, ValueError):
+            return False
 
     def stream(self, text: str) -> Iterator[bytes]:
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=get_env_value("OPENAI_API_KEY"),
-            base_url=get_env_value("OPENAI_BASE_URL") or None,
+        from tools.tts_tool import (
+            DEFAULT_OPENAI_MODEL,
+            DEFAULT_OPENAI_VOICE,
+            MANAGED_OPENAI_TTS_MODELS,
+            _import_openai_client,
+            _resolve_openai_audio_client_config,
         )
-        model = self.section.get("model", "gpt-4o-mini-tts")
-        voice = self.section.get("voice", "alloy")
-        with client.audio.speech.with_streaming_response.create(
-            model=model,
-            voice=voice,
-            input=text,
-            response_format="pcm",
-        ) as response:
-            yield from response.iter_bytes()
+
+        api_key, resolved_base_url, is_managed = _resolve_openai_audio_client_config()
+        configured_base_url = self.section.get("base_url")
+        base_url = resolved_base_url if is_managed else configured_base_url or resolved_base_url
+        model = self.section.get("model", DEFAULT_OPENAI_MODEL)
+        if is_managed and model not in MANAGED_OPENAI_TTS_MODELS:
+            model = DEFAULT_OPENAI_MODEL
+        voice = self.section.get("voice", DEFAULT_OPENAI_VOICE)
+        client = _import_openai_client()(api_key=api_key, base_url=base_url)
+        try:
+            with client.audio.speech.with_streaming_response.create(
+                model=model,
+                voice=voice,
+                input=text,
+                response_format="pcm",
+                extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+            ) as response:
+                yield from response.iter_bytes()
+        finally:
+            client.close()

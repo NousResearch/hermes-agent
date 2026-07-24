@@ -2721,6 +2721,26 @@ def _has_openai_audio_backend() -> bool:
 # ===========================================================================
 # Streaming TTS: sentence-by-sentence pipeline
 # ===========================================================================
+
+def supports_realtime_streaming_tts(provider: Optional[str] = None) -> bool:
+    """Return whether the configured provider can stream PCM audio chunks.
+
+    Sentence-at-a-time synthesis through a synchronous provider introduces a
+    full network round trip between sentences. Callers should use batch TTS
+    instead so the provider generates one continuous clip with natural pacing.
+
+    Args:
+        provider: Optional provider override. The configured provider is used
+            when omitted.
+
+    Returns:
+        True when a registered, available streaming provider resolves.
+    """
+    from tools.tts_streaming import resolve_streaming_provider
+
+    tts_config = _load_tts_config()
+    return resolve_streaming_provider(tts_config, preferred=provider) is not None
+
 # Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
@@ -2784,8 +2804,9 @@ def stream_tts_to_speaker(
         output_stream = None
         tts_config = _load_tts_config()
 
-        # Prefer a chunked streamer for low time-to-first-audio; fall back to
-        # per-sentence sync synthesis (universal — edge + every non-streamer).
+        # Prefer a chunked streamer for low time-to-first-audio. This function
+        # retains its sync fallback for direct callers; the CLI only enters this
+        # pipeline when a chunked provider is available.
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
 

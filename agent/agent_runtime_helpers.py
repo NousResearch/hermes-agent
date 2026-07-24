@@ -2077,10 +2077,64 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
 
     try:
-        # Clear the per-config context_length override so the new model's
-        # actual context window is resolved via get_model_context_length()
-        # instead of inheriting the stale value from the previous model.
+        # Re-resolve the global ``model.context_length`` pin from live config
+        # instead of unconditionally clearing it. The old behavior
+        # (``agent._config_context_length = None``) meant the pin worked at
+        # startup but silently disappeared after ANY /model switch — even when
+        # switching straight back to the configured default model (#40979).
+        #
+        # Scoping matches the design intent documented in agent_init.py
+        # ("model.context_length describes the configured default model"):
+        # the pin is restored ONLY when the switched-to model+route equals the
+        # configured default model+route. Switching to a *different* model
+        # still clears the pin, so the override cannot leak onto models it
+        # was never meant for (#62152). Mirrors the live-config re-read this
+        # function already does for custom_providers overrides (#15779).
         agent._config_context_length = None
+        try:
+            from hermes_cli.config import load_config_readonly as _sm_cfg_ro
+
+            _sm_model_cfg = (_sm_cfg_ro() or {}).get("model") or {}
+            if isinstance(_sm_model_cfg, dict):
+                _sm_raw_ctx = _sm_model_cfg.get("context_length")
+                _sm_pin = int(_sm_raw_ctx) if _sm_raw_ctx else None
+            else:
+                _sm_model_cfg = {}
+                _sm_pin = None
+            if _sm_pin is not None and _sm_pin > 0:
+                _sm_default = str(_sm_model_cfg.get("default") or "").strip()
+                _sm_default_rt = _sm_default
+                _sm_active_rt = new_model
+                try:
+                    from hermes_cli.model_normalize import (
+                        normalize_model_for_provider,
+                    )
+
+                    _sm_default_rt = normalize_model_for_provider(
+                        _sm_default, new_provider
+                    )
+                    _sm_active_rt = normalize_model_for_provider(
+                        new_model, new_provider
+                    )
+                except Exception:
+                    pass
+                if not _sm_default or _sm_default_rt != _sm_active_rt:
+                    _sm_pin = None
+                else:
+                    from agent.agent_init import _context_route_mismatch
+
+                    if _context_route_mismatch(
+                        _sm_model_cfg.get("base_url"),
+                        base_url or agent.base_url,
+                        _sm_model_cfg.get("provider"),
+                        new_provider,
+                    ):
+                        _sm_pin = None
+            agent._config_context_length = _sm_pin
+        except Exception:
+            # Config unreadable mid-switch — keep the old clearing behavior
+            # rather than carrying the previous model's stale value.
+            agent._config_context_length = None
 
         # ── Swap core runtime fields ──
         agent.model = new_model

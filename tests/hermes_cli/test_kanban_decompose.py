@@ -75,6 +75,55 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+@pytest.mark.parametrize(
+    "description",
+    [None, "", "  \t", ["described"], {"text": "described"}, 42, True],
+)
+def test_generic_roster_excludes_missing_blank_and_malformed_descriptions(description):
+    from types import SimpleNamespace
+
+    profiles = [
+        SimpleNamespace(name="invalid", description=description),
+        SimpleNamespace(name="valid", description="A useful worker"),
+    ]
+    with patch.object(decomp.profiles_mod, "list_profiles", return_value=profiles):
+        roster, valid_names = decomp._build_roster()
+
+    assert {entry["name"] for entry in roster} == {"valid"}
+    assert valid_names == {"valid"}
+
+
+def test_generic_roster_accepts_only_literal_nonblank_strings():
+    from types import SimpleNamespace
+
+    profiles = [
+        SimpleNamespace(name="worker", description="  A useful worker  "),
+    ]
+    with patch.object(decomp.profiles_mod, "list_profiles", return_value=profiles):
+        roster, valid_names = decomp._build_roster()
+
+    assert roster == [{
+        "name": "worker",
+        "description": "A useful worker",
+        "has_description": True,
+    }]
+    assert valid_names == {"worker"}
+
+
+def test_profile_loader_keeps_non_string_yaml_description_ineligible(kanban_home):
+    profile_dir = kanban_home / "profiles" / "worker"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "profile.yaml").write_text(
+        "description:\n  - described\n",
+        encoding="utf-8",
+    )
+
+    roster, valid_names = decomp._build_roster()
+
+    assert "worker" not in {entry["name"] for entry in roster}
+    assert "worker" not in valid_names
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)

@@ -15,7 +15,7 @@ import {
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { codiconForLanguage, isGenericFenceLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
 
 /**
  * Streamdown's code adapter renders header + body as inline siblings, so we
@@ -135,7 +135,10 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   }
 
   const cleanLanguage = sanitizeLanguageTag(language || '')
-  const label = cleanLanguage && cleanLanguage !== 'unknown' ? cleanLanguage : ''
+  // Hide generic fence labels (text/plain/…) — they are not useful chip text
+  // and used to leak into the transcript next to the first code line.
+  const label =
+    cleanLanguage && cleanLanguage !== 'unknown' && !isGenericFenceLanguage(cleanLanguage) ? cleanLanguage : ''
   const plain = defer || exceedsHighlightBudget(trimmed)
 
   return (

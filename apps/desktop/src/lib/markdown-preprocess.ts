@@ -1,6 +1,6 @@
 import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
-import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { isGenericFenceLanguage, isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
@@ -322,7 +322,15 @@ function extend(out: string[], lines: string[]) {
 }
 
 function pushProseFence(out: string[], indent: string, info: string, lines: string[]) {
-  if (info) {
+  // Generic language labels (```text, ```plain, …) are fence metadata, not
+  // content. Emitting them as prose produced transcript leaks like
+  // "text turns: 31…" / "text pytest …". Real info tails ("Heads up - …") still
+  // demote into the body — only bare generic tags are dropped.
+  const trimmed = info.trim()
+  const infoToken = trimmed.split(/\s+/, 1)[0] || ''
+  const isBareGenericLabel = Boolean(trimmed) && trimmed === infoToken && isGenericFenceLanguage(infoToken)
+
+  if (trimmed && !isBareGenericLabel) {
     out.push(`${indent}${info}`.trimEnd())
   }
 

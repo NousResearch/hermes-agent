@@ -5822,6 +5822,26 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Move '{key}' under the appropriate section",
             ))
 
+    # ── Memory: memory_enabled vs provider semantic mismatch (#32624) ──
+    # memory.memory_enabled: false does NOT disable the memory plugin or its
+    # configured external provider. The plugin still loads and runs (watchdog,
+    # capture, persona writes) because plugin loading is gated by
+    # memory.provider, not memory_enabled.
+    mem_cfg = config.get("memory", {})
+    if isinstance(mem_cfg, dict):
+        _mem_provider = mem_cfg.get("provider", "")
+        _mem_enabled = mem_cfg.get("memory_enabled", True)
+        if not _mem_enabled and _mem_provider and str(_mem_provider).strip():
+            issues.append(ConfigIssue(
+                "warning",
+                "memory.memory_enabled: false does NOT disable the memory "
+                "plugin or its configured external provider",
+                "The plugin still loads and runs (watchdog, capture, persona "
+                "writes) because loading is gated by memory.provider, not "
+                "memory_enabled. To fully disable the memory plugin, set: "
+                "memory.provider: '' (empty string)",
+            ))
+
     return issues
 
 

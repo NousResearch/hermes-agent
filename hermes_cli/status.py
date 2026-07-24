@@ -119,6 +119,23 @@ def show_status(args):
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
 
+    # Show the resolved profile + config/log paths so users know which
+    # files are live (#32624 Trap 2 — sticky profile silently overrides
+    # root config.yaml).
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_constants import get_hermes_home, display_hermes_home
+        _active_profile = get_active_profile_name() or "default"
+        _resolved_home = get_hermes_home()
+        _config_path = _resolved_home / "config.yaml"
+        _gateway_log = _resolved_home / "logs" / "gateway.log"
+        _agent_log = _resolved_home / "logs" / "agent.log"
+        print(f"  Profile:      {_active_profile}")
+        print(f"  Config:       {_config_path}")
+        print(f"  Logs:         {_gateway_log}, {_agent_log}")
+    except Exception:
+        pass
+
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
 

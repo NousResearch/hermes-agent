@@ -262,3 +262,47 @@ class TestUnknownTopLevelKeys:
             "model": {"provider": "openrouter"},
         })
         assert issues == []
+
+
+class TestMemoryEnabledTrap:
+    """memory.memory_enabled: false does not disable the plugin (#32624)."""
+
+    def test_disabled_with_provider_warns(self):
+        """The exact trap: memory_enabled: false + provider set."""
+        issues = validate_config_structure({
+            "memory": {
+                "memory_enabled": False,
+                "provider": "openviking",
+            }
+        })
+        warnings = [i for i in issues if "memory_enabled" in i.message]
+        assert len(warnings) == 1
+        assert "memory.provider" in warnings[0].hint or "provider:" in warnings[0].hint
+
+    def test_enabled_with_provider_no_warn(self):
+        """Normal case: memory_enabled: true + provider set = no warning."""
+        issues = validate_config_structure({
+            "memory": {
+                "memory_enabled": True,
+                "provider": "openviking",
+            }
+        })
+        warnings = [i for i in issues if "memory_enabled" in i.message]
+        assert len(warnings) == 0
+
+    def test_disabled_without_provider_no_warn(self):
+        """Disabled + no provider = truly disabled, no warning needed."""
+        issues = validate_config_structure({
+            "memory": {
+                "memory_enabled": False,
+                "provider": "",
+            }
+        })
+        warnings = [i for i in issues if "memory_enabled" in i.message]
+        assert len(warnings) == 0
+
+    def test_no_memory_section_no_warn(self):
+        """No memory section at all = no warning."""
+        issues = validate_config_structure({})
+        warnings = [i for i in issues if "memory_enabled" in i.message]
+        assert len(warnings) == 0

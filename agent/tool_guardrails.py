@@ -77,6 +77,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    same_call_repeat_warn_after: int = 3
+    same_call_repeat_block_after: int = 6
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -109,6 +111,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
                 defaults.no_progress_warn_after,
             ),
+            same_call_repeat_warn_after=_positive_int(
+                warn_after.get("same_call_repeat", data.get("same_call_repeat_warn_after")),
+                defaults.same_call_repeat_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -120,6 +126,10 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            same_call_repeat_block_after=_positive_int(
+                hard_stop_after.get("same_call_repeat", data.get("same_call_repeat_block_after")),
+                defaults.same_call_repeat_block_after,
             ),
         )
 
@@ -232,6 +242,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._same_call_repeat_counts: dict[ToolCallSignature, int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -279,6 +290,24 @@ class ToolCallGuardrailController:
                     )
                     self._halt_decision = decision
                     return decision
+
+            same_call_count = self._same_call_repeat_counts.get(signature, 0)
+            if same_call_count >= self.config.same_call_repeat_block_after:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="same_call_repeat_block",
+                    message=(
+                        f"Blocked {tool_name}: the same read-only call was made "
+                        f"{same_call_count} times this turn with varying results. "
+                        "Stop repeating it; use the results already provided or "
+                        "try a different query."
+                    ),
+                    tool_name=tool_name,
+                    count=same_call_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -358,6 +387,9 @@ class ToolCallGuardrailController:
             repeat_count = previous[1] + 1
         self._no_progress[signature] = (result_hash, repeat_count)
 
+        same_call_count = self._same_call_repeat_counts.get(signature, 0) + 1
+        self._same_call_repeat_counts[signature] = same_call_count
+
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(
                 action="warn",
@@ -369,6 +401,20 @@ class ToolCallGuardrailController:
                 ),
                 tool_name=tool_name,
                 count=repeat_count,
+                signature=signature,
+            )
+
+        if self.config.warnings_enabled and same_call_count >= self.config.same_call_repeat_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="same_call_repeat_warning",
+                message=(
+                    f"{tool_name} was called with the same arguments {same_call_count} "
+                    "times this turn. This looks like a loop; use the results already "
+                    "provided or try a different query instead of repeating it."
+                ),
+                tool_name=tool_name,
+                count=same_call_count,
                 signature=signature,
             )
 

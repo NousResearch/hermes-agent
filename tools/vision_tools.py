@@ -300,6 +300,55 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
     return False
 
 
+def _flatten_alpha_to_opaque(
+    image_path: Path, detected_mime: str, out_path: Optional[Path] = None
+) -> tuple[Path, str]:
+    """Composite a transparent image onto a white background.
+
+    llama.cpp's stb_image loader DROPS the alpha channel instead of
+    compositing it, so the RGB values of fully-transparent pixels — which
+    encoders store as arbitrary garbage — reach the vision encoder verbatim.
+    A transparent-background PNG then reads as heavy horizontal-line "glitch"
+    noise (reproduced 2026-07-14 against Qwen3-VL-30B on :8005; the flattened
+    copy of the same image was described clean). Cloud providers composite
+    server-side, so flattening is a no-op for them and makes behaviour
+    uniform across backends.
+
+    Returns ``(path, mime)``. When flattening applies, the result is a new
+    RGB PNG (written to ``out_path`` if given, else a fresh temp file the
+    caller cleans up like any converted image). Anything without an actual
+    alpha channel — plus animated GIF/WebP, where flattening would drop the
+    animation — is returned untouched. Soft-fails to the original on any
+    error: a missing Pillow must never break the embed path.
+    """
+    if detected_mime not in ("image/png", "image/webp"):
+        return image_path, detected_mime
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            if getattr(_img, "is_animated", False):
+                return image_path, detected_mime
+            has_alpha = (
+                _img.mode in ("RGBA", "LA")
+                or (_img.mode == "P" and "transparency" in _img.info)
+            )
+            if not has_alpha:
+                return image_path, detected_mime
+            rgba = _img.convert("RGBA")
+            flat = _PILImage.new("RGB", rgba.size, (255, 255, 255))
+            flat.paste(rgba, mask=rgba.getchannel("A"))
+        if out_path is None:
+            out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"flattened_{uuid.uuid4()}.png"
+        flat.save(out_path, format="PNG")
+        if out_path.exists() and out_path.stat().st_size > 0:
+            return out_path, "image/png"
+    except Exception as exc:
+        logger.warning("Alpha flatten failed; sending original image: %s", exc)
+    return image_path, detected_mime
+
+
 def _normalize_to_supported_image(
     image_path: Path, detected_mime: str
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
@@ -312,12 +361,15 @@ def _normalize_to_supported_image(
       - If conversion is impossible: ``(None, None, <error message>)``.
 
     SVG is rasterized to PNG (best-effort, soft deps).  Other raster formats
-    Pillow can read (BMP, TIFF, etc.) are re-encoded to PNG.  This runs BEFORE
+    Pillow can read (BMP, TIFF, etc.) are re-encoded to PNG.  Transparent
+    images are composited onto white (see :func:`_flatten_alpha_to_opaque` —
+    llama.cpp backends decode the alpha channel as noise).  This runs BEFORE
     the image is base64-embedded into conversation history, so an unsupported
     media_type can never reach the provider and wedge the session.
     """
     if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
-        return image_path, detected_mime, None
+        flat_path, flat_mime = _flatten_alpha_to_opaque(image_path, detected_mime)
+        return flat_path, flat_mime, None
 
     out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -326,6 +378,9 @@ def _normalize_to_supported_image(
     # SVG: needs a rasterizer (Pillow cannot render SVG).
     if detected_mime == "image/svg+xml":
         if _rasterize_svg_to_png(image_path, out_path):
+            # Rasterizers typically emit RGBA with a transparent background —
+            # the exact shape that decodes as noise on llama.cpp backends.
+            _flatten_alpha_to_opaque(out_path, "image/png", out_path=out_path)
             return out_path, "image/png", None
         return (
             None,
@@ -345,6 +400,7 @@ def _normalize_to_supported_image(
                 _img = _img.convert("RGBA")
             _img.save(out_path, format="PNG")
         if out_path.exists() and out_path.stat().st_size > 0:
+            _flatten_alpha_to_opaque(out_path, "image/png", out_path=out_path)
             return out_path, "image/png", None
     except Exception as _exc:
         logger.warning("Failed to normalize %s image to PNG: %s",

@@ -990,3 +990,58 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
 })
+
+
+describe('async_delegation_complete display', () => {
+  it('renders task_count from object display_metadata', () => {
+    const messages = toChatMessages([
+      {
+        role: 'system',
+        content: '',
+        timestamp: 1,
+        display_kind: 'async_delegation_complete',
+        display_metadata: {
+          delegation_id: 'deleg_test',
+          task_count: 3
+        }
+      }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(chatMessageText(messages[0])).toBe('3 background agents finished')
+  })
+
+  it('renders task_count when display_metadata is still a JSON string', () => {
+    const messages = toChatMessages([
+      {
+        role: 'system',
+        content: '',
+        timestamp: 1,
+        display_kind: 'async_delegation_complete',
+        // Some restore paths deliver the SQLite TEXT column unparsed (#70611).
+        display_metadata: JSON.stringify({
+          delegation_id: 'deleg_b6a3b009',
+          task_count: 2
+        }) as unknown as { delegation_id: string; task_count: number }
+      }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(chatMessageText(messages[0])).toBe('2 background agents finished')
+  })
+
+  it('falls back when display_metadata string is invalid', () => {
+    const messages = toChatMessages([
+      {
+        role: 'system',
+        content: '',
+        timestamp: 1,
+        display_kind: 'async_delegation_complete',
+        display_metadata: 'not-json{' as unknown as { delegation_id: string; task_count: number }
+      }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(chatMessageText(messages[0])).toBe('background agent work finished')
+  })
+})

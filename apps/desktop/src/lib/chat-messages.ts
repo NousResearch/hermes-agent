@@ -5,7 +5,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { SessionMessage, TimelineDisplayMetadata, UsageStats } from '@/types/hermes'
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
 
@@ -311,16 +311,42 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
   return displayKind === 'hidden' ? null : content
 }
 
+function normalizeDisplayMetadata(
+  metadata: SessionMessage['display_metadata']
+): TimelineDisplayMetadata | undefined {
+  if (metadata == null) {
+    return undefined
+  }
+
+  if (typeof metadata === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(metadata)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as TimelineDisplayMetadata
+      }
+    } catch {
+      return undefined
+    }
+
+    return undefined
+  }
+
+  if (typeof metadata === 'object') {
+    return metadata
+  }
+
+  return undefined
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
+    const meta = normalizeDisplayMetadata(message.display_metadata)
     const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
-        : undefined
+      meta && typeof meta === 'object' && 'task_count' in meta ? meta.task_count : undefined
 
     return count === undefined
       ? 'background agent work finished'

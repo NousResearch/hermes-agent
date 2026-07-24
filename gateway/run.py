@@ -17751,12 +17751,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # Resolve a reply anchor for the synthetic event. Prefer the event's
+            # explicit message_id (terminal watchers and async-delegation
+            # completions carry the triggering ``om_`` anchor from the
+            # session context). When that's missing (older background
+            # processes dispatched before the anchor was captured, or a
+            # session origin whose message_id wasn't populated), fall back to
+            # the persisted session-store origin's message_id — e.g. a Feishu
+            # thread root. This keeps topic/thread-capable platforms routing
+            # the re-entry message via the reply API instead of an invalid
+            # create-by-thread-id path.
+            _synth_msg_id = str(evt.get("message_id") or "").strip() or getattr(source, "message_id", None) or None
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None,
+                message_id=_synth_msg_id,
                 metadata=metadata,
             )
             logger.info(
@@ -18199,6 +18210,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await adapter.send(
                                 chat_id,
                                 message_text,
+                                reply_to=message_id,
                                 metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                             )
                         except Exception as e:
@@ -18229,6 +18241,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await adapter.send(
                             chat_id,
                             message_text,
+                            reply_to=message_id,
                             metadata=_non_conversational_metadata(send_meta, platform=platform_name),
                         )
                     except Exception as e:

@@ -78,3 +78,45 @@ class TestEnrichMessageWithVision:
         assert "photograph of a dog" in out
         assert "fenced leak" not in out
         assert "<memory-context>" not in out
+
+    # ─── 22413: all-failed / fail-fast ───────────────────────────────────
+
+    def test_all_failed_no_caption_returns_failfast(self, gateway_runner):
+        """When ALL images fail AND the user has no caption, return the
+        fail-fast message instead of enriched parts."""
+        fake_result = json.dumps({"success": False, "analysis": ""})
+        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
+            out = _run(gateway_runner._enrich_message_with_vision("", ["/tmp/img1.jpg", "/tmp/img2.jpg"]))
+        assert "unable to see it" in out
+        assert "not available right now" in out
+
+    def test_all_failed_with_caption_returns_original(self, gateway_runner):
+        """When ALL images fail but user provided a caption, return the
+        original user text (no enriched parts)."""
+        fake_result = json.dumps({"success": False, "analysis": ""})
+        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
+            out = _run(gateway_runner._enrich_message_with_vision("my caption", ["/tmp/img.jpg"]))
+        assert "my caption" in out
+        assert "unable to see it" not in out
+
+    def test_all_exception_no_caption_returns_failfast(self, gateway_runner):
+        """When ALL images raise exceptions and no caption, fail-fast."""
+        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(side_effect=ValueError("API error"))):
+            out = _run(gateway_runner._enrich_message_with_vision("", ["/tmp/img.jpg"]))
+        assert "unable to see it" in out
+
+    def test_mixed_success_failure_includes_user_text(self, gateway_runner):
+        """When some images succeed and some fail, still return the mixed
+        enriched results with user caption."""
+        def side_effect(*a, **kw):
+            path = kw.get("image_url") or a[0]
+            if "good" in path:
+                return json.dumps({"success": True, "analysis": "A beautiful landscape."})
+            return json.dumps({"success": False, "analysis": ""})
+        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(side_effect=side_effect)):
+            out = _run(gateway_runner._enrich_message_with_vision(
+                "here are two pics",
+                ["/tmp/good.jpg", "/tmp/bad.jpg"],
+            ))
+        assert "beautiful landscape" in out
+        assert "here are two pics" in out

@@ -200,6 +200,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     syntax). The Baileys adapter does the same.
     """
 
+    supports_native_remote_images = True
     splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):

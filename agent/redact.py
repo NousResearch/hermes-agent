@@ -116,7 +116,19 @@ _PREFIX_PATTERNS = [
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
 # Uppercase keys tolerate spaces around "=" (e.g. ``FOO_SECRET = bar``) because
 # an all-caps key is almost never prose/code.
-_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+_SECRET_ENV_WORDS = (
+    "API_KEY",
+    "APIKEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+)
+_SECRET_ENV_NAMES = (
+    r"(?:" + "|".join(re.escape(word) for word in _SECRET_ENV_WORDS) + r")"
+)
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
@@ -194,8 +206,10 @@ _JSON_FIELD_RE = re.compile(
 # corruption — the closing quote vanishes and the command/string no longer parses
 # (unterminated quote → shell EOF / Python SyntaxError). Real credentials never
 # contain ``"`` or ``'``, so excluding them is safe. See #43083.
+_AUTH_HEADER_NAMES = ("Authorization", "Proxy-Authorization")
 _AUTH_HEADER_RE = re.compile(
-    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)",
+    r"((?:" + "|".join(re.escape(name) for name in _AUTH_HEADER_NAMES)
+    + r"):\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)",
     re.IGNORECASE,
 )
 
@@ -203,8 +217,19 @@ _AUTH_HEADER_RE = re.compile(
 # Anthropic and many providers authenticate with ``x-api-key``; values without
 # a known vendor prefix (custom/local backends) would otherwise leak when a
 # request or curl command is logged or echoed into tool output / transcripts.
+_SECRET_HEADER_NAME_VALUES = (
+    "x-api-key",
+    "x-goog-api-key",
+    "api-key",
+    "apikey",
+    "x-api-token",
+    "x-auth-token",
+    "x-access-token",
+)
 _SECRET_HEADER_NAMES = (
-    r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
+    r"(?:" + "|".join(
+        re.escape(name) for name in _SECRET_HEADER_NAME_VALUES
+    ) + r")"
 )
 _SECRET_HEADER_RE = re.compile(
     rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)",
@@ -259,9 +284,13 @@ _URL_BARE_TOKEN_RE = re.compile(
 
 # JWT tokens: header.payload[.signature] — always start with "eyJ" (base64 for "{")
 # Matches 1-part (header only), 2-part (header.payload), and full 3-part JWTs.
+_JWT_HEAD_PATTERN = r"eyJ[A-Za-z0-9_-]{10,}"
 _JWT_RE = re.compile(
-    r"eyJ[A-Za-z0-9_-]{10,}"           # Header (always starts with eyJ)
-    r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
+    _JWT_HEAD_PATTERN                    # Header (always starts with eyJ)
+    + r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"  # Optional payload and/or signature
+)
+_STREAMING_JWT_CANDIDATE_RE = re.compile(
+    _JWT_HEAD_PATTERN + r"[A-Za-z0-9_.=-]*$"
 )
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
@@ -321,6 +350,682 @@ _FORM_BODY_RE = re.compile(
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
 )
+
+
+def _expand_streaming_prefix(expression: str) -> tuple[str, ...]:
+    """Expand the literal portion of a known-prefix regex.
+
+    The current patterns use literal characters, escaped literals, and one
+    simple character class (the Slack ``xox[baprs]-`` family). Keeping this
+    derivation next to ``_PREFIX_PATTERNS`` prevents the streaming guard from
+    becoming a second manually maintained credential list.
+    """
+    # Slack app-level tokens contain a variable numeric component
+    # (``xapp-\d+-...``).  Retaining from the stable ``xapp-`` stem is
+    # conservative and lets the static redactor decide whether the completed
+    # token is valid once a delimiter arrives.
+    variable_digits = expression.find(r"\d+")
+    if variable_digits >= 0:
+        expression = expression[:variable_digits]
+
+    expanded = [""]
+    i = 0
+    while i < len(expression):
+        char = expression[i]
+        if char == "\\" and i + 1 < len(expression):
+            expanded = [prefix + expression[i + 1] for prefix in expanded]
+            i += 2
+            continue
+        if char == "[":
+            closing = expression.find("]", i + 1)
+            if closing < 0:
+                return ()
+            choices = expression[i + 1:closing]
+            if not choices or any(ch in choices for ch in "\\^-"):
+                return ()
+            expanded = [prefix + choice for prefix in expanded for choice in choices]
+            i = closing + 1
+            continue
+        if char in ".^$*+?{}()|":
+            return ()
+        expanded = [prefix + char for prefix in expanded]
+        i += 1
+    return tuple(expanded)
+
+
+def _build_streaming_prefix_specs():
+    """Derive (literal prefixes, token-char regex, minimum) specifications."""
+    specs = []
+    parts_re = re.compile(r"^(.*)(\[[^\]]+\])\{(\d+)(,?)\}$")
+    for pattern in _PREFIX_PATTERNS:
+        match = parts_re.fullmatch(pattern)
+        if match is None:
+            continue
+        prefixes = _expand_streaming_prefix(match.group(1))
+        if not prefixes:
+            continue
+        token_chars = re.compile(rf"^{match.group(2)}*$")
+        specs.append((prefixes, token_chars, int(match.group(3))))
+    return tuple(specs)
+
+
+_STREAMING_PREFIX_SPECS = _build_streaming_prefix_specs()
+_STREAMING_JSON_KEYS = (
+    "apikey",
+    "api_key",
+    "token",
+    "secret",
+    "password",
+    "access_token",
+    "refresh_token",
+    "auth_token",
+    "bearer",
+    "secret_value",
+    "raw_secret",
+    "secret_input",
+    "key_material",
+)
+_STREAMING_JSON_OPENER_RE = re.compile(
+    r'"(?:' + "|".join(re.escape(key) for key in _STREAMING_JSON_KEYS)
+    + r')"\s*:\s*"',
+    re.IGNORECASE,
+)
+_STREAMING_DB_PROTOCOLS = (
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "mongodb://",
+    "mongodb+srv://",
+    "redis://",
+    "amqp://",
+)
+_STREAMING_DB_OPENER_RE = re.compile(
+    r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:",
+    re.IGNORECASE,
+)
+_STREAMING_PRIVATE_KEY_OPENER_RE = re.compile(
+    r"-----BEGIN[A-Z ]*PRIVATE KEY-----"
+)
+_STREAMING_PRIVATE_KEY_END_RE = re.compile(
+    r"-----END[A-Z ]*PRIVATE KEY-----"
+)
+_STREAMING_AUTH_HEADER_LITERALS = tuple(
+    name.lower() + ":" for name in _AUTH_HEADER_NAMES
+)
+_STREAMING_SECRET_HEADER_LITERALS = tuple(
+    name.lower() + ":" for name in _SECRET_HEADER_NAME_VALUES
+)
+_STREAMING_TELEGRAM_CANDIDATE_RE = re.compile(
+    r"(?:bot)?\d{8,}:[-A-Za-z0-9_]{0,29}$"
+)
+_STREAMING_JWT_PRETHRESHOLD_RE = re.compile(
+    r"e(?:y(?:J[A-Za-z0-9_.=-]{0,9})?)?$"
+)
+_STREAMING_JWT_BOUNDARY_PRETHRESHOLD_RE = re.compile(
+    r"ey(?:J[A-Za-z0-9_.=-]{0,9})?$"
+)
+_STREAMING_PHONE_CANDIDATE_RE = re.compile(
+    r"\+(?:[1-9]\d{0,13})?$"
+)
+_STREAMING_ENV_ACTIVE_RE = re.compile(
+    rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})"
+    r"\s*=\s*(['\"]?)",
+)
+_MAX_STREAMING_ENV_NAME = 100 + max(map(len, _SECRET_ENV_WORDS))
+
+
+def _known_prefix_candidate_start(
+    text: str, *, include_partial: bool = True,
+) -> int | None:
+    """Return the start of a trailing known-prefix token candidate."""
+    held_from = len(text)
+    token_boundary_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+
+    for prefixes, token_chars, _minimum in _STREAMING_PREFIX_SPECS:
+        for prefix in prefixes:
+            # A complete literal prefix followed only by token characters stays
+            # sensitive until a delimiter arrives. This includes candidates
+            # that already reached the static redactor's minimum length.
+            start = text.rfind(prefix)
+            while start >= 0:
+                if (
+                    (start == 0 or text[start - 1] not in token_boundary_chars)
+                    and token_chars.fullmatch(text[start + len(prefix):])
+                ):
+                    held_from = min(held_from, start)
+                    break
+                start = text.rfind(prefix, 0, start)
+
+            # Also retain a literal-prefix fragment split across deltas.
+            if not include_partial:
+                continue
+            for length in range(1, len(prefix)):
+                if not text.endswith(prefix[:length]):
+                    continue
+                start = len(text) - length
+                if start == 0 or text[start - 1] not in token_boundary_chars:
+                    held_from = min(held_from, start)
+
+    return held_from if held_from < len(text) else None
+
+
+def _could_be_json_opener(candidate: str) -> bool:
+    """Whether a trailing quote-led fragment can become a JSON secret opener."""
+    if not candidate.startswith('"'):
+        return False
+    body = candidate[1:]
+    lower = body.lower()
+    for key in _STREAMING_JSON_KEYS:
+        if len(body) <= len(key):
+            if key.startswith(lower):
+                return True
+            continue
+        if not lower.startswith(key):
+            continue
+        suffix = body[len(key):]
+        if not suffix.startswith('"'):
+            continue
+        suffix = suffix[1:].lstrip()
+        if not suffix:
+            return True
+        if not suffix.startswith(":"):
+            continue
+        suffix = suffix[1:].lstrip()
+        return not suffix or suffix == '"'
+    return False
+
+
+def _could_be_db_opener(candidate: str) -> bool:
+    """Whether a trailing fragment can become a DB password opener."""
+    lower = candidate.lower()
+    for protocol in _STREAMING_DB_PROTOCOLS:
+        if protocol.startswith(lower):
+            return True
+        if not lower.startswith(protocol):
+            continue
+        username = candidate[len(protocol):]
+        if not username:
+            return True
+        if any(char.isspace() for char in username):
+            continue
+        if ":" not in username:
+            return True
+        return username.endswith(":") and username.count(":") == 1
+    return False
+
+
+def _could_be_private_key_opener(candidate: str) -> bool:
+    """Whether a trailing fragment can become a private-key BEGIN marker."""
+    literal = "-----BEGIN"
+    if literal.startswith(candidate):
+        return True
+    if not candidate.startswith(literal):
+        return False
+    remainder = candidate[len(literal):]
+    marker = "PRIVATE KEY-----"
+    for split_at in range(len(remainder) + 1):
+        key_type = remainder[:split_at]
+        marker_part = remainder[split_at:]
+        if all(char == " " or "A" <= char <= "Z" for char in key_type):
+            if marker.startswith(marker_part):
+                return True
+    return False
+
+
+def _could_be_env_opener(candidate: str) -> bool:
+    """Whether a trailing ENV-name fragment can become a secret assignment."""
+    match = re.fullmatch(
+        rf"([A-Z0-9_]{{1,{_MAX_STREAMING_ENV_NAME}}})(\s*)(?:(=)\s*['\"]?)?",
+        candidate,
+    )
+    if match is None:
+        return False
+    name = match.group(1)
+    def _canonical_word_position(word: str) -> int | None:
+        for word_match in re.finditer(re.escape(word), name):
+            if (
+                word_match.start() <= 50
+                and len(name) - word_match.end() <= 50
+            ):
+                return word_match.start()
+        return None
+
+    if match.group(2) or match.group(3):
+        return any(_canonical_word_position(word) is not None for word in _SECRET_ENV_WORDS)
+    if len(name) <= 50:
+        # Any canonical pre-name fragment can still be followed by a full
+        # secret word.
+        return True
+    for word in _SECRET_ENV_WORDS:
+        if _canonical_word_position(word) is not None:
+            return True
+        if any(
+            index <= 50
+            and word.startswith(name[index:])
+            for index in range(len(name))
+        ):
+            return True
+    return False
+
+
+def _could_be_header_candidate(
+    candidate: str,
+    literals: tuple[str, ...],
+    *,
+    authorization: bool,
+) -> bool:
+    """Whether a trailing fragment can become or extend a secret header."""
+    lower = candidate.lower()
+    for literal in literals:
+        if literal.startswith(lower):
+            return True
+        if not lower.startswith(literal):
+            continue
+        remainder = candidate[len(literal):]
+        if "\n" in remainder or "\r" in remainder:
+            continue
+        stripped = remainder.lstrip()
+        if not stripped:
+            return True
+        tokens = stripped.split()
+        trailing_space = stripped[-1].isspace()
+        if not authorization:
+            return len(tokens) == 1 and not trailing_space
+        if len(tokens) == 1:
+            # A scheme-shaped first token remains ambiguous with the canonical
+            # bare-credential form until a following credential arrives.
+            return (
+                not trailing_space
+                or re.fullmatch(r"[A-Za-z][\w.+-]*", tokens[0]) is not None
+            )
+        if len(tokens) == 2:
+            return not trailing_space
+        return False
+    return False
+
+
+def _partial_form_opener_start(text: str) -> int | None:
+    """Return a pure form body's start when its last key is still incomplete."""
+    line_start = text.rfind("\n") + 1
+    candidate = text[line_start:]
+    if not candidate or any(char.isspace() for char in candidate):
+        return None
+    parts = candidate.split("&")
+    if any(
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*", part) is None
+        for part in parts[:-1]
+    ):
+        return None
+    last = parts[-1]
+    if "=" in last:
+        key, value = last.split("=", 1)
+    else:
+        key = last
+    lower = key.lower()
+    if not key:
+        return line_start
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", key or ""):
+        return None
+    if any(secret.startswith(lower) for secret in _SENSITIVE_QUERY_PARAMS):
+        return line_start
+    return None
+
+
+def _active_env_assignment_start(text: str) -> int | None:
+    """Return an ENV assignment whose value is still growing at the tail."""
+    candidates = []
+    for match in _STREAMING_ENV_ACTIVE_RE.finditer(text):
+        remainder = text[match.end():]
+        quote = match.group(2)
+        if quote:
+            closing = remainder.find(quote)
+            if closing < 0 or not remainder[closing + 1:]:
+                candidates.append(match.start())
+        elif remainder and not any(char.isspace() for char in remainder):
+            candidates.append(match.start())
+    return min(candidates) if candidates else None
+
+
+def _partial_context_opener_start(
+    text: str,
+    *,
+    embedded_prefixes: bool = True,
+) -> int | None:
+    """Return the earliest trailing fragment that can become an opener."""
+    candidates: list[int] = []
+
+    # Canonical JSON whitespace is unbounded. Check every quote that can begin
+    # a field so a long run before the colon does not fall out of a tail window.
+    for quote_start, char in enumerate(text):
+        if char != '"':
+            continue
+        quote_has_field_boundary = (
+            quote_start == 0 or text[quote_start - 1] in "{[, \t\r\n"
+        )
+        if (
+            (embedded_prefixes or quote_has_field_boundary)
+            and _could_be_json_opener(text[quote_start:])
+        ):
+            candidates.append(quote_start)
+            break
+
+    # DB usernames are unbounded in the static grammar. Search for each full
+    # protocol across the whole buffer, then check short literal fragments at
+    # the tail. This retains ``scheme://user`` even when a very long username
+    # crosses the platform overflow threshold before its password colon.
+    lower = text.lower()
+    for protocol in _STREAMING_DB_PROTOCOLS:
+        start = lower.rfind(protocol)
+        if (
+            start >= 0
+            and (
+                embedded_prefixes
+                or start == 0
+                or text[start - 1] not in
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+            )
+            and _could_be_db_opener(text[start:])
+        ):
+            candidates.append(start)
+        for length in range(1, len(protocol)):
+            if not lower.endswith(protocol[:length]):
+                continue
+            start = len(text) - length
+            if (
+                embedded_prefixes
+                or start == 0
+                or text[start - 1] not in
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+            ):
+                candidates.append(start)
+
+    # A private-key BEGIN marker is bounded, so only its short trailing window
+    # can still be incomplete.
+    private_scan_start = 0
+    for completed in _PRIVATE_KEY_RE.finditer(text):
+        private_scan_start = completed.end()
+    for start in range(private_scan_start, len(text)):
+        if _could_be_private_key_opener(text[start:]):
+            candidates.append(start)
+            break
+
+    # ENV names are bounded by the canonical 50/name/50 grammar, while header
+    # whitespace is intentionally unbounded. Search the full trailing buffer so
+    # the streaming language is exactly prefix-closed over both grammars.
+    for start in range(len(text)):
+        candidate = text[start:]
+        if (
+            _could_be_env_opener(candidate)
+            or _could_be_header_candidate(
+                candidate,
+                _STREAMING_AUTH_HEADER_LITERALS,
+                authorization=True,
+            )
+            or _could_be_header_candidate(
+                candidate,
+                _STREAMING_SECRET_HEADER_LITERALS,
+                authorization=False,
+            )
+        ):
+            candidates.append(start)
+            break
+
+    form_start = _partial_form_opener_start(text)
+    if form_start is not None:
+        candidates.append(form_start)
+    env_value_start = _active_env_assignment_start(text)
+    if env_value_start is not None:
+        candidates.append(env_value_start)
+
+    return min(candidates) if candidates else None
+
+
+def _unterminated_context(text: str):
+    """Return the earliest complete sensitive opener lacking its terminator."""
+    active = []
+    for match in _STREAMING_JSON_OPENER_RE.finditer(text):
+        if text.find('"', match.end()) < 0:
+            active.append((match.start(), "json", match))
+    for match in _STREAMING_DB_OPENER_RE.finditer(text):
+        if text.find("@", match.end()) < 0:
+            active.append((match.start(), "db", match))
+    for match in _STREAMING_PRIVATE_KEY_OPENER_RE.finditer(text):
+        if _STREAMING_PRIVATE_KEY_END_RE.search(text, match.end()) is None:
+            active.append((match.start(), "private_key", match))
+    return min(active, key=lambda item: item[0]) if active else None
+
+
+def _recognized_token_candidate_start(
+    text: str,
+    *,
+    embedded_prefixes: bool = True,
+) -> int | None:
+    """Return a trailing non-prefix token already recognized as sensitive.
+
+    These grammars redact an end-of-buffer token before a delimiter arrives.
+    Retaining the raw match prevents later token bytes from being appended to
+    a destructive mask. The canonical production regexes remain the source of
+    truth; JWT only adds an allowed-character continuation around its shared
+    canonical header pattern so a partial payload segment stays attached.
+    """
+    candidates: list[int] = []
+
+    for pattern in (_TELEGRAM_RE, _SIGNAL_PHONE_RE):
+        for match in pattern.finditer(text):
+            if match.end() == len(text):
+                candidates.append(match.start())
+
+    jwt_match = _STREAMING_JWT_CANDIDATE_RE.search(text)
+    if jwt_match is not None:
+        candidates.append(jwt_match.start())
+
+    # Hold candidates from the earliest point where the grammar is
+    # recognizable, not only after the static redactor's minimum. Otherwise a
+    # preview exposes almost the entire secret before the final byte masks it.
+    telegram_match = _STREAMING_TELEGRAM_CANDIDATE_RE.search(text)
+    if telegram_match is not None:
+        candidates.append(telegram_match.start())
+    jwt_prethreshold_re = (
+        _STREAMING_JWT_PRETHRESHOLD_RE
+        if embedded_prefixes
+        else _STREAMING_JWT_BOUNDARY_PRETHRESHOLD_RE
+    )
+    jwt_prethreshold_match = jwt_prethreshold_re.search(text)
+    if jwt_prethreshold_match is not None:
+        candidates.append(jwt_prethreshold_match.start())
+    phone_match = _STREAMING_PHONE_CANDIDATE_RE.search(text)
+    if phone_match is not None:
+        candidates.append(phone_match.start())
+
+    return min(candidates) if candidates else None
+
+
+def split_incomplete_sensitive_suffix(
+    text: str,
+    *,
+    final: bool = False,
+    logical_boundary: bool = False,
+    embedded_prefixes: bool = True,
+) -> tuple[str, str]:
+    """Keep a raw trailing secret candidate out of streaming writes.
+
+    The static redactor needs a whole match. A stream can end a platform write
+    before a known-prefix delimiter, JSON closing quote, DB ``@`` delimiter, or
+    PEM end marker arrives. Retain that raw suffix so later deltas are matched
+    with their original context instead of appending to destructively masked
+    display text.
+
+    On the terminal stream tick, conservatively replace an unterminated
+    structured value. Prefix-shaped prose below a known pattern's minimum is
+    released unchanged because it never became a credential match.
+    """
+    if not text:
+        return text, ""
+
+    context = _unterminated_context(text)
+    # ``logical_boundary`` remains in the public call shape for compatibility,
+    # but segment/commentary boundaries are attacker-influenced and therefore
+    # cannot terminate secret recognition state.
+    known_start = _known_prefix_candidate_start(text)
+    partial_start = _partial_context_opener_start(
+        text,
+        embedded_prefixes=embedded_prefixes,
+    )
+    token_start = _recognized_token_candidate_start(
+        text,
+        embedded_prefixes=embedded_prefixes,
+    )
+
+    if final:
+        if context is None:
+            return text, ""
+        start, kind, match = context
+        if kind == "json":
+            return text[:start] + match.group(0) + '***"', ""
+        if kind == "db":
+            return text[:start] + match.group(0) + "***", ""
+        return text[:start] + "[REDACTED PRIVATE KEY]", ""
+
+    starts = [
+        start
+        for start in (
+            context[0] if context is not None else None,
+            known_start,
+            partial_start,
+            token_start,
+        )
+        if start is not None
+    ]
+    if not starts:
+        return text, ""
+    held_from = min(starts)
+    # A one-character candidate can begin inside otherwise ordinary prose
+    # (for example the ``re`` at the end of ``more`` can still become
+    # ``redis://`` because the canonical DB grammar has no left boundary).
+    # Retain its containing lexical token as well, avoiding permanent
+    # mid-word splits when a logical platform boundary lands at that point.
+    while (
+        held_from > 0
+        and text[held_from - 1]
+        in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-"
+    ):
+        held_from -= 1
+    return text[:held_from], text[held_from:]
+
+
+def sanitize_terminal_secret_text(text: str) -> str:
+    """Force-redact a complete adapter-bound text payload."""
+    if not text:
+        return text
+    terminal_text, _held = split_incomplete_sensitive_suffix(
+        str(text),
+        final=True,
+    )
+    return redact_sensitive_text(terminal_text, force=True)
+
+
+def sanitize_terminal_secret_url(url: str) -> str:
+    """Force-redact credentials from an adapter-bound URL.
+
+    General text intentionally preserves opaque web query parameters because
+    agents often need to follow signed links. A URL that may fall back to
+    plaintext delivery is a different terminal boundary: query credentials
+    and userinfo must be neutralized before any native/fallback adapter sees it.
+    """
+    safe_url = sanitize_terminal_secret_text(url)
+    return _redact_strict_url_credentials(safe_url)
+
+
+class StreamingSecretSanitizer:
+    """Stateful forced redaction for sequential adapter-bound text fragments.
+
+    Formatting must be applied after ``feed``: inserting labels, quotes, or
+    fences between fragments would otherwise break the canonical grammar that
+    the retained bytes are meant to recognize.
+    """
+
+    def __init__(self, *, token_candidates_only: bool = False) -> None:
+        self._pending = ""
+        self._token_candidates_only = token_candidates_only
+
+    @property
+    def pending(self) -> str:
+        return self._pending
+
+    def feed(self, text: str, *, final: bool = False) -> str:
+        combined = self._pending + str(text or "")
+        if self._token_candidates_only and not final:
+            full_known_start = _known_prefix_candidate_start(
+                combined,
+                include_partial=False,
+            )
+            partial_known_start = _known_prefix_candidate_start(combined)
+            token_start = _recognized_token_candidate_start(combined)
+            context = _unterminated_context(combined)
+            starts = []
+            if full_known_start is not None:
+                starts.append(full_known_start)
+            if partial_known_start == 0:
+                starts.append(partial_known_start)
+            if token_start == 0:
+                starts.append(token_start)
+            # Progress callbacks are independent display events, so an
+            # unterminated DB URL in one event must not absorb the next event.
+            # JSON and ENV fragments are different: their opener/value grammar
+            # is explicitly structured and may be split by the producer across
+            # consecutive callbacks, so retain that complete state.
+            if context is not None and context[1] == "json":
+                starts.append(context[0])
+            for quote_start, char in enumerate(combined):
+                quote_has_field_boundary = (
+                    quote_start == 0
+                    or combined[quote_start - 1] in "{[, \t\r\n"
+                )
+                if (
+                    char == '"'
+                    and quote_has_field_boundary
+                    and _could_be_json_opener(combined[quote_start:])
+                ):
+                    starts.append(quote_start)
+                    break
+            for env_start in range(len(combined)):
+                if (
+                    (
+                        env_start == 0
+                        or combined[env_start - 1]
+                        not in
+                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+                    )
+                    and _could_be_env_opener(combined[env_start:])
+                ):
+                    starts.append(env_start)
+                    break
+            env_value_start = _active_env_assignment_start(combined)
+            if env_value_start is not None:
+                starts.append(env_value_start)
+            if starts:
+                held_from = min(starts)
+                while (
+                    held_from > 0
+                    and combined[held_from - 1]
+                    in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-"
+                ):
+                    held_from -= 1
+                visible, self._pending = (
+                    combined[:held_from],
+                    combined[held_from:],
+                )
+            else:
+                visible, self._pending = combined, ""
+        else:
+            visible, self._pending = split_incomplete_sensitive_suffix(
+                combined,
+                final=final,
+            )
+        return sanitize_terminal_secret_text(visible)
+
+    def flush(self) -> str:
+        return self.feed("", final=True)
 
 
 def mask_secret(
@@ -439,6 +1144,12 @@ def _canonical_url_param_name(name: str) -> str:
     return decoded.casefold().replace("-", "_")
 
 
+_CANONICAL_SENSITIVE_QUERY_PARAMS = frozenset(
+    key.casefold().replace("-", "_")
+    for key in _SENSITIVE_QUERY_PARAMS
+)
+
+
 def _redact_strict_url_credentials(text: str) -> str:
     """Redact credentials from absolute, relative, and network URL references.
 
@@ -448,7 +1159,10 @@ def _redact_strict_url_credentials(text: str) -> str:
     values and URL userinfo.
     """
     def _redact_param(match: re.Match) -> str:
-        if _canonical_url_param_name(match.group(2)) not in _SENSITIVE_QUERY_PARAMS:
+        if (
+            _canonical_url_param_name(match.group(2))
+            not in _CANONICAL_SENSITIVE_QUERY_PARAMS
+        ):
             return match.group(0)
         return f"{match.group(1)}{match.group(2)}=***"
 

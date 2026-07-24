@@ -255,6 +255,7 @@ def validate_signal_config(config: PlatformConfig) -> bool:
 class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
+    supports_native_remote_images = True
     platform = Platform.SIGNAL
     # Signal has no real edit API for already-sent messages. Mark it explicitly
     # so streaming suppresses the visible cursor instead of leaving a stale tofu

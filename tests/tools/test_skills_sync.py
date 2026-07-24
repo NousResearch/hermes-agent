@@ -1189,6 +1189,27 @@ class TestResetBundledSkill:
             # `dest` is recognized as a strict child.
             with patch("tools.skills_sync.SKILLS_DIR", skills_root):
                 _rmtree_writable(dest)
+
+            # Assert BEFORE cleanup — the finally block below chmod's
+            # intermediate to 0700 for teardown, which would mask the
+            # very regression we are checking (alt-glitch review note).
+            # The DIRECT child of skills_root (intermediate) must still be
+            # at 0750 — this is the chmod target #1 in the recovery branch.
+            # With the bug it would be clamped to 0700.
+            intermediate_mode = stat.S_IMODE(os.stat(intermediate).st_mode)
+            assert intermediate_mode == mode_0750, (
+                f"intermediate (direct child of skills root) mode changed to "
+                f"{oct(intermediate_mode)} (expected {oct(mode_0750)}); onerror "
+                "callback is replacing the mode instead of merging owner-write"
+            )
+
+            # Skills root must also be untouched (nothing chmod's it in this
+            # layout, but assert for completeness).
+            root_mode = stat.S_IMODE(os.stat(skills_root).st_mode)
+            assert root_mode == mode_0750, (
+                f"skills root mode changed to {oct(root_mode)} "
+                f"(expected {oct(mode_0750)})"
+            )
         finally:
             # Best-effort cleanup so tmp_path teardown can remove anything
             # the test left behind (a buggy run would leave intermediate at
@@ -1202,24 +1223,6 @@ class TestResetBundledSkill:
                     os.chmod(dest / "SKILL.md", stat.S_IRWXU)
             except OSError:
                 pass
-
-        # The DIRECT child of skills_root (intermediate) must still be at
-        # 0750 — this is the chmod target #1 in the recovery branch. With
-        # the bug it would be clamped to 0700.
-        intermediate_mode = stat.S_IMODE(os.stat(intermediate).st_mode)
-        assert intermediate_mode == mode_0750, (
-            f"intermediate (direct child of skills root) mode changed to "
-            f"{oct(intermediate_mode)} (expected {oct(mode_0750)}); onerror "
-            "callback is replacing the mode instead of merging owner-write"
-        )
-
-        # Skills root must also be untouched (nothing chmod's it in this
-        # layout, but assert for completeness).
-        root_mode = stat.S_IMODE(os.stat(skills_root).st_mode)
-        assert root_mode == mode_0750, (
-            f"skills root mode changed to {oct(root_mode)} "
-            f"(expected {oct(mode_0750)})"
-        )
 
     def test_reset_restore_preserves_manifest_on_rmtree_failure(self, tmp_path):
         """#34972: when the user copy genuinely cannot be removed, the manifest

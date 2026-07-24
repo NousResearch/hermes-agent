@@ -722,6 +722,24 @@ DISCORD_HOME_CHANNEL_NAME="#bot-updates"
 
 Replace the ID with the actual channel ID (right-click → Copy Channel ID with Developer Mode on).
 
+### Free Response and Auto-Threading
+
+The home channel is treated as a free-response channel: the bot answers every message there without needing an @mention, even when `discord.require_mention` is on. Unlike channels listed in `free_response_channels`, the home channel still auto-threads — each conversation gets its own thread, so cron deliveries and back-to-back conversations don't interleave.
+
+To keep home-channel replies in the channel itself instead of threads, set `auto_thread: false` on the home channel in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  discord:
+    home_channel:
+      platform: discord
+      chat_id: "123456789012345678"
+      name: "#bot-updates"
+      auto_thread: false   # reply in-channel instead of per-conversation threads
+```
+
+`auto_thread` applies to the home channel only and overrides the global `DISCORD_AUTO_THREAD` setting there; when omitted, the home channel follows the global setting (threads on by default). Listing the home channel in `no_thread_channels` also disables threading for it. This is behavioral configuration, so it lives in `config.yaml` — there is no environment variable for it (the `DISCORD_HOME_CHANNEL*` env vars keep working for selecting the channel and respect a YAML-configured `auto_thread`).
+
 ## Voice Messages
 
 Hermes Agent supports Discord voice messages:

@@ -5757,18 +5757,23 @@ class DiscordAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+        channels = set()
         if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # Coerce non-list scalars (str/int/float) to str before splitting.
-        # YAML parses a bare numeric value such as
-        # `free_response_channels: 1491973769726791812` as int, which was
-        # previously falling through the isinstance(str) branch and silently
-        # returning an empty set.  str() here accepts whatever scalar the YAML
-        # loader hands us without changing existing string/CSV semantics.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+            channels = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            # Coerce non-list scalars (str/int/float) to str before splitting.
+            # YAML parses a bare numeric value such as
+            # `free_response_channels: 1491973769726791812` as int, which was
+            # previously falling through the isinstance(str) branch and silently
+            # returning an empty set.  str() here accepts whatever scalar the YAML
+            # loader hands us without changing existing string/CSV semantics.
+            s = str(raw).strip() if raw is not None else ""
+            if s:
+                channels = {part.strip() for part in s.split(",") if part.strip()}
+        home = getattr(self.config, "home_channel", None)
+        if home and getattr(home, "chat_id", None):
+            channels.add(str(home.chat_id))
+        return channels
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
@@ -7134,6 +7139,10 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         is_voice_linked_channel = False
+        is_free_channel = False
+        is_home_channel = False
+        channel_ids: set[str] = set()
+        home = getattr(self.config, "home_channel", None)
 
         # Save mention-stripped text before auto-threading since create_thread()
         # can clobber message.content, breaking /command detection in channels.
@@ -7191,6 +7200,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 or bool(channel_keys & free_channels)
                 or is_voice_linked_channel
             )
+            home_channel_id = str(getattr(home, "chat_id", "") or "")
+            is_home_channel = bool(home_channel_id and home_channel_id in channel_ids)
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in)
@@ -7214,8 +7225,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_keys & no_thread_channels) or (is_free_channel and not is_home_channel)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            if is_home_channel and getattr(home, "auto_thread", None) is not None:
+                auto_thread = bool(home.auto_thread)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)

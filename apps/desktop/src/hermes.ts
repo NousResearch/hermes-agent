@@ -765,7 +765,16 @@ export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provi
   })
 }
 
-export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
+export function deleteCustomEndpoint(id: string, source?: string): Promise<CustomEndpointsResponse> {
+  if (source === 'custom_providers') {
+    const params = new URLSearchParams({ endpoint_id: id, source })
+
+    return window.hermesDesktop.api<CustomEndpointsResponse>({
+      path: `/api/providers/custom-endpoints?${params.toString()}`,
+      method: 'DELETE'
+    })
+  }
+
   return window.hermesDesktop.api<CustomEndpointsResponse>({
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
     method: 'DELETE'

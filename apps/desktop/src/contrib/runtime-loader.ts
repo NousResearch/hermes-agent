@@ -234,6 +234,23 @@ async function loadDiskPlugin(name: string, file: string): Promise<void> {
   }
 }
 
+/** Hermes home for the on-disk plugin door. Prefers the gateway-reported
+ *  value (profile-scoped), but a remote gateway on an auth-gated bind strips
+ *  `hermes_home` from the public /api/status payload ("deployment recon"),
+ *  which silently disabled runtime plugins for remote topologies — fall back
+ *  to the desktop's own local home, since the disk door reads the LOCAL
+ *  filesystem either way. A gateway-unreachable error still propagates,
+ *  preserving each caller's existing no-gateway handling. */
+export async function resolveHermesHome(): Promise<null | string> {
+  const { hermes_home } = await getStatus()
+
+  if (hermes_home) {
+    return hermes_home
+  }
+
+  return (await window.hermesDesktop?.getHermesHome?.()) ?? null
+}
+
 async function scanDiskPlugins(): Promise<void> {
   const desktop = window.hermesDesktop
 
@@ -246,8 +263,13 @@ async function scanDiskPlugins(): Promise<void> {
   scanning = true
 
   try {
-    const { hermes_home } = await getStatus()
-    const { entries } = await desktop.readDir(`${hermes_home}/desktop-plugins`)
+    const home = await resolveHermesHome()
+
+    if (!home) {
+      return
+    }
+
+    const { entries } = await desktop.readDir(`${home}/desktop-plugins`)
     const seen = new Set<string>()
 
     for (const dir of entries.filter(e => e.isDirectory)) {

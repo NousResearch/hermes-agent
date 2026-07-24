@@ -14,13 +14,16 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 ## How discovery works
 
-`providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Discovery order:
+`providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Provider sources are considered in this order:
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
-2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in any directory; no restart required for subsequent sessions
-3. **Legacy single-file** — `<repo>/providers/<name>.py` — back-compat for out-of-tree editable installs
+2. **Enabled package plugins** — installed Python distributions that publish the dedicated `hermes_agent.model_providers` entry-point group
+3. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — manually dropped or Git-installed directories
+4. **Legacy modules** — `<repo>/providers/<name>.py` — compatibility profiles loaded last
 
-**User plugins override bundled plugins of the same name** because `register_provider()` is last-writer-wins. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
+A user-directory leaf reserves its canonical `model-providers/<leaf>` key before package loading, so a same-named package entry point is skipped without invoking its registrar. User directories load after bundled plugins and can replace bundled registrations through `register_provider()`'s last-writer-wins behavior. Legacy modules load after every plugin source and can replace earlier registrations by the same rule. Drop a `$HERMES_HOME/plugins/model-providers/gmi/` directory to replace the built-in GMI profile without touching the repo.
+
+Package providers are opt-in. Manually dropped user directories remain active by default for backward compatibility, but an explicit entry in `plugins.disabled` wins over every enabled/default-active state.
 
 ## Directory structure
 
@@ -31,7 +34,7 @@ plugins/model-providers/my-provider/
 └── README.md         # Setup instructions (optional)
 ```
 
-The only required file is `__init__.py`. `plugin.yaml` is used by `hermes plugins` for introspection and by the general PluginManager to route the plugin to the right loader; without it, the general loader falls back to a source-text heuristic.
+The only required file for a manual directory drop is `__init__.py`. `plugin.yaml` is used by `hermes plugins` for introspection and is required for kind-aware Git installation into the model-provider directory.
 
 ## Minimal example — a simple API-key provider
 
@@ -175,7 +178,7 @@ register_provider(ProviderProfile(
 ))
 ```
 
-Next session, `get_provider_profile("gmi").base_url` returns the staging URL. No repo patch, no rebuild. Because user plugins are discovered after bundled ones, the user `register_provider()` call wins.
+After restarting Hermes, `get_provider_profile("gmi").base_url` returns the staging URL. No repo patch or rebuild is needed. Because user plugins are discovered after package and bundled plugins, the user `register_provider()` call wins.
 
 ## api_mode selection
 
@@ -204,7 +207,7 @@ Set `profile.api_mode` to match the default your provider ships — it acts as a
 
 ## Discovery timing
 
-Provider discovery is **lazy** — triggered by the first `get_provider_profile()` or `list_providers()` call in the process. In practice this happens early at startup (`auth.py` module load extends `PROVIDER_REGISTRY` eagerly). If you need to verify your plugin loaded, run:
+Provider discovery is **lazy** — triggered by the first `get_provider_profile()` or `list_providers()` call in the process — and cached for that process. Restart the CLI, desktop app, or gateway after installing, enabling, disabling, updating, or removing a provider. If you need to verify your plugin loaded in a fresh process, run:
 
 ```bash
 hermes doctor
@@ -242,22 +245,51 @@ export MY_API_KEY=your-test-key
 hermes -z "hello" --provider my-provider -m some-model
 ```
 
-## General PluginManager integration
+## Installation and lifecycle
 
-The general `PluginManager` (the thing `hermes plugins` operates on) **sees** model-provider plugins but does not import them — `providers/__init__.py` owns their lifecycle. The manager records the manifest for introspection and categorizes by `kind: model-provider`. When you drop an unlabeled user plugin into `$HERMES_HOME/plugins/` that happens to call `register_provider` with a `ProviderProfile`, the manager auto-coerces it to `kind: model-provider` via a source-text heuristic — so the plugin still routes correctly even without `plugin.yaml`.
+The general `PluginManager` (the thing `hermes plugins` operates on) may inventory model-provider manifests, but it does **not** import or register provider profiles. `providers/__init__.py` exclusively owns provider loading.
 
-## Distribute via pip
+### Distribute via pip
 
-Like any Hermes plugin, model providers can ship as a pip package. Add an entry point to your `pyproject.toml`:
+Model providers can ship as a Python package. Add a dedicated entry point to `pyproject.toml`:
 
 ```toml
-[project.entry-points."hermes_agent.plugins"]
+[project.entry-points."hermes_agent.model_providers"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 
-…where `acme_hermes_plugin:register` is a function that calls `register_provider(profile)`. The general PluginManager picks up entry-point plugins during `discover_and_load()`. For `kind: model-provider` pip plugins, you still need to declare the kind in your manifest (or rely on the source-text heuristic).
+`acme_hermes_plugin:register` must be a zero-argument callable that invokes `register_provider(profile)`. Install and enable the provider separately:
 
-See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the full entry-points setup.
+```bash
+pip install <distribution>
+hermes plugins enable model-providers/acme-inference
+```
+
+Package providers are updated and removed with pip, not `hermes plugins update` or `hermes plugins remove`.
+
+If one repository supports both package and Git/manual distribution, add a root
+`__init__.py` shim because directory discovery executes that file rather than
+the package entry point:
+
+```python
+from .acme_hermes_plugin import register
+
+register()
+```
+
+### Install from Git
+
+A repository with `kind: model-provider` in `plugin.yaml` is routed to `$HERMES_HOME/plugins/model-providers/<name>/`:
+
+```bash
+hermes plugins install owner/repo --enable
+# or install inactive:
+hermes plugins install owner/repo --no-enable
+```
+
+`hermes plugins update <name>` requires a Git checkout. `hermes plugins remove <name>` deletes either a Git-installed or manually dropped user-directory provider; package providers remain owned by pip.
+
+Activation changes apply only after restarting the running Hermes process. `plugins.disabled` always takes precedence over `plugins.enabled`, and manually dropped directories are default-active only when they are not explicitly disabled.
 
 ## Related pages
 

@@ -1,19 +1,19 @@
 """Provider module registry.
 
-Provider profiles can live in two places:
+Provider profiles can live in three places:
 
 1. Bundled plugins: ``plugins/model-providers/<name>/`` (shipped with hermes-agent)
-2. User plugins: ``$HERMES_HOME/plugins/model-providers/<name>/``
+2. Enabled Python packages exposing ``hermes_agent.model_providers`` entry points
+3. User plugins: ``$HERMES_HOME/plugins/model-providers/<name>/``
 
 Each plugin directory contains:
   - ``__init__.py`` — calls ``register_provider(profile)`` at import
   - ``plugin.yaml`` — manifest (name, kind: model-provider, version, description)
 
 Discovery is lazy: the first call to ``get_provider_profile()`` or
-``list_providers()`` scans both locations and imports every plugin. User
-plugins override bundled plugins on name collision (last-writer-wins), so
-third parties can monkey-patch or replace any built-in profile without
-editing the repo.
+``list_providers()`` scans all sources. User paths suppress same-key package
+entry points before invocation, then user registrations can override bundled
+profiles without editing the repo.
 
 For backward compatibility, ``providers/*.py`` files (other than ``base.py``
 and ``__init__.py``) are still discovered via ``pkgutil.iter_modules``.
@@ -31,14 +31,19 @@ Usage::
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import importlib.util
 import logging
 import sys
 from pathlib import Path
 
+import yaml
+
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+MODEL_PROVIDER_ENTRY_POINTS_GROUP = "hermes_agent.model_providers"
 
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
@@ -137,16 +142,91 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
         sys.modules.pop(module_name, None)
 
 
+def _provider_is_active(
+    identities: set[str],
+    *,
+    enabled: set[str],
+    disabled: set[str],
+    opt_in: bool,
+) -> bool:
+    """Return whether a provider is active under its known identities."""
+    if identities & disabled:
+        return False
+    return bool(identities & enabled) if opt_in else True
+
+
+def _load_package_providers(
+    enabled: set[str], disabled: set[str], blocked: set[str]
+) -> None:
+    """Load explicitly enabled dedicated model-provider entry points."""
+    try:
+        entry_points = list(
+            importlib.metadata.entry_points().select(
+                group=MODEL_PROVIDER_ENTRY_POINTS_GROUP
+            )
+        )
+    except Exception as exc:
+        logger.warning("Skipping package provider discovery: %s", exc)
+        return
+
+    counts: dict[str, int] = {}
+    for entry_point in entry_points:
+        counts[entry_point.name] = counts.get(entry_point.name, 0) + 1
+
+    for entry_point in entry_points:
+        canonical = f"model-providers/{entry_point.name}"
+        if canonical in blocked:
+            continue
+        if counts[entry_point.name] > 1:
+            logger.warning(
+                "Skipping ambiguous package provider entry point %s",
+                entry_point.name,
+            )
+            continue
+        if not _provider_is_active(
+            {canonical}, enabled=enabled, disabled=disabled, opt_in=True
+        ):
+            continue
+        try:
+            register = entry_point.load()
+            if callable(register):
+                register()
+        except Exception as exc:
+            logger.warning(
+                "Failed to load package provider entry point %s: %s",
+                entry_point.name,
+                exc,
+            )
+
+
+def _user_provider_identities(plugin_dir: Path) -> set[str]:
+    """Return canonical, directory-leaf, and manifest identities."""
+    identities = {
+        plugin_dir.name,
+        f"model-providers/{plugin_dir.name}",
+    }
+    manifest_path = plugin_dir / "plugin.yaml"
+    try:
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest, dict) and isinstance(manifest.get("name"), str):
+            identities.add(manifest["name"])
+    except (OSError, yaml.YAMLError):
+        pass
+    return identities
+
+
 def _discover_providers() -> None:
     """Populate the registry by importing every provider plugin.
 
     Order:
       1. Bundled plugins at ``<repo>/plugins/model-providers/<name>/``
-      2. User plugins at ``$HERMES_HOME/plugins/model-providers/<name>/``
-      3. Legacy per-file modules at ``providers/<name>.py`` (back-compat)
+      2. Enabled ``hermes_agent.model_providers`` package entry points
+      3. User plugins at ``$HERMES_HOME/plugins/model-providers/<name>/``
+      4. Legacy per-file modules at ``providers/<name>.py`` (back-compat)
 
-    Each step imports its plugins, which call ``register_provider()`` at
-    module-level. Later steps win on name collision.
+    Directory plugins call ``register_provider()`` at module-level. User paths
+    suppress same-key package entry points; later user registrations can still
+    override bundled profiles.
     """
     global _discovered
     if _discovered:
@@ -160,17 +240,53 @@ def _discover_providers() -> None:
                 continue
             _import_plugin_dir(child, "bundled")
 
-    # 2. User plugins — under $HERMES_HOME/plugins/model-providers/<name>/.
+    # Read activation without defaults or fail-open parsing. A malformed or
+    # unreadable existing config must not authorize untrusted package/user code.
+    try:
+        from hermes_cli.config import read_plugin_activation_config_strict
+
+        _config, _plugins, enabled, disabled = read_plugin_activation_config_strict()
+        activation_readable = True
+    except Exception as exc:
+        logger.warning("Skipping external provider plugins: %s", exc)
+        enabled = set()
+        disabled = set()
+        activation_readable = False
+
+    # 2. User plugin paths reserve their canonical package keys even when
+    # disabled, so one activation token can never execute hidden package code.
+    user_dir = _user_plugins_dir() if activation_readable else None
+    blocked_package_keys = (
+        {
+            f"model-providers/{child.name}"
+            for child in user_dir.iterdir()
+            if child.is_dir() and not child.name.startswith(("_", "."))
+        }
+        if user_dir is not None
+        else set()
+    )
+
+    # 3. Dedicated package providers are opt-in.
+    if activation_readable:
+        _load_package_providers(enabled, disabled, blocked_package_keys)
+
+    # 4. User plugins — under $HERMES_HOME/plugins/model-providers/<name>/.
     #    These can override any bundled profile of the same name (last-writer-wins
     #    in register_provider()).
-    user_dir = _user_plugins_dir()
     if user_dir is not None:
         for child in sorted(user_dir.iterdir()):
             if not child.is_dir() or child.name.startswith(("_", ".")):
                 continue
+            if not _provider_is_active(
+                _user_provider_identities(child),
+                enabled=enabled,
+                disabled=disabled,
+                opt_in=False,
+            ):
+                continue
             _import_plugin_dir(child, "user")
 
-    # 3. Legacy single-file profiles at providers/<name>.py. Kept for
+    # 5. Legacy single-file profiles at providers/<name>.py. Kept for
     #    back-compat — if someone drops a ``providers/foo.py`` into an
     #    editable install, it still works without the plugin layout.
     try:

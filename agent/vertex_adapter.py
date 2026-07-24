@@ -157,18 +157,18 @@ def resolve_vertex_api_key() -> Optional[str]:
 
 
 def build_vertex_api_key_base_url(project_id: str, region: str) -> str:
-    """Build the OpenAI-compatible base URL for Vertex AI Express Mode.
+    """Build the base URL for Vertex AI Express Mode native API.
 
-    Express Mode uses the standard aiplatform.googleapis.com host (or
-    ``{region}-aiplatform.googleapis.com`` for regional endpoints) with the
-    project in the URL path. The API key is passed as a Bearer token in the
-    Authorization header.
+    Express Mode uses the native ``generateContent`` API (not the
+    OpenAI-compatible endpoint). The URL points at the global
+    ``aiplatform.googleapis.com`` host with the ``publishers/google``
+    prefix so that the ``GeminiNativeClient`` constructs the correct
+    ``:generateContent`` endpoint path.
 
-    The ``global`` location uses the bare ``aiplatform.googleapis.com`` host.
-    Regional locations use ``{region}-aiplatform.googleapis.com``.
+    The project and region are embedded in the API key itself — they
+    are not part of the URL in Express Mode native API calls.
     """
-    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
-    return f"https://{host}/v1beta1/projects/{project_id}/locations/{region}/endpoints/openapi"
+    return "https://aiplatform.googleapis.com/v1/publishers/google"
 
 
 def _refresh_credentials(creds) -> None:

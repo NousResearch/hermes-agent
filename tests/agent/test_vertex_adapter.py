@@ -265,30 +265,21 @@ def test_resolve_vertex_api_key_returns_none_when_not_set(vertex_adapter):
 
 
 def test_build_vertex_api_key_base_url_global(vertex_adapter):
-    """Express Mode global endpoint uses aiplatform.googleapis.com."""
+    """Express Mode native API uses global aiplatform.googleapis.com."""
     url = vertex_adapter.build_vertex_api_key_base_url("my-project", "global")
-    assert url == (
-        "https://aiplatform.googleapis.com/v1beta1/projects/my-project/"
-        "locations/global/endpoints/openapi"
-    )
+    assert url == "https://aiplatform.googleapis.com/v1/publishers/google"
 
 
 def test_build_vertex_api_key_base_url_regional(vertex_adapter):
-    """Express Mode regional endpoint uses {region}-aiplatform.googleapis.com."""
+    """Express Mode native API ignores region — always uses global host."""
     url = vertex_adapter.build_vertex_api_key_base_url("my-project", "us-central1")
-    assert url == (
-        "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-project/"
-        "locations/us-central1/endpoints/openapi"
-    )
+    assert url == "https://aiplatform.googleapis.com/v1/publishers/google"
 
 
 def test_build_vertex_api_key_base_url_europe(vertex_adapter):
-    """Express Mode with europe-west4 region."""
+    """Express Mode native API ignores region — always uses global host."""
     url = vertex_adapter.build_vertex_api_key_base_url("my-project", "europe-west4")
-    assert url == (
-        "https://europe-west4-aiplatform.googleapis.com/v1beta1/projects/my-project/"
-        "locations/europe-west4/endpoints/openapi"
-    )
+    assert url == "https://aiplatform.googleapis.com/v1/publishers/google"
 
 
 def test_get_vertex_config_with_api_key(vertex_adapter, monkeypatch):
@@ -300,9 +291,8 @@ def test_get_vertex_config_with_api_key(vertex_adapter, monkeypatch):
     token_or_key, base_url, auth_hdr = vertex_adapter.get_vertex_config()
     assert token_or_key == "AIzaSyApiKey"
     assert auth_hdr == "x-goog-api-key"
-    assert "projects/api-key-project" in base_url
-    assert "europe-west1-aiplatform.googleapis.com" in base_url
-    assert "locations/europe-west1" in base_url
+    # Express Mode native API uses global endpoint without project in URL
+    assert base_url == "https://aiplatform.googleapis.com/v1/publishers/google"
 
 
 def test_get_vertex_config_api_key_precedence_over_adc(vertex_adapter, monkeypatch):
@@ -313,7 +303,8 @@ def test_get_vertex_config_api_key_precedence_over_adc(vertex_adapter, monkeypat
     token_or_key, base_url, auth_hdr = vertex_adapter.get_vertex_config()
     assert token_or_key == "AIzaSyKey"  # API key, not OAuth token
     assert auth_hdr == "x-goog-api-key"
-    assert "projects/key-project" in base_url
+    # Express Mode uses global endpoint without project in URL
+    assert base_url == "https://aiplatform.googleapis.com/v1/publishers/google"
 
 
 def test_get_vertex_config_api_key_missing_project(vertex_adapter, monkeypatch):

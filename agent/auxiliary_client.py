@@ -201,6 +201,14 @@ def _openai_http_client_kwargs(
     return {"http_client": client}
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
+    # Gemini/Vertex native API uses GeminiNativeClient instead of OpenAI SDK
+    try:
+        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+        if is_native_gemini_base_url(base_url):
+            return GeminiNativeClient(api_key=api_key, base_url=base_url, **kwargs)
+    except Exception:
+        pass
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # Hermes owns auxiliary retry + provider/model fallback policy (the
     # same-provider transient retry in call_llm plus the except-chain

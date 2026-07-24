@@ -386,6 +386,42 @@ def test_get_platform_tools_composite_only_unchanged():
     assert composite_only == default
 
 
+def test_get_platform_tools_legacy_hermes_alias_expands():
+    """Legacy ``"hermes"`` toolset name must expand to ``"hermes-cli"`` and
+    ``"hermes-api-server"`` so that tools are not silently dropped.
+
+    Regression test for issue #41579.
+    """
+    config = {"platform_toolsets": {"cli": ["hermes", "kanban"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    # Must resolve to the same toolset as a plain "hermes-cli" config.
+    reference = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli", "kanban"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    assert enabled == reference
+    # Sanity: something was actually enabled.
+    assert enabled
+    assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
+
+
+def test_get_platform_tools_legacy_hermes_alias_alone():
+    """``"hermes"`` alone (no other toolsets) must still produce tools."""
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    reference = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli", "hermes-api-server"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    assert enabled == reference
+    assert enabled
+
+
 def test_get_platform_tools_configurable_only_no_expansion():
     """Configurable-only list (no composite) must not pull in unrelated
     toolsets — guards against the expansion firing when ``composite_tools``

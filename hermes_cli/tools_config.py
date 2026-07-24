@@ -1757,6 +1757,25 @@ def _get_platform_tools(
     # Normalise to str so downstream sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
 
+    # Expand legacy toolset aliases.  Older Hermes versions used bare
+    # ``"hermes"`` as a composite toolset covering both the CLI and the
+    # API-server surface.  Modern code expects ``"hermes-cli"`` (and
+    # ``"hermes-api-server"`` for the HTTP endpoint).  Without expansion
+    # ``resolve_toolset("hermes")`` returns ``[]`` — all tools silently
+    # disappear.  The WebUI has its own ``_normalize_cli_toolsets()`` that
+    # does the same thing; this brings the CLI/TUI/Desktop path in line.
+    _LEGACY_TOOLSET_ALIASES: dict = {
+        "hermes": ("hermes-cli", "hermes-api-server"),
+    }
+    expanded: list = []
+    for name in toolset_names:
+        aliases = _LEGACY_TOOLSET_ALIASES.get(name)
+        if aliases:
+            expanded.extend(aliases)
+        else:
+            expanded.append(name)
+    toolset_names = expanded
+
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}

@@ -320,7 +320,26 @@ def _cmd_doctor(_args) -> None:
     if problems:
         print(f"{problems} issue(s) found.  Fix before relying on these hooks.")
     else:
-        print("All shell hooks look healthy.")
+        print("All shell hooks look healthy (config, allowlist, synthetic run).")
+
+    # #69836: a ✓ above must not read as "hooks will fire".  Doctor runs in
+    # its own short-lived process and registration state is in-process
+    # (agent/shell_hooks.py), so it genuinely cannot see whether any live
+    # agent process registered these hooks.  Say so, and name the
+    # entrypoints that do register — the #69825 failure mode was a launch
+    # path that never reached the registration call while doctor kept
+    # reporting healthy.
+    print(
+        "\nNote: doctor validates config, allowlist, and script behavior\n"
+        "from this process only — it cannot verify that a live agent\n"
+        "process actually registered these hooks.  Hooks fire only in\n"
+        "processes that call agent.shell_hooks.register_from_config() at\n"
+        "startup: `hermes` agent entrypoints (bare `hermes`, chat, acp,\n"
+        "rl, cron run/tick, gateway run, mcp serve), the interactive\n"
+        "cli.py REPL, and gateway boot.  If your agent runs behind an\n"
+        "entrypoint that skips that call, hooks pass every check above\n"
+        "yet never fire in that process (the #69825 bug class)."
+    )
 
 
 def _doctor_one(spec, shell_hooks) -> int:

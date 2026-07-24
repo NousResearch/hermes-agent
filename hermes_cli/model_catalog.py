@@ -76,6 +76,7 @@ DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
 DEFAULT_TTL_HOURS = 1
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
+_MAX_CATALOG_RESPONSE_BYTES = 16 * 1024 * 1024
 
 _HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
 
@@ -133,8 +134,14 @@ def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
             },
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            data = json.loads(_read_manifest_payload(resp))
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+        ValueError,
+    ) as exc:
         logger.info("model catalog fetch failed (%s): %s", url, exc)
         return None
     except Exception as exc:  # pragma: no cover — defensive
@@ -146,6 +153,15 @@ def _fetch_manifest(url: str, timeout: float) -> dict[str, Any] | None:
         return None
 
     return data
+
+
+def _read_manifest_payload(resp: Any) -> str:
+    raw = resp.read(_MAX_CATALOG_RESPONSE_BYTES + 1)
+    if len(raw) > _MAX_CATALOG_RESPONSE_BYTES:
+        raise ValueError(
+            f"model catalog response exceeded {_MAX_CATALOG_RESPONSE_BYTES} bytes"
+        )
+    return raw.decode()
 
 
 def _fetch_manifest_with_fallback(

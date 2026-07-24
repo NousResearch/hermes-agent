@@ -415,6 +415,37 @@ def test_challenge_unrecoverable_returns_needs_reauth_without_retry(
     assert "auth" not in server._config  # unchanged on failure
 
 
+def test_challenge_reconnect_failure_does_not_retry_stale_session(
+    monkeypatch, tmp_path,
+):
+    """Successful OAuth is not enough to retry: the transport must be fresh."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    challenge_result = _tool_result(
+        True, meta={"mcp/www_authenticate": [CHALLENGE]},
+    )
+    server, calls = _stub_server("srv-reconnect", [challenge_result])
+    _install_server(monkeypatch, server)
+    _patch_manager_challenge(monkeypatch, True)
+    monkeypatch.setattr(
+        mcp_tool, "_signal_reconnect_and_wait", lambda *a, **kw: False,
+    )
+
+    try:
+        handler = _make_tool_handler("srv-reconnect", "whoami", 10.0)
+        out = json.loads(handler({}))
+    finally:
+        mcp_tool._servers.pop("srv-reconnect", None)
+
+    assert calls["count"] == 1
+    assert out["server"] == "srv-reconnect"
+    assert out["reconnect_failed"] is True
+    assert "reconnect" in out["error"].lower()
+    assert "needs_reauth" not in out
+
+
 def test_second_challenge_does_not_loop(monkeypatch, tmp_path):
     """A second protected failure after OAuth + reconnect is a hard stop."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

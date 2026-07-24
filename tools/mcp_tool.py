@@ -4023,8 +4023,23 @@ def _handle_tool_challenge_and_retry(
             op_description=f"{op_description} after tool OAuth challenge",
             timeout=15,
         )
-        if reconnected:
-            _reset_server_error(server_name)
+        if not reconnected:
+            logger.warning(
+                "MCP server '%s': OAuth completed but the transport did not "
+                "reconnect; not retrying %s against the stale session",
+                server_name, op_description,
+            )
+            _bump_server_error(server_name)
+            return json.dumps({
+                "error": (
+                    f"MCP server '{server_name}' was authorized, but its "
+                    f"transport did not reconnect. Try this tool again shortly."
+                ),
+                "reconnect_failed": True,
+                "server": server_name,
+            }, ensure_ascii=False)
+
+        _reset_server_error(server_name)
 
         try:
             result = retry_call()

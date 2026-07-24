@@ -7026,7 +7026,7 @@ def _update_via_zip(args):
     # Same as the git-pull path: verify state.db survived the ZIP update
     # and auto-restore from the most recent pre-update snapshot if needed.
     try:
-        from hermes_cli.backup import verify_sqlite_integrity
+        from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
 
         _state_path = get_hermes_home() / "state.db"
         if _state_path.exists():
@@ -10073,7 +10073,16 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     snapshot_id = None
     try:
-        from hermes_cli.backup import create_quick_snapshot, verify_sqlite_integrity
+        from hermes_cli.backup import (
+            _quick_snapshot_root,
+            create_quick_snapshot,
+            verify_sqlite_integrity,
+        )
+
+        # NOTE: this function later does `from hermes_constants import
+        # get_hermes_home`, which makes the name function-local — the
+        # module-level import is shadowed and unbound here. Alias explicitly.
+        from hermes_cli.config import get_hermes_home as _get_home
 
         snapshot_id = create_quick_snapshot(
             label="pre-update",
@@ -10088,7 +10097,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
         # file at any point. A silent zeroing at this point would proceed with
         # the update and exit code 0 — exactly the #68474 symptom.
         if snapshot_id:
-            _src_path = get_hermes_home() / "state.db"
+            _src_path = _get_home() / "state.db"
             if _src_path.exists():
                 _integrity = verify_sqlite_integrity(
                     _src_path,
@@ -10102,7 +10111,7 @@ def _run_pre_update_backup(args) -> Optional[str]:
                         f"  ⚠ state.db integrity check FAILED after snapshot: {_msg}"
                     )
                     # Check if the snapshot itself is valid.
-                    _snap_root = _quick_snapshot_root(get_hermes_home())
+                    _snap_root = _quick_snapshot_root(_get_home())
                     _snap_state = _snap_root / snapshot_id / "state.db"
                     if _snap_state.exists():
                         _snap_ok = verify_sqlite_integrity(
@@ -11434,7 +11443,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # automatically restore from the pre-update snapshot rather than
         # letting the user discover silently that their sessions are gone.
         try:
-            from hermes_cli.backup import verify_sqlite_integrity
+            from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
 
             _state_path = get_hermes_home() / "state.db"
             if _state_path.exists():

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import copy
 import importlib
 import json
 import logging
@@ -39,7 +40,11 @@ import os
 import queue
 import sys
 import threading
+import time
 
+from collections import deque
+from dataclasses import dataclass, field
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -63,6 +68,7 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_RETAIN_WRITER_SHUTDOWN_TIMEOUT = 10.0
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -252,6 +258,41 @@ _loop_lock = threading.Lock()
 # Sentinel pushed to the per-provider retain queue to wake the writer for a
 # clean exit. A unique object so it can never collide with a real job.
 _WRITER_SENTINEL = object()
+
+
+class _ClientOperationTimeout(TimeoutError):
+    """The waiter timed out while the scheduled client future stayed live."""
+
+    def __init__(self, future: Future):
+        super().__init__("Hindsight client operation exceeded its wait timeout")
+        self.future = future
+
+@dataclass(frozen=True, slots=True)
+class _AutomaticRetainBatch:
+    """An enqueue-time retain snapshot reused unchanged for every retry."""
+
+    start_turn: int
+    end_turn: int
+    bank_id: str
+    document_id: str
+    update_mode: str | None
+    retain_async: bool
+    item: Dict[str, Any]
+
+
+@dataclass(slots=True)
+class _RetainSessionState:
+    """Ordered automatic-retain state owned by one session identity."""
+
+    session_id: str
+    parent_session_id: str
+    document_id: str
+    turns: list[str] = field(default_factory=list)
+    committed_turn_count: int = 0
+    enqueued_turn_count: int = 0
+    pending_batches: deque[_AutomaticRetainBatch] = field(default_factory=deque)
+    inflight_attempts: dict[int, Future] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
@@ -636,6 +677,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_key = None
         self._api_url = _DEFAULT_API_URL
         self._bank_id = "hermes"
+        self._static_bank_id = "hermes"
         self._budget = "mid"
         self._mode = "cloud"
         self._llm_base_url = ""
@@ -667,7 +709,20 @@ class HindsightMemoryProvider(MemoryProvider):
         # futures after interpreter shutdown" / "Unclosed client session".
         self._retain_queue: queue.Queue = queue.Queue()
         self._writer_thread: threading.Thread | None = None
+        self._writer_condition = threading.Condition()
+        self._writer_state = "stopped"
+        self._writer_shutdown_deadline: float | None = None
+        self._writer_sentinel_queued = False
         self._shutting_down = threading.Event()
+        self._retain_abandoned = threading.Event()
+        self._retain_lifecycle_lock = threading.RLock()
+        self._client_lifecycle_lock = threading.RLock()
+        self._client_condition = threading.Condition(self._client_lifecycle_lock)
+        self._client_close_lock = threading.Lock()
+        self._client_operation_futures: dict[Future, Any] = {}
+        self._client_close_requested: dict[int, Any] = {}
+        self._client_close_started: set[int] = set()
+        self._client_teardown_requested = False
         self._atexit_registered = False
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
@@ -688,10 +743,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
-        # How many turns the last append-mode retain already shipped. Used to
-        # send only the new delta on subsequent retains when the API supports
-        # update_mode='append' (legacy/overwrite path still sends everything).
+        # Committed turn watermark. Append batches start at watermark + 1;
+        # overwrite batches always start at turn 1.
         self._last_retained_turn_count = 0
+        self._retain_state: _RetainSessionState | None = None
 
         # Recall controls
         self._auto_recall = True
@@ -1009,58 +1064,80 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
 
+    def _create_client(self):
+        """Construct a client without changing provider ownership."""
+        if self._mode == "local_embedded":
+            available, reason = _check_local_runtime()
+            if not available:
+                raise RuntimeError(
+                    "Hindsight local runtime is unavailable"
+                    + (f": {reason}" if reason else "")
+                )
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure
+
+                _lazy_ensure("memory.hindsight", prompt=False)
+            except ImportError:
+                pass
+            except Exception as exc:
+                raise ImportError(str(exc)) from exc
+            from hindsight import HindsightEmbedded
+
+            HindsightEmbedded.__del__ = lambda self: None
+            llm_provider = self._config.get("llm_provider", "")
+            if llm_provider in {"openai_compatible", "openrouter"}:
+                llm_provider = "openai"
+            logger.debug(
+                "Creating HindsightEmbedded client (profile=%s, provider=%s)",
+                self._config.get("profile", "hermes"),
+                llm_provider,
+            )
+            kwargs = {
+                "profile": self._config.get("profile", "hermes"),
+                "llm_provider": llm_provider,
+                "llm_api_key": self._config.get("llmApiKey")
+                or self._config.get("llm_api_key")
+                or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                "llm_model": self._config.get("llm_model", ""),
+            }
+            if self._llm_base_url:
+                kwargs["llm_base_url"] = self._llm_base_url
+            idle_timeout = _parse_int_setting(
+                self._config.get("idle_timeout")
+                if self._config.get("idle_timeout") is not None
+                else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
+                _DEFAULT_IDLE_TIMEOUT,
+            )
+            self._idle_timeout = idle_timeout
+            kwargs["idle_timeout"] = idle_timeout
+            return HindsightEmbedded(**kwargs)
+
+        _ensure_cloud_client_dependency()
+        from hindsight_client import Hindsight
+
+        timeout = self._timeout or _DEFAULT_TIMEOUT
+        kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        logger.debug(
+            "Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
+            self._api_url,
+            bool(self._api_key),
+            kwargs["timeout"],
+        )
+        return Hindsight(**kwargs)
+
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
-        if self._client is None:
-            if self._mode == "local_embedded":
-                available, reason = _check_local_runtime()
-                if not available:
-                    raise RuntimeError(
-                        "Hindsight local runtime is unavailable"
-                        + (f": {reason}" if reason else "")
-                    )
-                try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
-                except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
-                HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
-                if llm_provider in {"openai_compatible", "openrouter"}:
-                    llm_provider = "openai"
-                logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
-                kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
-                    llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
-                    llm_model=self._config.get("llm_model", ""),
+        """Return the owned client, creating it only while teardown permits."""
+        self._ensure_retain_runtime()
+        with self._client_lifecycle_lock:
+            if self._retain_abandoned.is_set() or self._client_teardown_requested:
+                raise RuntimeError(
+                    "Hindsight client creation disabled during provider teardown"
                 )
-                if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
-                idle_timeout = _parse_int_setting(
-                    self._config.get("idle_timeout")
-                    if self._config.get("idle_timeout") is not None
-                    else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
-                    _DEFAULT_IDLE_TIMEOUT,
-                )
-                self._idle_timeout = idle_timeout
-                kwargs["idle_timeout"] = idle_timeout
-                self._client = HindsightEmbedded(**kwargs)
-            else:
-                _ensure_cloud_client_dependency()
-                from hindsight_client import Hindsight
-                timeout = self._timeout or _DEFAULT_TIMEOUT
-                kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
-                             self._api_url, bool(self._api_key), kwargs["timeout"])
-                self._client = Hindsight(**kwargs)
-        return self._client
+            if self._client is None:
+                self._client = self._create_client()
+            return self._client
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
@@ -1081,89 +1158,568 @@ class HindsightMemoryProvider(MemoryProvider):
             )
         )
 
-    def _ensure_writer(self) -> None:
-        """Lazy-start the single retain-writer thread.
+    def _ensure_writer(self, *, allow_shutdown: bool = False) -> None:
+        """Lazy-start the one retain writer under synchronized lifecycle state."""
+        self._ensure_retain_runtime()
+        with self._retain_lifecycle_lock:
+            with self._writer_condition:
+                thread = self._writer_thread
+                if thread is not None and thread.is_alive():
+                    return
+                if self._retain_abandoned.is_set():
+                    return
+                if self._shutting_down.is_set() and not allow_shutdown:
+                    return
+                self._writer_state = "running"
+                self._writer_shutdown_deadline = None
+                self._writer_sentinel_queued = False
+                thread = threading.Thread(
+                    target=self._writer_loop,
+                    daemon=True,
+                    name="hindsight-writer",
+                )
+                self._writer_thread = thread
+                # Legacy alias retained for callers that join _sync_thread.
+                self._sync_thread = thread
+                thread.start()
 
-        We don't start the writer in initialize() so providers that never
-        retain (e.g. tools-only mode) don't pay for an idle thread.
-        """
-        thread = self._writer_thread
-        if thread is not None and thread.is_alive():
-            return
-        # If the previous writer exited (e.g. after a prior shutdown), reset
-        # the flag so this fresh writer is allowed to drain new jobs.
-        self._shutting_down.clear()
-        thread = threading.Thread(
-            target=self._writer_loop,
-            daemon=True,
-            name="hindsight-writer",
-        )
-        self._writer_thread = thread
-        # Keep the legacy _sync_thread alias pointing at the writer so any
-        # external code that joins _sync_thread keeps working.
-        self._sync_thread = thread
-        thread.start()
+    def _transition_writer_to_abandoned_locked(self) -> bool:
+        """Publish abandonment while holding ``_writer_condition``."""
+        if self._writer_state in {"abandoned", "stopped"}:
+            return self._writer_state == "abandoned"
+        with self._client_lifecycle_lock:
+            self._writer_state = "abandoned"
+            self._retain_abandoned.set()
+            self._client_teardown_requested = True
+        self._writer_condition.notify_all()
+        return True
+
+    def _publish_writer_abandonment(self) -> bool:
+        """Atomically revoke callback dispatch and client reconnect permission."""
+        with self._writer_condition:
+            return self._transition_writer_to_abandoned_locked()
+
+    def _claim_retain_callback(self) -> bool:
+        """Return whether the dequeued callback may begin."""
+        with self._writer_condition:
+            deadline = self._writer_shutdown_deadline
+            if (
+                self._writer_state == "stopping"
+                and deadline is not None
+                and time.monotonic() >= deadline
+            ):
+                self._transition_writer_to_abandoned_locked()
+            return self._writer_state in {"running", "stopping"}
 
     def _writer_loop(self) -> None:
-        """Drain the retain queue serially. Exits on sentinel.
+        """Consume every queue entry exactly once; only a sentinel terminates."""
+        abandoned = False
+        try:
+            while True:
+                try:
+                    job = self._retain_queue.get(timeout=1.0)
+                except queue.Empty:
+                    # Shutdown always queues one sentinel. Exiting on an empty
+                    # poll could orphan that sentinel and hang queue.join().
+                    continue
+                try:
+                    if job is _WRITER_SENTINEL:
+                        return
+                    if not self._claim_retain_callback():
+                        continue
+                    try:
+                        job()
+                    except Exception as exc:
+                        if self._retain_abandoned.is_set():
+                            logger.debug(
+                                "Hindsight in-flight retain ended after abandonment: %s",
+                                exc,
+                            )
+                        else:
+                            logger.warning(
+                                "Hindsight retain failed: %s", exc, exc_info=True
+                            )
+                finally:
+                    self._retain_queue.task_done()
+        finally:
+            with self._writer_condition:
+                abandoned = self._writer_state == "abandoned"
+                self._writer_state = "stopped"
+                self._writer_shutdown_deadline = None
+                self._writer_sentinel_queued = False
+                self._writer_condition.notify_all()
+            if abandoned:
+                self._discard_queued_retain_jobs()
+                self._close_client()
 
-        Each job() is wrapped so a single failure can't kill the writer.
-        task_done() always fires so queue.join() works in tests.
-        """
+    def _discard_queued_retain_jobs(self) -> int:
+        """Remove queued callbacks without invoking them after abandonment."""
+        discarded = 0
         while True:
             try:
-                job = self._retain_queue.get(timeout=1.0)
+                job = self._retain_queue.get_nowait()
             except queue.Empty:
-                if self._shutting_down.is_set():
-                    return
-                continue
+                return discarded
             try:
-                if job is _WRITER_SENTINEL:
-                    return
-                try:
-                    job()
-                except Exception as exc:
-                    logger.warning("Hindsight retain failed: %s", exc, exc_info=True)
+                if job is not _WRITER_SENTINEL:
+                    discarded += 1
             finally:
                 self._retain_queue.task_done()
 
     def _register_atexit(self) -> None:
-        """Register an idempotent atexit hook to drain the writer.
-
-        Without this, a CLI exit that doesn't go through MemoryManager.
-        shutdown_all() would leave in-flight retain jobs racing interpreter
-        teardown, producing "cannot schedule new futures" warnings and
-        unclosed aiohttp sessions.
-        """
+        """Register an idempotent atexit hook that drains accepted retains."""
+        self._ensure_retain_state()
         if self._atexit_registered:
             return
         self._atexit_registered = True
         atexit.register(self._atexit_shutdown)
 
     def _atexit_shutdown(self) -> None:
-        if self._shutting_down.is_set():
-            return
         try:
             self.shutdown()
         except Exception as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
-    def _run_hindsight_operation(self, operation):
-        """Run an async Hindsight client operation, retrying once after idle shutdown."""
-        client = self._get_client()
+    def _schedule_client_operation_locked(self, client, coro) -> Future:
+        """Schedule and register a client coroutine while ownership is locked."""
+        from agent.async_utils import safe_schedule_threadsafe
+
+        future = safe_schedule_threadsafe(coro, _get_loop())
+        if future is None:
+            close = getattr(coro, "close", None)
+            if close is not None:
+                close()
+            raise RuntimeError("Hindsight loop unavailable")
+        self._client_operation_futures[future] = client
+        future.add_done_callback(self._client_operation_done)
+        return future
+
+    def _client_has_operations_locked(self, client) -> bool:
+        return any(
+            operation_client is client
+            for operation_client in self._client_operation_futures.values()
+        )
+
+    def _claim_client_close_locked(self, client) -> bool:
+        """Record close ownership; return whether close may start now."""
+        client_id = id(client)
+        self._client_close_requested[client_id] = client
+        if self._client_has_operations_locked(client):
+            return False
+        if client_id in self._client_close_started:
+            return False
+        self._client_close_started.add(client_id)
+        return True
+
+    def _client_operation_done(self, future: Future) -> None:
+        """Release one actual async operation and trigger deferred close."""
+        client_to_close = None
+        with self._client_lifecycle_lock:
+            client = self._client_operation_futures.pop(future, None)
+            if client is None:
+                return
+            client_id = id(client)
+            if (
+                client_id in self._client_close_requested
+                and not self._client_has_operations_locked(client)
+                and client_id not in self._client_close_started
+            ):
+                self._client_close_started.add(client_id)
+                client_to_close = self._client_close_requested[client_id]
+        if client_to_close is not None:
+            self._start_client_close(client_to_close)
+
+    def _start_client_close(self, client) -> None:
+        """Close a deferred client off the shared asyncio loop thread."""
+        threading.Thread(
+            target=self._close_client_instance,
+            args=(client,),
+            daemon=True,
+            name="hindsight-client-close",
+        ).start()
+
+    def _wait_for_client_operation(self, future: Future):
         try:
-            return self._run_sync(operation(client))
+            return future.result(timeout=self._timeout)
+        except FutureTimeoutError as exc:
+            if future.done():
+                raise
+            raise _ClientOperationTimeout(future) from exc
+
+    def _run_hindsight_operation(self, operation):
+        """Run one tracked client operation with atomic reconnect ownership."""
+        self._ensure_retain_runtime()
+        with self._client_lifecycle_lock:
+            if self._retain_abandoned.is_set() or self._client_teardown_requested:
+                raise RuntimeError("Hindsight operation rejected during teardown")
+            client = self._get_client()
+            future = self._schedule_client_operation_locked(
+                client, operation(client)
+            )
+        try:
+            return self._wait_for_client_operation(future)
+        except _ClientOperationTimeout:
+            # The scheduled coroutine still owns the client. Its done callback
+            # releases ownership and performs any deferred close.
+            raise
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
-            logger.info(
-                "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
-                exc,
+
+            old_client_to_close = None
+            try:
+                with self._client_lifecycle_lock:
+                    if (
+                        self._retain_abandoned.is_set()
+                        or self._client_teardown_requested
+                    ):
+                        # Abandonment owns the current client; never clear it here.
+                        raise
+                    if self._client is client:
+                        replacement = self._create_client()
+                        self._client = replacement
+                        if self._claim_client_close_locked(client):
+                            old_client_to_close = client
+                    else:
+                        replacement = self._client
+                        if replacement is None:
+                            replacement = self._create_client()
+                            self._client = replacement
+                    logger.info(
+                        "Hindsight embedded daemon appears unreachable; "
+                        "recreated client and retrying once: %s",
+                        exc,
+                    )
+                    retry_future = self._schedule_client_operation_locked(
+                        replacement, operation(replacement)
+                    )
+            finally:
+                if old_client_to_close is not None:
+                    self._start_client_close(old_client_to_close)
+            return self._wait_for_client_operation(retry_future)
+
+    def _ensure_retain_runtime(self) -> None:
+        """Lazily add synchronization fields for legacy provider instances."""
+        if not hasattr(self, "_retain_lifecycle_lock"):
+            self._retain_lifecycle_lock = threading.RLock()
+        if not hasattr(self, "_retain_queue"):
+            self._retain_queue = queue.Queue()
+        if not hasattr(self, "_writer_thread"):
+            self._writer_thread = getattr(self, "_sync_thread", None)
+        if not hasattr(self, "_sync_thread"):
+            self._sync_thread = self._writer_thread
+        if not hasattr(self, "_writer_condition"):
+            self._writer_condition = threading.Condition()
+        if not hasattr(self, "_writer_state"):
+            thread = self._writer_thread
+            self._writer_state = (
+                "running" if thread is not None and thread.is_alive() else "stopped"
             )
-            self._client = None
-            client = self._get_client()
-            self._client = client
-            return self._run_sync(operation(client))
+        if not hasattr(self, "_writer_shutdown_deadline"):
+            self._writer_shutdown_deadline = None
+        if not hasattr(self, "_writer_sentinel_queued"):
+            self._writer_sentinel_queued = False
+        if not hasattr(self, "_shutting_down"):
+            self._shutting_down = threading.Event()
+        if not hasattr(self, "_retain_abandoned"):
+            self._retain_abandoned = threading.Event()
+        if not hasattr(self, "_client_lifecycle_lock"):
+            self._client_lifecycle_lock = threading.RLock()
+        if not hasattr(self, "_client_condition"):
+            self._client_condition = threading.Condition(self._client_lifecycle_lock)
+        if not hasattr(self, "_client_close_lock"):
+            self._client_close_lock = threading.Lock()
+        if not hasattr(self, "_client_operation_futures"):
+            self._client_operation_futures = {}
+        if not hasattr(self, "_client_close_requested"):
+            self._client_close_requested = {}
+        if not hasattr(self, "_client_close_started"):
+            self._client_close_started = set()
+        if not hasattr(self, "_client_teardown_requested"):
+            self._client_teardown_requested = False
+        if not hasattr(self, "_atexit_registered"):
+            self._atexit_registered = False
+        if not hasattr(self, "_prefetch_lock"):
+            self._prefetch_lock = threading.Lock()
+        if not hasattr(self, "_prefetch_thread"):
+            self._prefetch_thread = None
+        if not hasattr(self, "_prefetch_result"):
+            self._prefetch_result = ""
+
+        defaults = {
+            "_api_key": None,
+            "_api_url": _DEFAULT_API_URL,
+            "_auto_retain": True,
+            "_bank_id": "hermes",
+            "_bank_id_template": "",
+            "_client": None,
+            "_config": {},
+            "_idle_timeout": _DEFAULT_IDLE_TIMEOUT,
+            "_llm_base_url": "",
+            "_mode": "cloud",
+            "_observation_scopes": None,
+            "_parent_session_id": "",
+            "_platform": "",
+            "_user_id": "",
+            "_user_name": "",
+            "_chat_id": "",
+            "_chat_name": "",
+            "_chat_type": "",
+            "_thread_id": "",
+            "_agent_identity": "",
+            "_agent_workspace": "",
+            "_retain_async": True,
+            "_retain_context": "conversation between Hermes Agent and the User",
+            "_retain_every_n_turns": 1,
+            "_retain_source": "",
+            "_retain_tags": [],
+            "_retain_user_prefix": "User",
+            "_retain_assistant_prefix": "Assistant",
+            "_session_id": "",
+            "_timeout": _DEFAULT_TIMEOUT,
+            "_turn_counter": 0,
+            "_turn_index": 0,
+        }
+        for name, value in defaults.items():
+            if not hasattr(self, name):
+                setattr(self, name, value)
+        if not hasattr(self, "_static_bank_id"):
+            self._static_bank_id = self._bank_id
+        if not hasattr(self, "_last_retained_turn_count"):
+            self._last_retained_turn_count = 0
+
+    def _ensure_retain_state(self) -> _RetainSessionState:
+        """Return the authoritative state while serializing lazy creation."""
+        self._ensure_retain_runtime()
+        with self._retain_lifecycle_lock:
+            state = getattr(self, "_retain_state", None)
+            if state is not None:
+                return state
+
+            document_id = str(getattr(self, "_document_id", "") or "").strip()
+            if not document_id:
+                start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                document_id = f"{self._session_id}-{start_ts}"
+                self._document_id = document_id
+            turns = getattr(self, "_session_turns", None)
+            if not isinstance(turns, list):
+                turns = list(turns or [])
+            try:
+                committed = int(self._last_retained_turn_count or 0)
+            except (TypeError, ValueError):
+                committed = 0
+            committed = max(0, min(committed, len(turns)))
+            state = _RetainSessionState(
+                session_id=str(self._session_id or "").strip(),
+                parent_session_id=str(self._parent_session_id or "").strip(),
+                document_id=document_id,
+                turns=turns,
+                committed_turn_count=committed,
+                enqueued_turn_count=committed,
+            )
+            self._retain_state = state
+            self._session_turns = state.turns
+            self._turn_counter = len(state.turns)
+            self._turn_index = self._turn_counter
+            self._last_retained_turn_count = committed
+            return state
+
+    def _start_retain_session(
+        self, session_id: str, parent_session_id: str
+    ) -> _RetainSessionState:
+        """Create isolated automatic-retain state for a new session."""
+        self._session_id = session_id
+        self._parent_session_id = parent_session_id
+        start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._document_id = f"{session_id}-{start_ts}"
+        state = _RetainSessionState(
+            session_id=session_id,
+            parent_session_id=parent_session_id,
+            document_id=self._document_id,
+        )
+        self._retain_state = state
+        self._session_turns = state.turns
+        self._turn_counter = 0
+        self._turn_index = 0
+        self._last_retained_turn_count = 0
+        return state
+
+    def _build_automatic_retain_batch(
+        self,
+        state: _RetainSessionState,
+        target_turn_count: int,
+        *,
+        bank_id: str,
+        document_id: str,
+        update_mode: str | None,
+        retain_async: bool,
+        retain_context: str,
+    ) -> _AutomaticRetainBatch | None:
+        """Freeze all request and item fields for one scheduled turn range."""
+        end_turn = min(target_turn_count, len(state.turns))
+        if end_turn <= state.enqueued_turn_count:
+            return None
+        start_turn = (
+            state.enqueued_turn_count + 1 if update_mode == "append" else 1
+        )
+        turns = list(state.turns[start_turn - 1 : end_turn])
+        if not turns:
+            return None
+
+        metadata = self._build_metadata(
+            message_count=len(turns) * 2,
+            turn_index=end_turn,
+        )
+        if state.session_id:
+            metadata["session_id"] = state.session_id
+        else:
+            metadata.pop("session_id", None)
+        lineage_tags: list[str] = []
+        if state.session_id:
+            lineage_tags.append(f"session:{state.session_id}")
+        if state.parent_session_id:
+            lineage_tags.append(f"parent:{state.parent_session_id}")
+
+        item = self._build_retain_kwargs(
+            "[" + ",".join(turns) + "]",
+            context=retain_context,
+            metadata=metadata,
+            tags=lineage_tags or None,
+        )
+        item.pop("bank_id", None)
+        item.pop("retain_async", None)
+        if update_mode is not None:
+            item["update_mode"] = update_mode
+        # observation_scopes may be nested; detach every mutable config value.
+        item = copy.deepcopy(item)
+        return _AutomaticRetainBatch(
+            start_turn=start_turn,
+            end_turn=end_turn,
+            bank_id=bank_id,
+            document_id=document_id,
+            update_mode=update_mode,
+            retain_async=retain_async,
+            item=item,
+        )
+
+    def _commit_automatic_retain_batch(
+        self, state: _RetainSessionState, batch: _AutomaticRetainBatch
+    ) -> None:
+        with state.lock:
+            if state.pending_batches and state.pending_batches[0] is batch:
+                state.pending_batches.popleft()
+                state.inflight_attempts.pop(id(batch), None)
+                state.committed_turn_count = batch.end_turn
+            committed = state.committed_turn_count
+        with self._retain_lifecycle_lock:
+            if getattr(self, "_retain_state", None) is state:
+                self._last_retained_turn_count = committed
+        logger.debug(
+            "Hindsight retain succeeded: doc=%s, committed_turn=%d",
+            batch.document_id,
+            committed,
+        )
+
+    def _drain_automatic_retains(self, state: _RetainSessionState) -> None:
+        """Retry and commit frozen batches in strict session FIFO order."""
+        while not self._retain_abandoned.is_set():
+            if not self._claim_retain_callback():
+                return
+            with state.lock:
+                if not state.pending_batches:
+                    return
+                batch = state.pending_batches[0]
+                prior_future = state.inflight_attempts.get(id(batch))
+
+            if prior_future is not None:
+                if not prior_future.done():
+                    raise _ClientOperationTimeout(prior_future)
+                with state.lock:
+                    state.inflight_attempts.pop(id(batch), None)
+                try:
+                    prior_future.result()
+                except Exception:
+                    # The completed attempt failed; retry the same canonical
+                    # batch below before considering any later range.
+                    pass
+                else:
+                    self._commit_automatic_retain_batch(state, batch)
+                    continue
+
+            logger.debug(
+                "Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, "
+                "turns=%d-%d",
+                batch.bank_id,
+                batch.document_id,
+                batch.update_mode,
+                batch.retain_async,
+                batch.start_turn,
+                batch.end_turn,
+            )
+            # The operation factory may run twice when local_embedded
+            # reconnects. Materialize from the private canonical snapshot
+            # inside the factory so every client sees an isolated payload.
+            try:
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(
+                        bank_id=batch.bank_id,
+                        items=[copy.deepcopy(batch.item)],
+                        document_id=batch.document_id,
+                        retain_async=batch.retain_async,
+                    )
+                )
+            except _ClientOperationTimeout as exc:
+                with state.lock:
+                    state.inflight_attempts[id(batch)] = exc.future
+                raise
+            self._commit_automatic_retain_batch(state, batch)
+
+    def _enqueue_automatic_retain(
+        self,
+        state: _RetainSessionState,
+        target_turn_count: int,
+        *,
+        allow_shutdown: bool = False,
+    ) -> None:
+        """Freeze and queue one target, or queue a retry for pending work."""
+        if self._shutting_down.is_set() and not allow_shutdown:
+            return
+        with state.lock:
+            if target_turn_count > state.enqueued_turn_count:
+                bank_id = str(getattr(self, "_bank_id", "hermes") or "hermes")
+                document_id, update_mode = self._resolve_retain_target(
+                    state.document_id
+                )
+                batch = self._build_automatic_retain_batch(
+                    state,
+                    target_turn_count,
+                    bank_id=bank_id,
+                    document_id=document_id,
+                    update_mode=update_mode,
+                    retain_async=bool(getattr(self, "_retain_async", True)),
+                    retain_context=str(
+                        getattr(
+                            self,
+                            "_retain_context",
+                            "conversation between Hermes Agent and the User",
+                        )
+                    ),
+                )
+                if batch is not None:
+                    state.pending_batches.append(batch)
+                    state.enqueued_turn_count = batch.end_turn
+            if not state.pending_batches:
+                return
+
+        def _drain() -> None:
+            self._drain_automatic_retains(state)
+
+        if allow_shutdown:
+            self._ensure_writer(allow_shutdown=True)
+        else:
+            self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_drain)
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
@@ -1251,8 +1807,15 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
+        self._turn_counter = 0
         self._session_turns = []
         self._last_retained_turn_count = 0
+        self._retain_state = _RetainSessionState(
+            session_id=self._session_id,
+            parent_session_id=self._parent_session_id,
+            document_id=self._document_id,
+            turns=self._session_turns,
+        )
         self._mode = self._config.get("mode", "cloud")
         # Read timeout from config or env var, fall back to default
         self._timeout = _parse_int_setting(
@@ -1284,11 +1847,13 @@ class HindsightMemoryProvider(MemoryProvider):
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = cfg_get(self._config, "banks", "hermes", default={})
-        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        self._static_bank_id = (
+            self._config.get("bank_id") or banks.get("bankId", "hermes")
+        )
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(
             self._bank_id_template,
-            fallback=static_bank_id,
+            fallback=self._static_bank_id,
             profile=self._agent_identity,
             workspace=self._agent_workspace,
             platform=self._platform,
@@ -1601,99 +2166,47 @@ class HindsightMemoryProvider(MemoryProvider):
         return kwargs
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Enqueue a retain for the current turn. Non-blocking.
-
-        The actual aretain_batch runs on a single long-lived writer thread
-        that drains an in-memory queue. Once shutdown() has been called,
-        further sync_turn() calls are dropped — this prevents post-exit
-        retains from reaching aiohttp after interpreter shutdown begins.
-        """
-        if not self._auto_retain:
-            logger.debug("sync_turn: skipped (auto_retain disabled)")
-            return
-        if self._shutting_down.is_set():
-            logger.debug("sync_turn: skipped (shutting down)")
-            return
-
-        if session_id:
-            self._session_id = str(session_id).strip()
-
-        turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
-        self._session_turns.append(turn)
-        self._turn_counter += 1
-        self._turn_index = self._turn_counter
-
-        if self._turn_counter % self._retain_every_n_turns != 0:
-            logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
-                         self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
-            return
-
-        document_id, update_mode = self._resolve_retain_target(self._document_id)
-
-        # On append-capable APIs each retain only needs to ship the turns
-        # accumulated since the last retain — the server appends them to the
-        # existing document. On legacy/overwrite APIs we must resend the whole
-        # session because each retain replaces the document.
-        if update_mode == "append":
-            turns_to_retain = self._session_turns[self._last_retained_turn_count:]
-            if not turns_to_retain:
-                logger.debug("sync_turn: skipped append retain; no new turns since last retain")
+        """Enqueue an immutable automatic-retain batch without blocking."""
+        self._ensure_retain_runtime()
+        with self._retain_lifecycle_lock:
+            if not self._auto_retain:
+                logger.debug("sync_turn: skipped (auto_retain disabled)")
                 return
-        else:
-            turns_to_retain = list(self._session_turns)
+            if self._shutting_down.is_set():
+                logger.debug("sync_turn: skipped (shutting down)")
+                return
 
-        logger.debug("sync_turn: retaining %d/%d turns, payload %d chars",
-                     len(turns_to_retain), len(self._session_turns),
-                     sum(len(t) for t in turns_to_retain))
-        content = "[" + ",".join(turns_to_retain) + "]"
+            requested_session_id = str(session_id or "").strip()
+            if requested_session_id and requested_session_id != self._session_id:
+                self.on_session_switch(requested_session_id)
 
-        lineage_tags: list[str] = []
-        if self._session_id:
-            lineage_tags.append(f"session:{self._session_id}")
-        if self._parent_session_id:
-            lineage_tags.append(f"parent:{self._parent_session_id}")
-
-        # Snapshot the state needed for the retain. The writer may run after
-        # _session_turns / _turn_index are mutated by a later sync_turn().
-        metadata_snapshot = self._build_metadata(
-            message_count=len(turns_to_retain) * 2,
-            turn_index=self._turn_index,
-        )
-        num_turns = len(turns_to_retain)
-        bank_id = self._bank_id
-        retain_async_flag = self._retain_async
-        retain_context = self._retain_context
-
-        def _do_retain() -> None:
-            item = self._build_retain_kwargs(
-                content,
-                context=retain_context,
-                metadata=metadata_snapshot,
-                tags=lineage_tags or None,
+            state = self._ensure_retain_state()
+            turn = json.dumps(
+                self._build_turn_messages(user_content, assistant_content),
+                ensure_ascii=False,
             )
-            item.pop("bank_id", None)
-            item.pop("retain_async", None)
-            if update_mode is not None:
-                item["update_mode"] = update_mode
-            logger.debug("Hindsight retain: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         bank_id, document_id, update_mode, retain_async_flag, len(content), num_turns)
-            self._run_hindsight_operation(
-                lambda client: client.aretain_batch(
-                    bank_id=bank_id,
-                    items=[item],
-                    document_id=document_id,
-                    retain_async=retain_async_flag,
+            state.turns.append(turn)
+            self._turn_counter = len(state.turns)
+            self._turn_index = self._turn_counter
+
+            if self._turn_counter % self._retain_every_n_turns != 0:
+                logger.debug(
+                    "sync_turn: buffered turn %d (will retain at turn %d)",
+                    self._turn_counter,
+                    self._turn_counter
+                    + (
+                        self._retain_every_n_turns
+                        - self._turn_counter % self._retain_every_n_turns
+                    ),
                 )
-            )
-            logger.debug("Hindsight retain succeeded")
+                return
 
-        self._ensure_writer()
-        self._register_atexit()
-        self._retain_queue.put(_do_retain)
-        # Advance the append watermark only after the delta is queued, so a
-        # later retain doesn't re-ship turns we've already handed to the writer.
-        if update_mode == "append":
-            self._last_retained_turn_count = len(self._session_turns)
+            logger.debug(
+                "sync_turn: queued retain through turn %d (%d uncommitted)",
+                self._turn_counter,
+                self._turn_counter - state.committed_turn_count,
+            )
+            self._enqueue_automatic_retain(state, self._turn_counter)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -1781,186 +2294,200 @@ class HindsightMemoryProvider(MemoryProvider):
         reset: bool = False,
         **kwargs,
     ) -> None:
-        """Refresh cached per-session state when the agent rotates session_id.
+        """Flush the old session tail, then rotate isolated retain state.
 
-        Fires on /resume, /branch, /reset, /new, and context compression.
-        Without this hook, initialize()-cached state (``_session_id``,
-        ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
-        pointing at the previous session and writes would land in the wrong
-        document. See hermes-agent#6672.
-
-        Always update ``_session_id`` so metadata and tags on subsequent
-        retains reflect the active session. Always mint a fresh
-        ``_document_id`` so the new session's retain doesn't overwrite the
-        old session's document on vectorize-io/hindsight#1303. Always clear
-        the accumulated batch buffers (``_session_turns``, ``_turn_counter``,
-        ``_turn_index``) — even for /resume and /branch, the new session's
-        batching must start from zero so an in-flight retain doesn't flush
-        under the wrong ``_document_id``.
-
-        Before clearing, flush any buffered turns under the *old*
-        ``_document_id``. Users who set ``retain_every_n_turns > 1`` would
-        otherwise silently lose whatever's in ``_session_turns`` at the
-        moment of switch — the same data-loss class as the shutdown race,
-        just at a different lifecycle event.
-
-        Also wait for any in-flight prefetch from the old session and drop
-        its cached result; otherwise the new session's first ``prefetch()``
-        could read stale recall text from before the switch.
-
-        ``parent_session_id`` is recorded for lineage tags on future retains.
-        ``reset`` is accepted but not needed for Hindsight's state model —
-        buffer clearing is correct for every session switch, not only /reset.
+        Every old-session batch is fully frozen before identity changes. A
+        blocked old writer therefore commits only its detached state object;
+        it cannot clear or advance the new session's buffers or watermark.
         """
         new_id = str(new_session_id or "").strip()
         if not new_id:
             return
 
-        # 1. Flush any buffered turns under the OLD identifiers. Snapshot
-        # everything before mutating self._* so metadata + tags + doc_id
-        # all reference the old session consistently.
-        if self._session_turns:
-            old_turns = list(self._session_turns)
-            old_session_id = self._session_id
-            old_parent_session_id = self._parent_session_id
-            old_turn_index = self._turn_index
-            old_metadata = self._build_metadata(
-                message_count=len(old_turns) * 2,
-                turn_index=old_turn_index,
-            )
-            old_lineage_tags: list[str] = []
-            if old_session_id:
-                old_lineage_tags.append(f"session:{old_session_id}")
-            if old_parent_session_id:
-                old_lineage_tags.append(f"parent:{old_parent_session_id}")
-            old_content = "[" + ",".join(old_turns) + "]"
-            # Resolve doc_id + update_mode against the OLD session BEFORE
-            # we rotate _session_id, so the flush lands in the old
-            # session's document either way (legacy: per-process unique;
-            # ≥0.5.0: stable session-scoped + append).
-            old_document_id, old_update_mode = self._resolve_retain_target(
-                self._document_id
-            )
+        self._ensure_retain_runtime()
+        with self._retain_lifecycle_lock:
+            old_state = self._ensure_retain_state()
+            if self._shutting_down.is_set():
+                return
+            old_target = len(old_state.turns)
+            with old_state.lock:
+                old_has_pending = bool(old_state.pending_batches)
+                old_has_tail = old_target > old_state.enqueued_turn_count
+            if old_has_tail or old_has_pending:
+                self._enqueue_automatic_retain(old_state, old_target)
 
-            def _flush():
-                try:
-                    item = self._build_retain_kwargs(
-                        old_content,
-                        context=self._retain_context,
-                        metadata=old_metadata,
-                        tags=old_lineage_tags or None,
-                    )
-                    item.pop("bank_id", None)
-                    item.pop("retain_async", None)
-                    if old_update_mode is not None:
-                        item["update_mode"] = old_update_mode
-                    logger.debug(
-                        "Hindsight flush-on-switch: bank=%s, doc=%s, mode=%s, num_turns=%d",
-                        self._bank_id, old_document_id, old_update_mode, len(old_turns),
-                    )
-                    self._run_hindsight_operation(
-                        lambda client: client.aretain_batch(
-                            bank_id=self._bank_id,
-                            items=[item],
-                            document_id=old_document_id,
-                            retain_async=self._retain_async,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
+            # Preserve the existing prefetch lifecycle behavior; retain state
+            # rotates only after the prior prefetch has been invalidated.
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
+                self._prefetch_thread.join(timeout=3.0)
+            with self._prefetch_lock:
+                self._prefetch_result = ""
 
-            # Route the flush through the same writer queue sync_turn
-            # uses. That serializes it behind any still-queued retains
-            # from the old session (FIFO by document_id), avoids racing
-            # two threads on aretain_batch against the same document, and
-            # keeps shutdown's drain semantics intact. Skip enqueue if
-            # shutdown has already fired — the writer is draining/gone.
-            if not self._shutting_down.is_set():
-                self._ensure_writer()
-                self._register_atexit()
-                self._retain_queue.put(_flush)
+            next_parent_session_id = self._parent_session_id
+            if parent_session_id:
+                next_parent_session_id = str(parent_session_id).strip()
+            self._start_retain_session(new_id, next_parent_session_id)
 
-        # 2. Drain any in-flight prefetch from the old session and drop
-        # its cached result so the new session doesn't see stale recall.
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-
-        # 3. Now rotate to the new session.
-        if parent_session_id:
-            self._parent_session_id = str(parent_session_id).strip()
-        self._session_id = new_id
-        start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        self._document_id = f"{self._session_id}-{start_ts}"
-        self._session_turns = []
-        self._turn_counter = 0
-        self._turn_index = 0
-        self._last_retained_turn_count = 0
-        logger.debug(
-            "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
-            self._session_id, self._parent_session_id, reset, self._document_id,
-        )
-
-    def shutdown(self) -> None:
-        logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
-        # Stop accepting new retain jobs first so anyone still calling
-        # sync_turn() during teardown is dropped, not enqueued.
-        self._shutting_down.set()
-        # Drain the writer: it will finish in-flight work, then exit on
-        # the sentinel. Bounded join keeps shutdown predictable even if
-        # the daemon is wedged.
-        writer = self._writer_thread
-        if writer is not None and writer.is_alive():
-            try:
-                self._retain_queue.put(_WRITER_SENTINEL)
-            except Exception:
-                pass
-            writer.join(timeout=10.0)
-            if writer.is_alive():
-                logger.warning(
-                    "Hindsight writer did not stop within 10s; "
-                    "abandoning %d pending retain(s)",
-                    self._retain_queue.qsize(),
+            if self._bank_id_template:
+                self._bank_id = _resolve_bank_id_template(
+                    self._bank_id_template,
+                    fallback=self._static_bank_id,
+                    profile=self._agent_identity,
+                    workspace=self._agent_workspace,
+                    platform=self._platform,
+                    user=self._user_id,
+                    session=self._session_id,
                 )
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=5.0)
-        if self._client is not None:
-            try:
+
+            logger.debug(
+                "Hindsight on_session_switch: new_session=%s parent=%s "
+                "reset=%s doc=%s bank=%s",
+                self._session_id,
+                self._parent_session_id,
+                reset,
+                self._document_id,
+                self._bank_id,
+            )
+
+    def _close_client_instance(self, client) -> None:
+        """Close one owned client after its tracked operations have ended."""
+        try:
+            with self._client_close_lock:
                 if self._mode == "local_embedded":
-                    # HindsightEmbedded.close() delegates to its sync client.close().
-                    # When Hermes created/used that client on the shared async loop,
-                    # closing it from this thread can raise "attached to a different
-                    # loop" before aiohttp releases the session. Close the embedded
-                    # inner async client on the shared loop first, then let the
-                    # wrapper clean up daemon/UI bookkeeping.
-                    inner_client = getattr(self._client, "_client", None)
+                    inner_client = getattr(client, "_client", None)
                     if inner_client is not None and hasattr(inner_client, "aclose"):
                         _run_sync(inner_client.aclose())
                         try:
-                            self._client._client = None
+                            client._client = None
                         except Exception:
                             pass
                     try:
-                        self._client.close()
+                        client.close()
                     except RuntimeError:
                         pass
                 else:
-                    self._run_sync(self._client.aclose())
-            except Exception:
-                pass
-            self._client = None
-        # The module-global background event loop (_loop / _loop_thread)
-        # is intentionally NOT stopped here. It is shared across every
-        # HindsightMemoryProvider instance in the process — the plugin
-        # loader creates a new provider per AIAgent, and the gateway
-        # creates one AIAgent per concurrent chat session. Stopping the
-        # loop from one provider's shutdown() strands the aiohttp
-        # ClientSession + TCPConnector owned by every sibling provider
-        # on a dead loop, which surfaces as the "Unclosed client session"
-        # / "Unclosed connector" warnings reported in #11923. The loop
-        # runs on a daemon thread and is reclaimed on process exit;
-        # per-session cleanup happens via self._client.aclose() above.
+                    self._run_sync(client.aclose())
+        except Exception as exc:
+            logger.debug("Hindsight client close failed: %s", exc)
+        finally:
+            with self._client_lifecycle_lock:
+                client_id = id(client)
+                if self._client is client:
+                    self._client = None
+                self._client_condition.notify_all()
+                self._client_close_requested.pop(client_id, None)
+                self._client_close_started.discard(client_id)
+
+    def _close_client(self) -> None:
+        """Request close now or after the client's last actual operation."""
+        self._ensure_retain_runtime()
+        close_now = False
+        with self._client_lifecycle_lock:
+            self._client_teardown_requested = True
+            client = self._client
+            if client is None:
+                return
+            close_now = self._claim_client_close_locked(client)
+        if close_now:
+            self._close_client_instance(client)
+
+    def shutdown(self) -> None:
+        """Quiesce producers, drain FIFO work, then close safely.
+
+        Shutdown first marks the provider quiescing under the same lifecycle
+        lock used by sync/switch, then freezes the authoritative active tail.
+        The writer exits only by consuming its one sentinel. If its bounded
+        wait expires, abandonment atomically revokes further callback dispatch
+        and reconnects. Queued callbacks are accounted for without invocation.
+        Client close is immediate only when no scheduled operation still owns
+        it; otherwise the final operation's done callback closes it later.
+        """
+        logger.debug(
+            "Hindsight shutdown: stopping writer + waiting for background threads"
+        )
+        self._ensure_retain_runtime()
+        with self._retain_lifecycle_lock:
+            first_shutdown = not self._shutting_down.is_set()
+            if first_shutdown:
+                # Quiesce before reading authoritative state. Any switch/sync
+                # that won the lifecycle lock first is now visible and flushed;
+                # any later producer observes shutting_down and is rejected.
+                self._shutting_down.set()
+            state = self._ensure_retain_state()
+            if first_shutdown:
+                target_turn_count = len(state.turns)
+                with state.lock:
+                    has_pending = bool(state.pending_batches)
+                    has_tail = target_turn_count > state.enqueued_turn_count
+                if has_tail or has_pending:
+                    self._enqueue_automatic_retain(
+                        state,
+                        target_turn_count,
+                        allow_shutdown=True,
+                    )
+
+                with self._writer_condition:
+                    writer = self._writer_thread
+                    if writer is not None and writer.is_alive():
+                        if self._writer_state != "abandoned":
+                            self._writer_state = "stopping"
+                            self._writer_shutdown_deadline = (
+                                time.monotonic()
+                                + _RETAIN_WRITER_SHUTDOWN_TIMEOUT
+                            )
+                        if not self._writer_sentinel_queued:
+                            self._retain_queue.put(_WRITER_SENTINEL)
+                            self._writer_sentinel_queued = True
+                        self._writer_condition.notify_all()
+            else:
+                with self._writer_condition:
+                    writer = self._writer_thread
+                    writer_state = self._writer_state
+
+        if first_shutdown:
+            writer_state = "stopped"
+            with self._writer_condition:
+                writer_state = self._writer_state
+
+        if (
+            writer is not None
+            and writer.is_alive()
+            and writer_state != "abandoned"
+        ):
+            writer.join(timeout=_RETAIN_WRITER_SHUTDOWN_TIMEOUT)
+
+        abandoned_now = False
+        if writer is not None and writer.is_alive():
+            abandoned_now = self._publish_writer_abandonment()
+        timed_out = abandoned_now or self._retain_abandoned.is_set()
+        if timed_out:
+            with state.lock:
+                pending_count = len(state.pending_batches)
+            logger.warning(
+                "Hindsight writer exceeded %.1fs; abandoning %d frozen retain "
+                "batch(es). No queued callback may start. Existing scheduled "
+                "operations retain client ownership until they actually finish.",
+                _RETAIN_WRITER_SHUTDOWN_TIMEOUT,
+                pending_count,
+            )
+            self._close_client()
+            return
+
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=5.0)
+        with state.lock:
+            remaining = len(state.pending_batches)
+        if remaining:
+            logger.warning(
+                "Hindsight shutdown abandoned %d frozen retain batch(es) "
+                "after their final FIFO attempt failed; watermark remains at %d.",
+                remaining,
+                state.committed_turn_count,
+            )
+        self._close_client()
+
+        # The module-global event loop is intentionally not stopped. It is
+        # shared by every provider instance; only owned clients are closed.
 
 
 def register(ctx) -> None:

@@ -5,11 +5,15 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import asyncio
+import copy
 import json
+import queue
 import os
 import re
 import stat
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -149,6 +153,44 @@ class _FakeSessionDB:
 
     def get_messages_as_conversation(self, session_id):
         return list(self._messages)
+
+
+async def _wait_for_event(event: threading.Event) -> None:
+    if not await asyncio.to_thread(event.wait, 5.0):
+        raise AssertionError("timed out waiting for test event")
+
+
+def _wait_for_client_release(provider, timeout: float = 2.0) -> bool:
+    with provider._client_condition:
+        return provider._client_condition.wait_for(
+            lambda: provider._client is None,
+            timeout=timeout,
+        )
+
+
+class _SignalingRLock:
+    """RLock that reports when one named thread attempts entry."""
+
+    def __init__(self, target_name: str):
+        self._lock = threading.RLock()
+        self._target_name = target_name
+        self.attempted = threading.Event()
+
+    def acquire(self):
+        return self._lock.acquire()
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        if threading.current_thread().name == self._target_name:
+            self.attempted.set()
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+        return False
 
 
 @pytest.fixture()
@@ -768,11 +810,10 @@ class TestToolHandlers:
         second_client.arecall.return_value = SimpleNamespace(
             results=[SimpleNamespace(text="Recovered memory")]
         )
-        clients = iter([first_client, second_client])
 
         provider._mode = "local_embedded"
         provider._client = first_client
-        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+        monkeypatch.setattr(provider, "_create_client", lambda: second_client)
 
         result = json.loads(provider.handle_tool_call(
             "hindsight_recall", {"query": "test"}
@@ -1038,6 +1079,266 @@ class TestSyncTurn:
             with _append_capability_lock:
                 _append_capability_cache.clear()
 
+    def test_retain_batch_freezes_enqueue_identity_and_item_config(
+        self, provider_with_config, monkeypatch
+    ):
+        p = provider_with_config(
+            bank_id="fallback-bank",
+            bank_id_template="bank-{session}",
+            retain_async=False,
+            retain_context="old-context",
+            retain_source="old-source",
+            retain_tags=["tag:old"],
+            observation_scopes=[["scope:old"]],
+            retain_user_prefix="Old User",
+            retain_assistant_prefix="Old Assistant",
+        )
+        p.initialize(
+            session_id="old-session",
+            parent_session_id="old-parent",
+            platform="discord",
+            user_id="old-user-id",
+            user_name="old-user-name",
+            chat_id="old-chat-id",
+            chat_name="old-chat-name",
+            chat_type="thread",
+            thread_id="old-thread-id",
+            agent_identity="old-agent",
+        )
+        p._client = _make_mock_client()
+        p._resolve_retain_target = lambda fallback: ("old-document", "append")
+        monkeypatch.setattr(p, "_ensure_writer", lambda: None)
+        p._writer_state = "running"
+
+        p.sync_turn("hello", "hi")
+        retain_job = p._retain_queue.get_nowait()
+
+        p._bank_id = "new-bank"
+        p._document_id = "new-document"
+        p._session_id = "new-session"
+        p._retain_async = True
+        p._retain_context = "new-context"
+        p._retain_source = "new-source"
+        p._retain_tags[:] = ["tag:new"]
+        p._observation_scopes[0][0] = "scope:new"
+        p._platform = "slack"
+        p._user_id = "new-user-id"
+        p._user_name = "new-user-name"
+        p._chat_id = "new-chat-id"
+        p._chat_name = "new-chat-name"
+        p._chat_type = "channel"
+        p._thread_id = "new-thread-id"
+        p._agent_identity = "new-agent"
+        p._retain_user_prefix = "New User"
+        p._retain_assistant_prefix = "New Assistant"
+
+        try:
+            retain_job()
+        finally:
+            p._retain_queue.task_done()
+
+        call = p._client.aretain_batch.call_args.kwargs
+        assert call["bank_id"] == "bank-old-session"
+        assert call["document_id"] == "old-document"
+        assert call["retain_async"] is False
+        item = call["items"][0]
+        assert item["update_mode"] == "append"
+        assert item["context"] == "old-context"
+        assert item["tags"] == [
+            "tag:old",
+            "session:old-session",
+            "parent:old-parent",
+        ]
+        assert item["observation_scopes"] == [["scope:old"]]
+        assert "Old User: hello" in item["content"]
+        assert "Old Assistant: hi" in item["content"]
+        assert item["metadata"] | {"retained_at": "ignored"} == {
+            "retained_at": "ignored",
+            "message_count": "2",
+            "turn_index": "1",
+            "source": "old-source",
+            "session_id": "old-session",
+            "platform": "discord",
+            "user_id": "old-user-id",
+            "user_name": "old-user-name",
+            "chat_id": "old-chat-id",
+            "chat_name": "old-chat-name",
+            "chat_type": "thread",
+            "thread_id": "old-thread-id",
+            "agent_identity": "old-agent",
+        }
+
+    @pytest.mark.parametrize("update_mode", ["append", None], ids=["append", "overwrite"])
+    def test_failed_batch_retries_in_order_without_advancing_watermark(
+        self, provider_with_config, update_mode
+    ):
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+        p._resolve_retain_target = lambda fallback: (fallback, update_mode)
+        attempts: list[dict] = []
+
+        async def _flaky_retain(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) <= 2:
+                raise RuntimeError("temporary failure")
+
+        p._client.aretain_batch = AsyncMock(side_effect=_flaky_retain)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+        assert p._last_retained_turn_count == 0
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+        assert p._last_retained_turn_count == 0
+
+        p.sync_turn("turn5-user", "turn5-asst")
+        p.sync_turn("turn6-user", "turn6-asst")
+        p._retain_queue.join()
+
+        assert len(attempts) == 5
+        assert attempts[0]["items"][0] is not attempts[1]["items"][0]
+        assert attempts[1]["items"][0] is not attempts[2]["items"][0]
+        assert attempts[0]["items"][0] == attempts[1]["items"][0]
+        assert attempts[1]["items"][0] == attempts[2]["items"][0]
+        contents = [attempt["items"][0]["content"] for attempt in attempts]
+        assert contents[0] == contents[1] == contents[2]
+        if update_mode == "append":
+            assert "turn1-user" in contents[2]
+            assert "turn2-user" in contents[2]
+            assert "turn1-user" not in contents[3]
+            assert "turn3-user" in contents[3]
+            assert "turn4-user" in contents[3]
+            assert "turn4-user" not in contents[4]
+            assert "turn5-user" in contents[4]
+            assert "turn6-user" in contents[4]
+        else:
+            assert "turn1-user" in contents[3]
+            assert "turn4-user" in contents[3]
+            assert "turn1-user" in contents[4]
+            assert "turn6-user" in contents[4]
+        assert p._last_retained_turn_count == 6
+
+    def test_failed_mutating_client_cannot_change_canonical_retry_payload(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            retain_every_n_turns=1,
+            retain_async=False,
+            retain_tags=["stable-tag"],
+            observation_scopes=[["stable-scope"]],
+        )
+        p._resolve_retain_target = lambda fallback: (fallback, "append")
+        snapshots: list[dict] = []
+        exposed_items: list[dict] = []
+
+        async def _mutating_retain(**kwargs):
+            item = kwargs["items"][0]
+            exposed_items.append(item)
+            snapshots.append(copy.deepcopy(item))
+            if len(snapshots) == 1:
+                item["tags"].append("client-mutation")
+                item["metadata"]["session_id"] = "client-mutation"
+                item["observation_scopes"][0][0] = "client-mutation"
+                raise RuntimeError("mutated failure")
+
+        p._client.aretain_batch = AsyncMock(side_effect=_mutating_retain)
+        p.sync_turn("first-user", "first-assistant")
+        p._retain_queue.join()
+        p.sync_turn("second-user", "second-assistant")
+        p._retain_queue.join()
+
+        assert exposed_items[0] is not exposed_items[1]
+        assert snapshots[0] == snapshots[1]
+        assert snapshots[1]["tags"] == ["stable-tag", "session:test-session"]
+        assert snapshots[1]["metadata"]["session_id"] == "test-session"
+        assert snapshots[1]["observation_scopes"] == [["stable-scope"]]
+
+    def test_reconnect_retry_gets_fresh_canonical_payload(
+        self, provider_with_config, monkeypatch
+    ):
+        p = provider_with_config(
+            retain_every_n_turns=1,
+            retain_async=False,
+            retain_tags=["stable-tag"],
+            observation_scopes=[["stable-scope"]],
+        )
+        p._resolve_retain_target = lambda fallback: (fallback, "append")
+        first_items: list[dict] = []
+        replacement_items: list[dict] = []
+
+        class _DisconnectedClient:
+            _client = None
+
+            async def aretain_batch(self, **kwargs):
+                item = kwargs["items"][0]
+                first_items.append(item)
+                item["metadata"]["session_id"] = "client-mutation"
+                item["tags"].append("client-mutation")
+                item["observation_scopes"][0][0] = "client-mutation"
+                item["content"] = "client-mutation"
+                raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+
+            def close(self):
+                return None
+
+        class _ReplacementClient:
+            _client = None
+
+            async def aretain_batch(self, **kwargs):
+                replacement_items.append(kwargs["items"][0])
+
+            def close(self):
+                return None
+
+        first_client = _DisconnectedClient()
+        replacement_client = _ReplacementClient()
+        p._mode = "local_embedded"
+        p._client = first_client
+        monkeypatch.setattr(p, "_create_client", lambda: replacement_client)
+
+        p.sync_turn("stable-user", "stable-assistant")
+        p._retain_queue.join()
+
+        assert len(first_items) == 1
+        assert len(replacement_items) == 1
+        assert first_items[0] is not replacement_items[0]
+        replacement_item = replacement_items[0]
+        assert replacement_item["metadata"]["session_id"] == "test-session"
+        assert replacement_item["tags"] == ["stable-tag", "session:test-session"]
+        assert replacement_item["observation_scopes"] == [["stable-scope"]]
+        assert "stable-user" in replacement_item["content"]
+        assert "stable-assistant" in replacement_item["content"]
+        assert p._last_retained_turn_count == 1
+        assert not p._retain_state.pending_batches
+        p.shutdown()
+
+    def test_constructor_bypassing_legacy_instance_retains_and_shuts_down(self):
+        calls: list[dict] = []
+        client = SimpleNamespace(
+            aretain_batch=lambda **kwargs: calls.append(kwargs),
+            aclose=lambda: object(),
+        )
+        p = object.__new__(HindsightMemoryProvider)
+        p._client = client
+        p._session_id = "legacy-session"
+        p._document_id = "legacy-document"
+        p._session_turns = []
+        p._last_retained_turn_count = 0
+        p._resolve_retain_target = lambda fallback: (fallback, None)
+        p._run_hindsight_operation = lambda operation: operation(client)
+        p._run_sync = lambda operation: None
+
+        p.sync_turn("legacy-user", "legacy-assistant")
+        p._retain_queue.join()
+
+        assert calls[0]["document_id"] == "legacy-document"
+        assert "legacy-user" in calls[0]["items"][0]["content"]
+        assert p._sync_thread is p._writer_thread
+        assert p._atexit_registered is True
+        p.shutdown()
+
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
         provider.sync_turn("hello", "hi")
@@ -1187,6 +1488,326 @@ class TestShutdownRace:
         provider.shutdown()
         assert provider._shutting_down.is_set()
 
+    def test_shutdown_drains_buffered_tail_before_closing_client(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        events: list[str] = []
+
+        async def _retain(**kwargs):
+            events.append("retain")
+
+        async def _close():
+            events.append("close")
+
+        p._client.aretain_batch = AsyncMock(side_effect=_retain)
+        p._client.aclose = AsyncMock(side_effect=_close)
+        p.sync_turn("buffered-user", "buffered-assistant")
+        assert p._writer_thread is None
+
+        p.shutdown()
+
+        assert events == ["retain", "close"]
+        assert p._last_retained_turn_count == 1
+
+    def test_timed_out_shutdown_abandons_queue_without_close_or_reconnect(
+        self, provider_with_config, monkeypatch
+    ):
+        from plugins.memory import hindsight as hindsight_mod
+
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        started = threading.Event()
+        release = threading.Event()
+        second_started = threading.Event()
+        closed = threading.Event()
+
+        class _EmbeddedClient:
+            def __init__(self):
+                self.retain_calls: list[dict] = []
+                self.close_calls = 0
+
+            async def aretain_batch(self, **kwargs):
+                self.retain_calls.append(kwargs)
+                if len(self.retain_calls) == 1:
+                    started.set()
+                    await _wait_for_event(release)
+                    raise RuntimeError("Cannot connect to host 127.0.0.1")
+                second_started.set()
+
+            def close(self):
+                self.close_calls += 1
+                closed.set()
+
+        client = _EmbeddedClient()
+        reconnect_calls = 0
+
+        def _unexpected_reconnect():
+            nonlocal reconnect_calls
+            reconnect_calls += 1
+            return _EmbeddedClient()
+
+        monkeypatch.setattr(
+            hindsight_mod, "_RETAIN_WRITER_SHUTDOWN_TIMEOUT", 0.05
+        )
+        monkeypatch.setattr(p, "_create_client", _unexpected_reconnect)
+        p._mode = "local_embedded"
+        p._timeout = 5.0
+        p._client = client
+
+        p.sync_turn("in-flight-user", "in-flight-assistant")
+        assert started.wait(timeout=2.0)
+        p.sync_turn("queued-user", "queued-assistant")
+
+        p.shutdown()
+
+        assert client.close_calls == 0
+        assert reconnect_calls == 0
+        assert len(client.retain_calls) == 1
+        assert not second_started.is_set()
+        assert p._client is client
+
+        release.set()
+        assert closed.wait(timeout=2.0)
+        p._writer_thread.join(timeout=2.0)
+        p._retain_queue.join()
+
+        assert not p._writer_thread.is_alive()
+        assert reconnect_calls == 0
+        assert len(client.retain_calls) == 1
+        assert not second_started.is_set()
+        assert client.close_calls == 1
+        assert p._client is None
+        assert p._retain_queue.empty()
+        assert p._retain_queue.unfinished_tasks == 0
+
+    def test_timeout_publication_prevents_next_callback_dispatch(
+        self, provider_with_config, monkeypatch
+    ):
+        from plugins.memory import hindsight as hindsight_mod
+
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        publish_entered = threading.Event()
+        allow_publish = threading.Event()
+        shutdown_done = threading.Event()
+        calls = 0
+
+        async def _retain(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_started.set()
+                await _wait_for_event(release_first)
+            else:
+                second_started.set()
+
+        p._client.aretain_batch = AsyncMock(side_effect=_retain)
+        p._timeout = 5.0
+        monkeypatch.setattr(
+            hindsight_mod, "_RETAIN_WRITER_SHUTDOWN_TIMEOUT", 0.05
+        )
+        original_publish = p._publish_writer_abandonment
+
+        def _paused_publish():
+            publish_entered.set()
+            allow_publish.wait(timeout=5.0)
+            return original_publish()
+
+        monkeypatch.setattr(p, "_publish_writer_abandonment", _paused_publish)
+        p.sync_turn("first-user", "first-assistant")
+        assert first_started.wait(timeout=2.0)
+        p.sync_turn("second-user", "second-assistant")
+
+        shutdown_thread = threading.Thread(
+            target=lambda: (p.shutdown(), shutdown_done.set()),
+            name="hindsight-test-shutdown",
+        )
+        shutdown_thread.start()
+        try:
+            assert publish_entered.wait(timeout=2.0)
+            release_first.set()
+            p._writer_thread.join(timeout=2.0)
+            assert not p._writer_thread.is_alive()
+            assert not second_started.is_set()
+        finally:
+            allow_publish.set()
+            release_first.set()
+            shutdown_thread.join(timeout=2.0)
+
+        assert shutdown_done.is_set()
+        p._retain_queue.join()
+        assert calls == 1
+        assert p._retain_queue.empty()
+        assert p._retain_queue.unfinished_tasks == 0
+
+    def test_idle_writer_consumes_single_shutdown_sentinel(
+        self, provider, monkeypatch
+    ):
+        class _ControlledEmptyQueue(queue.Queue):
+            def __init__(self):
+                super().__init__()
+                self.get_entered = threading.Event()
+                self.release_empty = threading.Event()
+                self.put_observed = threading.Event()
+                self._forced_empty = False
+
+            def get(self, block=True, timeout=None):
+                if not self._forced_empty:
+                    self._forced_empty = True
+                    self.get_entered.set()
+                    self.release_empty.wait(timeout=5.0)
+                    raise queue.Empty
+                return super().get(block=block, timeout=timeout)
+
+            def put(self, item, block=True, timeout=None):
+                result = super().put(item, block=block, timeout=timeout)
+                self.put_observed.set()
+                return result
+
+        controlled_queue = _ControlledEmptyQueue()
+        provider._retain_queue = controlled_queue
+        provider._ensure_writer()
+        assert controlled_queue.get_entered.wait(timeout=2.0)
+
+        shutdown_done = threading.Event()
+        shutdown_thread = threading.Thread(
+            target=lambda: (provider.shutdown(), shutdown_done.set())
+        )
+        shutdown_thread.start()
+        assert controlled_queue.put_observed.wait(timeout=2.0)
+        controlled_queue.release_empty.set()
+        shutdown_thread.join(timeout=2.0)
+
+        assert shutdown_done.is_set()
+        controlled_queue.join()
+        assert controlled_queue.empty()
+        assert controlled_queue.unfinished_tasks == 0
+        provider.shutdown()
+        provider._atexit_shutdown()
+        assert controlled_queue.unfinished_tasks == 0
+
+    def test_retain_future_outlives_waiter_before_client_close(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        started = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        order: list[str] = []
+
+        async def _retain(**kwargs):
+            started.set()
+            await _wait_for_event(release)
+            order.append("operation-finished")
+
+        async def _close():
+            order.append("client-closed")
+            closed.set()
+
+        p._client.aretain_batch = AsyncMock(side_effect=_retain)
+        p._client.aclose = AsyncMock(side_effect=_close)
+        p._timeout = 0.05
+        p.sync_turn("slow-user", "slow-assistant")
+        assert started.wait(timeout=2.0)
+        p._retain_queue.join()
+
+        p.shutdown()
+
+        assert not closed.is_set()
+        assert p._client is not None
+        release.set()
+        assert closed.wait(timeout=2.0)
+        assert order == ["operation-finished", "client-closed"]
+        assert _wait_for_client_release(p)
+        assert p._client is None
+
+    def test_prefetch_future_outlives_waiter_before_client_close(
+        self, provider
+    ):
+        started = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        order: list[str] = []
+
+        async def _recall(**kwargs):
+            started.set()
+            await _wait_for_event(release)
+            order.append("prefetch-finished")
+            return SimpleNamespace(results=[])
+
+        async def _close():
+            order.append("client-closed")
+            closed.set()
+
+        provider._client.arecall = AsyncMock(side_effect=_recall)
+        provider._client.aclose = AsyncMock(side_effect=_close)
+        provider._timeout = 0.05
+        provider.queue_prefetch("slow prefetch")
+        assert started.wait(timeout=2.0)
+        provider._prefetch_thread.join(timeout=2.0)
+
+        provider.shutdown()
+
+        assert not closed.is_set()
+        assert provider._client is not None
+        release.set()
+        assert closed.wait(timeout=2.0)
+        assert order == ["prefetch-finished", "client-closed"]
+        assert _wait_for_client_release(provider)
+        assert provider._client is None
+
+    def test_repeated_shutdown_and_atexit_are_harmless_after_timeout(
+        self, provider_with_config, monkeypatch
+    ):
+        from plugins.memory import hindsight as hindsight_mod
+
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        started = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+
+        async def _retain(**kwargs):
+            started.set()
+            await _wait_for_event(release)
+
+        async def _close():
+            closed.set()
+
+        p._client.aretain_batch = AsyncMock(side_effect=_retain)
+        p._client.aclose = AsyncMock(side_effect=_close)
+        p._timeout = 5.0
+        monkeypatch.setattr(
+            hindsight_mod, "_RETAIN_WRITER_SHUTDOWN_TIMEOUT", 0.05
+        )
+        p.sync_turn("slow-user", "slow-assistant")
+        assert started.wait(timeout=2.0)
+        p.shutdown()
+
+        repeated_done = [threading.Event(), threading.Event()]
+        repeated_threads = [
+            threading.Thread(target=lambda: (p.shutdown(), repeated_done[0].set())),
+            threading.Thread(
+                target=lambda: (p._atexit_shutdown(), repeated_done[1].set())
+            ),
+        ]
+        for thread in repeated_threads:
+            thread.start()
+        for done in repeated_done:
+            assert done.wait(timeout=0.5)
+        for thread in repeated_threads:
+            thread.join(timeout=2.0)
+
+        assert not closed.is_set()
+        release.set()
+        assert closed.wait(timeout=2.0)
+        assert _wait_for_client_release(p)
+        p._writer_thread.join(timeout=2.0)
+        p._retain_queue.join()
+        assert p._client is None
+        assert p._retain_queue.unfinished_tasks == 0
+
 
 # ---------------------------------------------------------------------------
 # on_session_switch — flush + prefetch reset behavior
@@ -1194,6 +1815,132 @@ class TestShutdownRace:
 
 
 class TestSessionSwitchBufferFlush:
+    def test_templated_bank_switch_keeps_queued_tail_in_old_bank(
+        self, provider_with_config, monkeypatch
+    ):
+        p = provider_with_config(
+            retain_every_n_turns=3,
+            retain_async=False,
+            bank_id="fallback-bank",
+            bank_id_template="bank-{session}",
+        )
+        p.sync_turn("old-user", "old-assistant")
+        monkeypatch.setattr(p, "_ensure_writer", lambda: None)
+        p._writer_state = "running"
+
+        p.on_session_switch("new-session")
+        retain_job = p._retain_queue.get_nowait()
+        try:
+            retain_job()
+        finally:
+            p._retain_queue.task_done()
+
+        assert p._bank_id == "bank-new-session"
+        call = p._client.aretain_batch.call_args.kwargs
+        assert call["bank_id"] == "bank-test-session"
+        assert call["items"][0]["metadata"]["session_id"] == "test-session"
+        assert "old-user" in call["items"][0]["content"]
+
+    def test_blocked_old_writer_cannot_advance_new_session_watermark(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=1, retain_async=False)
+        p._resolve_retain_target = lambda fallback: (fallback, "append")
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls: list[dict] = []
+
+        async def _blocking_retain(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                first_started.set()
+                release_first.wait(timeout=5.0)
+
+        p._client.aretain_batch = AsyncMock(side_effect=_blocking_retain)
+        p.sync_turn("old-user", "old-assistant")
+        assert first_started.wait(timeout=2.0)
+
+        try:
+            p._retain_every_n_turns = 2
+            p.on_session_switch("new-session")
+            p.sync_turn("new-user", "new-assistant")
+        finally:
+            release_first.set()
+            p._retain_queue.join()
+
+        assert len(calls) == 1
+        assert calls[0]["items"][0]["metadata"]["session_id"] == "test-session"
+        assert p._session_id == "new-session"
+        assert p._last_retained_turn_count == 0
+        assert len(p._session_turns) == 1
+        assert "new-user" in p._session_turns[0]
+
+    def test_concurrent_switch_rereads_authoritative_state_under_lock(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        lifecycle_lock = _SignalingRLock("switch-b")
+        p._retain_lifecycle_lock = lifecycle_lock
+        switch_done = threading.Event()
+
+        def _switch_b():
+            p.on_session_switch("session-b")
+            switch_done.set()
+
+        lifecycle_lock.acquire()
+        switch_thread = threading.Thread(target=_switch_b, name="switch-b")
+        switch_thread.start()
+        try:
+            assert lifecycle_lock.attempted.wait(timeout=2.0)
+            p.on_session_switch("session-c")
+            p.sync_turn("session-c-user", "session-c-assistant")
+        finally:
+            lifecycle_lock.release()
+        switch_thread.join(timeout=2.0)
+        p._retain_queue.join()
+
+        assert switch_done.is_set()
+        assert p._session_id == "session-b"
+        assert p._session_turns == []
+        calls = p._client.aretain_batch.call_args_list
+        assert len(calls) == 1
+        item = calls[0].kwargs["items"][0]
+        assert item["metadata"]["session_id"] == "session-c"
+        assert "session-c-user" in item["content"]
+
+    def test_shutdown_flushes_state_created_while_waiting_for_lifecycle_lock(
+        self, provider_with_config
+    ):
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        client = p._client
+        lifecycle_lock = _SignalingRLock("shutdown-race")
+        p._retain_lifecycle_lock = lifecycle_lock
+        shutdown_done = threading.Event()
+
+        def _shutdown():
+            p.shutdown()
+            shutdown_done.set()
+
+        lifecycle_lock.acquire()
+        shutdown_thread = threading.Thread(target=_shutdown, name="shutdown-race")
+        shutdown_thread.start()
+        try:
+            assert lifecycle_lock.attempted.wait(timeout=2.0)
+            p.on_session_switch("session-c")
+            p.sync_turn("session-c-user", "session-c-assistant")
+        finally:
+            lifecycle_lock.release()
+        shutdown_thread.join(timeout=2.0)
+        p._retain_queue.join()
+
+        assert shutdown_done.is_set()
+        client.aretain_batch.assert_awaited_once()
+        item = client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["metadata"]["session_id"] == "session-c"
+        assert "session-c-user" in item["content"]
+        assert p._session_id == "session-c"
+        assert p._shutting_down.is_set()
+
     def test_buffered_turns_flushed_before_clear(self, provider_with_config):
         """retain_every_n_turns > 1 must not silently drop partial buffers
         on session switch. Whatever's in _session_turns at switch time

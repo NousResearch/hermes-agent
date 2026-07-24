@@ -54,6 +54,45 @@ The installer handles everything for you (Python 3.11+, a portable Git, ripgrep)
 
 ---
 
+## Deep links
+
+The desktop app registers the `hermes://` protocol. Existing:
+
+```text
+hermes://blueprint/<name>?slot=value
+```
+
+Inserts a reviewable `/blueprint …` command into the composer.
+
+**New session (this PR):**
+
+```text
+hermes://chat/new?cwd=<absolute-path>&profile=<name>&project=<id-or-slug>&prompt=<text>&sticky=<slot>
+```
+
+| Param | Required | Behavior |
+|-------|----------|----------|
+| `cwd` | one of `cwd` / `project` | Absolute workspace path (Unix, Windows drive, or UNC). Relative paths and `..` are refused. |
+| `project` | one of `cwd` / `project` | Resolve path via the desktop project store (id, slug, or name). |
+| `profile` | no | Target Hermes profile / gateway seat for the new chat. |
+| `prompt` | no | Prefill composer (does not auto-send). |
+| `sticky` | no | Named slot: reopen the same session on later opens; first open creates and binds. |
+
+Examples:
+
+```bash
+# macOS / Linux
+open 'hermes://chat/new?cwd=%2FUsers%2Fyou%2Fmy-repo&profile=default'
+open 'hermes://chat/new?cwd=%2FUsers%2Fyou%2Fmy-repo&sticky=ceo'
+
+# Windows (PowerShell)
+start 'hermes://chat/new?cwd=C%3A%5CUsers%5Cyou%5Cmy-repo&profile=default'
+```
+
+Use a hidden iframe or bare `<a href="hermes://…">` from browsers — `window.open(url, '_blank')` often leaves an empty tab when handing off to a custom protocol.
+
+---
+
 ## Development
 
 Want to hack on the app itself? Install workspace deps from the repo root once, then run the dev server from this directory:

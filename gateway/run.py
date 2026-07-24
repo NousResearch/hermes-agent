@@ -3598,6 +3598,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from hermes_cli.config import load_config as _load_full_config
                 _sess_cfg = (_load_full_config().get("sessions") or {})
+                # Non-destructive stale-session archive, independent of prune.
+                if _sess_cfg.get("auto_archive", False):
+                    self._session_db._db.maybe_auto_archive(
+                        idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                    )
                 if _sess_cfg.get("auto_prune", False):
                     # Construction-time, before the loop serves traffic; sync DB is fine.
                     self._session_db._db.maybe_auto_prune_and_vacuum(
@@ -23360,6 +23366,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
@@ -23423,6 +23430,28 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+        # Stale-session auto-archive — a live timer, so gateways that stay up
+        # for weeks keep sweeping on schedule (the startup hook fires once).
+        # maybe_auto_archive() is gated by sessions.min_interval_hours in
+        # state_meta; this is just the poll rate. Opens its own SessionDB —
+        # SQLite connections are thread-bound and this runs off-loop.
+        if tick_count % AUTO_ARCHIVE_EVERY == 0:
+            try:
+                from hermes_cli.config import load_config as _load_full_config
+                from hermes_state import SessionDB
+                _sess_cfg = (_load_full_config().get("sessions") or {})
+                if _sess_cfg.get("auto_archive", False):
+                    _adb = SessionDB()
+                    try:
+                        _adb.maybe_auto_archive(
+                            idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+                            min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                        )
+                    finally:
+                        _adb.close()
+            except Exception as e:
+                logger.debug("Auto-archive tick error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Gateway housekeeping stopped")

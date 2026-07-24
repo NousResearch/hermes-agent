@@ -863,6 +863,12 @@ export const zhHant = defineLocale({
       messages: count => `${count} 則訊息`,
       restored: '已還原',
       deleteConfirm: title => `永久刪除「${title}」？此操作無法復原。`,
+      autoArchiveTitle: '自動封存閒置對話',
+      autoArchiveDesc:
+        '自動封存你一段時間未使用的對話。已釘選的對話永遠不會被封存，也不會刪除任何內容——封存的對話會移到這裡。',
+      autoArchiveDaysLabel: '封存前',
+      autoArchiveDaysUnit: '天無活動',
+      autoArchiveFailed: '無法更新自動封存設定',
       defaultDirTitle: '預設專案目錄',
       defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
       defaultDirUpdated: '預設專案目錄已更新',
@@ -1652,6 +1658,13 @@ export const zhHant = defineLocale({
       ageDay: '天',
       ageHour: '時',
       ageMin: '分'
+    },
+    dateDivider: {
+      today: '今天稍早',
+      yesterday: '昨天',
+      thisWeek: '本週',
+      lastWeek: '上週',
+      thisMonth: '本月'
     }
   },
 

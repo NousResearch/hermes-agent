@@ -690,6 +690,25 @@ class TestBuildNativeContentPartsURLs:
             "image_url": {"url": "https://example.com/diagram.png"},
         }
 
+    def test_url_in_image_paths_is_treated_as_remote_url(self):
+        """Gateway adapters may pass signed remote media URLs via image_paths."""
+        parts, skipped = build_native_content_parts(
+            "describe this",
+            ["https://example.com/signed-dingtalk-image.jpg?token=abc"],
+        )
+        assert skipped == []
+        assert parts[0]["type"] == "text"
+        assert (
+            "[Image attached: https://example.com/signed-dingtalk-image.jpg?token=abc]"
+            in parts[0]["text"]
+        )
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {
+                "url": "https://example.com/signed-dingtalk-image.jpg?token=abc"
+            },
+        }
+
     def test_mixed_path_and_url(self, tmp_path: Path):
         img = tmp_path / "local.png"
         img.write_bytes(_png_bytes())

@@ -741,6 +741,9 @@ def build_native_content_parts(
     Local paths are read from disk and embedded as base64 ``data:`` URLs.
     Remote URLs (``http(s)://``) are passed through verbatim — the provider
     fetches them server-side. The model still sees the pixels either way.
+    Some gateway adapters historically pass resolved remote media URLs in
+    ``image_paths``; accept those here too instead of treating them as missing
+    local files.
 
     For each successfully attached image, a hint is appended to the text
     part:
@@ -769,19 +772,29 @@ def build_native_content_parts(
     attached_urls: List[str] = []
 
     for raw_path in image_paths:
-        p = Path(raw_path)
+        raw = (str(raw_path) or "").strip()
+        if not raw:
+            continue
+        if raw.startswith(("http://", "https://")):
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": raw},
+            })
+            attached_urls.append(raw)
+            continue
+        p = Path(raw)
         if not p.exists() or not p.is_file():
-            skipped.append(str(raw_path))
+            skipped.append(raw)
             continue
         data_url = _file_to_data_url(p)
         if not data_url:
-            skipped.append(str(raw_path))
+            skipped.append(raw)
             continue
         image_parts.append({
             "type": "image_url",
             "image_url": {"url": data_url},
         })
-        attached_paths.append(str(raw_path))
+        attached_paths.append(raw)
 
     for url in image_urls or []:
         url = (url or "").strip()

@@ -14440,6 +14440,20 @@ def main():
         "add",
         help="Pick a provider + model (same picker as `hermes model`) and append to the chain",
     )
+    fallback_swap = fallback_subparsers.add_parser(
+        "swap",
+        help="Swap the primary model with a fallback entry (default: #1)",
+        description=(
+            "Swap config.model with one entry from fallback_providers. "
+            "The fallback index is 1-based and matches `hermes fallback list`."
+        ),
+    )
+    fallback_swap.add_argument(
+        "fallback_index",
+        nargs="?",
+        type=int,
+        help="1-based fallback index to promote (default: 1)",
+    )
     fallback_subparsers.add_parser(
         "remove",
         aliases=["rm"],

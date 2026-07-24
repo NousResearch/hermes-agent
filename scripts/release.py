@@ -994,6 +994,7 @@ LEGACY_AUTHOR_MAP = {
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "SHL0MS@users.noreply.github.com": "SHL0MS",
     "abner.the.foreman@agentmail.to": "Abnertheforeman",
+    "dimahermes@agentmail.to": "DimaHermes",
     "adam.manning@pro-serveinc.com": "amanning3390",
     "thomasgeorgevii09@gmail.com": "tochukwuada",
     "sb@wmc.sh": "zicochaos",

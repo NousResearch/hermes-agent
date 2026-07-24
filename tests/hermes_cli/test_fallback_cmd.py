@@ -357,6 +357,154 @@ class TestAddCommand:
 
 
 # ---------------------------------------------------------------------------
+# cmd_fallback_swap
+# ---------------------------------------------------------------------------
+
+class TestSwapCommand:
+    def test_swap_primary_with_first_fallback(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {
+                "provider": "anthropic",
+                "default": "claude-sonnet-4-6",
+                "base_url": "https://api.anthropic.com",
+                "api_mode": "anthropic_messages",
+            },
+            "fallback_providers": [
+                {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4.6",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_mode": "chat_completions",
+                },
+                {"provider": "nous", "model": "Hermes-4"},
+            ],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["model"]["provider"] == "openrouter"
+        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+        assert cfg["model"]["base_url"] == "https://openrouter.ai/api/v1"
+        assert cfg["model"]["api_mode"] == "chat_completions"
+        assert cfg["fallback_providers"] == [
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "base_url": "https://api.anthropic.com",
+                "api_mode": "anthropic_messages",
+            },
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
+        assert "fallback_model" not in cfg
+        out = capsys.readouterr().out
+        assert "Swapped primary with fallback #1" in out
+
+    def test_swap_primary_with_selected_fallback_index(self, isolated_home):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "gpt-5.4"},
+                {"provider": "nous", "model": "Hermes-4"},
+            ],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=2))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "nous", "default": "Hermes-4"}
+        assert cfg["fallback_providers"] == [
+            {"provider": "openrouter", "model": "gpt-5.4"},
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+        ]
+
+    def test_swap_migrates_legacy_fallback_model(self, isolated_home):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            "fallback_model": {"provider": "openrouter", "model": "gpt-5.4"},
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "openrouter", "default": "gpt-5.4"}
+        assert cfg["fallback_providers"] == [
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+        ]
+        assert "fallback_model" not in cfg
+
+    def test_swap_requires_primary_model_dict(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": "plain-string-model",
+            "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        with pytest.raises(SystemExit):
+            cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+
+        assert _read_config(isolated_home)["model"] == "plain-string-model"
+        out = capsys.readouterr().out
+        assert "config.model is not a dict" in out
+
+    def test_swap_requires_fallback_chain(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        with pytest.raises(SystemExit):
+            cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+
+        out = capsys.readouterr().out
+        assert "No fallback providers configured" in out
+
+    def test_swap_rejects_out_of_range_index(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        with pytest.raises(SystemExit):
+            cmd_fallback_swap(types.SimpleNamespace(fallback_index=2))
+
+        out = capsys.readouterr().out
+        assert "Fallback index out of range" in out
+
+
+    def test_swap_removes_stale_primary_routing_fields_when_fallback_lacks_them(self, isolated_home):
+        _write_config(isolated_home, {
+            "model": {
+                "provider": "custom",
+                "default": "primary-model",
+                "base_url": "https://primary.example/v1",
+                "api_mode": "chat_completions",
+            },
+            "fallback_providers": [
+                {"provider": "nous", "model": "Hermes-4"},
+            ],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_swap
+        cmd_fallback_swap(types.SimpleNamespace(fallback_index=None))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {"provider": "nous", "default": "Hermes-4"}
+        assert cfg["fallback_providers"] == [
+            {
+                "provider": "custom",
+                "model": "primary-model",
+                "base_url": "https://primary.example/v1",
+                "api_mode": "chat_completions",
+            },
+        ]
+
+
+# ---------------------------------------------------------------------------
 # cmd_fallback_remove
 # ---------------------------------------------------------------------------
 
@@ -503,8 +651,9 @@ class TestArgparseWiring:
         # --help exits 0
         assert result.returncode == 0, f"stderr: {result.stderr}"
         out = result.stdout + result.stderr
-        # All four subcommands should appear in help
+        # All five subcommands should appear in help
         assert "list" in out
         assert "add" in out
+        assert "swap" in out
         assert "remove" in out
         assert "clear" in out

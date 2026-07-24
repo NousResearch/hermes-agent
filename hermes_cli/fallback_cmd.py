@@ -9,6 +9,7 @@ Subcommands:
   hermes fallback [list]   Show the current fallback chain (default when no subcommand)
   hermes fallback add      Pick provider + model via the same picker as `hermes model`,
                            then append the selection to the chain
+  hermes fallback swap     Swap the primary model with a fallback entry (default: #1)
   hermes fallback remove   Pick an entry to delete from the chain
   hermes fallback clear    Remove all fallback entries
 
@@ -73,6 +74,24 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
     if api_mode:
         entry["api_mode"] = api_mode
     return entry
+
+
+def _apply_fallback_to_model_cfg(model_cfg: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Return model config after promoting one fallback entry."""
+    updated = dict(model_cfg)
+    updated["provider"] = entry["provider"]
+    updated["default"] = entry["model"]
+    # Keep a single canonical model field.  Existing config loaders promote
+    # model.model to model.default, so removing model avoids contradictory YAML.
+    updated.pop("model", None)
+    for key in ("base_url", "api_mode"):
+        value = (entry.get(key) or "").strip()
+        if value:
+            updated[key] = value
+        else:
+            updated.pop(key, None)
+    updated.pop("api_key", None)
+    return updated
 
 
 def _snapshot_auth_active_provider() -> Any:
@@ -221,7 +240,54 @@ def cmd_fallback_add(args) -> None:
     print(f"  Added fallback: {_format_entry(new_entry)}")
     print(f"  Chain is now {len(chain)} {'entry' if len(chain) == 1 else 'entries'} long.")
     print()
-    print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
+    print("  Run `hermes fallback list` to view, `hermes fallback swap` to promote, or `hermes fallback remove` to delete.")
+
+
+def cmd_fallback_swap(args) -> None:
+    """Swap the primary model with a fallback entry (default: first fallback)."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        print()
+        print("  config.model is not a dict; refusing to guess primary model shape.")
+        print("  Run `hermes model` to choose a primary model, then retry `hermes fallback swap`.")
+        raise SystemExit(2)
+
+    primary_entry = _extract_fallback_from_model_cfg(model_cfg)
+    if not primary_entry:
+        print()
+        print("  Could not extract current primary provider/model from config.model.")
+        print("  Run `hermes model` to choose a primary model, then retry `hermes fallback swap`.")
+        raise SystemExit(2)
+
+    chain = _read_chain(config)
+    if not chain:
+        print()
+        print("  No fallback providers configured — nothing to swap.")
+        print("  Add one with:  hermes fallback add")
+        raise SystemExit(2)
+
+    raw_index = getattr(args, "fallback_index", None)
+    index = 0 if raw_index in (None, "") else int(raw_index) - 1
+    if index < 0 or index >= len(chain):
+        print()
+        print(f"  Fallback index out of range: {index + 1}. Choose 1-{len(chain)}.")
+        raise SystemExit(2)
+    promoted = dict(chain[index])
+
+    config["model"] = _apply_fallback_to_model_cfg(model_cfg, promoted)
+    chain[index] = primary_entry
+    _write_chain(config, chain)
+    save_config(config)
+
+    print()
+    print(f"  Swapped primary with fallback #{index + 1}.")
+    print(f"  New primary:     {_format_entry(promoted)}")
+    print(f"  New fallback #{index + 1}: {_format_entry(primary_entry)}")
+    print()
+    print("  Restart Hermes for the new primary model to take effect.")
 
 
 def _restore_model_cfg(model_before: Any) -> None:
@@ -344,11 +410,13 @@ def cmd_fallback(args) -> None:
         cmd_fallback_list(args)
     elif sub == "add":
         cmd_fallback_add(args)
+    elif sub == "swap":
+        cmd_fallback_swap(args)
     elif sub in {"remove", "rm"}:
         cmd_fallback_remove(args)
     elif sub == "clear":
         cmd_fallback_clear(args)
     else:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, swap, remove, clear")
         raise SystemExit(2)

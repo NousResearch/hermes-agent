@@ -3141,6 +3141,17 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+            # Fire the created hook AFTER the write txn commits, matching the
+            # post-commit contract at `_fire_kanban_lifecycle_hook` (L141-148):
+            # plugin callbacks must observe durable board state and never hold
+            # the SQLite write lock.
+            _fire_kanban_lifecycle_hook(
+                "kanban_task_created",
+                task_id,
+                board=get_current_board(),
+                assignee=assignee,
+                run_id=None,
+            )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3929,6 +3940,7 @@ def recompute_ready(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
+    promoted_tasks: list[tuple[str, str | None]] = []
     with write_txn(conn):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
@@ -3979,6 +3991,24 @@ def recompute_ready(
                     )
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
+                # Capture task_id + assignee for post-commit hook.
+                # Read inside the txn so the value is durable.
+                _assignee_row = conn.execute(
+                    "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+                promoted_tasks.append(
+                    (task_id, _assignee_row["assignee"] if _assignee_row else None)
+                )
+    # Fire promotion hooks AFTER the write txn commits, matching the
+    # post-commit contract at _fire_kanban_lifecycle_hook (L141-148).
+    for _tid, _assignee in promoted_tasks:
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_promoted",
+            _tid,
+            board=get_current_board(),
+            assignee=_assignee,
+            run_id=None,
+        )
     return promoted
 
 
@@ -4662,6 +4692,48 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # ── Pre-complete governance gate ──────────────────────────────────
+    # Plugins may veto a completion BEFORE the state transition commits.
+    # Fires with the proposed summary so governance hooks (attestation
+    # check, eval chain, compliance) can inspect the worker's output
+    # without holding the SQLite write lock.  The first callback that
+    # returns {"action": "block", "reason": "..."} wins; the completion
+    # is rejected with that reason surfaced to the caller.
+    try:
+        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.profiles import get_active_profile_name
+        try:
+            profile_name = get_active_profile_name()
+        except Exception:
+            profile_name = "default"
+        # Read current assignee before firing — the task is still in its
+        # pre-completion state (running/ready/blocked).
+        _pre_task = get_task(conn, task_id)
+        pre_results = invoke_hook(
+            "kanban_pre_complete",
+            task_id=task_id,
+            board=get_current_board(),
+            assignee=_pre_task.assignee if _pre_task else None,
+            run_id=None,
+            profile_name=profile_name,
+            summary=summary if summary is not None else result,
+        )
+        for ret in pre_results:
+            if isinstance(ret, dict) and ret.get("action") == "block":
+                reason = ret.get("reason", "blocked by plugin governance hook")
+                _log.warning(
+                    "kanban_pre_complete blocked task %s: %s", task_id, reason,
+                )
+                # Record the veto as an event so it's auditable.
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "completion_blocked_governance",
+                        {"reason": reason, "source": "kanban_pre_complete"},
+                    )
+                return False
+    except Exception as exc:
+        _log.debug("kanban_pre_complete hook error (non-fatal): %s", exc)
 
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -5727,7 +5799,22 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
-        return True
+        # Capture assignee for the lifecycle hook while still inside the txn.
+        # SQLite's SERIALIZABLE isolation (the default WAL mode) guarantees
+        # this read sees the row that was just committed — no other writer can
+        # mutate the row between our UPDATE above and this SELECT, so the
+        # value is not stale when the hook fires outside the txn.
+        _unblocked_assignee = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_unblocked",
+        task_id,
+        board=get_current_board(),
+        assignee=_unblocked_assignee["assignee"] if _unblocked_assignee else None,
+        run_id=None,
+    )
+    return True
 
 
 def specify_triage_task(

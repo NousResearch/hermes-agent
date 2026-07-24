@@ -923,7 +923,7 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 ## Recent Bot API Features
 
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. Hermes uses this for two distinct features: operator-curated [Private Chat Topics](#private-chat-topics-bot-api-94) (config-driven, fixed topic list) and user-driven [Multi-session DM mode](#multi-session-dm-mode-topic) (activated by `/topic`, unlimited user-created topics).
-- **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
+- **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Bot API 9.5 (Mar 2026): Native streaming via `sendMessageDraft`.** Hermes supports Telegram's native streaming-draft API as an opt-in transport for private chats. The default remains the legacy `editMessageText` path because draft previews can visibly collapse and re-render on some Telegram clients.
 
 ### Streaming transport (`gateway.streaming.transport`)

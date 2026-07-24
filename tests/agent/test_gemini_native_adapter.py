@@ -677,7 +677,7 @@ def test_stale_cached_content_retries_uncached(monkeypatch):
     # Force the registry key to match regardless of hash by monkeypatching the key builder.
     monkeypatch.setattr(
         "agent.gemini_native_adapter._context_cache_key",
-        lambda base_url, model, text: "https://generativelanguage.googleapis.com/v1beta|gemini-2.5-flash|" + "x" * 64,
+        lambda base_url, model, api_key, text: "https://generativelanguage.googleapis.com/v1beta|gemini-2.5-flash|" + "x" * 64,
     )
 
     stale_response = DummyResponse(status_code=404, payload={"error": {"message": "cachedContent not found"}})
@@ -700,3 +700,48 @@ def test_stale_cached_content_retries_uncached(monkeypatch):
     assert "cachedContent" not in http.calls[1]["json"]
     assert http.calls[1]["json"]["systemInstruction"]["parts"][0]["text"] == big_system_prompt.strip()
     assert not _context_cache_registry  # stale entry was evicted
+
+
+def test_forbidden_cached_content_also_retries_uncached(monkeypatch):
+    """A 403 (e.g. the key that created the cache was rotated/revoked) gets
+    the same treatment as a 404, not a hard failure."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _context_cache_registry
+
+    big_system_prompt = "You are a helpful assistant. " * 5000
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter._context_cache_key",
+        lambda base_url, model, api_key, text: "some-key",
+    )
+    _context_cache_registry["some-key"] = {"name": "cachedContents/foreign", "expires_at": 9999999999}
+
+    forbidden_response = DummyResponse(status_code=403, payload={"error": {"message": "permission denied"}})
+    http = _RecordingHTTP([forbidden_response, _generate_content_response()])
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+    monkeypatch.setattr("agent.gemini_native_adapter._gemini_cache_settings", lambda: (True, 300))
+
+    client = GeminiNativeClient(api_key="AIza-test")
+    response = client.chat.completions.create(
+        model="gemini-2.5-flash",
+        messages=[
+            {"role": "system", "content": big_system_prompt},
+            {"role": "user", "content": "Hello"},
+        ],
+    )
+
+    assert response.choices[0].message.content == "hi"
+    assert len(http.calls) == 2
+    assert "cachedContent" not in http.calls[1]["json"]
+    assert not _context_cache_registry
+
+
+def test_context_cache_key_binds_api_key_so_different_keys_never_share_a_cache():
+    """Two different API keys must never resolve to the same registry entry,
+    even with identical base_url/model/system text — a Gemini cachedContents
+    resource is scoped to the key/project that created it, and a multi-tenant
+    gateway process can hold several users' keys at once."""
+    from agent.gemini_native_adapter import _context_cache_key
+
+    key_a = _context_cache_key("https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash", "AIza-user-a", "same system prompt")
+    key_b = _context_cache_key("https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash", "AIza-user-b", "same system prompt")
+
+    assert key_a != key_b

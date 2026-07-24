@@ -496,12 +496,17 @@ GEMINI_MIN_CACHE_TOKENS = 32768
 _CACHE_TTL_SECONDS_BY_TIER = {"5m": 300, "1h": 3600}
 
 # In-memory registry of live cachedContents resources, keyed by
-# f"{base_url}|{model}|{sha256(system_instruction text)}". Module-level
-# (not per-client) because the cache resource lives on Google's side and
-# outlives any single GeminiNativeClient instance — reusing it after a
-# client eviction/reconnect is a pure win, not a correctness risk, since
-# the key already binds the resource to the exact system text it was
-# created from.
+# f"{base_url}|{model}|{sha256(api_key)}|{sha256(system_instruction text)}".
+# Module-level (not per-client) because the cache resource lives on Google's
+# side and outlives any single GeminiNativeClient instance — reusing it
+# after a client eviction/reconnect is a pure win, not a correctness risk.
+# The api_key hash is load-bearing, not defensive dressing: a Hermes gateway
+# process can hold multiple users' Gemini keys concurrently, and a Google
+# cachedContents resource is scoped to the key/project that created it.
+# Without binding the key into the cache key, two different users with the
+# same (or coincidentally identical) large system prompt would collide on
+# one registry entry, and the second user's request would carry a
+# cachedContent reference created under someone else's credentials.
 _context_cache_registry: Dict[str, Dict[str, Any]] = {}
 
 
@@ -519,10 +524,11 @@ def _gemini_cache_settings() -> tuple[bool, int]:
     return enabled, _CACHE_TTL_SECONDS_BY_TIER.get(tier, 300)
 
 
-def _context_cache_key(base_url: str, model: str, system_text: str) -> str:
+def _context_cache_key(base_url: str, model: str, api_key: str, system_text: str) -> str:
     import hashlib
-    digest = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
-    return f"{base_url}|{model}|{digest}"
+    key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    text_digest = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
+    return f"{base_url}|{model}|{key_digest}|{text_digest}"
 
 
 def _map_gemini_finish_reason(reason: str) -> str:
@@ -997,7 +1003,7 @@ class GeminiNativeClient:
         if not enabled:
             return request
 
-        key = _context_cache_key(self.base_url, model, text)
+        key = _context_cache_key(self.base_url, model, self.api_key, text)
         entry = _context_cache_registry.get(key)
         if entry is None or entry["expires_at"] <= time.time():
             entry = self._create_context_cache(model=model, system_instruction=system_instruction, ttl_seconds=ttl_seconds)
@@ -1093,12 +1099,13 @@ class GeminiNativeClient:
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             # A cachedContent reference can go stale between our local TTL
-            # check and the request actually landing (expiry race, or the
-            # resource was deleted server-side). Drop it from the registry
-            # and retry once with the original, uncached request (which still
+            # check and the request actually landing: expiry race, deleted
+            # server-side (404), or revoked/inaccessible (403 — e.g. the API
+            # key that created it was rotated). Drop it from the registry and
+            # retry once with the original, uncached request (which still
             # carries the real systemInstruction) instead of surfacing a hard
             # failure for something Hermes can trivially recover from.
-            if response.status_code == 404 and request.get("cachedContent"):
+            if response.status_code in (403, 404) and request.get("cachedContent"):
                 self._invalidate_context_cache(model=model, request=request)
                 response = self._http.post(url, json=uncached_request, headers=self._headers(), timeout=timeout)
             if response.status_code != 200:
@@ -1124,7 +1131,7 @@ class GeminiNativeClient:
                 with self._http.stream("POST", url, json=request, headers=stream_headers, timeout=timeout) as response:
                     if response.status_code != 200:
                         body_text = read_streaming_error_body(response)
-                        if response.status_code == 404 and request.get("cachedContent"):
+                        if response.status_code in (403, 404) and request.get("cachedContent"):
                             self._invalidate_context_cache(model=model, request=request)
                         raise gemini_http_error(response, body_text=body_text)
                     tool_call_indices: Dict[str, Dict[str, Any]] = {}

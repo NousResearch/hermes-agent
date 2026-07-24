@@ -55,6 +55,7 @@ def test_cron_create_options():
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
         "--workdir", "/tmp/x",
+        "--interpreter", "~/venvs/reporting/bin/python3",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "daily task prompt"
@@ -64,6 +65,27 @@ def test_cron_create_options():
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
+    assert ns.interpreter == "~/venvs/reporting/bin/python3"
+
+
+def test_cron_create_interpreter_defaults_to_none():
+    parser = _build()
+    ns = parser.parse_args(["cron", "create", "30m", "task"])
+    assert ns.interpreter is None
+
+
+def test_cron_edit_interpreter_flag():
+    parser = _build()
+    ns = parser.parse_args([
+        "cron", "edit", "j", "--interpreter", "/opt/venv/bin/python",
+    ])
+    assert ns.interpreter == "/opt/venv/bin/python"
+    # Empty string clears the field.
+    ns_clear = parser.parse_args(["cron", "edit", "j", "--interpreter", ""])
+    assert ns_clear.interpreter == ""
+    # Absent by default.
+    ns_default = parser.parse_args(["cron", "edit", "j"])
+    assert ns_default.interpreter is None
 
 
 def test_cron_edit_no_agent_tristate():

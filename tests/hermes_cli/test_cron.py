@@ -402,3 +402,136 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+class TestCronInterpreterCli:
+    """``hermes cron create/edit`` plumb the ``--interpreter`` flag through."""
+
+    def test_create_passes_interpreter_to_api(self, monkeypatch):
+        captured = {}
+
+        def fake_api(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "job_id": "job-1",
+                "name": "Report",
+                "schedule": "0 8 * * *",
+                "skills": [],
+                "next_run_at": "2026-06-01T00:00:00Z",
+                "job": {"interpreter": "~/venvs/reporting/bin/python3"},
+            }
+
+        monkeypatch.setattr(cron_cli, "_cron_api", fake_api)
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+        args = SimpleNamespace(
+            schedule="0 8 * * *",
+            prompt="Daily report",
+            name="Report",
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            script=None,
+            workdir=None,
+            interpreter="~/venvs/reporting/bin/python3",
+            no_agent=False,
+        )
+        rc = cron_cli.cron_create(args)
+        assert rc == 0
+        # The flag must be forwarded to the underlying tool/api.
+        assert captured.get("interpreter") == "~/venvs/reporting/bin/python3"
+
+    def test_create_shows_interpreter_in_confirmation(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cron_cli,
+            "_cron_api",
+            lambda **kwargs: {
+                "success": True,
+                "job_id": "job-1",
+                "name": "Report",
+                "schedule": "0 8 * * *",
+                "skills": [],
+                "next_run_at": "2026-06-01T00:00:00Z",
+                "job": {"interpreter": "~/venvs/reporting/bin/python3"},
+            },
+        )
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+
+        args = SimpleNamespace(
+            schedule="0 8 * * *",
+            prompt="Daily report",
+            name="Report",
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            script=None,
+            workdir=None,
+            interpreter="~/venvs/reporting/bin/python3",
+            no_agent=False,
+        )
+        cron_cli.cron_create(args)
+        out = capsys.readouterr().out
+        assert "Python: ~/venvs/reporting/bin/python3" in out
+
+    def test_edit_passes_interpreter_to_api(self, monkeypatch):
+        captured = {}
+
+        def fake_api(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "job": {
+                    "job_id": "job-1",
+                    "name": "Report",
+                    "schedule": "0 8 * * *",
+                    "skills": [],
+                    "interpreter": "~/venvs/reporting/bin/python3",
+                },
+            }
+
+        monkeypatch.setattr(cron_cli, "_cron_api", fake_api)
+
+        # resolve_job_ref is called at the top of cron_edit; point the job it
+        # returns at a real record so the skills-diff logic has something to
+        # read. The captured kwargs are what we assert on.
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        monkeypatch.setattr(
+            "cron.jobs.resolve_job_ref", lambda ref: get_job(job["id"])
+        )
+
+        args = SimpleNamespace(
+            job_id=job["id"],
+            schedule=None,
+            prompt=None,
+            name=None,
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            add_skills=None,
+            remove_skills=None,
+            clear_skills=False,
+            script=None,
+            workdir=None,
+            interpreter="~/venvs/reporting/bin/python3",
+            no_agent=None,
+        )
+        rc = cron_cli.cron_edit(args)
+        assert rc == 0
+        assert captured.get("interpreter") == "~/venvs/reporting/bin/python3"
+
+    def test_list_shows_interpreter_when_set(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+        create_job(
+            prompt="Report",
+            schedule="0 8 * * *",
+            script="daily.py",
+            interpreter="~/venvs/reporting/bin/python3",
+        )
+        cron_command(Namespace(cron_command="list", all=True))
+        out = capsys.readouterr().out
+        assert "Python:" in out
+        assert "~/venvs/reporting/bin/python3" in out

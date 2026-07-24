@@ -28,7 +28,7 @@ Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
 
 - **No LLM call.** Zero tokens, zero agent loop, zero model spend.
 - **Script is the job.** The script decides whether to alert. Emit output → message gets sent. Emit nothing → silent tick.
-- **Bash or Python.** `.sh` / `.bash` files run under `/bin/bash`; any other extension runs under the current Python interpreter. Anything in `~/.hermes/scripts/` is accepted.
+- **Bash or Python.** `.sh` / `.bash` files run under `/bin/bash`; any other extension runs under the current Python interpreter. A Python script can also pin a **user-managed venv** via `--interpreter` (see [Using your own Python environment](#using-your-own-python-environment)). Anything in `~/.hermes/scripts/` is accepted.
 - **Same scheduler.** Lives in `cronjob` alongside LLM jobs — pausing, resuming, listing, logs, and delivery targeting all work the same way.
 
 ## When to Use It
@@ -158,9 +158,45 @@ Interpreter choice is by file extension:
 | Extension | Interpreter |
 |-----------|-------------|
 | `.sh`, `.bash` | `/bin/bash` |
-| anything else | `sys.executable` (current Python) |
+| anything else | `sys.executable` (current Python), or a [configured interpreter](#using-your-own-python-environment) |
 
 We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
+
+### Using your own Python environment
+
+By default a Python cron script runs under Hermes' own Python (`sys.executable`), which lives in the Hermes-managed virtualenv. That environment only carries Hermes' own dependencies — so a script that imports `openpyxl`, a database driver, or any other package you installed would fail with `ModuleNotFoundError`.
+
+You can point the job at a **user-managed venv** instead with `--interpreter`:
+
+```bash
+# 1. Create a venv you own — it survives Hermes reinstalls/rebuilds.
+uv venv ~/venvs/hermes-reporting --python 3.11
+uv pip install --python ~/venvs/hermes-reporting/bin/python openpyxl
+
+# 2. Schedule the job with that interpreter.
+hermes cron create "0 8 * * *" \
+  --no-agent \
+  --script daily-report.py \
+  --interpreter ~/venvs/hermes-reporting/bin/python \
+  --deliver telegram
+```
+
+The same field is exposed to the agent through the `cronjob` tool:
+
+```python
+cronjob(action="create", schedule="0 8 * * *",
+        script="daily-report.py", no_agent=True,
+        interpreter="~/venvs/hermes-reporting/bin/python",
+        deliver="telegram")
+```
+
+Rules:
+
+- The venv is **user-managed**. Hermes does not create, freeze, restore, or install packages into it — it just invokes the path you give.
+- The path must be **absolute or `~`-prefixed** (e.g. `~/venvs/reporting/bin/python3`). Bare names like `python3` are rejected, because they are not stable across `PATH` changes.
+- Applies **only to Python scripts**. `.sh` / `.bash` always run under bash regardless.
+- It is validated **at run time**, not at creation — a cron job is long-lived, and the venv may be rebuilt or moved between when you create the job and when it fires. A missing or non-executable interpreter produces a clear script failure that is delivered like any other error.
+- To clear it later: `hermes cron edit <job_id> --interpreter ""`.
 
 ## Schedule Syntax
 

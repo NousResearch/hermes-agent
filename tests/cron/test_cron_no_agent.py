@@ -329,3 +329,53 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# no_agent jobs honoring a configured Python interpreter
+# ---------------------------------------------------------------------------
+
+
+def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
+    """A no-agent job's script must run through the configured interpreter.
+
+    Proves the override survives the no_agent branch of ``run_job`` →
+    ``_run_job_script_with_claim_heartbeat`` → ``_run_job_script``.
+    """
+    import os
+    import stat as _stat
+    import sys
+
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    # A wrapper that re-execs the real interpreter with an env marker.
+    wrapper = hermes_env / "scripts" / "python-wrapper"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "env = os.environ.copy()\n"
+        'env["CRON_WRAPPER_USED"] = "1"\n'
+        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n"
+    )
+    wrapper.chmod(wrapper.stat().st_mode | _stat.S_IXUSR)
+
+    script_path = hermes_env / "scripts" / "marker.py"
+    script_path.write_text(
+        'import os\nprint(os.environ.get("CRON_WRAPPER_USED", "0"))\n'
+    )
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="marker.py",
+        no_agent=True,
+        deliver="local",
+        interpreter=str(wrapper),
+    )
+
+    success, doc, final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert final_response == "1"
+    assert "1" in doc

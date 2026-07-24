@@ -447,7 +447,7 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
+`.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate). A Python script can also pin a user-managed venv (for packages the Hermes runtime doesn't carry) by passing `--interpreter ~/venvs/.../bin/python` at create/edit time — see [Using your own Python environment](/guides/cron-script-only#using-your-own-python-environment). The Hermes-managed venv stays Hermes-owned; nothing is installed or restored automatically.
 
 ### The agent sets these up for you
 

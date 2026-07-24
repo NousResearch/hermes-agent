@@ -403,16 +403,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             "you to."
         )
     else:
+        # Named profiles set HERMES_HOME to <root>/profiles/<name> already —
+        # do not nest another /profiles/<name>/ under it. Default-profile
+        # data lives at the Hermes root (sibling of profiles/), not under
+        # this profile's home. Do not spell out default-profile absolute
+        # paths or the cross_profile=True bypass here — that combination
+        # is a prompt-injection privilege-escalation roadmap.
+        profile_home = get_hermes_home()
         stable_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
-            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
-            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
-            f"different session run from a different shell. Do NOT modify "
-            f"another profile's skills/plugins/cron/memories unless the user "
-            f"explicitly directs you to. The cross-profile write guard will "
-            f"refuse such writes by default; pass cross_profile=True only "
-            f"after explicit direction."
+            f"and writes {profile_home}/. The default profile's "
+            f"skills/plugins/cron/memories live under the Hermes root "
+            f"(the parent of the profiles/ directory), not under this "
+            f"profile's home — those belong to a different session run "
+            f"from a different shell. Do NOT modify another profile's "
+            f"skills/plugins/cron/memories unless the user explicitly "
+            f"directs you to."
         )
 
     platform_key = (agent.platform or "").lower().strip()

@@ -74,6 +74,23 @@ class TestDoctorToolAvailabilitySummary:
 
         assert [item["name"] for item in filtered] == ["rl", "web"]
 
+    def test_enabled_unavailable_summary_includes_system_dependency_failures(self, monkeypatch):
+        unavailable = [
+            {"name": "image", "env_vars": [], "tools": ["image_generate"]},
+            {"name": "video", "env_vars": [], "tools": ["video_generate"]},
+            {"name": "tts", "env_vars": [], "tools": ["text_to_speech"]},
+            {"name": "browser", "env_vars": [], "tools": ["browser_navigate"]},
+        ]
+        monkeypatch.setattr(
+            doctor,
+            "_enabled_cli_toolsets_for_doctor",
+            lambda: {"image", "video", "tts"},
+        )
+
+        filtered = doctor._enabled_unavailable_toolsets_for_summary(unavailable)
+
+        assert [item["name"] for item in filtered] == ["image", "video", "tts"]
+
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows

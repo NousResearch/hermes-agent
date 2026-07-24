@@ -86,6 +86,18 @@ def test_single_handler_builders(name, builder, kw, argv):
     assert ns.func is handler
 
 
+def test_doctor_probe_routes_flag_parses():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("doctor")
+    build_doctor_parser(sub, cmd_doctor=handler)
+
+    ns = parser.parse_args(["doctor", "--probe-routes"])
+
+    assert ns.func is handler
+    assert ns.probe_routes is True
+
+
 def test_config_get_unset_subcommands_parse():
     """`hermes config get/unset` parse key args (and --json for get)."""
     parser = argparse.ArgumentParser(prog="hermes")

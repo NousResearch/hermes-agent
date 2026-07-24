@@ -116,6 +116,25 @@ def test_subject_prepends_header(fake_tool):
     assert fake_tool.calls[0]["message"] == "[CI]\n\nbody text"
 
 
+def test_email_subject_uses_transport_subject_not_body_header(fake_tool):
+    args = _parse([
+        "--to",
+        "email:andy@example.com",
+        "--subject",
+        "[Hermes][Test] Subject",
+        "body text",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert fake_tool.calls[0] == {
+        "action": "send",
+        "target": "email:andy@example.com",
+        "message": "body text",
+        "subject": "[Hermes][Test] Subject",
+    }
+
+
 def test_json_mode_emits_payload(fake_tool, capsys):
     args = _parse(["--to", "telegram", "--json", "hi"])
     with pytest.raises(SystemExit) as exc:

@@ -195,6 +195,12 @@ _nb_install_bundled_node() {
 
     _nb_log "Extracting to $HERMES_HOME/node/..."
     if [[ "$tarball" == *.tar.xz ]]; then
+        if ! command -v xz >/dev/null 2>&1; then
+            _nb_warn "xz is required to extract $tarball"
+            _nb_warn "Install it with your package manager, for example: sudo apt install xz-utils"
+            rm -rf "$tmp"
+            return 1
+        fi
         tar xf  "$tmp/$tarball" -C "$tmp" || { rm -rf "$tmp"; return 1; }
     else
         tar xzf "$tmp/$tarball" -C "$tmp" || { rm -rf "$tmp"; return 1; }

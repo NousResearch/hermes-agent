@@ -634,6 +634,10 @@ class SessionManager:
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            # Match gateway/CLI: pass credential_pool so long-lived ACP sessions
+            # can refresh OAuth (xAI returns 403 bad-credentials for stale tokens).
+            # Without the pool, idle Buzz ACP processes abort while Telegram/Desktop
+            # keep working on the same HERMES_HOME.
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
@@ -642,6 +646,7 @@ class SessionManager:
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
+                    "credential_pool": runtime.get("credential_pool"),
                 }
             )
         except Exception:

@@ -968,9 +968,21 @@ def _classify_by_status(
                 should_rotate_credential=True,
                 should_fallback=True,
             )
+        # Default: auth without rotate — preserve historical behaviour for
+        # generic providers (see test_non_xai_403_generic_billing_code_remains_auth).
+        # OAuth providers that return 403 for stale access tokens (xAI
+        # ``bad-credentials``, etc.) need rotate/refresh like 401 so long-lived
+        # ACP sessions recover. Billing shapes above already returned.
+        _stale_oauth_403 = (
+            provider in {"xai-oauth", "openai-codex", "nous"}
+            or "bad-credentials" in error_msg
+            or "oauth2 access token could not be validated" in error_msg
+            or "wke=unauthenticated" in error_msg
+        )
         return result_fn(
             FailoverReason.auth,
             retryable=False,
+            should_rotate_credential=_stale_oauth_403,
             should_fallback=True,
         )
 

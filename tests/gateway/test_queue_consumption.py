@@ -454,3 +454,222 @@ class TestBusyInputModeQueueFifo:
         head = adapter._pending_messages[session_key]
         assert head.message_type == MessageType.PHOTO
         assert len(head.media_urls) == 3
+
+
+class TestUserPriorityOverInternalEvents:
+    """Queue-level regression coverage for the user-over-internal priority fix.
+
+    Real user input queued while a session is busy must always run before
+    synthetic internal completion events (async-delegation / background-process
+    notifications), while arrival order is preserved *within* each class. When
+    the bounded queue is full, an internal event — never user input — is the
+    one displaced.
+    """
+
+    def _make_runner_and_adapter(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        return runner, adapter
+
+    def _event(self, text: str, *, internal: bool = False) -> MessageEvent:
+        # profile=None: a MagicMock auto-attribute reads as a truthy stamped
+        # profile and trips fail-closed adapter resolution (AGENTS.md #17).
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"m-{text}",
+            internal=internal,
+        )
+
+    def _photo_event(self, message_id: str, url: str) -> MessageEvent:
+        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        return MessageEvent(
+            text="",
+            message_type=MessageType.PHOTO,
+            source=source,
+            message_id=message_id,
+            media_urls=[url],
+            media_types=["image/jpeg"],
+        )
+
+    def _drain_order(self, runner, adapter, session_key: str) -> list:
+        """Replay the real drain site: consume the slot, then promote the
+        next overflow item into it, once per turn (gateway/run.py drain)."""
+        executed = []
+        while True:
+            pending = _dequeue_pending_event(adapter, session_key)
+            pending = runner._promote_queued_event(session_key, adapter, pending)
+            if pending is None:
+                break
+            executed.append(pending)
+        return executed
+
+    def _enqueue_interleaved(self, runner, session_key: str) -> None:
+        """internal/user arrivals strictly alternating, internal first."""
+        for text, internal in (
+            ("internal-1", True),
+            ("user-1", False),
+            ("internal-2", True),
+            ("user-2", False),
+            ("internal-3", True),
+            ("user-3", False),
+        ):
+            runner._queue_or_replace_pending_event(
+                session_key, self._event(text, internal=internal)
+            )
+            # Invariant assumed by the priority fix's first-internal insertion
+            # point: the overflow is always partitioned [user..., internal...].
+            # A user event sitting after an internal one would let a later
+            # arrival jump ahead of it, breaking user arrival order.
+            flags = [
+                bool(e.internal) for e in runner._queued_events.get(session_key, [])
+            ]
+            assert flags == sorted(flags)
+
+    def test_users_precede_internals_and_keep_arrival_order(self):
+        """All user events outrank all internal events; order within each
+        class is arrival order."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:prio"
+
+        self._enqueue_interleaved(runner, session_key)
+
+        assert adapter._pending_messages[session_key].text == "user-1"
+        assert [e.text for e in runner._queued_events[session_key]] == [
+            "user-2",
+            "user-3",
+            "internal-1",
+            "internal-2",
+            "internal-3",
+        ]
+
+    def test_drain_executes_all_users_before_any_internal(self):
+        """The actual dequeue+promote execution order — not just the
+        in-memory slot/overflow arrangement — runs users first."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:drain"
+
+        self._enqueue_interleaved(runner, session_key)
+
+        executed = self._drain_order(runner, adapter, session_key)
+        assert [e.text for e in executed] == [
+            "user-1",
+            "user-2",
+            "user-3",
+            "internal-1",
+            "internal-2",
+            "internal-3",
+        ]
+        assert session_key not in adapter._pending_messages
+        assert runner._queue_depth(session_key, adapter=adapter) == 0
+
+    def test_full_queue_user_input_replaces_internal_head(self):
+        """At the cap with an internal event in the head slot, user steering
+        replaces that internal event instead of being dropped."""
+        from gateway.run import GatewayRunner
+
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:cap-head"
+        cap = GatewayRunner._BUSY_QUEUE_MAX_PENDING
+
+        for i in range(cap):
+            runner._queue_or_replace_pending_event(
+                session_key, self._event(f"internal-{i:02d}", internal=True)
+            )
+        assert runner._queue_depth(session_key, adapter=adapter) == cap
+
+        user = self._event("steer-me")
+        runner._queue_or_replace_pending_event(session_key, user)
+
+        # User input survives at the head; the queue stays at the cap; the
+        # displaced event is the internal one that held the slot.
+        assert adapter._pending_messages[session_key] is user
+        assert runner._queue_depth(session_key, adapter=adapter) == cap
+        assert [e.text for e in runner._queued_events[session_key]] == [
+            f"internal-{i:02d}" for i in range(1, cap)
+        ]
+
+    def test_full_queue_user_input_displaces_internal_in_overflow(self):
+        """At the cap with a user head and internal overflow, a new user
+        event drops one internal event — never any user input."""
+        from gateway.run import GatewayRunner
+
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:cap-overflow"
+        cap = GatewayRunner._BUSY_QUEUE_MAX_PENDING
+
+        first_user = self._event("user-first")
+        runner._queue_or_replace_pending_event(session_key, first_user)
+        for i in range(cap - 1):
+            runner._queue_or_replace_pending_event(
+                session_key, self._event(f"internal-{i:02d}", internal=True)
+            )
+        assert runner._queue_depth(session_key, adapter=adapter) == cap
+
+        second_user = self._event("user-second")
+        runner._queue_or_replace_pending_event(session_key, second_user)
+
+        assert runner._queue_depth(session_key, adapter=adapter) == cap
+        assert adapter._pending_messages[session_key] is first_user
+        overflow = runner._queued_events[session_key]
+        assert overflow[0] is second_user
+        # One internal event was sacrificed; the survivors keep arrival order.
+        assert [e.text for e in overflow[1:]] == [
+            f"internal-{i:02d}" for i in range(cap - 2)
+        ]
+
+    def test_full_queue_of_user_events_drops_incoming_internal(self):
+        """The complement: a full queue of real user input never sheds a user
+        event to admit an internal one."""
+        from gateway.run import GatewayRunner
+
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:cap-users"
+        cap = GatewayRunner._BUSY_QUEUE_MAX_PENDING
+
+        for i in range(cap):
+            runner._queue_or_replace_pending_event(
+                session_key, self._event(f"user-{i:02d}")
+            )
+
+        runner._queue_or_replace_pending_event(
+            session_key, self._event("internal-late", internal=True)
+        )
+
+        assert runner._queue_depth(session_key, adapter=adapter) == cap
+        assert adapter._pending_messages[session_key].text == "user-00"
+        assert all(not e.internal for e in runner._queued_events[session_key])
+
+    def test_photo_burst_still_merges_when_internal_event_queued(self):
+        """Album-merge semantics must survive the priority fix: a photo burst
+        arriving while an internal completion is queued stays one merged head
+        turn (ahead of the internal event), not N split turns."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:user:burst-prio"
+
+        runner._queue_or_replace_pending_event(
+            session_key, self._event("internal-note", internal=True)
+        )
+        for i in range(3):
+            runner._queue_or_replace_pending_event(
+                session_key, self._photo_event(f"p-{i}", f"http://example.com/{i}.jpg")
+            )
+
+        head = adapter._pending_messages[session_key]
+        assert head.message_type == MessageType.PHOTO
+        assert not head.internal
+        assert head.media_urls == [f"http://example.com/{i}.jpg" for i in range(3)]
+        assert [e.text for e in runner._queued_events[session_key]] == ["internal-note"]
+
+        executed = self._drain_order(runner, adapter, session_key)
+        assert [e.message_type for e in executed] == [
+            MessageType.PHOTO,
+            MessageType.TEXT,
+        ]
+        assert executed[1].internal

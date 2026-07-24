@@ -43,10 +43,13 @@ import type { TileDock } from '@/store/session-states'
 
 /** Where a dragged new session lands. `center` stacks a fresh tab into the
  *  anchor's zone (optionally at a strip slot via `before`); an edge dir splits
- *  a new tile docked to that edge of the anchor. */
+ *  a new tile docked to that edge of the anchor. `cwd` pins the new session to
+ *  a project's path when the drag started from a project row (null = the
+ *  default new-session cwd). */
 export interface NewSessionPlacement {
   anchor: string
   before?: null | string
+  cwd?: null | string
   dir: TileDock
 }
 
@@ -90,7 +93,15 @@ function chatZonePane(groupId: string): null | string {
 export function startNewSessionDrag(
   onCreate: (placement: NewSessionPlacement) => void,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { onTap?: () => void }
+  opts?: {
+    /** Pin the created session to a project's path (drag from a project row).
+     *  Omitted/null = the default new-session cwd (drag from "New session"). */
+    cwd?: null | string
+    /** Ghost chip label — the project's name for a project-row drag, else the
+     *  default "New session". */
+    label?: string
+    onTap?: () => void
+  }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
@@ -102,13 +113,14 @@ export function startNewSessionDrag(
   // move before commit, so this always matches the released-at position).
   let placement: NewSessionPlacement | null = null
 
-  // The drag SOURCE (the "New session" row). Dimmed while lifted so it reads as
-  // "picked up" — the same in-place feedback a sidebar session row uses.
+  // The drag SOURCE (the "New session" row or a project's + button). Dimmed
+  // while lifted so it reads as "picked up" — the same in-place feedback a
+  // sidebar session row uses.
   const source = e.currentTarget
   const restoreOpacity = source?.style.opacity ?? ''
 
   startDragSession(e, {
-    ghost: { label: translateNow('sidebar.nav.new-session') },
+    ghost: { label: opts?.label || translateNow('sidebar.nav.new-session') },
     onTap: opts?.onTap,
 
     onEngage() {
@@ -144,7 +156,7 @@ export function startNewSessionDrag(
 
       if (strip) {
         const stack = slotBefore(strip.slots, x)
-        placement = { anchor: host, before: stack.before, dir: 'center' }
+        placement = { anchor: host, before: stack.before, cwd: opts?.cwd, dir: 'center' }
 
         return { groupId: zone.id, groupIds: [zone.id], kind: 'group', pos: 'center', stack }
       }
@@ -156,9 +168,9 @@ export function startNewSessionDrag(
       const pos = composers.some(rect => rectContains(rect, x, y)) ? 'center' : subZonePosition(zones, zone.id, x, y)
 
       if (pos === 'center') {
-        placement = { anchor, dir: 'center' }
+        placement = { anchor, cwd: opts?.cwd, dir: 'center' }
       } else {
-        placement = { anchor, dir: pos }
+        placement = { anchor, cwd: opts?.cwd, dir: pos }
       }
 
       return { groupId: zone.id, groupIds: [zone.id], kind: 'group', pos }

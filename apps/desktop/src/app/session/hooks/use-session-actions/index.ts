@@ -473,13 +473,14 @@ export function useSessionActions({
    *  list (Cursor-style draft tab); it surfaces on the next refresh once the
    *  first message persists a turn. "Open in split" keeps the listed behavior. */
   const openNewSessionTile = useCallback(
-    async (dir: TileDock = 'right', options?: { anchor?: string; before?: null | string; listed?: boolean }) => {
+    async (dir: TileDock = 'right', options?: { anchor?: string; before?: null | string; cwd?: null | string; listed?: boolean }) => {
       const listed = options?.listed ?? true
 
       try {
         // Fresh tile → the resolved new-session cwd (project/default), not the
-        // primary composer's live cwd.
-        const params = await desktopSessionCreateParams(resolveNewSessionCwd().trim())
+        // primary composer's live cwd. A drag from a project row pins `cwd` to
+        // that project's path so the new session is created inside it.
+        const params = await desktopSessionCreateParams((options?.cwd ?? resolveNewSessionCwd()).trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 

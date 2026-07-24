@@ -235,10 +235,11 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
    *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
-   *  specific zone / tab-strip slot — used by the "New session" row's drag,
-   *  which lands a fresh session exactly where it's dropped. The context-menu
-   *  "Open in split" path passes just a `dir`. */
-  onNewSessionSplit: (dir: TileDock, opts?: { anchor?: string; before?: null | string }) => void
+   *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
+   *  used by the new-session drags (the "New session" row and the project "+"
+   *  buttons), which land a fresh session exactly where it's dropped. The
+   *  context-menu "Open in split" path passes just a `dir`. */
+  onNewSessionSplit: (dir: TileDock, opts?: { anchor?: string; before?: null | string; cwd?: null | string }) => void
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
 }
@@ -1422,6 +1423,7 @@ export function ChatSidebar({
                 onDeleteSession={onDeleteSession}
                 onEnterProject={onEnterProject}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
+                onNewSessionSplit={showAllProfiles ? undefined : onNewSessionSplit}
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
                 onResumeSession={onResumeSession}

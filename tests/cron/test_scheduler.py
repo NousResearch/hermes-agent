@@ -1801,6 +1801,19 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] is False  # success should be False
         assert "empty" in call_args[0][2].lower()  # error should mention empty
 
+    def test_failure_delivery_redacts_credential_shaped_fallback_text(self):
+        """Unexpected errors must not expose provider credentials in chat delivery."""
+        from cron.scheduler import _summarize_cron_failure_for_delivery
+
+        credential = "xoxb-" + "HER96SYNTHETIC" * 2
+        message = _summarize_cron_failure_for_delivery(
+            {"id": "safe-delivery", "name": "safe delivery"},
+            f"unexpected upstream failure: {credential}",
+        )
+
+        assert credential not in message
+        assert "[redacted credential]" in message
+
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {
             "id": "test-job",
@@ -3189,6 +3202,32 @@ class TestRunJobWakeGate:
         assert script_output in prompt_arg
         assert success is True
         assert err is None
+
+    def test_runtime_requested_provider_reaches_agent_when_transport_is_canonical(self):
+        """Routing intent survives when a provider is carried over another transport."""
+        import cron.scheduler as scheduler
+
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+        runtime = {
+            "provider": "openrouter",
+            "requested_provider": "anthropic",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "test-key",
+            "source": "canonical-transport",
+        }
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime,
+        ), patch("run_agent.AIAgent", return_value=agent) as agent_cls:
+            success, _doc, _final, err = scheduler.run_job(self._make_job())
+
+        assert success is True
+        assert err is None
+        assert agent_cls.call_args.kwargs["provider"] == "openrouter"
+        assert agent_cls.call_args.kwargs["requested_provider"] == "anthropic"
 
     def test_script_runs_only_once_on_wake(self):
         """Wake-true path must not re-run the script inside _build_job_prompt

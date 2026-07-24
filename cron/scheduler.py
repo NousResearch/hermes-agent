@@ -44,6 +44,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from cron.redaction import redact_credential_text
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     stack traces into the delivery channel.
     """
     job_name = job.get("name") or job.get("id") or "cron job"
-    text = (error or "unknown error").strip()
+    text = redact_credential_text((error or "unknown error").strip())
     lower = text.lower()
 
     # Provider/API failures are the common noisy path. Keep these short.
@@ -278,7 +279,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
-from cron.executions import create_execution, finish_execution, mark_execution_running
+from cron.executions import create_execution, finish_execution, mark_execution_running, recover_interrupted_executions
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -4016,6 +4017,12 @@ def tick(
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
+
+        # HER-96: every builtin tick reconciles orphaned execution owners before
+        # deciding what is due. Recovery is audit-only (claimed/running ->
+        # unknown) and never schedules retries, but keeping it startup-only left
+        # dead manual/direct owners visible until a scheduler restart.
+        recover_interrupted_executions()
 
         due_jobs = get_due_jobs()
 

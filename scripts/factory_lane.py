@@ -23,6 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from cron.redaction import contains_credential, redact_credential_text
+
 # --------------------------------------------------------------------------
 # Constantes de contrat
 # --------------------------------------------------------------------------
@@ -54,6 +56,22 @@ MAX_EVIDENCE_LEN = 200
 MAX_NEXT_STEP_LEN = 1000
 WORKTREE_ACTIVE_SECONDS = 24 * 3600
 DEFAULT_TTL_HOURS = 72.0
+MAX_FRESHNESS_EVIDENCE_BYTES = 32 * 1024
+MAX_TEAM_CONFIG_BYTES = 32 * 1024
+MAX_FRESHNESS_SOURCE_ITEMS = 100
+# Freshness is operational proof, not durable history: one day is the largest
+# controller window so a bad policy cannot make an epoch sentinel look current.
+MAX_FRESHNESS_MAX_AGE_SECONDS = 24 * 3600
+_SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+_FRESHNESS_VERDICTS = frozenset({"current", "superseded", "duplicate", "needs-rebase"})
+_FRESHNESS_EVIDENCE_FIELDS = frozenset({
+    "issue", "checked_at", "canonical_branch", "canonical_head", "sources", "verdict",
+})
+_FRESHNESS_SOURCE_FIELDS = frozenset({
+    "newer_linear_issues", "newer_prs_commits", "current_main_behavior",
+})
+_FRESHNESS_BEHAVIOR_FIELDS = frozenset({"checked", "summary"})
+_FRESHNESS_RED_FIELDS = frozenset({"reproduced", "evidence"})
 
 _SECRET_PATTERN = re.compile(
     r"(token|password|passwd|secret|api[_-]?key|credential)", re.IGNORECASE
@@ -189,10 +207,10 @@ def _safe_subdir(root, name):
 def _validate_metadata_field(value, label):
     if len(value) > MAX_EVIDENCE_LEN:
         raise RegistryError(f"{label} too long")
+    if _SECRET_PATTERN.search(value) or contains_credential(value):
+        raise RegistryError(f"{label} looks like a credential and was rejected")
     if "\n" in value or "\r" in value:
         raise RegistryError(f"{label} must not contain newlines")
-    if _SECRET_PATTERN.search(value):
-        raise RegistryError(f"{label} looks like a secret and was rejected")
 
 
 def _validate_evidence(evidence):
@@ -254,13 +272,13 @@ def _parse_jsonl_lines(text, source):
 def _read_all_events(lane_file):
     """Lit le journal via ouverture secure no-follow + flock partagé (cohérent
     avec le flock exclusif utilisé pendant l'append)."""
-    fd = _open_secure(lane_file, os.O_RDONLY | _NONBLOCK_FLAG)
+    fd = _open_regular_file_via_chain(lane_file, label=f"journal {lane_file}")
     return _read_all_events_fd(fd, lane_file)
 
 
 def _read_all_events_at(parent_fd, name, source):
     """Read one regular JSONL journal relative to an anchored directory fd."""
-    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, dir_fd=parent_fd)
+    fd = _open_regular_file_at(parent_fd, name, label=f"journal {source}")
     return _read_all_events_fd(fd, source)
 
 
@@ -296,6 +314,9 @@ def _same_event(a, b):
 
 _ODIRECTORY_FLAG = getattr(os, "O_DIRECTORY", 0)
 _RENAME_SUPPORTS_DIR_FD = os.rename in os.supports_dir_fd
+_OPATH_FLAG = getattr(os, "O_PATH", 0)
+_CLOEXEC_FLAG = getattr(os, "O_CLOEXEC", 0)
+_PROC_SELF_FD = "/proc/self/fd"
 _SYMLINK_ERRNOS = (errno.ELOOP, errno.ENOTDIR, errno.EMLINK)
 
 try:
@@ -407,15 +428,113 @@ def _open_dir_chain(root_path, parts, create=False):
         raise
 
 
-def _read_json_at(parent_fd, name):
-    fd = os.open(name, os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, dir_fd=parent_fd)
+def _open_regular_file_at(parent_fd, name, *, label):
+    """Return a readable fd only after pinning and validating a regular leaf."""
+    if not _OPATH_FLAG:
+        # Darwin has no O_PATH. A portable stat-then-open is only safe when the
+        # already-pinned parent is not writable by other local UIDs: they cannot
+        # swap the leaf after validation. Refuse an attacker-writable directory
+        # before any content-capable leaf open.
+        parent_stat = os.fstat(parent_fd)
+        if not stat.S_ISDIR(parent_stat.st_mode):
+            raise RegistryError(f"safe parent for {label} is not a directory")
+        if parent_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise RegistryError(f"safe leaf pinning requires a trusted directory for {label}")
+        if not _NOFOLLOW_FLAG:
+            raise RegistryError(f"safe leaf pinning unavailable for {label}")
+        try:
+            fd = os.open(
+                name,
+                os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG | _CLOEXEC_FLAG,
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                raise
+            if exc.errno in _SYMLINK_ERRNOS:
+                raise RegistryError(f"{label} must not be a symlink") from exc
+            raise RegistryError(f"failed to open {label}: {exc}") from exc
+        try:
+            _require_regular_fd(fd, label)
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
     try:
-        _require_regular_fd(fd, f"registry file {name}")
+        pinned_fd = os.open(
+            name,
+            _OPATH_FLAG | _NOFOLLOW_FLAG | _CLOEXEC_FLAG,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            raise
+        raise RegistryError(f"failed to pin {label}: {exc}") from exc
+    try:
+        pinned_stat = os.fstat(pinned_fd)
+        if not stat.S_ISREG(pinned_stat.st_mode):
+            raise RegistryError(f"{label} must be a regular non-symlink file")
+        try:
+            fd = os.open(
+                f"{_PROC_SELF_FD}/{pinned_fd}",
+                os.O_RDONLY | _NONBLOCK_FLAG | _CLOEXEC_FLAG,
+            )
+        except OSError as exc:
+            raise RegistryError(f"failed to reopen pinned {label}: {exc}") from exc
+        try:
+            reopened_stat = os.fstat(fd)
+            if (
+                not stat.S_ISREG(reopened_stat.st_mode)
+                or (pinned_stat.st_dev, pinned_stat.st_ino)
+                != (reopened_stat.st_dev, reopened_stat.st_ino)
+            ):
+                raise RegistryError(f"{label} changed during secure open")
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
     except BaseException:
-        os.close(fd)
         raise
+    finally:
+        os.close(pinned_fd)
+
+
+def _read_json_at(parent_fd, name):
+    fd = _open_regular_file_at(parent_fd, name, label=f"registry file {name}")
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _safe_absolute_path(path):
+    """Return an absolute lexical path without resolving user-controlled links."""
+    absolute = os.path.abspath(os.fspath(path))
+    for alias in _KNOWN_SYSTEM_ALIAS_ROOTS:
+        if (_is_known_system_alias(Path(alias))
+                and (absolute == alias or absolute.startswith(f"{alias}{os.sep}"))):
+            return f"/private{absolute}"
+    return absolute
+
+
+def _open_regular_file_via_chain(path, *, label="freshness evidence"):
+    """Pin every ancestor before opening an external regular-file input."""
+    parts = Path(_safe_absolute_path(path)).parts
+    if len(parts) < 2:
+        raise RegistryError(f"{label} must name a regular file")
+    parent_fd = _open_secure(parts[0], os.O_RDONLY | _ODIRECTORY_FLAG)
+    try:
+        for part in parts[1:-1]:
+            next_fd = _openat_subdir(parent_fd, part, create=False)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        try:
+            return _open_regular_file_at(parent_fd, parts[-1], label=label)
+        except OSError as exc:
+            if exc.errno in _SYMLINK_ERRNOS:
+                raise RegistryError(f"{label} must not be a symlink") from exc
+            raise RegistryError(f"failed to open {label}: {exc}") from exc
+    finally:
+        os.close(parent_fd)
 
 
 def _require_regular_fd(fd, label):
@@ -764,7 +883,8 @@ def _resolve_owner_identity(owner_pid, owner_start_time):
 
 
 def _build_owner(agent, session, worktree, ttl_hours, now, profile=None,
-                 gateway_session_key=None, owner_pid=None, owner_start_time=None):
+                 gateway_session_key=None, owner_pid=None, owner_start_time=None,
+                 team=None, allowed_teams=None, freshness=None):
     if owner_pid is not None:
         pid = owner_pid
         start_time = owner_start_time
@@ -784,6 +904,12 @@ def _build_owner(agent, session, worktree, ttl_hours, now, profile=None,
     }
     if profile:
         owner["profile"] = profile
+    if team:
+        owner["team"] = team
+    if allowed_teams is not None:
+        owner["allowed_teams"] = allowed_teams
+    if freshness is not None:
+        owner["freshness"] = freshness
     if gateway_session_key:
         owner["gateway_session_key"] = gateway_session_key
     return owner
@@ -793,29 +919,41 @@ def _is_same_session(owner, agent, session):
     return owner.get("agent") == agent and owner.get("session_id") == session
 
 
-def _iter_owner_files(locks_root):
-    if not locks_root.exists() or locks_root.is_symlink():
-        return []
+def _iter_owners_via_chain(root_path):
+    """Yield owner records through pinned `locks/` and lane directory fds."""
+    locks_fd = _open_dir_chain(root_path, ("locks",), create=False)
     try:
-        entries = sorted(locks_root.iterdir())
-    except OSError:
-        return []
-    owner_files = []
-    for lock_dir in entries:
-        if lock_dir.is_symlink() or not lock_dir.is_dir():
-            continue
-        owner_file = lock_dir / "owner.json"
-        if owner_file.exists() and not owner_file.is_symlink():
-            owner_files.append((lock_dir.name, owner_file))
-    return owner_files
+        for key in sorted(os.listdir(locks_fd)):
+            validate_key(key)
+            key_fd = _openat_subdir(locks_fd, key, create=False)
+            try:
+                try:
+                    owner = _read_json_at(key_fd, "owner.json")
+                except FileNotFoundError:
+                    continue
+                if not isinstance(owner, dict):
+                    raise RegistryError(f"owner.json for {key} must be a JSON object")
+                yield key, owner
+            finally:
+                os.close(key_fd)
+    finally:
+        os.close(locks_fd)
 
 
-def _find_worktree_claim(locks_root, worktree_real):
-    for key, owner_file in _iter_owner_files(locks_root):
-        owner = _read_json(owner_file)
+def _find_worktree_claim(root_path, worktree_real):
+    for key, owner in _iter_owners_via_chain(root_path):
         claimed = owner.get("worktree")
         if claimed and _canonical_worktree(claimed) == worktree_real:
-            return key, owner, owner_file
+            return key, owner
+    return None
+
+
+def _find_team_claim(root_path, team):
+    if not team:
+        return None
+    for key, owner in _iter_owners_via_chain(root_path):
+        if owner.get("team") == team:
+            return key, owner
     return None
 
 
@@ -878,7 +1016,8 @@ def _validate_ttl_hours(ttl_hours):
 
 def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
                       profile=None, gateway_session_key=None,
-                      owner_pid=None, owner_start_time=None):
+                      owner_pid=None, owner_start_time=None, team=None,
+                      allowed_teams=None, freshness=None):
     validate_key(key)
     _validate_ttl_hours(ttl_hours)
     # Un `gateway_session_key` ressemblant à un secret (token/password/api_key…)
@@ -907,6 +1046,12 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
                     if resolved_pid is not None:
                         owner["pid"] = resolved_pid
                         owner["process_start_time"] = resolved_start
+                    if team:
+                        owner["team"] = team
+                    if allowed_teams is not None:
+                        owner["allowed_teams"] = allowed_teams
+                    if freshness is not None:
+                        owner["freshness"] = freshness
                     owner["heartbeat_at"] = now
                     _write_owner_via_chain(root_anchor, key, owner)
                     return 0
@@ -928,6 +1073,7 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
                     agent, session, worktree_real, ttl_hours, now,
                     profile=profile, gateway_session_key=gateway_session_key,
                     owner_pid=resolved_pid, owner_start_time=resolved_start,
+                    team=team, allowed_teams=allowed_teams, freshness=freshness,
                 )
                 _write_owner_via_chain(root_anchor, key, new_owner)
                 _append_event_via_chain(root_anchor, key, "lock_reclaimed", extra={
@@ -951,10 +1097,21 @@ def _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
                         )
                     _unlink_owner_via_chain(root_anchor, conflict_key)
 
+            team_conflict = _find_team_claim(root_anchor, team)
+            if team_conflict is not None and team_conflict[0] != key:
+                conflict_key, conflict_owner = team_conflict
+                if not reclaim or not _can_reclaim_owner(now, conflict_owner):
+                    raise RegistryError(
+                        f"team {team} already claimed by {conflict_key} "
+                        f"{conflict_owner.get('agent')}/{conflict_owner.get('session_id')}"
+                    )
+                _unlink_owner_via_chain(root_anchor, conflict_key)
+
             new_owner = _build_owner(
                 agent, session, worktree_real, ttl_hours, now,
                 profile=profile, gateway_session_key=gateway_session_key,
                 owner_pid=resolved_pid, owner_start_time=resolved_start,
+                team=team, allowed_teams=allowed_teams, freshness=freshness,
             )
             _write_owner_via_chain(root_anchor, key, new_owner)
             _append_event_via_chain(root_anchor, key, "lane_claimed")
@@ -981,6 +1138,279 @@ def _validate_profile_domain(key, profile, domain_prefixes):
     allowed = {part.strip() for part in domain_prefixes.split(",") if part.strip()}
     if allowed and _lane_prefix(key) not in allowed:
         raise RegistryError(f"profile {profile} cannot own lane {key}")
+
+
+def _bounded_json_file(path, label, maximum):
+    try:
+        fd = _open_regular_file_via_chain(path, label=label)
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            if os.fstat(f.fileno()).st_size > maximum:
+                raise RegistryError(f"{label} is too large")
+            raw = f.read(maximum + 1)
+    except RegistryError as exc:
+        if label in str(exc):
+            raise
+        raise RegistryError(f"failed to read {label}: {exc}") from exc
+    except OSError as exc:
+        raise RegistryError(f"failed to read {label}: {exc}") from exc
+    if len(raw.encode("utf-8")) > maximum:
+        raise RegistryError(f"{label} is too large")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RegistryError(f"{label} is not valid JSON: {exc}") from exc
+
+
+def load_team_config(path):
+    data = _bounded_json_file(path, "team config", MAX_TEAM_CONFIG_BYTES)
+    if not isinstance(data, dict) or set(data) != {"freshness", "teams"}:
+        raise RegistryError("team config contains unknown or missing fields")
+    freshness, teams = data["freshness"], data["teams"]
+    if not isinstance(freshness, dict) or set(freshness) != {"canonical_branch", "max_age_seconds"}:
+        raise RegistryError("freshness config contains unknown or missing fields")
+    branch, maximum_age = freshness["canonical_branch"], freshness["max_age_seconds"]
+    if not isinstance(branch, str) or not branch:
+        raise RegistryError("freshness.canonical_branch must be a non-empty string")
+    if (isinstance(maximum_age, bool) or not isinstance(maximum_age, int)
+            or not 0 < maximum_age <= MAX_FRESHNESS_MAX_AGE_SECONDS):
+        raise RegistryError(
+            "freshness.max_age_seconds must be a whole number between 1 and "
+            f"{MAX_FRESHNESS_MAX_AGE_SECONDS}"
+        )
+    if not isinstance(teams, dict) or set(teams) != {"HER", "SCA"}:
+        raise RegistryError("dual-team config must define exactly HER and SCA teams")
+    normalized = {"freshness": {"canonical_branch": branch, "max_age_seconds": maximum_age}, "teams": {}}
+    profiles = set()
+    for team, spec in teams.items():
+        if not isinstance(spec, dict) or set(spec) != {"profiles", "allowed_teams", "job_id", "gateway_started_at"}:
+            raise RegistryError(f"team {team} config contains unknown or missing fields")
+        mapped_profiles, allowed_teams = spec["profiles"], spec["allowed_teams"]
+        if (not isinstance(mapped_profiles, list) or len(mapped_profiles) != 1
+                or not isinstance(mapped_profiles[0], str) or not mapped_profiles[0]):
+            raise RegistryError(f"team {team} must map exactly one profile")
+        if mapped_profiles[0] in profiles:
+            raise RegistryError("each team profile must have one controller")
+        profiles.add(mapped_profiles[0])
+        if (not isinstance(allowed_teams, list) or not allowed_teams
+                or any(item not in {"HER", "SCA"} for item in allowed_teams)
+                or len(set(allowed_teams)) != len(allowed_teams)):
+            raise RegistryError(f"team {team} allowed_teams must be a non-empty unique HER/SCA list")
+        if not isinstance(spec["job_id"], str) or not spec["job_id"]:
+            raise RegistryError(f"team {team} job_id must be a non-empty string")
+        if _parse_handoff_timestamp(spec["gateway_started_at"]) is None:
+            raise RegistryError(f"team {team} gateway_started_at must be an ISO8601 UTC timestamp")
+        normalized["teams"][team] = {
+            "profiles": mapped_profiles,
+            "allowed_teams": allowed_teams,
+            "job_id": spec["job_id"],
+            "gateway_started_at": spec["gateway_started_at"],
+        }
+    return normalized
+
+
+def _resolve_team_for_profile(config, profile):
+    matches = [(team, spec) for team, spec in config["teams"].items() if profile in spec["profiles"]]
+    if not matches:
+        raise RegistryError(f"profile {profile} is not mapped to any team")
+    if len(matches) != 1:
+        raise RegistryError(f"profile {profile} maps to multiple teams")
+    return matches[0]
+
+
+def _load_freshness_evidence(path):
+    evidence = _bounded_json_file(path, "freshness evidence", MAX_FRESHNESS_EVIDENCE_BYTES)
+    if not isinstance(evidence, dict):
+        raise RegistryError("freshness evidence must be a JSON object")
+    return evidence
+
+
+def _validate_freshness_evidence(evidence, key, policy):
+    if evidence.get("verdict") == "needs-rebase" and "current_main_red" not in evidence:
+        raise RegistryError("needs-rebase freshness requires current-main RED evidence")
+    allowed_fields = set(_FRESHNESS_EVIDENCE_FIELDS)
+    if evidence.get("verdict") == "needs-rebase":
+        allowed_fields.add("current_main_red")
+    if set(evidence) != allowed_fields:
+        raise RegistryError("freshness evidence contains unknown or missing fields")
+    if evidence["issue"] != key:
+        raise RegistryError("freshness evidence issue must match lane key")
+    raw_checked_at = evidence["checked_at"]
+    if isinstance(raw_checked_at, float) and not math.isfinite(raw_checked_at):
+        raise RegistryError("freshness checked_at must be finite")
+    checked_at = _parse_handoff_timestamp(raw_checked_at)
+    if checked_at is None or checked_at <= 0:
+        raise RegistryError("freshness checked_at must be after epoch")
+    if (checked_at > time.time() + 60
+            or time.time() - checked_at > policy["max_age_seconds"]):
+        raise RegistryError("freshness evidence is stale")
+    canonical_branch = evidence["canonical_branch"]
+    if not isinstance(canonical_branch, str):
+        raise RegistryError("freshness evidence canonical branch must be a string")
+    _validate_metadata_field(canonical_branch, "freshness canonical branch")
+    if canonical_branch != policy["canonical_branch"]:
+        raise RegistryError("freshness evidence canonical branch does not match controller config")
+    canonical_head = evidence["canonical_head"]
+    if not isinstance(canonical_head, str) or not _SHA40_RE.fullmatch(canonical_head):
+        raise RegistryError("freshness evidence canonical_head must be a lowercase 40-character SHA")
+    sources = evidence["sources"]
+    if not isinstance(sources, dict) or set(sources) != _FRESHNESS_SOURCE_FIELDS:
+        raise RegistryError("freshness evidence must record checked sources")
+    linear_issues = sources["newer_linear_issues"]
+    prs_commits = sources["newer_prs_commits"]
+    if not isinstance(linear_issues, list) or not isinstance(prs_commits, list):
+        raise RegistryError("freshness evidence sources must be lists")
+    if len(linear_issues) > MAX_FRESHNESS_SOURCE_ITEMS or len(prs_commits) > MAX_FRESHNESS_SOURCE_ITEMS:
+        raise RegistryError("freshness sources have too many items")
+    if (any(not isinstance(item, str) or not _TICKET_KEY_RE.fullmatch(item) for item in linear_issues)
+            or any(not isinstance(item, str) or not _SHA40_RE.fullmatch(item) for item in prs_commits)):
+        raise RegistryError("freshness sources contain an invalid item")
+    behavior = sources["current_main_behavior"]
+    if not isinstance(behavior, dict) or set(behavior) != _FRESHNESS_BEHAVIOR_FIELDS:
+        raise RegistryError("freshness evidence current-main behavior contains unknown or missing fields")
+    if behavior["checked"] is not True or not isinstance(behavior["summary"], str) or not behavior["summary"]:
+        raise RegistryError("freshness evidence current-main behavior must be checked")
+    _validate_metadata_field(behavior["summary"], "freshness current-main summary")
+    verdict = evidence["verdict"]
+    if verdict not in _FRESHNESS_VERDICTS:
+        raise RegistryError("freshness verdict must be current, superseded, duplicate, or needs-rebase")
+    if verdict in {"superseded", "duplicate"}:
+        raise RegistryError(f"freshness verdict {verdict} blocks build admission")
+    normalized = {
+        "issue": key,
+        "checked_at": checked_at,
+        "canonical_branch": canonical_branch,
+        "canonical_head": canonical_head,
+        "sources": {
+            "newer_linear_issues": list(linear_issues),
+            "newer_prs_commits": list(prs_commits),
+            "current_main_behavior": {"checked": True, "summary": behavior["summary"]},
+        },
+        "verdict": verdict,
+    }
+    if verdict == "needs-rebase":
+        red = evidence["current_main_red"]
+        if not isinstance(red, dict) or set(red) != _FRESHNESS_RED_FIELDS:
+            raise RegistryError("needs-rebase freshness current-main RED contains unknown or missing fields")
+        if red["reproduced"] is not True or not isinstance(red["evidence"], str) or not red["evidence"]:
+            raise RegistryError("needs-rebase freshness requires current-main RED evidence")
+        _validate_metadata_field(red["evidence"], "freshness current-main RED evidence")
+        normalized["current_main_red"] = {"reproduced": True, "evidence": red["evidence"]}
+    return normalized
+
+
+def cmd_team_admit(root, key, team_config_path, profile, agent, session, worktree,
+                   ttl_hours=DEFAULT_TTL_HOURS, gateway_session_key=None,
+                   owner_pid=None, owner_start_time=None, reclaim=False,
+                   freshness_evidence_path=None):
+    validate_key(key)
+    team, spec = _resolve_team_for_profile(load_team_config(team_config_path), profile)
+    if _lane_prefix(key) not in spec["allowed_teams"]:
+        raise RegistryError(f"profile {profile} cannot own lane {key}")
+    if not freshness_evidence_path:
+        raise RegistryError("--freshness-evidence is required for team admission")
+    config = load_team_config(team_config_path)
+    freshness = _validate_freshness_evidence(_load_freshness_evidence(freshness_evidence_path), key, config["freshness"])
+    return _claim_under_gate(root, key, agent, session, worktree, reclaim, ttl_hours,
+                             profile=profile, gateway_session_key=gateway_session_key,
+                             owner_pid=owner_pid, owner_start_time=owner_start_time,
+                             team=team, allowed_teams=spec["allowed_teams"], freshness=freshness)
+
+
+def _load_cron_jobs_by_id():
+    try:
+        from cron.jobs import list_jobs
+        return {job.get("id"): job for job in list_jobs(include_disabled=True)}
+    except Exception:
+        return {}
+
+
+def _load_latest_cron_executions(job_ids):
+    try:
+        from cron.executions import latest_executions
+        return latest_executions(list(job_ids))
+    except Exception:
+        return {}
+
+
+def _load_latest_builtin_cron_executions(job_ids):
+    try:
+        from cron.executions import latest_builtin_executions
+        return latest_builtin_executions(list(job_ids))
+    except Exception:
+        return {}
+
+
+def _execution_after_gateway_start(record, gateway_started_at):
+    gateway_started = _parse_handoff_timestamp(gateway_started_at)
+    if not record or gateway_started is None:
+        return None
+    for field in ("finished_at", "started_at", "claimed_at"):
+        timestamp = _parse_handoff_timestamp(record.get(field))
+        if timestamp is not None:
+            return record if timestamp >= gateway_started else None
+    return None
+
+
+_STATUS_EXECUTION_FIELDS = (
+    "id", "job_id", "source", "status", "claimed_at", "started_at", "finished_at",
+)
+
+
+def _project_execution_status(record):
+    """Expose bounded execution state without replaying untrusted cron errors."""
+    if not isinstance(record, dict):
+        return None
+    projected = {}
+    for field in _STATUS_EXECUTION_FIELDS:
+        value = record.get(field)
+        projected[field] = redact_credential_text(value) if isinstance(value, str) else value
+    # A status consumer only needs to know that the attempt failed. The durable
+    # error is intentionally not copied, even after persistence-time redaction.
+    projected["error"] = "redacted" if record.get("error") is not None else None
+    return projected
+
+
+def build_team_status(root, config):
+    _safe_subdir(root, "locks")
+    jobs = _load_cron_jobs_by_id()
+    ids = [spec["job_id"] for spec in config["teams"].values()]
+    latest, builtin = _load_latest_cron_executions(ids), _load_latest_builtin_cron_executions(ids)
+    for job_id, record in latest.items():
+        if record.get("source") == "builtin":
+            builtin.setdefault(job_id, record)
+    teams = {}
+    for team, spec in config["teams"].items():
+        claim = _find_team_claim(root, team)
+        owner = claim[1] if claim else None
+        job_id, job = spec["job_id"], jobs.get(spec["job_id"])
+        teams[team] = {
+            "team": team,
+            "profile": owner.get("profile") if owner else spec["profiles"][0],
+            "lane": claim[0] if claim else None,
+            "worktree": owner.get("worktree") if owner else None,
+            "runtime_status_source": "registry" if owner else "unclaimed",
+            "job_id": job_id,
+            "next_run_at": job.get("next_run_at") if job else None,
+            "latest_execution": _project_execution_status(latest.get(job_id)),
+            "last_builtin_execution": _project_execution_status(builtin.get(job_id)),
+            "last_builtin_tick_after_gateway_start": _project_execution_status(
+                _execution_after_gateway_start(builtin.get(job_id), spec["gateway_started_at"]),
+            ),
+            "worker": {"agent": owner.get("agent"), "pid": owner.get("pid"), "process_state": determine_process_state(owner)} if owner else None,
+            "heartbeat": owner.get("heartbeat_at") if owner else None,
+            "gate": {"freshness": owner.get("freshness") if owner else None},
+        }
+    return {"teams": teams}
+
+
+def cmd_team_status(root, team_config_path, as_json=False):
+    payload = build_team_status(root, load_team_config(team_config_path))
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        for team, status in payload["teams"].items():
+            print(f"{team}: {status['lane'] or '-'} profile={status['profile']}")
+    return 0
 
 
 def cmd_admit(root, key, mode, hard, agent, session, worktree, ttl_hours,
@@ -1244,9 +1674,10 @@ def _load_context_map(path):
     try:
         if path.is_symlink() or not path.exists():
             return {}
-        with open(path, "r", encoding="utf-8") as f:
+        fd = _open_regular_file_via_chain(path, label="context map")
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, RegistryError, json.JSONDecodeError):
         return {}
     if not isinstance(data, dict):
         return {}
@@ -1287,13 +1718,10 @@ def _read_vault_file_safely(vault_root, relpath):
     except (OSError, ValueError, RegistryError):
         return None
     try:
-        fd = _open_secure(resolved, os.O_RDONLY)
-    except (OSError, RegistryError):
-        return None
-    try:
+        fd = _open_regular_file_via_chain(resolved, label="vault context file")
         with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
-    except OSError:
+    except (OSError, RegistryError):
         return None
 
 
@@ -1320,8 +1748,10 @@ def _linear_cache_banner(root, key):
     try:
         if cache_path.is_symlink() or not cache_path.exists():
             return f"> Linear cache MISSING for {key}."
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        fd = _open_regular_file_via_chain(cache_path, label="linear cache")
+        with os.fdopen(fd, "r", encoding="utf-8") as source:
+            data = json.load(source)
+    except (OSError, RegistryError, json.JSONDecodeError):
         return f"> Linear cache MISSING or unreadable for {key}."
 
     cached_at = data.get("cached_at")
@@ -1648,12 +2078,7 @@ def _validate_summary_value(label, value, depth=0, budget=None):
 
 def _load_summary(summary_path):
     path = Path(summary_path)
-    if path.is_symlink():
-        raise RegistryError(f"summary path must not be a symlink: {path}")
-    if not path.exists() or not path.is_file():
-        raise RegistryError(f"summary path is not a regular file: {path}")
-
-    fd = _open_secure(path, os.O_RDONLY)
+    fd = _open_regular_file_via_chain(path, label="summary path")
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         if os.fstat(f.fileno()).st_size > MAX_SUMMARY_BYTES:
             raise RegistryError("summary JSON is too large")
@@ -1818,12 +2243,14 @@ def _find_claim_for_worktree(root, repo_real):
                 raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
             try:
                 try:
-                    owner_fd = os.open(
-                        "owner.json", os.O_RDONLY | _NOFOLLOW_FLAG | _NONBLOCK_FLAG, dir_fd=key_fd,
+                    owner_fd = _open_regular_file_at(
+                        key_fd,
+                        "owner.json",
+                        label=f"owner record for {key!r}",
                     )
                 except FileNotFoundError:
                     continue
-                except OSError as exc:
+                except (OSError, RegistryError) as exc:
                     raise RegistryError(f"registry lock scan failed for {key!r}: {exc}") from exc
                 try:
                     _require_regular_fd(owner_fd, f"owner record for {key!r}")
@@ -1855,10 +2282,7 @@ def _load_handoff(handoff_path, handoffs_dir):
         resolved.relative_to(Path(handoffs_dir).resolve(strict=True))
     except (OSError, ValueError) as exc:
         raise RegistryError("handoff path must stay inside registry/handoffs") from exc
-    if not resolved.is_file():
-        raise RegistryError(f"handoff path is not a regular file: {resolved}")
-
-    fd = _open_secure(resolved, os.O_RDONLY)
+    fd = _open_regular_file_via_chain(resolved, label="handoff path")
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         if os.fstat(f.fileno()).st_size > MAX_HANDOFF_BYTES:
             raise RegistryError("handoff JSON is too large")
@@ -2160,6 +2584,24 @@ def _build_parser():
     p_admit.add_argument("--owner-pid", type=int)
     p_admit.add_argument("--owner-start-time")
 
+    p_team_admit = sub.add_parser("team-admit")
+    p_team_admit.add_argument("key")
+    p_team_admit.add_argument("--team-config", required=True)
+    p_team_admit.add_argument("--profile", required=True)
+    p_team_admit.add_argument("--agent", required=True)
+    p_team_admit.add_argument("--session", required=True)
+    p_team_admit.add_argument("--worktree", required=True)
+    p_team_admit.add_argument("--ttl-hours", type=float, default=DEFAULT_TTL_HOURS)
+    p_team_admit.add_argument("--gateway-session-key")
+    p_team_admit.add_argument("--owner-pid", type=int)
+    p_team_admit.add_argument("--owner-start-time")
+    p_team_admit.add_argument("--reclaim", action="store_true")
+    p_team_admit.add_argument("--freshness-evidence")
+
+    p_team_status = sub.add_parser("team-status")
+    p_team_status.add_argument("--team-config", required=True)
+    p_team_status.add_argument("--json", action="store_true")
+
     p_guard = sub.add_parser("guard")
     p_guard.add_argument("--repo", required=True)
     p_guard.add_argument("--agent", required=True)
@@ -2223,6 +2665,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
+        # Team routing is an input-policy gate.  Validate it before creating a
+        # registry root so rejected cross-team admits leave no observable or
+        # mutable registry state behind.
+        if args.command == "team-admit":
+            validate_key(args.key)
+            team, spec = _resolve_team_for_profile(
+                load_team_config(args.team_config), args.profile,
+            )
+            if _lane_prefix(args.key) not in spec["allowed_teams"]:
+                raise RegistryError(f"profile {args.profile} cannot own lane {args.key}")
         root = _safe_registry_root(args.registry)
         if args.command == "preflight":
             return cmd_preflight(root, args.key, args.json)
@@ -2242,6 +2694,16 @@ def main(argv=None):
                 domain_prefixes=args.domain_prefixes,
                 owner_pid=args.owner_pid, owner_start_time=args.owner_start_time,
             )
+        if args.command == "team-admit":
+            return cmd_team_admit(
+                root, args.key, args.team_config, args.profile, args.agent, args.session,
+                args.worktree, ttl_hours=args.ttl_hours,
+                gateway_session_key=args.gateway_session_key, owner_pid=args.owner_pid,
+                owner_start_time=args.owner_start_time, reclaim=args.reclaim,
+                freshness_evidence_path=args.freshness_evidence,
+            )
+        if args.command == "team-status":
+            return cmd_team_status(root, args.team_config, as_json=args.json)
         if args.command == "guard":
             return cmd_guard(
                 root, args.repo, args.agent, args.session,

@@ -19,9 +19,11 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -50,6 +52,29 @@ def load_factory_lane():
     return module
 
 
+_OPATH_INDEPENDENT_TESTS = frozenset({
+    "test_secure_leaf_open_rejects_non_regular_files_before_read_open",
+    "test_secure_leaf_open_pins_a_regular_leaf_before_read_open",
+    "test_secure_leaf_open_fails_closed_when_opath_is_unavailable",
+    "test_secure_leaf_open_fails_closed_without_opath_before_readable_open",
+    "test_no_opath_rejects_fifo_from_an_untrusted_parent_before_content_open",
+    "test_secure_event_read_rejects_non_regular_leaf_before_read_open",
+    "test_runtime_owner_scan_rejects_device_leaf_before_read_open",
+    "test_secure_leaf_open_rejects_reopened_inode_mismatch",
+    "test_secure_leaf_open_reads_an_ordinary_file",
+})
+
+
+@pytest.fixture(autouse=True)
+def _require_safe_leaf_pinning_for_operational_factory_tests(request):
+    """Darwin intentionally fails closed: operational coverage runs where O_PATH exists."""
+    if (
+        not getattr(os, "O_PATH", 0)
+        and request.node.originalname not in _OPATH_INDEPENDENT_TESTS
+    ):
+        pytest.skip("requires O_PATH safe leaf pinning")
+
+
 def read_owner(registry: Path, key: str):
     return json.loads((registry / "locks" / key / "owner.json").read_text())
 
@@ -59,6 +84,244 @@ def owner_worktrees(registry: Path):
         json.loads(p.read_text()).get("worktree")
         for p in (registry / "locks").glob("*/owner.json")
     ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "label"),
+    [
+        (stat.S_IFIFO, "fifo"),
+        (stat.S_IFSOCK, "socket"),
+        (stat.S_IFLNK, "symlink"),
+        (stat.S_IFCHR, "char-device"),
+        (stat.S_IFBLK, "block-device"),
+    ],
+)
+def test_secure_leaf_open_rejects_non_regular_files_before_read_open(monkeypatch, mode, label):
+    """Device-like leafs must be rejected before the readable reopen itself.
+
+    The AppSec blocker for HER-96 is that a plain ``os.open(..., O_RDONLY)`` can
+    already interact with a FIFO/socket/device before the post-open ``fstat``
+    notices the wrong type.  A harmless O_PATH pin may inspect the leaf, but a
+    readable fd must never be reopened for FIFO/socket/device input.
+    """
+    module = load_factory_lane()
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0x200000, raising=False)
+    opens = []
+
+    def fake_open(name, flags, *, dir_fd=None):
+        opens.append((name, flags, dir_fd))
+        assert name == "owner.json", f"readable open reached for {label}"
+        assert flags & module._OPATH_FLAG
+        return 41
+
+    monkeypatch.setattr(module.os, "open", fake_open)
+    monkeypatch.setattr(module.os, "fstat", lambda _fd: types.SimpleNamespace(st_mode=mode))
+    monkeypatch.setattr(module.os, "close", lambda _fd: None)
+
+    with pytest.raises(module.RegistryError, match="regular non-symlink file"):
+        module._open_regular_file_at(123, "owner.json", label="owner.json")
+    assert len(opens) == 1
+
+
+def test_secure_leaf_open_pins_a_regular_leaf_before_read_open(monkeypatch):
+    """The content fd must be reopened from a pinned O_PATH descriptor.
+
+    A stat-before-O_RDONLY precheck still races: a regular leaf may become a
+    character or block device before ``open``.  The first operation must only
+    pin the leaf, and the readable fd must come from its proc-fd handle after
+    both descriptors are verified as the same regular inode.
+    """
+    module = load_factory_lane()
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0x200000, raising=False)
+    monkeypatch.setattr(module, "_PROC_SELF_FD", "/proc/self/fd", raising=False)
+    opens = []
+    stats = iter(
+        [
+            types.SimpleNamespace(st_mode=stat.S_IFREG, st_dev=7, st_ino=9, st_size=3),
+            types.SimpleNamespace(st_mode=stat.S_IFREG, st_dev=7, st_ino=9, st_size=3),
+        ]
+    )
+
+    def fake_open(name, flags, *, dir_fd=None):
+        opens.append((name, flags, dir_fd))
+        if name == "owner.json":
+            assert flags & module._OPATH_FLAG
+            assert flags & module._NOFOLLOW_FLAG
+            return 41
+        assert name == "/proc/self/fd/41"
+        assert dir_fd is None
+        return 42
+
+    monkeypatch.setattr(module.os, "open", fake_open)
+    monkeypatch.setattr(module.os, "fstat", lambda _fd: next(stats))
+    monkeypatch.setattr(module.os, "close", lambda _fd: None)
+
+    assert module._open_regular_file_at(123, "owner.json", label="owner.json") == 42
+    assert [call[0] for call in opens] == ["owner.json", "/proc/self/fd/41"]
+
+
+def test_secure_leaf_open_fails_closed_when_opath_is_unavailable(monkeypatch):
+    """Without O_PATH, an attacker-writable parent must fail before leaf open."""
+    module = load_factory_lane()
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0, raising=False)
+    monkeypatch.setattr(module.os, "getuid", lambda: 501)
+    monkeypatch.setattr(
+        module.os,
+        "fstat",
+        lambda _fd: types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_uid=999),
+    )
+
+    def fail_read_open(*_args, **_kwargs):
+        raise AssertionError("unsafe readable open reached for an untrusted parent")
+
+    monkeypatch.setattr(module.os, "open", fail_read_open)
+
+    with pytest.raises(module.RegistryError, match="trusted directory"):
+        module._open_regular_file_at(123, "owner.json", label="owner.json")
+
+
+def test_secure_leaf_open_fails_closed_without_opath_before_readable_open(monkeypatch):
+    """An untrusted macOS parent must fail before it reaches a readable open."""
+    module = load_factory_lane()
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0, raising=False)
+    monkeypatch.setattr(
+        module.os,
+        "fstat",
+        lambda _fd: types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o777),
+    )
+
+    def fail_any_open(*_args, **_kwargs):
+        raise AssertionError("unsafe readable open reached without O_PATH pinning")
+
+    monkeypatch.setattr(module.os, "open", fail_any_open)
+
+    with pytest.raises(module.RegistryError, match="trusted directory"):
+        module._open_regular_file_at(123, "owner.json", label="owner.json")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named pipes are unavailable")
+def test_no_opath_rejects_fifo_from_an_untrusted_parent_before_content_open(tmp_path, monkeypatch):
+    """A no-O_PATH fallback must not content-open an attacker-writable FIFO."""
+    module = load_factory_lane()
+    fifo = tmp_path / "freshness.fifo"
+    os.mkfifo(fifo)
+    tmp_path.chmod(0o777)
+    parent_fd = os.open(str(tmp_path), os.O_RDONLY | module._ODIRECTORY_FLAG)
+    native_open = module.os.open
+
+    def reject_leaf_open(name, flags, *args, **kwargs):
+        if name == fifo.name:
+            raise AssertionError("unsafe content-capable FIFO open reached")
+        return native_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0, raising=False)
+    monkeypatch.setattr(module.os, "open", reject_leaf_open)
+    try:
+        with pytest.raises(module.RegistryError, match="trusted directory"):
+            module._open_regular_file_at(parent_fd, fifo.name, label="freshness evidence")
+    finally:
+        os.close(parent_fd)
+
+
+def test_secure_event_read_rejects_non_regular_leaf_before_read_open(monkeypatch):
+    """Registry journals must use the same pinned-leaf read boundary as owners.
+
+    Reading a journal directly with ``O_RDONLY`` leaves the exact device-open
+    race intact even after owner.json moved to the hardened helper.  The test is
+    entirely mocked: no real device is opened and the assertion fails as soon
+    as a content-capable open is attempted.
+    """
+    module = load_factory_lane()
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0x200000, raising=False)
+    opens = []
+
+    def fake_open(name, flags, *, dir_fd=None):
+        opens.append((name, flags, dir_fd))
+        assert name == "HER-96.jsonl"
+        assert flags & module._OPATH_FLAG, "unsafe journal readable open reached"
+        return 41
+
+    monkeypatch.setattr(module.os, "open", fake_open)
+    monkeypatch.setattr(
+        module.os,
+        "fstat",
+        lambda _fd: types.SimpleNamespace(st_mode=stat.S_IFCHR),
+    )
+    monkeypatch.setattr(module.os, "close", lambda _fd: None)
+
+    with pytest.raises(module.RegistryError, match="regular non-symlink file"):
+        module._read_all_events_at(123, "HER-96.jsonl", "journal HER-96")
+    assert len(opens) == 1
+
+
+def test_runtime_owner_scan_rejects_device_leaf_before_read_open(tmp_path, monkeypatch):
+    """The runtime admission scan cannot bypass the pinned-leaf boundary."""
+    module = load_factory_lane()
+    locks = tmp_path / "registry" / "locks" / "HER-96"
+    locks.mkdir(parents=True)
+    (locks / "owner.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0x200000, raising=False)
+    native_open, native_fstat, native_close = module.os.open, module.os.fstat, module.os.close
+
+    def fake_open(name, flags, *args, **kwargs):
+        if name == "owner.json":
+            assert flags & module._OPATH_FLAG, "unsafe owner readable open reached"
+            return 41
+        return native_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", fake_open)
+    monkeypatch.setattr(
+        module.os,
+        "fstat",
+        lambda fd: types.SimpleNamespace(st_mode=stat.S_IFCHR) if fd == 41 else native_fstat(fd),
+    )
+    monkeypatch.setattr(module.os, "close", lambda fd: None if fd == 41 else native_close(fd))
+
+    with pytest.raises(module.RegistryError, match="regular non-symlink file"):
+        module._find_claim_for_worktree(tmp_path / "registry", str(tmp_path / "repo"))
+
+
+def test_secure_leaf_open_rejects_reopened_inode_mismatch(monkeypatch):
+    """A pinned regular leaf may not be replaced between identity and content fd."""
+    module = load_factory_lane()
+    monkeypatch.setattr(module, "_OPATH_FLAG", 0x200000, raising=False)
+    monkeypatch.setattr(module, "_PROC_SELF_FD", "/proc/self/fd", raising=False)
+    stats = iter(
+        [
+            types.SimpleNamespace(st_mode=stat.S_IFREG, st_dev=7, st_ino=9),
+            types.SimpleNamespace(st_mode=stat.S_IFREG, st_dev=7, st_ino=10),
+        ]
+    )
+    closed = []
+
+    def fake_open(name, flags, *, dir_fd=None):
+        if name == "owner.json":
+            assert flags & module._OPATH_FLAG
+            return 41
+        assert name == "/proc/self/fd/41"
+        return 42
+
+    monkeypatch.setattr(module.os, "open", fake_open)
+    monkeypatch.setattr(module.os, "fstat", lambda _fd: next(stats))
+    monkeypatch.setattr(module.os, "close", closed.append)
+
+    with pytest.raises(module.RegistryError, match="changed during secure open"):
+        module._open_regular_file_at(123, "owner.json", label="owner.json")
+    assert closed == [42, 41]
+
+
+def test_secure_leaf_open_reads_an_ordinary_file(tmp_path):
+    """An ordinary private regular file remains readable on the local platform."""
+    module = load_factory_lane()
+    owner = tmp_path / "owner.json"
+    owner.write_text('{"lane": "HER-96"}', encoding="utf-8")
+    parent_fd = os.open(str(tmp_path), os.O_RDONLY | module._ODIRECTORY_FLAG)
+    try:
+        fd = module._open_regular_file_at(parent_fd, "owner.json", label="owner.json")
+        with os.fdopen(fd, "r", encoding="utf-8") as source:
+            assert json.load(source) == {"lane": "HER-96"}
+    finally:
+        os.close(parent_fd)
 
 
 # ---------------------------------------------------------------------------

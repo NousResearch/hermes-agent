@@ -39,6 +39,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from cron.redaction import redact_credential_text
 from utils import atomic_replace
 
 try:
@@ -2234,7 +2235,7 @@ def save_job_output(job_id: str, output: str):
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(output)
+            f.write(redact_credential_text(output))
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, output_file)

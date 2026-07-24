@@ -75,6 +75,23 @@ def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
     assert executions.EXECUTIONS_FILE.read_bytes() == b"not a sqlite database"
 
 
+def test_execution_ledger_uses_shared_wal_protocol_fallback(monkeypatch, tmp_path):
+    """NFS/SMB locking-protocol failures must retain hermes_state's DELETE fallback."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    calls = []
+
+    monkeypatch.setattr(
+        "hermes_state.apply_wal_with_fallback",
+        lambda conn, *, db_label: calls.append((conn, db_label)) or "delete",
+    )
+
+    conn = executions._connect()
+    try:
+        assert calls == [(conn, "cron/executions.db")]
+    finally:
+        conn.close()
+
+
 def test_execution_history_is_paginated(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     ids = []
@@ -121,6 +138,35 @@ def test_failed_execution_keeps_error(monkeypatch, tmp_path):
     assert failed["error"] == "provider exploded"
 
 
+def test_failed_execution_redacts_credential_shaped_error_before_persistence(monkeypatch, tmp_path):
+    """The durable ledger must not retain credentials embedded in provider failures."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    sentinel = "Authorization: Bearer HER96_EXECUTION_SENTINEL_DO_NOT_PERSIST"
+    record = executions.create_execution("job-secret", source="builtin")
+
+    failed = executions.finish_execution(record["id"], success=False, error=sentinel)
+
+    assert failed["error"] == "[redacted credential]"
+    assert sentinel not in executions.latest_execution("job-secret")["error"]
+
+
+@__import__("pytest").mark.parametrize(
+    "credential",
+    [
+        "AIzaSy" + "HER96SYNTHETIC" * 2,
+        "hf_" + "HER96SYNTHETIC" * 2,
+        "xoxb-" + "HER96SYNTHETIC" * 2,
+        "openai-" + "HER96SYNTHETIC" * 2,
+    ],
+)
+def test_credential_detector_recognizes_common_provider_prefixes(credential):
+    """Provider-shaped credentials are redacted before any cron persistence."""
+    from cron.redaction import contains_credential, redact_credential_text
+
+    assert contains_credential(credential)
+    assert redact_credential_text(credential) == "[redacted credential]"
+
+
 def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("still-live", source="builtin")
@@ -141,6 +187,37 @@ def test_recovery_does_not_mark_other_live_owner_unknown(monkeypatch, tmp_path):
 
     assert executions.recover_interrupted_executions() == 0
     assert executions.latest_execution("other-live")["status"] == "claimed"
+
+
+def test_recovery_defers_live_owner_without_recorded_start_time(monkeypatch, tmp_path):
+    """A live foreign PID with missing identity is ambiguous, never dead proof."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("missing-start", source="builtin")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            "UPDATE executions SET process_id=?, pid=?, process_started_at=NULL WHERE id=?",
+            ("foreign-import", 4242, record["id"]),
+        )
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.latest_execution("missing-start")["status"] == "claimed"
+
+
+def test_recovery_defers_live_owner_when_start_time_probe_is_unavailable(monkeypatch, tmp_path):
+    """A failed current-identity probe cannot prove a live foreign PID was reused."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("probe-unavailable", source="builtin")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute(
+            "UPDATE executions SET process_id=?, pid=?, process_started_at=? WHERE id=?",
+            ("foreign-import", 4242, 123, record["id"]),
+        )
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(executions, "_process_start_time", lambda _pid: None)
+
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.latest_execution("probe-unavailable")["status"] == "claimed"
 
 
 def test_recovery_rejects_recycled_pid(monkeypatch, tmp_path):
@@ -319,3 +396,34 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_latest_builtin_executions_ignore_direct_manual_runs(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    manual = executions.create_execution("team-loop", source="direct")
+    executions.finish_execution(manual["id"], success=True)
+    builtin = executions.create_execution("team-loop", source="builtin")
+    executions.finish_execution(builtin["id"], success=True)
+    newer_manual = executions.create_execution("team-loop", source="direct")
+    executions.finish_execution(newer_manual["id"], success=True)
+
+    latest = executions.latest_builtin_executions(["team-loop"])
+
+    assert latest["team-loop"]["id"] == builtin["id"]
+    assert latest["team-loop"]["source"] == "builtin"
+
+
+def test_tick_recovers_dead_execution_owner_before_builtin_due_jobs(monkeypatch, tmp_path):
+    import cron.scheduler as scheduler
+
+    events = []
+    monkeypatch.setattr(
+        scheduler,
+        "recover_interrupted_executions",
+        lambda: events.append("recover") or 1,
+        raising=False,
+    )
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: events.append("due") or [])
+
+    assert scheduler.tick(verbose=False) == 0
+    assert events[:2] == ["recover", "due"]

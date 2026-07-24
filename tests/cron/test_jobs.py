@@ -1725,6 +1725,16 @@ class TestSaveJobOutput:
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
+    def test_redacts_credential_shaped_output_before_persistence(self, tmp_cron_dir):
+        """Agent output must not bypass the shared durable redaction boundary."""
+        credential = "hf_" + "HER96SYNTHETIC" * 2
+
+        output_file = save_job_output("test123", f"Provider response: {credential}")
+
+        persisted = output_file.read_text()
+        assert credential not in persisted
+        assert "[redacted credential]" in persisted
+
     @pytest.mark.parametrize("bad_job_id", ["../escape", "nested/escape", ".", "..", ""])
     def test_rejects_unsafe_job_id(self, tmp_cron_dir, bad_job_id):
         """Path-escape attempts must fail closed and never create dirs."""

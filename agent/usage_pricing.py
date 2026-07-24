@@ -867,7 +867,109 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.fireworks.ai/serverless/pricing",
         pricing_version="fireworks-pricing-2026-07",
     ),
+    # ── xAI Grok ─────────────────────────────────────────────────────────
+    # Source: https://docs.x.ai/developers/models and https://x.ai/api
+    # (as of 2026-07-22). Cache rates are not published separately; treat
+    # cache_read at 25% of input (common industry default) so sessions that
+    # report cached prompt tokens still estimate instead of falling to n/a.
+    (
+        "xai",
+        "grok-4.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("6.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("2.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.x.ai/developers/models",
+        pricing_version="xai-grok-4.5-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.75"),
+        cache_write_cost_per_million=Decimal("3.00"),
+        source="official_docs_snapshot",
+        source_url="https://docs.x.ai/developers/models",
+        pricing_version="xai-grok-4-2026-07",
+    ),
+    (
+        "xai",
+        "grok-4.1-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("0.50"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        cache_write_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://docs.x.ai/developers/models",
+        pricing_version="xai-grok-4.1-fast-2026-07",
+    ),
+    # ── Moonshot / Kimi Coding ───────────────────────────────────────────
+    # Source: https://platform.kimi.ai/docs/pricing/chat-k3 (as of 2026-07-22).
+    # Coding Plan / CN endpoints share the same published list rates for
+    # status-bar estimates; subscription-included plans may still over-estimate.
+    (
+        "kimi",
+        "kimi-k3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://platform.kimi.ai/docs/pricing/chat-k3",
+        pricing_version="kimi-k3-2026-07",
+    ),
+    # ── Z.AI / GLM ───────────────────────────────────────────────────────
+    # Source: https://docs.z.ai/guides/overview/pricing (as of 2026-07-22).
+    (
+        "zai",
+        "glm-5.2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-glm-5.2-2026-07",
+    ),
+    (
+        "zai",
+        "glm-5.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-glm-5.1-2026-07",
+    ),
+    (
+        "zai",
+        "glm-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.20"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://docs.z.ai/guides/overview/pricing",
+        pricing_version="zai-glm-5-2026-07",
+    ),
 }
+
+# Short Coding Plan aliases → canonical Kimi K3 SKU.
+for _kimi_alias in (
+    "k3",
+    "kimi-for-coding",
+    "kimi-for-coding-highspeed",
+    "kimi-k2.7-code",
+    "kimi-k2p7-code",
+):
+    _OFFICIAL_DOCS_PRICING[("kimi", _kimi_alias)] = _OFFICIAL_DOCS_PRICING[("kimi", "kimi-k3")]
+del _kimi_alias
 
 # GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
 # their base tiers (more tokens per task, not a higher rate). Alias them
@@ -934,9 +1036,62 @@ def resolve_billing_route(
         # Fireworks model ids look like accounts/fireworks/models/<name>;
         # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
         return BillingRoute(provider="fireworks", model=model.rsplit("/", 1)[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # xai-oauth (SuperGrok OAuth) and bare xai share the same published list
+    # rates for status-bar estimates. Subscription billing may still be
+    # "included" at the account level; we estimate API-equivalent spend so the
+    # desktop $ chip is not blank when display.show_cost is on.
+    if (
+        provider_name in {"xai", "xai-oauth", "x-ai"}
+        or base_url_host_matches(base_url or "", "api.x.ai")
+    ):
+        bare = model.split("/")[-1].lower()
+        if bare.startswith("x-ai/"):
+            bare = bare[len("x-ai/") :]
+        return BillingRoute(
+            provider="xai",
+            model=bare,
+            base_url=base_url or "",
+            billing_mode="official_docs_snapshot",
+        )
+    # Kimi Coding Plan (global + CN) and Moonshot direct — same list rates.
+    if (
+        provider_name in {"kimi-coding", "kimi-coding-cn", "kimi", "moonshot", "moonshotai"}
+        or base_url_host_matches(base_url or "", "api.kimi.com")
+        or base_url_host_matches(base_url or "", "api.moonshot.cn")
+        or base_url_host_matches(base_url or "", "api.moonshot.ai")
+    ):
+        bare = model.split("/")[-1].lower()
+        if bare.startswith("moonshotai/"):
+            bare = bare[len("moonshotai/") :]
+        return BillingRoute(
+            provider="kimi",
+            model=bare,
+            base_url=base_url or "",
+            billing_mode="official_docs_snapshot",
+        )
+    # Z.AI / Zhipu GLM direct API.
+    if (
+        provider_name in {"zai", "zhipu", "z-ai", "z.ai"}
+        or base_url_host_matches(base_url or "", "api.z.ai")
+        or base_url_host_matches(base_url or "", "open.bigmodel.cn")
+    ):
+        bare = model.split("/")[-1].lower()
+        if bare.startswith("z-ai/"):
+            bare = bare[len("z-ai/") :]
+        return BillingRoute(
+            provider="zai",
+            model=bare,
+            base_url=base_url or "",
+            billing_mode="official_docs_snapshot",
+        )
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
-    return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
+    return BillingRoute(
+        provider=provider_name or "unknown",
+        model=model.split("/")[-1] if model else "",
+        base_url=base_url or "",
+        billing_mode="unknown",
+    )
 
 
 def _normalize_bedrock_model_name(model: str) -> str:

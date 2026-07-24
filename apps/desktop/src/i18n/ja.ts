@@ -2679,5 +2679,5 @@ export const ja = defineLocale({
       description: 'モバイルサイドバーを表示します。',
       toggle: 'サイドバーを切り替え'
     }
-  }
+  },
 })

@@ -601,6 +601,42 @@ class TestTranscribeLocalExtended:
         assert gpu_model.transcribe.call_count == 1
         assert cpu_model.transcribe.call_count == 1
 
+    def test_cublas_status_not_supported_retries_on_cpu(self, tmp_path):
+        """Blackwell cuBLAS unsupported errors should use the CPU fallback path."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "blackwell fallback"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED"
+        )
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        models = [gpu_model, cpu_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "blackwell fallback"
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
         """'CUDA out of memory' is a real error, not a missing lib — surface it."""
         audio = tmp_path / "test.ogg"

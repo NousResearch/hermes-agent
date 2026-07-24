@@ -1016,16 +1016,19 @@ class TestEditMessageStreamingSafety:
         adapter._bot.send_message = AsyncMock()
 
         # First oversized edit: delivers the truncated preview (1 API call).
-        r1 = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+        # Must exceed MAX_MESSAGE_LENGTH (4096) to trigger the overflow preview
+        # path, which then uses STREAMING_EDIT_SAFE_LIMIT (3072) for chunking.
+        r1 = await adapter.edit_message("123", "456", "x" * 5000, finalize=False)
         assert r1.success is True
         assert adapter._bot.edit_message_text.await_count == 1
 
         # Stream keeps growing within the same chunk count: previews truncate
-        # identically — no API calls. (7000 and 8000 chars both truncate to
-        # the same "…(1/2)" preview; 9000 crosses into "(1/3)" — a real change
-        # that SHOULD be delivered, at most one edit per ~4096 chars of growth
-        # instead of one per 0.8s tick.)
-        for grow in (7000, 8000):
+        # identically — no API calls. (5000 and 6000 chars both truncate to
+        # the same 2-chunk "(1/2)" preview at the 3072 safe limit;
+        # 6200 crosses into 3-chunk "(1/3)" — a real change that SHOULD be
+        # delivered, at most one edit per ~3072 chars of growth instead of
+        # one per 0.8s tick.)
+        for grow in (6000,):
             r = await adapter.edit_message("123", "456", "x" * grow, finalize=False)
             assert r.success is True
             assert r.message_id == "456"
@@ -1033,13 +1036,13 @@ class TestEditMessageStreamingSafety:
             "identical saturated previews must not be re-sent"
         )
         # Chunk-count boundary: marker changes (1/2 → 1/3) — one real edit.
-        await adapter.edit_message("123", "456", "x" * 9000, finalize=False)
+        await adapter.edit_message("123", "456", "x" * 6200, finalize=False)
         assert adapter._bot.edit_message_text.await_count == 2
         # ...and saturates again at the new marker.
         await adapter.edit_message("123", "456", "x" * 9100, finalize=False)
         assert adapter._bot.edit_message_text.await_count == 2
 
-        # A DIFFERENT oversized prefix (content changed within the first 4096)
+        # A DIFFERENT oversized prefix (content changed within the first 3072)
         # must still go through.
         await adapter.edit_message("123", "456", "y" * 9100, finalize=False)
         assert adapter._bot.edit_message_text.await_count == 3

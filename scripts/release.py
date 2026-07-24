@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hermes Agent Release Script
 
-Generates changelogs and creates GitHub releases with CalVer tags.
+Generates changelogs and creates GitHub releases with SemVer tags.
 
 Usage:
     # Preview changelog (dry run)
@@ -16,7 +16,7 @@ Usage:
     # First release (no previous tag)
     python scripts/release.py --bump minor --publish --first-release
 
-    # Override CalVer date (e.g. for a belated release)
+    # Override release-date metadata (e.g. for a belated release)
     python scripts/release.py --bump minor --publish --date 2026.3.15
 """
 
@@ -2116,24 +2116,28 @@ def git_result(*args, cwd=None):
     )
 
 
+_SEMVER_TAG_RE = re.compile(r"v(?:0|[1-9]\d*)\.\d+\.\d+$")
+_LEGACY_CALVER_TAG_RE = re.compile(r"v20\d{2}\.\d+\.\d+(?:\.\d+)?$")
+
+
+def release_tag_for_version(semver: str) -> str:
+    """Return the canonical Git tag for a Hermes package version."""
+    return f"v{semver}"
+
+
 def get_last_tag():
-    """Get the most recent CalVer tag."""
-    tags = git("tag", "--list", "v20*", "--sort=-v:refname")
+    """Get the latest SemVer tag, falling back to legacy CalVer history."""
+    tags = git("tag", "--list", "v[0-9]*", "--sort=-v:refname")
     if tags:
-        return tags.split("\n")[0]
+        tag_list = tags.split("\n")
+        for tag in tag_list:
+            if _SEMVER_TAG_RE.fullmatch(tag) and not _LEGACY_CALVER_TAG_RE.fullmatch(tag):
+                return tag
+
+    legacy_tags = git("tag", "--list", "v20*", "--sort=-v:refname")
+    if legacy_tags:
+        return legacy_tags.split("\n")[0]
     return None
-
-
-def next_available_tag(base_tag: str) -> tuple[str, str]:
-    """Return a tag/calver pair, suffixing same-day releases when needed."""
-    if not git("tag", "--list", base_tag):
-        return base_tag, base_tag.removeprefix("v")
-
-    suffix = 2
-    while git("tag", "--list", f"{base_tag}.{suffix}"):
-        suffix += 1
-    tag_name = f"{base_tag}.{suffix}"
-    return tag_name, tag_name.removeprefix("v")
 
 
 def get_current_version():
@@ -2177,6 +2181,15 @@ def update_version_files(semver: str, calver_date: str):
     content = re.sub(
         r'__release_date__\s*=\s*"[^"]+"',
         f'__release_date__ = "{calver_date}"',
+        content,
+    )
+    # This function runs before the release-bump commit is created. Record the
+    # count that commit will have so Nix store builds can derive ``+N`` without
+    # a .git directory. The corresponding SemVer tag is made at that commit.
+    parent_count = int(git("rev-list", "--count", "HEAD") or "0")
+    content = re.sub(
+        r'__release_rev_count__\s*=\s*\d+',
+        f'__release_rev_count__ = {parent_count + 1}',
         content,
     )
     VERSION_FILE.write_text(content)
@@ -2467,24 +2480,19 @@ def main():
     parser.add_argument("--publish", action="store_true",
                         help="Actually create the tag and GitHub release (otherwise dry run)")
     parser.add_argument("--date", type=str,
-                        help="Override CalVer date (format: YYYY.M.D)")
+                        help="Override release date metadata (format: YYYY.M.D)")
     parser.add_argument("--first-release", action="store_true",
                         help="Mark as first release (no previous tag expected)")
     parser.add_argument("--output", type=str,
                         help="Write changelog to file instead of stdout")
     args = parser.parse_args()
 
-    # Determine CalVer date
+    # Determine release-date metadata.
     if args.date:
         calver_date = args.date
     else:
         now = datetime.now()
         calver_date = f"{now.year}.{now.month}.{now.day}"
-
-    base_tag = f"v{calver_date}"
-    tag_name, calver_date = next_available_tag(base_tag)
-    if tag_name != base_tag:
-        print(f"Note: Tag {base_tag} already exists, using {tag_name}")
 
     # Determine semver
     current_version = get_current_version()
@@ -2492,6 +2500,7 @@ def main():
         new_version = bump_version(current_version, args.bump)
     else:
         new_version = current_version
+    tag_name = release_tag_for_version(new_version)
 
     # Get previous tag
     prev_tag = get_last_tag()
@@ -2511,7 +2520,7 @@ def main():
     print(f"{'='*60}")
     print("  Hermes Agent Release Preview")
     print(f"{'='*60}")
-    print(f"  CalVer tag:      {tag_name}")
+    print(f"  Release tag:     {tag_name}")
     print(f"  SemVer:          v{current_version} → v{new_version}")
     print(f"  Previous tag:    {prev_tag or '(none — first release)'}")
     print(f"  Commits:         {len(commits)}")

@@ -56,7 +56,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__, __release_date__
+from hermes_cli import __version__
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -3227,7 +3227,6 @@ async def get_status(profile: Optional[str] = None):
         # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
         status = {
             "version": __version__,
-            "release_date": __release_date__,
             "config_version": current_ver,
             "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),

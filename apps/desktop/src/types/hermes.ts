@@ -1035,7 +1035,6 @@ export interface StatusResponse {
   gateway_updated_at: string | null
   hermes_home: string
   latest_config_version: number
-  release_date: string
   version: string
 }
 

@@ -34,11 +34,18 @@
   # check for updates without needing a local .git directory. Null for
   # impure / dirty builds where flakes can't determine a rev.
   rev ? null,
+  revCount ? null,
+  branch ? null,
+  dirty ? false,
   # Overridable parameters
   extraPythonPackages ? [ ],
   extraDependencyGroups ? [ ],
 }:
 let
+  versionModule = builtins.readFile ../hermes_cli/__init__.py;
+  releaseRevCountLine = lib.findFirst (line: lib.hasPrefix "__release_rev_count__" line) null (lib.splitString "\n" versionModule);
+  releaseRevCountMatch = if releaseRevCountLine == null then null else builtins.match ".*= ([0-9]+)" releaseRevCountLine;
+  releaseRevCount = if releaseRevCountMatch == null then null else builtins.fromJSON (builtins.elemAt releaseRevCountMatch 0);
   nodejs = nodejs_22;
   mkHermesVenv =
     extraDependencyGroups:
@@ -201,7 +208,10 @@ stdenv.mkDerivation (finalAttrs: {
             # blank line, ending the makeWrapper command early and running
             # the next flag as its own shell command (`--suffix: command
             # not found`). Only reproduces when rev == null (dirty trees).
-            lib.optionalString (rev != null) " \\\n          --set HERMES_REVISION ${rev}"
+            lib.optionalString (rev != null) " \\\n          --set HERMES_REVISION ${rev}" +
+            lib.optionalString (revCount != null && releaseRevCount != null) " \\\n          --set HERMES_REVISION_COUNT ${toString revCount} \\\n          --set HERMES_RELEASE_REV_COUNT ${toString releaseRevCount}" +
+            lib.optionalString (branch != null) " \\\n          --set HERMES_REVISION_BRANCH ${branch}" +
+            lib.optionalString dirty " \\\n          --set HERMES_REVISION_DIRTY 1"
           }${
             lib.optionalString (
               extraPythonPackages != [ ]
@@ -246,6 +256,7 @@ stdenv.mkDerivation (finalAttrs: {
       hermesDesktop = callPackage ./desktop.nix {
         inherit hermesNpmLib electron;
         hermesAgent = finalAttrs.finalPackage;
+        inherit rev revCount branch dirty releaseRevCount;
       };
 
       devShellHook = ''

@@ -26,13 +26,17 @@
  * commit as unpinned and follows the branch instead of fetching a fake SHA.
  */
 
-import { mkdirSync, writeFileSync } from "fs"
+import { mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative } from "path"
 import { execSync } from "child_process"
 
 import { isMain } from "./utils.mjs"
 
-const STAMP_SCHEMA_VERSION = 1
+const STAMP_SCHEMA_VERSION = 2
+// Hermes's historical tags use a four-digit calendar year as their major
+// component (for example v2026.7.20). Restrict release majors to three digits
+// so these date tags cannot masquerade as the v0.x.y SemVer boundaries.
+const SEMVER_TAG = /^v(0|[1-9]\d{0,2})\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 
 /** All-zero placeholder used when no real commit can be resolved. */
 export const FALLBACK_COMMIT = "0000000000000000000000000000000000000000"
@@ -114,8 +118,65 @@ export function isFallbackCommit(commit) {
   return typeof commit === "string" && /^0{7,40}$/.test(commit)
 }
 
+function parseReleaseMetadata(repoRoot, readFile = readFileSync) {
+  try {
+    const init = readFile(join(repoRoot, 'hermes_cli', '__init__.py'), 'utf8')
+    const baseVersion = init.match(/__version__\s*=\s*["']([^"']+)["']/)?.[1]
+    const releaseDate = init.match(/__release_date__\s*=\s*["']([^"']+)["']/)?.[1]
+
+    return { baseVersion: baseVersion || null, releaseDate: releaseDate || null }
+  } catch {
+    return { baseVersion: null, releaseDate: null }
+  }
+}
+
+function splitLines(value) {
+  return value ? value.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : []
+}
+
+/**
+ * Add user-facing release topology to a build stamp. This runs while Git is
+ * available to the build, so Electron never needs to inspect a live checkout.
+ */
+export function deriveVersionMetadata(stamp, {
+  repoRoot = REPO_ROOT,
+  execFn = tryExec,
+  readFile = readFileSync
+} = {}) {
+  const { baseVersion, releaseDate } = parseReleaseMetadata(repoRoot, readFile)
+  if (!baseVersion) {
+    return stamp
+  }
+
+  const mergedTags = splitLines(execFn('git tag --merged HEAD --format=%(refname:short)', { cwd: repoRoot }))
+  const candidates = mergedTags.filter(tag => SEMVER_TAG.test(tag))
+  // Hermes has historical CalVer tags. Keep the release-date tag as a
+  // temporary fallback until the first v0.x.y tag exists; never parse a
+  // broad v[0-9]* match as SemVer.
+  if (releaseDate) {
+    candidates.push(`v${releaseDate}`)
+  }
+
+  let distance = null
+  let releaseTag = null
+  for (const tag of candidates) {
+    const raw = execFn(`git rev-list --count ${tag}..HEAD`, { cwd: repoRoot })
+    const value = raw === null ? Number.NaN : Number(raw)
+    if (Number.isInteger(value) && value >= 0 && (distance === null || value < distance)) {
+      distance = value
+      releaseTag = tag
+    }
+  }
+
+  const semver = releaseTag?.match(SEMVER_TAG)
+  const taggedVersion = semver ? `${semver[1]}.${semver[2]}.${semver[3]}` : baseVersion
+  const displayVersion = distance !== null && distance > 0 ? `${taggedVersion}+${distance}` : taggedVersion
+
+  return { ...stamp, baseVersion: taggedVersion, displayVersion, distance }
+}
+
 function main() {
-  const stamp = resolveStamp()
+  const stamp = deriveVersionMetadata(resolveStamp())
   if (!stamp || !stamp.commit) {
     // Should not happen — fromFallback() always provides a commit.
     console.error(
@@ -155,7 +216,10 @@ function main() {
     branch: stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
-    source: stamp.source
+    source: stamp.source,
+    baseVersion: stamp.baseVersion ?? null,
+    displayVersion: stamp.displayVersion ?? null,
+    distance: stamp.distance ?? null
   }
 
   mkdirSync(OUT_DIR, { recursive: true })

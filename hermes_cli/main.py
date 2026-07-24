@@ -389,9 +389,9 @@ def _read_openai_version_fast() -> str | None:
 
 
 def _print_fast_version_info() -> None:
-    from hermes_cli import __release_date__, __version__
+    from hermes_cli import __version__
 
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    print(f"Hermes Agent v{__version__}")
     print(f"Install directory: {PROJECT_ROOT}")
 
     print(f"Python: {sys.version.split()[0]}")
@@ -4598,8 +4598,16 @@ def cmd_import(args):
 def _print_version_info(*, check_updates: bool = True) -> None:
     from hermes_cli.config import detect_install_method
     from hermes_cli.banner import format_banner_version_label
+    from hermes_cli.version_info import get_version_info
 
     print(format_banner_version_label())
+    version_info = get_version_info()
+    if version_info.branch:
+        print(f"Branch: {version_info.branch}")
+    if version_info.commit:
+        print(f"Commit: {version_info.commit}")
+    if version_info.dirty is not None:
+        print(f"Working tree: {'dirty' if version_info.dirty else 'clean'}")
     print(f"Install directory: {PROJECT_ROOT}")
     print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
 

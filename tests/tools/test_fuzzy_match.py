@@ -320,6 +320,58 @@ class TestUnicodeNormalized:
         assert new == "plain text there"
 
 
+class TestUnicodeSpaceAndMinusNormalized:
+    """Space-separator family + Unicode minus normalization.
+
+    Port of the anomalyco/opencode#38133 patch-matching corpus: files with
+    typographic spacing (en/em/thin spaces, narrow NBSP, CJK ideographic
+    space) or the Unicode minus sign must match a model's ASCII old_string
+    at the precise unicode_normalized strategy — not fall through to the
+    similarity-based context_aware fallback.
+    """
+
+    def test_unicode_minus_matched_and_preserved(self):
+        content = "offset = value \u2212 1\nprint(offset)\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "offset = value - 1", "offset = delta - 1"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        # The untouched minus keeps its Unicode form
+        assert "delta \u2212 1" in new, f"Got {new!r}"
+
+    def test_space_variants_match_at_unicode_strategy(self):
+        # en space, em space, thin space, narrow NBSP, medium math space,
+        # ideographic space, figure space, hair space
+        for space in ["\u2002", "\u2003", "\u2009", "\u202f",
+                      "\u205f", "\u3000", "\u2007", "\u200a"]:
+            content = f"# wait{space}30{space}seconds\nrun()\n"
+            new, count, strategy, err = fuzzy_find_and_replace(
+                content, "# wait 30 seconds", "# wait 60 seconds"
+            )
+            assert count == 1, (
+                f"space U+{ord(space):04X}: expected match, err={err}"
+            )
+            assert strategy == "unicode_normalized", (
+                f"space U+{ord(space):04X}: matched via {strategy}, "
+                "expected unicode_normalized"
+            )
+            # Unchanged spaces keep their typographic form; only the
+            # digits change.
+            assert f"60{space}seconds" in new, (
+                f"space U+{ord(space):04X}: got {new!r}"
+            )
+
+    def test_ideographic_space_cjk_line(self):
+        content = "標題\u3000第一章\nbody text\n"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "標題 第一章", "標題 第二章"
+        )
+        assert count == 1, f"Expected match, got err={err}"
+        assert strategy == "unicode_normalized"
+        assert "標題\u3000第二章" in new, f"Got {new!r}"
+
+
 class TestBlockAnchorThreshold:
     """Tests for the raised block_anchor threshold (Bug 4)."""
 

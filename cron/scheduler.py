@@ -2252,7 +2252,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         argv = [python_exe, str(path)]
 
     try:
-        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local import _make_run_env
 
         popen_kwargs = {}
         if sys.platform == "win32":
@@ -2261,7 +2261,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-        env = _sanitize_subprocess_env(os.environ.copy())
+        env = _make_run_env(os.environ.copy())
         env.update(env_overlay)
         result = subprocess.run(
             argv,

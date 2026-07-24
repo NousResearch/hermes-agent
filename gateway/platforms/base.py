@@ -3187,11 +3187,18 @@ class BasePlatformAdapter(ABC):
         self,
         chat_id: str,
         message_id: str,
+        *,
+        permanent: bool = False,
     ) -> bool:
         """
         Delete a previously sent message.  Optional — platforms that don't
         support deletion return ``False`` and callers fall back to leaving
         the message in place.
+
+        ``permanent``, when supported by a platform, requests a hard delete
+        that leaves no tombstone/placeholder in place of the deleted message.
+        Platforms that don't support (or can't guarantee) a tombstone-free
+        delete should ignore the flag and fall back to their normal delete.
 
         Used by the stream consumer's fresh-final cleanup path (see
         openclaw/openclaw#72038) to remove long-lived preview messages

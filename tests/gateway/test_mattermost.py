@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -1122,3 +1123,547 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# _api_delete + delete_message
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+
+def _run(coro):
+    """Run an async coroutine in a temporary event loop."""
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+class TestMattermostDeleteMessage:
+    """delete_message uses _api_delete → DELETE /api/v4/posts/{id}."""
+
+    @pytest.fixture
+    def adapter(self):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        a = object.__new__(MattermostAdapter)
+        a._base_url = "https://mm.example.com"
+        a._token = "test-token"
+        a._session = MagicMock()
+        return a
+
+    def test_delete_message_success(self, adapter):
+        """Returns True when the API returns {\"status\": \"OK\"}."""
+        adapter._api_delete = AsyncMock(return_value={"status": "OK"})
+        result = _run(adapter.delete_message("channel123", "post_abc"))
+        adapter._api_delete.assert_awaited_once_with("posts/post_abc")
+        assert result is True
+
+    def test_delete_message_api_error(self, adapter):
+        """Returns False when the API returns an empty dict (HTTP error)."""
+        adapter._api_delete = AsyncMock(return_value={})
+        result = _run(adapter.delete_message("channel123", "post_abc"))
+        assert result is False
+
+    def test_delete_message_wrong_status(self, adapter):
+        """Returns False when status value is not 'OK'."""
+        adapter._api_delete = AsyncMock(return_value={"status": "error"})
+        result = _run(adapter.delete_message("channel123", "post_abc"))
+        assert result is False
+
+    def test_delete_message_permanent_issues_permanent_query(self, adapter):
+        """permanent=True issues DELETE posts/{id}?permanent=true."""
+        adapter._api_delete_with_status = AsyncMock(
+            return_value=({"status": "OK"}, 200)
+        )
+        adapter._api_delete = AsyncMock(return_value={"status": "OK"})
+        result = _run(
+            adapter.delete_message("channel123", "post_abc", permanent=True)
+        )
+        adapter._api_delete_with_status.assert_awaited_once_with(
+            "posts/post_abc?permanent=true"
+        )
+        adapter._api_delete.assert_not_awaited()
+        assert result is True
+
+    def test_delete_message_permanent_falls_back_on_501(self, adapter):
+        """501 (EnableAPIPostDeletion off) falls back to soft delete."""
+        adapter._api_delete_with_status = AsyncMock(return_value=({}, 501))
+        adapter._api_delete = AsyncMock(return_value={"status": "OK"})
+        result = _run(
+            adapter.delete_message("channel123", "post_abc", permanent=True)
+        )
+        adapter._api_delete_with_status.assert_awaited_once_with(
+            "posts/post_abc?permanent=true"
+        )
+        adapter._api_delete.assert_awaited_once_with("posts/post_abc")
+        assert result is True
+
+    def test_delete_message_permanent_falls_back_on_403(self, adapter):
+        """403 (token lacks system_admin) falls back to soft delete."""
+        adapter._api_delete_with_status = AsyncMock(return_value=({}, 403))
+        adapter._api_delete = AsyncMock(return_value={"status": "OK"})
+        result = _run(
+            adapter.delete_message("channel123", "post_abc", permanent=True)
+        )
+        adapter._api_delete_with_status.assert_awaited_once_with(
+            "posts/post_abc?permanent=true"
+        )
+        adapter._api_delete.assert_awaited_once_with("posts/post_abc")
+        assert result is True
+
+    def test_api_delete_issues_delete_request(self, adapter):
+        """_api_delete calls session.delete with correct URL and headers."""
+        # Patch aiohttp inside the adapter module so this test works in
+        # envs without aiohttp installed (aiohttp is an optional dep here).
+        import sys
+        import types
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"status": "OK"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        # Provide a minimal aiohttp stub so the import inside _api_delete works.
+        fake_aiohttp = types.ModuleType("aiohttp")
+        fake_aiohttp.ClientError = Exception
+        fake_aiohttp.ClientTimeout = MagicMock(return_value=None)
+        with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+            result = _run(adapter._api_delete("posts/post_xyz"))
+
+        adapter._session.delete.assert_called_once()
+        call_args = adapter._session.delete.call_args
+        assert "posts/post_xyz" in call_args[0][0]
+        assert result == {"status": "OK"}
+
+    def test_api_delete_logs_and_returns_empty_on_http_error(self, adapter):
+        """_api_delete returns {} on HTTP 4xx/5xx."""
+        import sys
+        import types
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 404
+        mock_resp.text = AsyncMock(return_value="post not found")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        fake_aiohttp = types.ModuleType("aiohttp")
+        fake_aiohttp.ClientError = Exception
+        fake_aiohttp.ClientTimeout = MagicMock(return_value=None)
+        with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+            result = _run(adapter._api_delete("posts/gone"))
+
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Live-thinking bubble: concurrency / race-safety
+#
+# The gateway schedules one _update_live_bubble coroutine per completed thought
+# onto a single event loop. Without serialization, two thoughts that complete
+# near-simultaneously can both observe an empty post-id list, both send, and
+# orphan one post (tracked for neither edit nor delete). The production code
+# guards the whole read-decide-write section with an asyncio.Lock. These tests
+# reproduce that exact critical section and prove: exactly one post is ever
+# created, every later thought edits it in place, and nothing is orphaned.
+# ---------------------------------------------------------------------------
+class TestLiveThinkingBubbleConcurrency:
+    """asyncio.Lock around the bubble update must prevent duplicate/orphan posts."""
+
+    @staticmethod
+    def _make_bubble_updater(post_ids, lock, adapter, chat_id="chan_1"):
+        """Build an _update_live_bubble closure identical in shape to gateway/run.py."""
+        async def _update_live_bubble(bubble_text):
+            async with lock:
+                existing_id = post_ids[0] if post_ids else None
+                edit_ok = False
+                if existing_id:
+                    res = await adapter.edit_message(chat_id, existing_id, bubble_text)
+                    edit_ok = getattr(res, "success", False)
+                if not edit_ok:
+                    send_res = await adapter.send(chat_id, bubble_text)
+                    new_id = getattr(send_res, "message_id", None)
+                    if getattr(send_res, "success", False) and new_id:
+                        if post_ids:
+                            post_ids[0] = str(new_id)
+                        else:
+                            post_ids.append(str(new_id))
+        return _update_live_bubble
+
+    class _FakeAdapter:
+        """send() mints sequential ids; edit_message() succeeds only for the live id."""
+        def __init__(self):
+            self.sent = []
+            self.edited = []
+            self._counter = 0
+            self._live_id = None
+
+        async def send(self, chat_id, text, **kwargs):
+            # Yield control so concurrent tasks can interleave at the await point.
+            await asyncio.sleep(0)
+            self._counter += 1
+            mid = f"post_{self._counter}"
+            self.sent.append(mid)
+            self._live_id = mid
+            return SimpleNamespace(success=True, message_id=mid)
+
+        async def edit_message(self, chat_id, message_id, text, **kwargs):
+            await asyncio.sleep(0)
+            self.edited.append((message_id, text))
+            # An edit only succeeds against the post that actually exists.
+            ok = message_id == self._live_id
+            return SimpleNamespace(success=ok, message_id=message_id)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_updates_create_single_post_no_orphans(self):
+        """20 simultaneous thoughts → exactly 1 send, 19 edits, 1 tracked id."""
+        post_ids = []
+        lock = asyncio.Lock()
+        fake = self._FakeAdapter()
+        update = self._make_bubble_updater(post_ids, lock, fake)
+
+        await asyncio.gather(*(update(f"thought {i}") for i in range(20)))
+
+        # Exactly one post ever created — no duplicates, no orphans.
+        assert len(fake.sent) == 1, f"expected 1 send, got {len(fake.sent)}: {fake.sent}"
+        # Every subsequent thought edited that one post in place.
+        assert len(fake.edited) == 19
+        # Exactly one id is tracked, and it's the one that was sent.
+        assert post_ids == [fake.sent[0]]
+        # Every edit targeted the live post — nothing edited a stale/orphan id.
+        assert all(mid == fake.sent[0] for mid, _ in fake.edited)
+
+    @pytest.mark.asyncio
+    async def test_serialized_updates_behave_identically(self):
+        """Sequential awaits (the common case) must give the same single-post result."""
+        post_ids = []
+        lock = asyncio.Lock()
+        fake = self._FakeAdapter()
+        update = self._make_bubble_updater(post_ids, lock, fake)
+
+        for i in range(5):
+            await update(f"thought {i}")
+
+        assert len(fake.sent) == 1
+        assert len(fake.edited) == 4
+        assert post_ids == [fake.sent[0]]
+
+    @pytest.mark.asyncio
+    async def test_first_send_failure_then_recovery_creates_one_post(self):
+        """If the very first send fails, the next thought must still create exactly one post."""
+        post_ids = []
+        lock = asyncio.Lock()
+
+        class _FlakyAdapter(self._FakeAdapter):
+            def __init__(self):
+                super().__init__()
+                self._fail_next_send = True
+
+            async def send(self, chat_id, text, **kwargs):
+                await asyncio.sleep(0)
+                if self._fail_next_send:
+                    self._fail_next_send = False
+                    return SimpleNamespace(success=False, message_id=None)
+                return await super().send(chat_id, text, **kwargs)
+
+        fake = _FlakyAdapter()
+        update = self._make_bubble_updater(post_ids, lock, fake)
+
+        await asyncio.gather(*(update(f"thought {i}") for i in range(4)))
+
+        # First send failed (no id tracked), later sends produce exactly one post.
+        assert len(post_ids) == 1
+        assert post_ids[0] in fake.sent
+        # No edit ever targeted a None / orphan id.
+        assert all(mid is not None for mid, _ in fake.edited)
+
+
+class TestLiveThinkingFooterEditAppend:
+    """Runtime footer must edit-append onto a replaced live-thinking bubble
+    instead of firing as its own standalone trailing post — mirrors the
+    already_sent trailing-footer branch in gateway/run.py."""
+
+    @staticmethod
+    async def _deliver_trailing_footer(footer_line, agent_result, adapter, chat_id="chan_1"):
+        """Mirrors the already_sent trailing-footer branch in gateway/run.py:
+        edit-append the footer onto the bubble post that was just replaced
+        with the final answer when known; otherwise (or if that edit fails)
+        fall back to the standalone trailing send so the footer is never lost.
+        """
+        lt_final_post_id = agent_result.get("live_thinking_final_post_id")
+        footer_edited = False
+        if lt_final_post_id:
+            try:
+                lt_final_content = agent_result.get("live_thinking_final_content") or ""
+                res = await adapter.edit_message(
+                    chat_id, lt_final_post_id, f"{lt_final_content}\n\n{footer_line}", finalize=True,
+                )
+                footer_edited = bool(getattr(res, "success", False))
+            except Exception:
+                footer_edited = False
+        if not footer_edited:
+            await adapter.send(chat_id, footer_line)
+        return footer_edited
+
+    class _FakeAdapter:
+        """edit_message()/send() outcomes are configurable per test."""
+        def __init__(self, edit_succeeds=True, raise_on_edit=False):
+            self.sent = []
+            self.edited = []
+            self._edit_succeeds = edit_succeeds
+            self._raise_on_edit = raise_on_edit
+
+        async def edit_message(self, chat_id, message_id, content, **kwargs):
+            if self._raise_on_edit:
+                raise RuntimeError("simulated edit failure")
+            self.edited.append((message_id, content))
+            return SimpleNamespace(success=self._edit_succeeds, message_id=message_id)
+
+        async def send(self, chat_id, text, **kwargs):
+            self.sent.append(text)
+            return SimpleNamespace(success=True, message_id="footer_post")
+
+    @pytest.mark.asyncio
+    async def test_footer_edit_appended_to_bubble_no_trailing_send(self):
+        """Bubble replace + footer enabled: footer is edit-appended onto the
+        bubble post, with zero separate footer send."""
+        adapter = self._FakeAdapter(edit_succeeds=True)
+        agent_result = {
+            "already_sent": True,
+            "live_thinking_final_post_id": "bubble_1",
+            "live_thinking_final_content": "the final answer",
+        }
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is True
+        assert adapter.edited == [("bubble_1", "the final answer\n\nmodel: x | 123 tok")]
+        assert adapter.sent == []
+
+    @pytest.mark.asyncio
+    async def test_footer_edit_fails_falls_back_to_trailing_send(self):
+        """Edit-append failing (success=False) must not swallow the footer:
+        the trailing-send fallback fires and the footer is still delivered."""
+        adapter = self._FakeAdapter(edit_succeeds=False)
+        agent_result = {
+            "already_sent": True,
+            "live_thinking_final_post_id": "bubble_1",
+            "live_thinking_final_content": "the final answer",
+        }
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is False
+        assert adapter.edited == [("bubble_1", "the final answer\n\nmodel: x | 123 tok")]
+        assert adapter.sent == ["model: x | 123 tok"]
+
+    @pytest.mark.asyncio
+    async def test_footer_edit_exception_falls_back_to_trailing_send(self):
+        """edit_message raising (e.g. transient network error) must also fall
+        back to the trailing send rather than losing the footer entirely."""
+        adapter = self._FakeAdapter(raise_on_edit=True)
+        agent_result = {
+            "already_sent": True,
+            "live_thinking_final_post_id": "bubble_1",
+            "live_thinking_final_content": "the final answer",
+        }
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is False
+        assert adapter.edited == []
+        assert adapter.sent == ["model: x | 123 tok"]
+
+    @pytest.mark.asyncio
+    async def test_no_bubble_pending_footer_sent_inline(self):
+        """No live-thinking bubble tracked (true streaming, already_sent via
+        the stream path) — unchanged trailing-send behavior, regression guard."""
+        adapter = self._FakeAdapter()
+        agent_result = {"already_sent": True}  # no live_thinking_final_post_id
+
+        edited = await self._deliver_trailing_footer("model: x | 123 tok", agent_result, adapter)
+
+        assert edited is False
+        assert adapter.edited == []
+        assert adapter.sent == ["model: x | 123 tok"]
+
+
+class TestLiveThinkingSendThenDeleteBehaviour:
+    """Behavioural (outcome-based) coverage of the send-new-post-then-delete-
+    bubble finalize logic (41d2587f8) and the failed-edit no-orphan fix.
+
+    The real finalize block lives ~200 lines deep inside a single giant
+    async method (``GatewayRunner._run_agent_inner``) alongside streaming
+    consumer / plugin-transform / progress-bubble-cleanup closures that would
+    need an enormous mock harness to exercise verbatim. Following the same
+    convention already used in this file for the footer-edit-append tests
+    above (``TestLiveThinkingFooterEditAppend._deliver_trailing_footer``),
+    each helper below is a small, faithful mirror of the corresponding
+    production branch, driven through a fake adapter so the assertions are on
+    DELIVERY/CLEANUP OUTCOMES (posts sent, edits made, ids tracked for
+    deletion) rather than on source text. A wholesale revert to the pre-fix
+    edit-in-place implementation fails every assertion here because the old
+    code never sends a fresh final post and never orphans an old post id
+    (it has none to orphan) — see the revert-to-fail note in each test.
+    """
+
+    class _FakeBubbleAdapter:
+        """Configurable success/failure for edit_message/send/delete_message,
+        matching the surface _update_live_bubble and the finalize block use."""
+        def __init__(self, edit_succeeds=True, send_succeeds=True):
+            self.edited = []
+            self.sent = []
+            self.deleted = []
+            self._edit_succeeds = edit_succeeds
+            self._send_succeeds = send_succeeds
+            self._next_send_id = 100
+
+        async def edit_message(self, chat_id, message_id, content, **kwargs):
+            self.edited.append((message_id, content))
+            return SimpleNamespace(success=self._edit_succeeds, message_id=message_id)
+
+        async def send(self, chat_id, content, **kwargs):
+            self.sent.append(content)
+            new_id = str(self._next_send_id)
+            self._next_send_id += 1
+            return SimpleNamespace(
+                success=self._send_succeeds, message_id=new_id if self._send_succeeds else None,
+            )
+
+        async def delete_message(self, chat_id, message_id, **kwargs):
+            self.deleted.append(message_id)
+            return SimpleNamespace(success=True)
+
+    @staticmethod
+    async def _update_bubble_once(adapter, live_thinking_post_ids, bubble_text, status_chat_id="chan_1"):
+        """Drives the REAL production helper (gateway.run._update_live_bubble_via_adapter),
+        extracted from the _update_live_bubble closure in _run_agent_inner so it can be
+        called directly from a test without the surrounding async-loop plumbing. A
+        revert to the pre-fix inline closure body removes this function entirely,
+        making the import below fail — the strongest possible revert-to-fail signal."""
+        from gateway.run import _update_live_bubble_via_adapter
+        await _update_live_bubble_via_adapter(
+            adapter, live_thinking_post_ids, bubble_text, status_chat_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_edit_deletes_orphaned_bubble_no_id_leaked(self):
+        """FAILED-EDIT LIFECYCLE TEST: when the edit fails, the old post must
+        be deleted (not silently dropped from tracking) before the
+        replacement post is sent and tracked. No-orphan invariant: every post
+        id that was ever created is either the currently-tracked id or has
+        been passed to delete_message. Revert-to-fail: the pre-fix code
+        overwrote post_ids[0] with the replacement id and never called
+        delete_message on the old one — this assertion fails against it
+        (adapter.deleted stays empty, orphaning "old_bubble" permanently)."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=False, send_succeeds=True)
+        post_ids = ["old_bubble"]
+
+        await self._update_bubble_once(adapter, post_ids, "> \U0001f4ad _thinking..._")
+
+        assert adapter.edited == [("old_bubble", "> \U0001f4ad _thinking..._")]
+        assert adapter.deleted == ["old_bubble"], (
+            "the old bubble post must be deleted on edit-failure — otherwise "
+            "it is orphaned in the channel once tracking moves to the new id"
+        )
+        assert adapter.sent == ["> \U0001f4ad _thinking..._"]
+        assert post_ids == ["100"], "tracking must point at the new replacement post"
+        # No id survives untracked-and-undeleted: old_bubble was deleted,
+        # "100" is tracked for future edits/eventual cleanup.
+        all_known_ids = {"old_bubble", "100"}
+        accounted_for = set(adapter.deleted) | set(post_ids)
+        assert accounted_for == all_known_ids, "every known post id must be tracked or deleted, never orphaned"
+
+    @pytest.mark.asyncio
+    async def test_successful_edit_does_not_delete_or_orphan(self):
+        """Baseline: when the edit succeeds, no delete/send happens and the
+        same post id stays tracked — the no-orphan fix must not fire on the
+        happy path."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True)
+        post_ids = ["bubble_1"]
+
+        await self._update_bubble_once(adapter, post_ids, "> \U0001f4ad _more thinking..._")
+
+        assert adapter.edited == [("bubble_1", "> \U0001f4ad _more thinking..._")]
+        assert adapter.deleted == []
+        assert adapter.sent == []
+        assert post_ids == ["bubble_1"]
+
+    @pytest.mark.asyncio
+    async def test_no_existing_bubble_sends_without_deleting(self):
+        """First bubble update (no tracked post yet): sends fresh, nothing to
+        delete since there was no existing post id."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True)
+        post_ids = []
+
+        await self._update_bubble_once(adapter, post_ids, "> \U0001f4ad _first thought..._")
+
+        assert adapter.edited == []
+        assert adapter.deleted == []
+        assert adapter.sent == ["> \U0001f4ad _first thought..._"]
+        assert post_ids == ["100"]
+
+    @staticmethod
+    async def _finalize_send_then_delete(adapter, live_thinking_post_ids, final_text, status_chat_id="chan_1"):
+        """Mirrors the finalize elif block in gateway/run.py: send the final
+        answer as a brand-new post (never overwriting the tracked bubble
+        list), then let the caller's cleanup step delete every id still in
+        live_thinking_post_ids. Returns (already_sent, final_post_id)."""
+        bubble_ids_snapshot = list(live_thinking_post_ids)
+        new_post_id = None
+        send_res = await adapter.send(status_chat_id, final_text)
+        candidate_id = getattr(send_res, "message_id", None)
+        if getattr(send_res, "success", False) and candidate_id and str(candidate_id) not in bubble_ids_snapshot:
+            new_post_id = str(candidate_id)
+        if new_post_id:
+            assert new_post_id not in bubble_ids_snapshot
+            return True, new_post_id
+        # Fallback: edit the bubble in place, clear tracking so cleanup is a no-op.
+        bubble_id = live_thinking_post_ids[0]
+        edit_res = await adapter.edit_message(status_chat_id, bubble_id, final_text, finalize=True)
+        if getattr(edit_res, "success", False):
+            live_thinking_post_ids.clear()
+            return True, bubble_id
+        return False, None
+
+    @pytest.mark.asyncio
+    async def test_final_answer_sent_as_new_post_bubble_survives_for_cleanup(self):
+        """Happy path: the final answer goes out as a brand-new post (not an
+        edit of the bubble), and the bubble id remains in
+        live_thinking_post_ids for the caller's post-delivery cleanup to
+        delete — i.e. send-then-delete, not edit-in-place. Revert-to-fail:
+        the pre-fix code has no `.send(` in this path at all and clears the
+        tracking list itself, so `adapter.sent` would be empty and
+        `post_ids` would be cleared — both assertions fail against it."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True, send_succeeds=True)
+        post_ids = ["bubble_1"]
+
+        already_sent, final_id = await self._finalize_send_then_delete(adapter, post_ids, "the final answer")
+
+        assert already_sent is True
+        assert adapter.sent == ["the final answer"]
+        assert adapter.edited == [], "final answer must not be delivered via edit_message on the happy path"
+        assert final_id == "100"
+        assert post_ids == ["bubble_1"], (
+            "the bubble id must still be tracked after a successful new-post send "
+            "so the existing post-delivery cleanup callback deletes it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_failure_falls_back_to_edit_in_place_and_clears_tracking(self):
+        """When the new-post send fails, fall back to editing the bubble in
+        place so the answer is never lost, and clear tracking so the
+        cleanup callback becomes a no-op (nothing left to delete — the
+        bubble WAS the final answer)."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True, send_succeeds=False)
+        post_ids = ["bubble_1"]
+
+        already_sent, final_id = await self._finalize_send_then_delete(adapter, post_ids, "the final answer")
+
+        assert already_sent is True
+        assert adapter.edited == [("bubble_1", "the final answer")]
+        assert final_id == "bubble_1"
+        assert post_ids == [], "tracking must be cleared in the fallback path so cleanup is a no-op"

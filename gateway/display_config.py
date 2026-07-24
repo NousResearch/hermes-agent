@@ -58,6 +58,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # When true, show a single live-editing "thinking bubble" that is updated
+    # in place for each completed interim thought, then deleted when the final
+    # answer lands. Strictly opt-in — default false everywhere. Must be
+    # enabled explicitly per-platform (e.g. display.platforms.mattermost.live_thinking: true).
+    "live_thinking": False,
     # Live working-state status on platforms whose typing indicator renders
     # text (Slack's assistant status line). Values:
     #   "full" / true  -> verb + argument preview ("is running pytest…")
@@ -272,6 +277,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "live_thinking",
         "busy_steer_ack_enabled",
         "thinking_progress",
     }:

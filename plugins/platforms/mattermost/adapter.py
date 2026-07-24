@@ -254,6 +254,35 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
+    async def _api_delete(self, path: str) -> Dict[str, Any]:
+        """DELETE /api/v4/{path}. Returns the parsed JSON body (e.g. {\"status\": \"OK\"})."""
+        data, _status = await self._api_delete_with_status(path)
+        return data
+
+    async def _api_delete_with_status(self, path: str) -> "tuple[Dict[str, Any], int]":
+        """DELETE /api/v4/{path}, returning (parsed JSON body, HTTP status).
+
+        Status is 0 on network error. Callers that need to distinguish error
+        classes (e.g. 501 "feature disabled" vs 403 "forbidden") should use
+        this instead of ``_api_delete``, which discards the status code.
+        """
+        import aiohttp
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url,
+                headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return {}, resp.status
+                return await resp.json(), resp.status
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return {}, 0
+
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
@@ -424,6 +453,41 @@ class MattermostAdapter(BasePlatformAdapter):
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
         return SendResult(success=True, message_id=data["id"])
+
+    async def delete_message(
+        self, chat_id: str, message_id: str, *, permanent: bool = False
+    ) -> bool:
+        """Delete a post by its ID.
+
+        Returns True when Mattermost confirms deletion (``{"status": "OK"}``),
+        False on any error. ``chat_id`` is accepted for API symmetry but
+        Mattermost's DELETE /api/v4/posts/{id} endpoint does not need it.
+
+        When ``permanent=True``, first attempts a hard delete via
+        ``?permanent=true`` (no "(message deleted)" tombstone). That endpoint
+        is gated behind the server config flag
+        ``ServiceSettings.EnableAPIPostDeletion`` AND requires a
+        ``system_admin`` token; servers/tokens without it respond 501 or 403.
+        This method never touches server config — it only probes the
+        endpoint and falls back to the plain soft delete on 501/403 (or any
+        other failure), so behaviour is unchanged everywhere except servers
+        that have already opted in.
+        """
+        if permanent:
+            data, status = await self._api_delete_with_status(
+                f"posts/{message_id}?permanent=true"
+            )
+            if status in (501, 403):
+                logger.debug(
+                    "MM permanent delete unavailable (status %s) for post %s; "
+                    "falling back to soft delete",
+                    status, message_id,
+                )
+            else:
+                return bool(data and data.get("status") == "OK")
+
+        data = await self._api_delete(f"posts/{message_id}")
+        return bool(data and data.get("status") == "OK")
 
     async def send_image(
         self,

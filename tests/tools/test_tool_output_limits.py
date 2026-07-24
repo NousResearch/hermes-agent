@@ -95,7 +95,7 @@ class TestOverrides:
 
 
 class TestCoercion:
-    @pytest.mark.parametrize("bad", [None, "not a number", -1, 0, [], {}])
+    @pytest.mark.parametrize("bad", [None, "not a number", -1, 0, True, False, [], {}])
     def test_invalid_values_fall_back_to_defaults(self, bad):
         cfg = {"tool_output": {"max_bytes": bad, "max_lines": bad, "max_line_length": bad}}
         with patch("hermes_cli.config.load_config", return_value=cfg):

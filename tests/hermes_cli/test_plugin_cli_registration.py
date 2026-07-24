@@ -183,3 +183,56 @@ class TestProviderCollectorCliNoop:
         )
         # Should not store anything — CLI is discovered via file convention
         assert not hasattr(collector, "_cli_commands")
+
+
+class TestMemoryProviderPluginRegistrations:
+    def test_provider_loader_keeps_plugin_commands_and_skills(
+        self, tmp_path, monkeypatch
+    ):
+        """Memory provider plugins can expose slash commands and explicit skills."""
+        from hermes_cli import plugins as plugins_mod
+        from plugins.memory import _load_provider_from_dir
+
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+
+        provider_dir = tmp_path / "basic-memory"
+        provider_dir.mkdir()
+        skill_md = provider_dir / "SKILL.md"
+        skill_md.write_text("---\nname: basic-memory\n---\nUse basic memory.\n")
+        (provider_dir / "__init__.py").write_text(
+            "def _bm_status(args):\n"
+            "    return f'status:{args}'\n"
+            "\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider('provider-instance')\n"
+            "    ctx.register_command('/bm-status', _bm_status,\n"
+            "        description='Show Basic Memory status', args_hint='<scope>')\n"
+            "    ctx.register_skill('basic-memory', __import__('pathlib').Path(__file__).parent / 'SKILL.md',\n"
+            "        description='Basic Memory workflow')\n"
+        )
+
+        provider = _load_provider_from_dir(provider_dir)
+
+        assert provider == "provider-instance"
+        command = manager._plugin_commands["bm-status"]
+        assert command["handler"]("all") == "status:all"
+        assert command["description"] == "Show Basic Memory status"
+        assert command["plugin"] == "basic-memory"
+        assert command["args_hint"] == "<scope>"
+        assert manager.find_plugin_skill("basic-memory:basic-memory") == skill_md
+
+    def test_provider_collector_rejects_builtin_command_conflicts(
+        self, monkeypatch
+    ):
+        """Memory provider slash commands use the same conflict checks as plugins."""
+        from hermes_cli import plugins as plugins_mod
+        from plugins.memory import _ProviderCollector
+
+        manager = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+
+        collector = _ProviderCollector("basic-memory")
+        collector.register_command("help", lambda args: args)
+
+        assert "help" not in manager._plugin_commands

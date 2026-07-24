@@ -16984,8 +16984,38 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not bound_host:
         return None
 
+    # When the dashboard is loopback-bound but fronted by a reverse proxy
+    # (e.g. cloudflared + Cloudflare Access) that rewrites the Host header
+    # to ``localhost``, the browser still sends Origin: https://public.host
+    # because cloudflared does not rewrite Origin. Operators opt into this
+    # topology by setting ``dashboard.public_url`` — when present, accept
+    # requests whose Host/Origin matches either the bound host (local dev,
+    # SSH/Tailscale tunnels) OR the public URL's host.
+    public_host: str = ""
+    if bound_host in _LOOPBACK_HOSTS:
+        try:
+            from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+            _purl = resolve_public_url()
+            if _purl:
+                # .hostname (not .netloc) strips any port and unwraps IPv6
+                # brackets, matching what _is_accepted_host expects below.
+                public_host = (urllib.parse.urlparse(_purl).hostname or "").lower()
+        except Exception:  # noqa: BLE001 — best-effort; never fail-closed on config lookup
+            public_host = ""
+
+    def _host_accepted(value: str) -> bool:
+        if _is_accepted_host(value, bound_host):
+            return True
+        # Reuse _is_accepted_host for the public-host comparison too, so
+        # port-stripping and IPv6 bracket handling stay consistent instead
+        # of re-implementing (and mis-implementing) them here.
+        if public_host and _is_accepted_host(value, public_host):
+            return True
+        return False
+
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    if not _host_accepted(host_header):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -17002,7 +17032,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _host_accepted(parsed.netloc):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

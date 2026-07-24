@@ -240,14 +240,19 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
 
 
 def _configured_terminal_cwd() -> str | None:
-    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+    """Return the configured/session cwd only when it names a real directory anchor.
 
-    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
-    rejected — a relative anchor is meaningless without knowing which cwd it is
-    relative to, which is exactly the ambiguity that misroutes worktree edits.
-    Only an absolute, sentinel-free value is honored.
+    Prefers the task-local ContextVar (cron workdir / gateway session pin) over
+    process-global ``$TERMINAL_CWD`` so concurrent sessions cannot steal each
+    other's workspace (#69396). Sentinel values (see ``_TERMINAL_CWD_SENTINELS``)
+    and relative paths are rejected.
     """
-    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+    try:
+        from agent.runtime_cwd import resolve_tool_cwd
+
+        return _sentinel_free_abs_cwd(resolve_tool_cwd())
+    except Exception:
+        return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:

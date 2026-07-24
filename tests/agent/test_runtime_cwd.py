@@ -10,6 +10,7 @@ from agent.runtime_cwd import (
     clear_session_cwd,
     resolve_agent_cwd,
     resolve_context_cwd,
+    resolve_tool_cwd,
     set_session_cwd,
 )
 
@@ -105,8 +106,36 @@ class TestSessionCwdOverride:
         try:
             assert resolve_agent_cwd() == other
             assert resolve_context_cwd() == other
+            assert resolve_tool_cwd() == str(other)
         finally:
             rt._SESSION_CWD.reset(token)
+
+    def test_resolve_tool_cwd_allows_nonexistent_remote_path(self, monkeypatch):
+        """Container/SSH remotes may pin a cwd that only exists inside the sandbox."""
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        token = set_session_cwd("/workspace/only-in-container")
+        try:
+            assert resolve_tool_cwd() == "/workspace/only-in-container"
+            # resolve_agent_cwd requires is_dir(); falls through to getcwd.
+            assert resolve_agent_cwd() != Path("/workspace/only-in-container")
+        finally:
+            rt._SESSION_CWD.reset(token)
+
+    def test_resolve_tool_cwd_preserves_ssh_tilde(self, monkeypatch):
+        """Do not expanduser — SSH remotes need the literal tilde path (#69396 CI)."""
+        monkeypatch.setenv("TERMINAL_CWD", "~/project")
+        monkeypatch.setenv("HOME", "/opt/data")
+        assert resolve_tool_cwd() == "~/project"
+        token = set_session_cwd("~")
+        try:
+            assert resolve_tool_cwd() == "~"
+        finally:
+            rt._SESSION_CWD.reset(token)
+
+    def test_resolve_tool_cwd_none_when_unset(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        clear_session_cwd()
+        assert resolve_tool_cwd() is None
 
     def test_empty_session_cwd_falls_back_to_terminal_cwd(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))

@@ -6169,6 +6169,13 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
+            display_metadata = msg.get("display_metadata")
+            if isinstance(display_metadata, str):
+                try:
+                    msg["display_metadata"] = json.loads(display_metadata)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to deserialize display_metadata in get_messages, ignoring it")
+                    msg["display_metadata"] = None
             result.append(msg)
         return result
 
@@ -6238,6 +6245,15 @@ class SessionDB:
                         "Failed to deserialize tool_calls in get_messages_around, falling back to []"
                     )
                     msg["tool_calls"] = []
+            display_metadata = msg.get("display_metadata")
+            if isinstance(display_metadata, str):
+                try:
+                    msg["display_metadata"] = json.loads(display_metadata)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Failed to deserialize display_metadata in get_messages_around, ignoring it"
+                    )
+                    msg["display_metadata"] = None
             result.append(msg)
 
         # before_rows includes the anchor itself; subtract 1 for the count of

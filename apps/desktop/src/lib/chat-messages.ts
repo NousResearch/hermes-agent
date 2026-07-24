@@ -311,16 +311,30 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
   return displayKind === 'hidden' ? null : content
 }
 
+function timelineDisplayMetadata(value: SessionMessage['display_metadata']): Record<string, unknown> | null {
+  let metadata: unknown = value
+
+  if (typeof metadata === 'string') {
+    try {
+      metadata = JSON.parse(metadata)
+    } catch {
+      return null
+    }
+  }
+
+  return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)
+    : null
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
-    const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
-        : undefined
+    const metadata = timelineDisplayMetadata(message.display_metadata)
+    const count = typeof metadata?.task_count === 'number' ? metadata.task_count : undefined
 
     return count === undefined
       ? 'background agent work finished'

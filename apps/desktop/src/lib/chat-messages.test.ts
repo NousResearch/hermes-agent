@@ -180,15 +180,29 @@ describe('toChatMessages', () => {
         content: 'opaque delegation context payload',
         display_kind: 'async_delegation_complete',
         timestamp: 5
+      },
+      {
+        role: 'user',
+        content: 'serialized delegation context payload',
+        display_kind: 'async_delegation_complete',
+        // SQLite can return persisted JSON metadata as a serialized string.
+        display_metadata: JSON.stringify({
+          delegation_id: 'deleg_f6415f5b',
+          task_count: 1,
+          completed_count: 1,
+          failed_count: 0
+        }) as unknown as { delegation_id: string; task_count: number },
+        timestamp: 6
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system'])
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system'])
     expect(messages.map(chatMessageText)).toEqual([
       'real user turn',
       'real assistant reply',
       'model changed',
-      'background agent work finished'
+      'background agent work finished',
+      '1 background agent finished'
     ])
   })
 })

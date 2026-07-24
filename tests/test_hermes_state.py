@@ -7199,6 +7199,13 @@ class TestDisplayMetadataPersistence:
             display_kind="async_delegation_complete",
             display_metadata=meta,
         )
+        stored = db.get_messages("s1")
+        assert stored[0]["display_kind"] == "async_delegation_complete"
+        assert stored[0]["display_metadata"] == meta
+
+        around = db.get_messages_around("s1", stored[0]["id"], window=0)
+        assert around["window"][0]["display_metadata"] == meta
+
         conv = db.get_messages_as_conversation("s1")
         assert conv[0]["display_kind"] == "async_delegation_complete"
         assert conv[0]["display_metadata"] == meta

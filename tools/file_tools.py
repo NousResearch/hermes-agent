@@ -1254,6 +1254,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                             ),
                             "path": path,
                             "already_read": hits + 1,
+                            "action_hint": (
+                                "The file content is unchanged. Options: "
+                                "(1) Use the content you already read earlier in this conversation; "
+                                "(2) If you need different information, use search_files to locate it; "
+                                "(3) Proceed with writing, patching, or responding."
+                            ),
                         }, ensure_ascii=False)
 
                     return json.dumps({
@@ -1388,12 +1394,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
                 "path": path,
                 "already_read": count,
+                "action_hint": (
+                    "You must change your approach. Options: "
+                    "(1) Use the content from your earlier read_file result — it is still current; "
+                    "(2) If you need a different region, use offset/limit to read a different part; "
+                    "(3) If you need to find something, use search_files instead; "
+                    "(4) Proceed with writing, patching, or responding to the user."
+                ),
             }, ensure_ascii=False)
         elif count >= 3:
             result_dict["_warning"] = (
                 f"You have read this exact file region {count} times consecutively. "
                 "The content has not changed since your last read. Use the information you already have. "
-                "If you are stuck in a loop, stop reading and proceed with writing or responding."
+                "If you continue re-reading, you will be blocked. "
+                "Try using search_files, reading a different offset, or proceeding with your task."
             )
 
         return json.dumps(result_dict, ensure_ascii=False)
@@ -1886,6 +1900,13 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 ),
                 "pattern": pattern,
                 "already_searched": count,
+                "action_hint": (
+                    "You must change your approach. Options: "
+                    "(1) Use a different, more specific or broader search pattern; "
+                    "(2) If you already know which file to examine, use read_file instead; "
+                    "(3) Use search_files with a different file_glob or target directory; "
+                    "(4) If the search returned no results, accept that and move on."
+                ),
             }, ensure_ascii=False)
 
         try:
@@ -1917,7 +1938,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if count >= 3:
             result_dict["_warning"] = (
                 f"You have run this exact search {count} times consecutively. "
-                "The results have not changed. Use the information you already have."
+                "The results have not changed. Use the information you already have. "
+                "If you continue searching, you will be blocked. "
+                "Try a different search pattern, file_glob, or use read_file on a known file."
             )
 
         result_json = json.dumps(result_dict, ensure_ascii=False)

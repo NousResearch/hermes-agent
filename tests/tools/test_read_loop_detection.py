@@ -284,6 +284,59 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertNotIn("error", result)
 
 
+class TestActionHints(unittest.TestCase):
+    """Verify that BLOCKED responses include actionable strategy hints."""
+
+    def setUp(self):
+        _read_tracker.clear()
+
+    def tearDown(self):
+        _read_tracker.clear()
+
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_search_blocked_has_action_hint(self, _mock_ops):
+        """BLOCKED search response includes action_hint with strategy options."""
+        for _ in range(3):
+            search_tool("needle", task_id="t1")
+        result = json.loads(search_tool("needle", task_id="t1"))
+        self.assertIn("error", result)
+        self.assertIn("BLOCKED", result["error"])
+        self.assertIn("action_hint", result)
+        self.assertIn("different", result["action_hint"])
+        self.assertIn("read_file", result["action_hint"])
+
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_read_blocked_has_action_hint(self, _mock_ops):
+        """BLOCKED read response includes action_hint with strategy options."""
+        for _ in range(3):
+            read_file_tool("/tmp/test.py", task_id="t1")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
+        self.assertIn("error", result)
+        self.assertIn("BLOCKED", result["error"])
+        self.assertIn("action_hint", result)
+        self.assertIn("search_files", result["action_hint"])
+
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_search_warning_suggests_alternatives(self, _mock_ops):
+        """Search warning at count=3 suggests changing approach."""
+        for _ in range(2):
+            search_tool("needle", task_id="t1")
+        result = json.loads(search_tool("needle", task_id="t1"))
+        self.assertIn("_warning", result)
+        self.assertIn("blocked", result["_warning"].lower())
+        self.assertIn("different", result["_warning"].lower())
+
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_read_warning_suggests_alternatives(self, _mock_ops):
+        """Read warning at count=3 suggests using search_files or different offset."""
+        for _ in range(2):
+            read_file_tool("/tmp/test.py", task_id="t1")
+        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
+        self.assertIn("_warning", result)
+        self.assertIn("blocked", result["_warning"].lower())
+        self.assertIn("search_files", result["_warning"])
+
+
 class TestTodoInjectionFiltering(unittest.TestCase):
     """Verify that format_for_injection filters completed/cancelled todos."""
 

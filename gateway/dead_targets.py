@@ -82,7 +82,7 @@ class DeadTargetRegistry:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-            tmp.write_text(json.dumps(self._dead, indent=2))
+            tmp.write_text(json.dumps(self._dead, indent=2), encoding="utf-8")
             tmp.replace(self._path)
         except OSError as exc:
             # Best-effort: keep the in-memory state, don't break delivery.

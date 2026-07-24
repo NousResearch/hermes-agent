@@ -736,7 +736,7 @@ class CopilotACPClient:
                 if denied:
                     raise PermissionError(denied)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(params.get("content") or ""))
+                path.write_text(str(params.get("content") or ""), encoding="utf-8")
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

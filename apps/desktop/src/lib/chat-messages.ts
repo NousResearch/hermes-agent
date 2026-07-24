@@ -930,7 +930,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // pull image refs out into `attachmentRefs` (same shape the local
     // optimistic composer already uses) and render them via the dedicated
     // attachments row below the bubble instead.
-    const imageRefExtraction = displayRole === 'user' ? extractImageRefs(rawDisplayContent) : null
+    const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
     const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
     const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
 

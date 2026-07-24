@@ -354,7 +354,10 @@ export function DirectiveContent({ text }: { text: string }) {
   // `@image:<path>` directives render as a block-level thumbnail row (like
   // embedded base64 images below), not inline mid-text — otherwise a large
   // thumbnail gets wedged between words and breaks the text's line flow.
-  const imageSegments = segments.filter(segment => segment.kind === 'mention' && segment.type === 'image')
+  const imageSegments = segments.filter(
+  (segment): segment is Extract<Unstable_DirectiveSegment, { kind: 'mention' }> =>
+    segment.kind === 'mention' && segment.type === 'image'
+)
 
   return (
     <span className="whitespace-pre-line" data-slot="aui_directive-text">

@@ -341,6 +341,87 @@ def test_nemo_relay_plugin_closes_api_span_on_error(monkeypatch):
     assert not plugin._get_runtime().sessions["s1"].llm_spans
 
 
+def test_nemo_relay_auxiliary_attempts_propagate_metadata_and_keep_request_ids_isolated(
+    monkeypatch,
+):
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    shared = {
+        "session_id": "s1",
+        "task_id": "title_generation",
+        "turn_id": "aux-call-1",
+        "request_kind": "auxiliary",
+        "auxiliary_task": "title_generation",
+        "auxiliary_call_id": "aux-call-1",
+        "provider": "openrouter",
+        "model": "demo-model",
+        "api_mode": "chat_completions",
+        "request": {"body": {"messages": [{"role": "user", "content": "hi"}]}},
+    }
+    first = {
+        **shared,
+        "api_request_id": "request-first",
+        "api_call_count": 1,
+        "attempt_index": 0,
+        "attempt_reason": "initial",
+    }
+    second = {
+        **shared,
+        "api_request_id": "request-second",
+        "api_call_count": 2,
+        "attempt_index": 1,
+        "attempt_reason": "retry:transient_transport",
+    }
+
+    plugin.on_pre_api_request(**first)
+    plugin.on_pre_api_request(**second)
+    state = plugin._get_runtime().sessions["s1"]
+    assert set(state.llm_spans) == {"request-first", "request-second"}
+
+    plugin.on_api_request_error(
+        **first,
+        error={"type": "ConnectionError", "message": "connection reset"},
+    )
+    assert set(state.llm_spans) == {"request-second"}
+    plugin.on_post_api_request(
+        **second,
+        response={"assistant_message": {"role": "assistant", "content": "done"}},
+    )
+    assert state.llm_spans == {}
+
+    llm_calls = [event for event in fake.events if event[0] == "llm.call"]
+    first_metadata = llm_calls[0][3]["metadata"]
+    second_metadata = llm_calls[1][3]["metadata"]
+    assert {
+        key: first_metadata[key]
+        for key in (
+            "request_kind",
+            "auxiliary_task",
+            "auxiliary_call_id",
+            "attempt_index",
+            "attempt_reason",
+        )
+    } == {
+        "request_kind": "auxiliary",
+        "auxiliary_task": "title_generation",
+        "auxiliary_call_id": "aux-call-1",
+        "attempt_index": 0,
+        "attempt_reason": "initial",
+    }
+    assert second_metadata["attempt_index"] == 1
+    assert second_metadata["attempt_reason"] == "retry:transient_transport"
+
+    llm_ends = [event for event in fake.events if event[0] == "llm.call_end"]
+    assert llm_ends[0][2] == {
+        "error": {"type": "ConnectionError", "message": "connection reset"}
+    }
+    assert llm_ends[0][3]["metadata"]["attempt_index"] == 0
+    assert llm_ends[1][2] == {
+        "assistant_message": {"role": "assistant", "content": "done"}
+    }
+    assert llm_ends[1][3]["metadata"]["attempt_index"] == 1
+
+
 def test_nemo_relay_plugin_emits_approval_marks(monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)

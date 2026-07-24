@@ -603,6 +603,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| [`pre_api_request`](/user-guide/features/hooks#api-request-lifecycle) | Before each main or auxiliary provider attempt | Correlation, route, and redacted request fields | ignored |
+| [`post_api_request`](/user-guide/features/hooks#api-request-lifecycle) | After a provider attempt succeeds | Matching correlation fields plus response and usage | ignored |
+| [`api_request_error`](/user-guide/features/hooks#api-request-lifecycle) | After a provider attempt fails | Matching correlation fields plus redacted error | ignored |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |

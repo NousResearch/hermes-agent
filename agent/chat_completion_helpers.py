@@ -37,6 +37,7 @@ from agent.message_content import flatten_message_text
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
+    collapse_degenerate_repetition,
 )
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
@@ -1299,6 +1300,27 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # compression, title generation.
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
+
+    # Collapse degenerate token-repetition spam ("call call call …") before the
+    # content is persisted. Some models (Claude Opus 4.x especially) pad the
+    # assistant content with one short word repeated dozens of times when they
+    # intend to issue a tool call but the structured call doesn't materialize.
+    # Left in place, the run enters durable history and becomes a bad few-shot
+    # that makes later turns imitate the degeneration (same failure mode as the
+    # leaked-tool-call loop, #50279). The collapse is conservative — only a long
+    # run of the SAME short token separated by whitespace is touched — so real
+    # prose is never altered (no-op fast path when clean).
+    if isinstance(_san_content, str) and _san_content:
+        _san_content, _degen_runs = collapse_degenerate_repetition(_san_content)
+        if _degen_runs:
+            logger.warning(
+                "Collapsed %d degenerate token-repetition run(s) from assistant "
+                "content before persist (model=%s provider=%s finish_reason=%s)",
+                _degen_runs,
+                getattr(agent, "model", "unknown"),
+                getattr(agent, "provider", "unknown"),
+                finish_reason,
+            )
 
     # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
     # from assistant content BEFORE the message enters conversation history.

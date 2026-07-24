@@ -461,6 +461,96 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+# ---------------------------------------------------------------------------
+# Degenerate token-repetition collapse
+# ---------------------------------------------------------------------------
+#
+# Some models — Claude Opus 4.x most notably — fall into a *neural text
+# degeneration* loop when they want to issue a tool call but the structured
+# tool-call tokens don't materialize: instead of emitting the call, the model
+# pads the assistant CONTENT with the same short word over and over
+# ("call call call …", "court court …", "la la la …") until it hits the token
+# cap or spontaneously recovers. The same turn often still carries a real
+# tool call alongside the spam, so the garbage gets persisted into history —
+# where, per the leaked-tool-call lesson (#50279), it becomes a bad few-shot
+# that makes *later* turns imitate the very same degeneration.
+#
+# This collapses such a run at the storage boundary (build_assistant_message),
+# mirroring the surrogate / think-strip / secret-redact sanitizers that already
+# run there. It is deliberately conservative: it only fires on a long run of
+# the SAME short alphanumeric token separated solely by whitespace, so ordinary
+# prose, repeated list bullets, code, or legitimately repeated short phrases are
+# never touched. Detection (``text_has_degenerate_repetition``) is exposed
+# separately so the conversation loop can also *count* occurrences and re-prompt
+# for a real tool call rather than silently swallowing the turn.
+
+# A "token" here is a short run of word characters (letters/digits/_), the shape
+# that degeneration produces. We cap length so this never matches a repeated
+# real sentence — genuine loops are single short words.
+_DEGENERATE_TOKEN = r"[A-Za-z0-9_]{1,20}"
+
+# Run of the same token repeated, separated only by whitespace. The backref
+# \1 forces every repeat to be IDENTICAL to the first. Default threshold of 8
+# total occurrences (the first token + 7 backref repeats) is well clear of any
+# natural writing while catching the 50-100x runs degeneration produces.
+_DEGENERATE_RUN_MIN = 8
+
+
+def _degenerate_run_regex(min_repeats: int) -> "re.Pattern[str]":
+    # (token)( ws (same token) ){min_repeats-1,}
+    backrefs = min_repeats - 1
+    pattern = (
+        r"\b(" + _DEGENERATE_TOKEN + r")"
+        r"(?:\s+\1\b){" + str(backrefs) + r",}"
+    )
+    return re.compile(pattern)
+
+
+def text_has_degenerate_repetition(text: str, min_repeats: int = _DEGENERATE_RUN_MIN) -> bool:
+    """Return True when ``text`` contains a degenerate same-token run.
+
+    Conservative detector: fires only on a run of one short alphanumeric token
+    repeated ``min_repeats`` or more times separated solely by whitespace
+    (e.g. ``"call call call …"``). Ordinary prose — even prose that repeats a
+    short word a handful of times — does not trip it. Used both to scrub the
+    run from persisted content and to let the loop re-prompt for the real
+    tool call the model was trying to make.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    return _degenerate_run_regex(max(2, min_repeats)).search(text) is not None
+
+
+def collapse_degenerate_repetition(
+    text: str, min_repeats: int = _DEGENERATE_RUN_MIN
+) -> tuple[str, int]:
+    """Collapse degenerate same-token runs to a single occurrence.
+
+    Returns ``(cleaned_text, runs_collapsed)``. Each qualifying run
+    (``"call call call …"``) is replaced by one instance of the token, so a
+    sentence that legitimately precedes or follows the spam is preserved while
+    the padding is removed. ``runs_collapsed`` is 0 (and the input returned
+    unchanged) when nothing degenerate is present — a fast common-case no-op.
+    """
+    if not isinstance(text, str) or not text:
+        return text, 0
+    regex = _degenerate_run_regex(max(2, min_repeats))
+    collapsed = 0
+
+    def _repl(match: "re.Match[str]") -> str:
+        nonlocal collapsed
+        collapsed += 1
+        return match.group(1)
+
+    cleaned = regex.sub(_repl, text)
+    if collapsed:
+        # A run that filled the whole turn can leave doubled blank lines or
+        # trailing whitespace behind; tidy without disturbing real prose.
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, collapsed
+
+
 __all__ = [
     "_SURROGATE_RE",
     "close_interrupted_tool_sequence",
@@ -474,4 +564,6 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
+    "text_has_degenerate_repetition",
+    "collapse_degenerate_repetition",
 ]

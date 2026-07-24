@@ -19,6 +19,7 @@ import { updateCronJobs } from '@/store/cron'
 import { notify } from '@/store/notifications'
 
 import { PanelEmpty, PanelPill } from '../overlays/panel'
+import { ListRow } from '../settings/primitives'
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
@@ -153,11 +154,11 @@ function BlueprintCard({
   }, [blueprint, values, profile, onCreated, b])
 
   return (
-    // A card container — NOT PanelBlock. PanelBlock is a height-capped, scrollable
-    // <pre> for monospace code; using it here clipped each blueprint's copy at
-    // max-h-48 and forced an inner scroll. A plain auto-height card lets the row
-    // grow with its content and the whole gallery scrolls as one.
-    <div className="rounded-md bg-foreground/5 p-3">
+    // Keep this in the Panel family (matches the cron editor's in-surface
+    // groupings) rather than a standalone card look — bg-(--ui-bg-quinary) is the
+    // shared in-panel grouping token. NOT PanelBlock: that's a height-capped,
+    // scrollable <pre> for monospace code and clipped each blueprint's copy.
+    <div className="rounded-md bg-(--ui-bg-quinary) p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-foreground">{blueprint.title}</p>
@@ -177,7 +178,7 @@ function BlueprintCard({
 
       {open && (
         <form
-          className="mt-3 grid gap-3 border-t border-border/60 pt-3"
+          className="mt-3 border-t border-border/60 pt-1"
           onSubmit={event => {
             event.preventDefault()
             void submit()
@@ -185,37 +186,40 @@ function BlueprintCard({
         >
           {blueprint.fields.map(field => {
             const fieldId = `blueprint-${blueprint.key}-${field.name}`
+            // The backend deliver help is origin/dashboard-centric and even
+            // contradicts desktop semantics ("local = save only" vs. This
+            // desktop), and the relabeled dropdown is self-explanatory — skip it
+            // for the deliver slot.
+            const help = field.help && field.type !== 'text' && !isDeliverField(field) ? field.help : undefined
 
             return (
-              <div className="grid gap-1.5" key={field.name}>
-                <label className="text-xs font-medium text-foreground" htmlFor={fieldId}>
-                  {field.label}
-                </label>
-                <FieldInput
-                  c={c}
-                  field={field}
-                  id={fieldId}
-                  onChange={next => setValues(prev => ({ ...prev, [field.name]: next }))}
-                  value={values[field.name] ?? ''}
-                />
-                {/* The backend deliver help is origin/dashboard-centric and even
-                    contradicts desktop semantics ("local = save only" vs. This
-                    desktop), and the relabeled dropdown is self-explanatory —
-                    skip it for the deliver slot. */}
-                {field.help && field.type !== 'text' && !isDeliverField(field) && (
-                  <p className="text-[0.66rem] leading-4 text-muted-foreground">{field.help}</p>
-                )}
-              </div>
+              // Shared settings/messaging field primitive so the slot form matches
+              // the rest of the app's forms (label + description on the left, the
+              // control on the right; stacks in a narrow pane).
+              <ListRow
+                action={
+                  <FieldInput
+                    c={c}
+                    field={field}
+                    id={fieldId}
+                    onChange={next => setValues(prev => ({ ...prev, [field.name]: next }))}
+                    value={values[field.name] ?? ''}
+                  />
+                }
+                description={help}
+                key={field.name}
+                title={<label htmlFor={fieldId}>{field.label}</label>}
+              />
             )
           })}
 
           {error && (
-            <p className="text-xs text-destructive" role="alert">
+            <p className="mt-2 text-xs text-destructive" role="alert">
               {error}
             </p>
           )}
 
-          <div>
+          <div className="mt-3">
             <Button disabled={submitting} size="sm" type="submit">
               {submitting ? b.scheduling : b.scheduleIt}
             </Button>

@@ -30,7 +30,13 @@ import { latestSessionTodos } from '@/lib/todos'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  freshSessionDraftOptions,
+  refreshActiveProfile
+} from '@/store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -410,15 +416,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // A profile switch/create drops to a fresh new-session draft so the
   // previously open session doesn't bleed across contexts. Skip initial value.
   const freshSessionRequest = useStore($freshSessionRequest)
-  const lastFreshRef = useRef(freshSessionRequest)
+  const lastFreshRef = useRef(freshSessionRequest.generation)
 
   useEffect(() => {
-    if (freshSessionRequest === lastFreshRef.current) {
+    if (freshSessionRequest.generation === lastFreshRef.current) {
       return
     }
 
-    lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
+    lastFreshRef.current = freshSessionRequest.generation
+    startFreshSessionDraft(freshSessionDraftOptions(freshSessionRequest))
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's

@@ -156,12 +156,26 @@ export const $newChatProfile = atom<string | null>(null)
 
 // Bumped whenever the open session should be dropped for a fresh new-session
 // draft: a profile switch/create (below), or deleting the project that owns the
-// currently-open session (store/projects). The chat controller subscribes and
-// resets to the intro draft, so we never strand the user in an orphaned view.
-export const $freshSessionRequest = atom(0)
+// currently-open session (store/projects). A profile switch also carries an
+// explicit detached workspace target: the request fires before the async gateway
+// swap completes, so resolving a default at that instant would read the previous
+// profile's remembered cwd and leak its project context into the target profile.
+export interface FreshSessionRequest {
+  generation: number
+  workspaceTarget?: null
+}
 
-export function requestFreshSession(): void {
-  $freshSessionRequest.set($freshSessionRequest.get() + 1)
+export const $freshSessionRequest = atom<FreshSessionRequest>({ generation: 0 })
+
+export function freshSessionDraftOptions(request: FreshSessionRequest): { workspaceTarget: null } | undefined {
+  return request.workspaceTarget === null ? { workspaceTarget: null } : undefined
+}
+
+export function requestFreshSession(options: { workspaceTarget?: null } = {}): void {
+  $freshSessionRequest.set({
+    generation: $freshSessionRequest.get().generation + 1,
+    ...options
+  })
 }
 
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
@@ -344,7 +358,7 @@ export function selectProfile(name: string): void {
   $newChatProfile.set(target)
 
   if (switching) {
-    requestFreshSession()
+    requestFreshSession({ workspaceTarget: null })
   }
 
   void ensureGatewayProfile(target).then(async () => {
@@ -369,7 +383,7 @@ export function selectProfile(name: string): void {
 export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
   $newChatProfile.set(target)
-  requestFreshSession()
+  requestFreshSession({ workspaceTarget: null })
   void ensureGatewayProfile(target)
 }
 

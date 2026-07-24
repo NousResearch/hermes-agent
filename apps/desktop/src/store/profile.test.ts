@@ -19,8 +19,16 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles, selectProfile } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profiles,
+  ensureGatewayProfile,
+  freshSessionDraftOptions,
+  prewarmProfileBackend,
+  refreshProfiles,
+  selectProfile
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -114,6 +122,25 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 })
 
 describe('selected profile persistence', () => {
+  it('maps a profile switch request to an explicitly detached fresh draft', () => {
+    expect(freshSessionDraftOptions({ generation: 1, workspaceTarget: null })).toEqual({ workspaceTarget: null })
+  })
+
+  it('leaves ordinary fresh-session requests project-aware', () => {
+    expect(freshSessionDraftOptions({ generation: 1 })).toBeUndefined()
+  })
+
+  it('starts the target profile on a detached workspace instead of inheriting the prior profile cwd', () => {
+    const previousGeneration = $freshSessionRequest.get().generation
+
+    selectProfile('secretary')
+
+    expect($freshSessionRequest.get()).toEqual({
+      generation: previousGeneration + 1,
+      workspaceTarget: null
+    })
+  })
+
   it('remembers a named profile only after its gateway becomes active', async () => {
     getConnection.mockResolvedValue(remoteConn({ profile: 'secretary' }))
 

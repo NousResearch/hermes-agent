@@ -17,6 +17,9 @@ import pytest
 from agent.lsp.client import LSPClient
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
@@ -141,3 +144,41 @@ async def test_client_diagnostics_are_deduped(tmp_path: Path):
         assert len(diags) == 1
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_client_handles_large_stderr_line(tmp_path: Path):
+    """LSP stderr drain must not crash or deadlock when the server emits a line
+    larger than asyncio's old 64 KiB default StreamReader limit."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n")
+
+    client = _client(tmp_path, "large_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        diags = client.diagnostics_for(str(f))
+        assert diags == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running
+
+
+@pytest.mark.asyncio
+async def test_client_handles_stderr_line_over_stream_limit(tmp_path: Path):
+    """An over-limit stderr line must not terminate the drain task."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n")
+
+    client = _client(tmp_path, "oversized_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        assert client.diagnostics_for(str(f)) == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running

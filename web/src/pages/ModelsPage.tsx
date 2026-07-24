@@ -31,7 +31,7 @@ import {
 import { formatTokenCount } from "@/lib/format";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Stats } from "@nous-research/ui/ui/components/stats";
+import { Stats } from "@/components/Stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Switch } from "@nous-research/ui/ui/components/switch";
@@ -179,12 +179,12 @@ function CapabilityBadges({
         </span>
       )}
       {capabilities.supports_vision && (
-        <span className="inline-flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
+        <span className="inline-flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-foreground">
           <Eye className="h-2.5 w-2.5" /> Vision
         </span>
       )}
       {capabilities.supports_reasoning && (
-        <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
+        <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-xs font-medium text-foreground">
           <Brain className="h-2.5 w-2.5" /> Reasoning
         </span>
       )}
@@ -417,7 +417,7 @@ function ModelCard({
                 </span>
               )}
               {mainAuxTask && (
-                <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-purple-600 dark:text-purple-400">
+                <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-foreground">
                   aux · {mainAuxTask}
                 </span>
               )}
@@ -985,7 +985,9 @@ function ModelSettingsPanel({
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <h2 className="font-expanded text-sm font-bold tracking-[0.08em] uppercase">
+            Model Settings
+          </h2>
           <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
             applies to new sessions
           </span>

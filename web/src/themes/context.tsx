@@ -396,7 +396,7 @@ function applyTheme(theme: DashboardTheme) {
   );
   root.style.setProperty(
     "--theme-terminal-foreground",
-    theme.terminalForeground ?? "#f0e6d2",
+    theme.terminalForeground ?? "#fff8e7",
   );
 
   // Re-assert the font override last: theme application just rewrote

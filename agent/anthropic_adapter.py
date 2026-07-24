@@ -2037,7 +2037,15 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
                 blocks.extend(converted_content)
         else:
             blocks.append({"type": "text", "text": str(content)})
-    for tc in m.get("tool_calls", []):
+    # ``or []`` mirrors the sibling loop above (~L1978): ``.get("tool_calls",
+    # [])`` returns None — not the default — when the key is PRESENT with a
+    # null value, which happens for tool-less assistant rows (``get_messages``
+    # surfaces the SQL NULL as ``dict(row)["tool_calls"] = None``, and
+    # ``auxiliary_client``/``bedrock_adapter`` build messages with
+    # ``tool_calls=... or None``). Without the guard, ``for tc in None`` raises
+    # ``TypeError: 'NoneType' object is not iterable`` and the whole Anthropic
+    # request build fails.
+    for tc in m.get("tool_calls", []) or []:
         if not tc or not isinstance(tc, dict):
             continue
         fn = tc.get("function", {})

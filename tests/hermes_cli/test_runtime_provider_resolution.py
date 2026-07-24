@@ -1319,6 +1319,38 @@ def test_explicit_openrouter_honors_openrouter_base_url_over_pool(monkeypatch):
     assert resolved.get("credential_pool") is None
 
 
+def test_explicit_openrouter_honors_config_base_url_mirror(monkeypatch):
+    """requested='openrouter' + cfg_provider='openrouter' must use config
+    base_url AND select OPENROUTER_API_KEY for it — a config-sourced mirror
+    is an OpenRouter context for credential selection just like the
+    OPENROUTER_BASE_URL env var path already was, and resolving to the
+    mirror's base_url without the matching key would send an empty/wrong
+    credential (#10707 followup)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://openrouter-mirror.example.com/api/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["base_url"] == "https://openrouter-mirror.example.com/api/v1"
+    assert resolved["api_key"] == "router-key"
+    # A config-mirrored explicit provider is a custom endpoint — the
+    # credential pool must be bypassed entirely, not silently substitute a
+    # pooled OpenRouter credential for the mirror's own key.
+    assert not resolved.get("credential_pool")
+
+
 def test_resolve_requested_provider_precedence(monkeypatch):
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "openai-codex"})

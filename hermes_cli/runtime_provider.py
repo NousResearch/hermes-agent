@@ -1114,6 +1114,8 @@ def _resolve_openrouter_runtime(
             cfg_base_url, cfg_provider
         ):
             use_config_base_url = True
+        elif requested_norm == "openrouter" and cfg_provider == "openrouter":
+            use_config_base_url = True
 
     base_url = (
         (explicit_base_url or "").strip()
@@ -1130,12 +1132,20 @@ def _resolve_openrouter_runtime(
     # provider (issues #420, #560).
     _is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
     # Also treat explicitly-configured OpenRouter mirrors/proxies as OpenRouter
-    # for key selection — if the user set OPENROUTER_BASE_URL or requested
-    # provider=openrouter explicitly, OPENROUTER_API_KEY should still be used.
+    # for key selection — if the user set OPENROUTER_BASE_URL, or requested
+    # provider=openrouter explicitly with a config.yaml mirror (#10707),
+    # OPENROUTER_API_KEY should still be used rather than falling through to
+    # the generic custom-endpoint branch (which wouldn't select it at all,
+    # since a non-openrouter.ai mirror host doesn't match `_is_openrouter_url`).
     _is_openrouter_context = _is_openrouter_url or (
         requested_norm == "openrouter"
-        and (env_openrouter_base_url or base_url == env_openrouter_base_url)
-        and base_url == (env_openrouter_base_url or "").rstrip("/")
+        and (
+            (use_config_base_url and cfg_provider == "openrouter")
+            or (
+                (env_openrouter_base_url or base_url == env_openrouter_base_url)
+                and base_url == (env_openrouter_base_url or "").rstrip("/")
+            )
+        )
     )
     if _is_openrouter_context:
         api_key_candidates = [
@@ -1731,7 +1741,7 @@ def resolve_runtime_provider(
             or env_openai_base_url
             or env_openrouter_base_url
         )
-        if cfg_base_url and cfg_provider in {"auto", "custom"}:
+        if cfg_base_url and cfg_provider in {"auto", "custom", "openrouter"}:
             has_custom_endpoint = True
         has_runtime_override = bool(explicit_api_key or explicit_base_url)
         should_use_pool = (

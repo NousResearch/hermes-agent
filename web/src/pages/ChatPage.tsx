@@ -560,6 +560,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+    const isLinux =
+      typeof navigator !== "undefined" && /Linux/i.test(navigator.platform);
+
+    const getSelectedText = (): null | { source: "dom" | "term"; text: string } => {
+      const termSelection = term.getSelection();
+      if (termSelection) {
+        return { source: "term", text: termSelection };
+      }
+      const domSelection = window.getSelection()?.toString() ?? "";
+      if (domSelection) {
+        return { source: "dom", text: domSelection };
+      }
+      return null;
+    };
+
+    const copySelectionToClipboard = (
+      selection: { source: "dom" | "term"; text: string },
+    ) => {
+      navigator.clipboard.writeText(selection.text).catch((err) => {
+        console.warn("[dashboard clipboard] direct copy failed:", err.message);
+      });
+      if (selection.source === "term") {
+        // Clear xterm.js's highlight after copy (matches gnome-terminal).
+        term.clearSelection();
+      }
+    };
 
     // ── Image paste / drop ───────────────────────────────────────────────
     // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
@@ -639,23 +665,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const bareCtrlCopy =
+        !isMac &&
+        ev.ctrlKey &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        !ev.metaKey &&
+        ev.key.toLowerCase() === "c";
 
-      if (copyModifier && ev.key.toLowerCase() === "c") {
-        const sel = term.getSelection();
-        if (sel) {
+      if ((copyModifier || bareCtrlCopy) && ev.key.toLowerCase() === "c") {
+        const selection = getSelectedText();
+        if (selection) {
           // Direct writeText inside the keydown handler preserves the user
           // gesture — async round-trips through OSC 52 can lose activation
           // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
-          });
-          // Clear xterm.js's highlight after copy (matches gnome-terminal).
-          term.clearSelection();
+          copySelectionToClipboard(selection);
           ev.preventDefault();
           return false;
         }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
+        // No selection → fall through so the TUI still receives SIGINT on
+        // bare Ctrl+C, and Ctrl+Shift+C remains available for terminal-side
+        // bindings when nothing is highlighted.
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
@@ -700,6 +730,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       return true;
     });
+
+    const handleLinuxMiddleClickPaste = (ev: MouseEvent) => {
+      if (!isLinux || ev.button !== 1) {
+        return;
+      }
+      const selection = getSelectedText();
+      if (!selection) {
+        return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      term.focus();
+      term.paste(selection.text);
+    };
+    host.addEventListener("mousedown", handleLinuxMiddleClickPaste, true);
 
     const fit = new FitAddon();
     fitRef.current = fit;
@@ -1157,6 +1202,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         "resize",
         scheduleSyncTerminalMetrics,
       );
+      host.removeEventListener("mousedown", handleLinuxMiddleClickPaste, true);
       ro.disconnect();
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);

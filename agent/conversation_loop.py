@@ -76,6 +76,7 @@ from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
     jittered_backoff,
+    should_retry_short_window_rate_limit,
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
@@ -3897,8 +3898,16 @@ def run_conversation(
                 )
                 if _is_zai_coding_overload:
                     max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+                _short_window_retry_pending = (
+                    classified.reason == FailoverReason.rate_limit
+                    and should_retry_short_window_rate_limit(
+                        api_error,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                    )
+                )
                 _should_fallback = (
-                    is_rate_limited
+                    (is_rate_limited and not _short_window_retry_pending)
                     or (_is_transport_failure and retry_count >= 2)
                 )
                 if _should_fallback and agent._fallback_index < len(agent._fallback_chain):

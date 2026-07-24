@@ -251,6 +251,23 @@ If a request sends a `provider` that conflicts with a configured `model_routes`
 alias, Hermes rejects the request with `400` instead of silently remixing route
 credentials with another provider.
 
+**Bare `model` values on the OpenAI-compatible endpoints are opt-in.** Generic
+OpenAI clients routinely hardcode model names (`gpt-4o`, ...), and existing
+deployments rely on those falling back to the gateway default. On
+`POST /v1/chat/completions` and `POST /v1/responses`, a `model` value sent
+WITHOUT a `provider` is therefore ignored unless you enable:
+
+```yaml
+gateway:
+  platforms:
+    api_server:
+      direct_model_requests: true
+```
+
+Requests that include an explicit `provider` — and the Hermes-native
+`/v1/runs` and session-chat endpoints — always honor the requested model
+regardless of this flag.
+
 Example:
 
 ```json

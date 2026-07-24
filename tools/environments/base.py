@@ -804,6 +804,14 @@ class BaseEnvironment(ABC):
                             output.append(tail)
                     except Exception:
                         pass
+                    # Close from the reader thread after ReadFile reaches EOF.
+                    # Closing this stream from the waiter thread while a
+                    # descendant GUI still owns the pipe's write end can block
+                    # Windows indefinitely.
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
                 return
             idle_after_exit = 0
             try:
@@ -959,10 +967,17 @@ class BaseEnvironment(ABC):
         # it means the non-blocking loop itself stopped cooperating.
         drain_thread.join(timeout=2)
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        # A Windows GUI launched through `cmd.exe /c start` may inherit the
+        # stdout write handle after the shell wrapper exits. Its reader thread
+        # then remains blocked in ReadFile until the GUI closes. Do not close
+        # the read stream concurrently from this waiter thread: Windows can
+        # block that close behind the outstanding read and wedge the whole tool
+        # turn. The daemon reader owns cleanup once EOF eventually arrives.
+        if not drain_thread.is_alive():
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
 
         if _DEBUG_INTERRUPT:
             logger.info(

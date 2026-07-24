@@ -1122,3 +1122,27 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# Proxy / trust_env
+# ---------------------------------------------------------------------------
+
+class TestMattermostProxySupport:
+    @pytest.mark.asyncio
+    async def test_connect_creates_session_with_trust_env(self):
+        """ClientSession must use trust_env=True so proxy env vars are honored."""
+        adapter = _make_adapter()
+        adapter._api_get = AsyncMock(return_value={"id": "bot123", "username": "hermes-bot"})
+        adapter._ws_task = None
+
+        with patch("aiohttp.ClientSession") as mock_cls:
+            mock_session = AsyncMock()
+            mock_session.closed = False
+            mock_cls.return_value = mock_session
+
+            await adapter.connect()
+
+            mock_cls.assert_called_once()
+            call_kwargs = mock_cls.call_args[1]
+            assert call_kwargs.get("trust_env") is True

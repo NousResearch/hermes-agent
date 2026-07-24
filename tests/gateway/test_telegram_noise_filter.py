@@ -65,6 +65,9 @@ NOISY_STATUS_MESSAGES = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # Iteration-budget and empty-response retry chatter.
+    "⚠️ Iteration budget exhausted (50/50) — asking model to summarise",
+    "⚠️ Model returned empty after tool calls — nudging to continue",
 ]
 
 # Messages that must NEVER be swallowed by the compression-noise filter:

@@ -112,6 +112,10 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    r"|iteration\s+budget\s+exhausted"
+    r"|asking\s+model\s+to\s+summarise"
+    r"|model\s+returned\s+empty\s+after\s+tool\s+calls"
+    r"|nudging\s+to\s+continue"
     r")",
     re.IGNORECASE | re.DOTALL,
 )

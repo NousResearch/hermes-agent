@@ -108,14 +108,50 @@ class TestParseModelInput:
         assert model == "qwen-2.5"
 
     def test_custom_triple_syntax(self):
-        """custom:name:model → named custom provider."""
-        provider, model = parse_model_input("custom:local-server:qwen-2.5", "openrouter")
+        """custom:name:model → named custom provider (when name is registered)."""
+        with patch(
+            "hermes_cli.models._is_registered_custom_provider",
+            return_value=True,
+        ):
+            provider, model = parse_model_input("custom:local-server:qwen-2.5", "openrouter")
         assert provider == "custom:local-server"
         assert model == "qwen-2.5"
 
+    def test_custom_triple_unregistered_falls_back(self):
+        """custom:name:model → when name is NOT a registered custom provider,
+        treat everything after custom: as the model id.
+
+        Ollama models use colons in tags (e.g. glm-5.2:cloud).
+        Without this guard, parse_model_input truncates the model name
+        to just the part after the last colon (e.g. 'cloud' instead of
+        'glm-5.2:cloud'), causing HTTP 404 errors.
+        """
+        with patch(
+            "hermes_cli.models._is_registered_custom_provider",
+            return_value=False,
+        ):
+            provider, model = parse_model_input("custom:glm-5.2:cloud", "custom")
+        assert provider == "custom"
+        assert model == "glm-5.2:cloud"
+
+    def test_custom_ollama_tag_not_truncated(self):
+        """custom:glm-5.2:cloud must not be truncated to custom:glm-5.2 / cloud.
+
+        Regression test: Ollama cloud models have colons in their tags.
+        The triple-syntax parser must only split when the middle part is a
+        registered custom provider name.
+        """
+        provider, model = parse_model_input("custom:glm-5.2:cloud", "custom")
+        assert provider == "custom"
+        assert model == "glm-5.2:cloud"
+
     def test_custom_triple_spaces(self):
         """Triple syntax should handle whitespace."""
-        provider, model = parse_model_input("custom: my-server : my-model ", "openrouter")
+        with patch(
+            "hermes_cli.models._is_registered_custom_provider",
+            return_value=True,
+        ):
+            provider, model = parse_model_input("custom: my-server : my-model ", "openrouter")
         assert provider == "custom:my-server"
         assert model == "my-model"
 
@@ -126,6 +162,107 @@ class TestParseModelInput:
         assert provider == "custom"
         assert model == "name:"
 
+
+
+# -- integration: real config --> parse_model_input -----------------------------
+#
+# The unit tests above mock _is_registered_custom_provider to isolate the
+# parser.  The sweeper review on PR #56089 asked for an integration test that
+# wires a real config.yaml with a named custom provider and asserts the full
+# code path: _is_registered_custom_provider -> get_compatible_custom_providers
+# -> config.yaml -> parse_model_input.
+
+
+class TestParseModelInputIntegration:
+    """Integration tests that use a real HERMES_HOME + config.yaml.
+
+    These exercise the full _is_registered_custom_provider ->
+    get_compatible_custom_providers -> load_config path, proving the named
+    custom provider syntax works end-to-end without mocks.
+    """
+
+    def test_named_custom_provider_resolves(self, tmp_path, monkeypatch):
+        """custom:<name>:<model> selects the named custom provider when it
+        exists in config.yaml's custom_providers list."""
+        import yaml
+
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        config = {
+            "model": "test-model",
+            "custom_providers": [
+                {
+                    "name": "ollama-local",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "api_key": "ollama",
+                    "model": "qwen3",
+                }
+            ],
+        }
+        (home / "config.yaml").write_text(yaml.dump(config))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Clear any cached config for this new path.
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.pop(str(home / "config.yaml"), None)
+
+        provider, model = parse_model_input(
+            "custom:ollama-local:qwen3-coder", "openrouter"
+        )
+        assert provider == "custom:ollama-local"
+        assert model == "qwen3-coder"
+
+    def test_unregistered_name_keeps_full_model_id(self, tmp_path, monkeypatch):
+        """When the middle part is NOT a registered custom provider,
+        parse_model_input must keep everything after 'custom:' as the model
+        id -- including colons (Ollama tag syntax like glm-5.2:cloud)."""
+        import yaml
+
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        # config with NO custom_providers -- nothing registered
+        (home / "config.yaml").write_text(
+            yaml.dump({"model": "test-model", "custom_providers": []})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.pop(str(home / "config.yaml"), None)
+
+        provider, model = parse_model_input(
+            "custom:glm-5.2:cloud", "custom"
+        )
+        assert provider == "custom"
+        assert model == "glm-5.2:cloud"
+
+    def test_named_provider_via_providers_key(self, tmp_path, monkeypatch):
+        """The v12+ keyed 'providers' schema must also be discoverable by
+        _is_registered_custom_provider via get_compatible_custom_providers."""
+        import yaml
+
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        config = {
+            "model": "test-model",
+            "providers": {
+                "ollama-local": {
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "api_key": "ollama",
+                    "model": "qwen3",
+                }
+            },
+        }
+        (home / "config.yaml").write_text(yaml.dump(config))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from hermes_cli.config import _LOAD_CONFIG_CACHE
+        _LOAD_CONFIG_CACHE.pop(str(home / "config.yaml"), None)
+
+        provider, model = parse_model_input(
+            "custom:ollama-local:qwen3-coder", "openrouter"
+        )
+        assert provider == "custom:ollama-local"
+        assert model == "qwen3-coder"
 
 # -- curated_models_for_provider ---------------------------------------------
 

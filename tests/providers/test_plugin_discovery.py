@@ -119,6 +119,43 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     _clear_provider_caches()
 
 
+def test_user_plugin_live_metadata_resolves_context(tmp_path, monkeypatch):
+    """A discovered out-of-tree profile can supply authoritative metadata."""
+    hermes_home = tmp_path / ".hermes"
+    plugin_dir = hermes_home / "plugins" / "model-providers" / "live-metadata"
+    plugin_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (plugin_dir / "__init__.py").write_text(
+        "from providers import register_provider\n"
+        "from providers.base import ProviderProfile\n"
+        "\n"
+        "class LiveMetadataProfile(ProviderProfile):\n"
+        "    use_live_model_metadata = True\n"
+        "\n"
+        "    def fetch_model_metadata(self, **_kwargs):\n"
+        "        return [{\"id\": \"live/model\", \"context_length\": 40960}]\n"
+        "\n"
+        "profile = LiveMetadataProfile(\n"
+        "    name=\"live-metadata\",\n"
+        "    aliases=(\"live-alias\",),\n"
+        "    base_url=\"https://live.example.com/v1\",\n"
+        ")\n"
+        "register_provider(profile)\n",
+        encoding="utf-8",
+    )
+
+    _clear_provider_caches()
+    from agent.model_metadata import get_model_context_length
+
+    context_length = get_model_context_length(
+        "live/model",
+        provider="live-alias",
+    )
+
+    assert context_length == 40_960
+    _clear_provider_caches()
+
+
 def test_general_plugin_manager_skips_model_provider_kind(tmp_path, monkeypatch):
     """The general PluginManager must NOT import model-provider plugins
     (providers/__init__.py handles them). It records the manifest only."""

@@ -936,6 +936,296 @@ class TestNousPortalContextResolution:
 # get_model_context_length — resolution order
 # =========================================================================
 
+class TestProviderProfileLiveMetadataContextResolution:
+    def setup_method(self):
+        import agent.model_metadata as mm
+
+        mm._profile_model_metadata_cache.clear()
+        mm._profile_model_metadata_cache_time.clear()
+
+    def test_opted_in_profile_uses_its_catalog_when_base_url_is_omitted(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                provider="vendor",
+            )
+
+        assert context_length == 65_536
+        profile.fetch_model_metadata.assert_called_once_with(
+            api_key="",
+            base_url=None,
+        )
+
+    def test_opted_in_known_provider_uses_live_context_before_persistent_cache(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/small-model", "context_length": 40_960},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.model_metadata.get_cached_context_length",
+                return_value=999_999,
+            ) as mock_cache,
+        ):
+            context_length = get_model_context_length(
+                model="vendor/small-model",
+                base_url="https://api.vendor.test/v1",
+                api_key="test-key",
+                provider="vendor",
+            )
+
+        assert context_length == 40_960
+        mock_cache.assert_not_called()
+        profile.fetch_model_metadata.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://api.vendor.test/v1",
+        )
+
+    def test_url_inferred_opt_in_uses_live_context(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "max_model_len": 131_072},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile) as mock_profile,
+            patch(
+                "agent.model_metadata._infer_provider_from_url",
+                return_value="vendor",
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="custom",
+            )
+
+        assert context_length == 131_072
+        mock_profile.assert_called_with("vendor")
+
+    def test_default_profile_does_not_probe_known_provider_endpoint(self):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="vendor")
+        with (
+            patch(
+                "providers.get_provider_profile",
+                return_value=profile,
+            ),
+            patch(
+                "providers.base.ProviderProfile.fetch_model_metadata"
+            ) as mock_metadata,
+            patch(
+                "agent.model_metadata._is_known_provider_base_url",
+                return_value=True,
+            ),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=262_144,
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="vendor",
+            )
+
+        assert context_length == 262_144
+        mock_metadata.assert_not_called()
+
+    def test_live_probe_failure_is_cached_and_preserves_provider_fallback_chain(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "fallback-vendor"
+        profile.fetch_model_metadata.return_value = None
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=202_752,
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="vendor",
+            )
+            repeated_context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="vendor",
+            )
+
+        assert context_length == repeated_context_length == 202_752
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_malformed_live_metadata_is_cached_and_preserves_fallback_chain(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "malformed-vendor"
+        profile.models_url = ""
+        profile.fetch_model_metadata.return_value = 42
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=202_752,
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                provider="malformed-vendor",
+            )
+            repeated_context_length = get_model_context_length(
+                model="vendor/model",
+                provider="malformed-vendor",
+            )
+
+        assert context_length == repeated_context_length == 202_752
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_repeated_resolution_reuses_profile_metadata_within_ttl(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "cached-vendor"
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            first = get_model_context_length("vendor/model", provider="cached-vendor")
+            second = get_model_context_length("vendor/model", provider="cached-vendor")
+
+        assert first == second == 65_536
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_profile_metadata_cache_is_scoped_by_credential(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "credential-vendor"
+        profile.models_url = ""
+        profile.fetch_model_metadata.side_effect = lambda **kwargs: [
+            {
+                "id": "vendor/model",
+                "context_length": (
+                    65_536 if kwargs["api_key"] == "key-a" else 131_072
+                ),
+            },
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            first = get_model_context_length(
+                "vendor/model",
+                base_url="https://api.vendor.test/v1",
+                api_key="key-a",
+                provider="credential-vendor",
+            )
+            second = get_model_context_length(
+                "vendor/model",
+                base_url="https://api.vendor.test/v1",
+                api_key="key-b",
+                provider="credential-vendor",
+            )
+
+        assert first == 65_536
+        assert second == 131_072
+        assert profile.fetch_model_metadata.call_count == 2
+
+    def test_explicit_models_url_defines_profile_metadata_cache_scope(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "split-endpoint-vendor"
+        profile.models_url = "https://catalog.vendor.test/models"
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            first = get_model_context_length(
+                "vendor/model",
+                base_url="https://inference-a.vendor.test/v1",
+                provider="split-endpoint-vendor",
+            )
+            second = get_model_context_length(
+                "vendor/model",
+                base_url="https://inference-b.vendor.test/v1",
+                provider="split-endpoint-vendor",
+            )
+
+        assert first == second == 65_536
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_unmatched_routing_alias_does_not_inherit_sole_catalog_entry(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "routing-vendor"
+        profile.models_url = ""
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/concrete-model", "context_length": 40_960},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=262_144,
+            ),
+        ):
+            context_length = get_model_context_length(
+                "default:latency",
+                provider="routing-vendor",
+            )
+
+        assert context_length == 262_144
+
+    def test_expired_profile_metadata_refreshes(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "refreshing-vendor"
+        profile.fetch_model_metadata.side_effect = [
+            [{"id": "vendor/model", "context_length": 65_536}],
+            [{"id": "vendor/model", "context_length": 131_072}],
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch("agent.model_metadata.time.time", side_effect=[1_000, 1_301]),
+        ):
+            first = get_model_context_length("vendor/model", provider="refreshing-vendor")
+            refreshed = get_model_context_length("vendor/model", provider="refreshing-vendor")
+
+        assert first == 65_536
+        assert refreshed == 131_072
+        assert profile.fetch_model_metadata.call_count == 2
+
+    def test_failed_refresh_reuses_stale_metadata_and_negative_caches_failure(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "stale-vendor"
+        profile.fetch_model_metadata.side_effect = [
+            [{"id": "vendor/model", "context_length": 65_536}],
+            None,
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.model_metadata.time.time",
+                side_effect=[1_000, 1_301, 1_302],
+            ),
+        ):
+            first = get_model_context_length("vendor/model", provider="stale-vendor")
+            stale = get_model_context_length("vendor/model", provider="stale-vendor")
+            cached_stale = get_model_context_length(
+                "vendor/model",
+                provider="stale-vendor",
+            )
+
+        assert first == stale == cached_stale == 65_536
+        assert profile.fetch_model_metadata.call_count == 2
+
+
 class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_known_model_from_api(self, mock_fetch):

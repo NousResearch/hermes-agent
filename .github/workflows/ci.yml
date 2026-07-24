@@ -224,47 +224,10 @@ jobs:
           COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
           COMMIT_MESSAGE: ${{ github.event.pull_request.head.commit.message }}
           COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}/commits/${{ github.event.pull_request.head.sha }}
-          # Structured review statuses from workflow_call jobs.
-          # Each job outputs a JSON array of {source, results: [...]} objects
-          # that the assembler renders directly — no hardcoded job-name
-          # matching. We merge all available outputs into one array.
-          REVIEW_STATUSES: ${{ toJSON(needs.*.outputs.review_status) }}
         run: |
-          set -uo pipefail
-
-          # REVIEW_STATUSES is a JSON array of strings (some may be empty
-          # when a job was skipped). Parse each string and merge into one
-          # flat array for the assembler.
-          python3 - <<'PYEOF'
-          import json, os, sys
-
-          raw = os.environ.get("REVIEW_STATUSES", "")
-          merged = []
-          if raw:
-              try:
-                  arr = json.loads(raw)
-              except (json.JSONDecodeError, TypeError):
-                  arr = []
-              for item in arr:
-                  if not item:
-                      continue
-                  try:
-                      statuses = json.loads(item)
-                  except (json.JSONDecodeError, TypeError):
-                      continue
-                  if isinstance(statuses, list):
-                      merged.extend(statuses)
-
-          # Write merged array to a temp file the poller reads.
-          with open("/tmp/review_statuses.json", "w") as f:
-              json.dump(merged, f)
-          print(f"Merged {len(merged)} review status entries")
-          PYEOF
-
           python3 scripts/ci/live_comment.py \
             --interval 15 \
-            --timeout 2100 \
-            --review-statuses-file /tmp/review_statuses.json
+            --timeout 2100
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
@@ -333,8 +296,9 @@ jobs:
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
-  # The live comment poller can read the standalone review-status artifact
-  # after the HTML report is uploaded, so its link points straight at that report.
+  # The live comment poller dynamically fetches all review-status-* artifacts
+  # across the orchestrator and sub-workflow runs every cycle, so its link
+  # points straight at that report.
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
@@ -393,7 +357,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ci-timings-review-status
+          name: review-status-ci-timings
           path: review-status.json
           retention-days: 14
 

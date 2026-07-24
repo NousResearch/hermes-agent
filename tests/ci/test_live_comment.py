@@ -1,14 +1,17 @@
-"""Tests for scripts/ci/live_comment.py — classify_jobs().
+"""Tests for scripts/ci/live_comment.py — classify_jobs() + artifact helpers.
 
 The poller's core logic is a pure function: take raw GitHub API job dicts
-and split them into (completed, pending). The API wrapper + polling loop
-are tested via E2E in CI, not here.
+and split them into (completed, pending). Artifact parsing helpers are also
+pure and tested here. The API wrapper + polling loop are tested via E2E
+in CI, not here.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "live_comment.py"
@@ -120,3 +123,85 @@ def test_commit_info_uses_past_tense_after_jobs_complete():
     assert _mod._commit_info_for_state(info, []) == (
         "<sub>ran on [abc1234](https://commit-url) — fix: thing</sub>"
     )
+
+
+# ---------------------------------------------------------------------------
+# Artifact parsing helpers
+# ---------------------------------------------------------------------------
+
+def test_parse_status_file_with_prefix():
+    """GITHUB_OUTPUT format: review_status=<json>"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('review_status=[{"source":"test","results":[]}]')
+        f.flush()
+        statuses = _mod._parse_status_file(Path(f.name))
+    assert len(statuses) == 1
+    assert statuses[0]["source"] == "test"
+
+
+def test_parse_status_file_without_prefix():
+    """Raw JSON (no review_status= prefix) is also accepted."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('[{"source":"raw","results":[]}]')
+        f.flush()
+        statuses = _mod._parse_status_file(Path(f.name))
+    assert len(statuses) == 1
+    assert statuses[0]["source"] == "raw"
+
+
+def test_parse_status_file_empty_array():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('review_status=[]')
+        f.flush()
+        statuses = _mod._parse_status_file(Path(f.name))
+    assert statuses == []
+
+
+def test_parse_status_file_invalid_json():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('review_status=not json')
+        f.flush()
+        statuses = _mod._parse_status_file(Path(f.name))
+    assert statuses == []
+
+
+def test_parse_status_file_nonexistent():
+    assert _mod._parse_status_file(Path("/nonexistent/file.json")) == []
+
+
+def test_parse_status_file_not_a_list():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write('review_status={"not":"a list"}')
+        f.flush()
+        statuses = _mod._parse_status_file(Path(f.name))
+    assert statuses == []
+
+
+def test_merge_statuses_empty():
+    assert _mod._merge_statuses([]) == ""
+
+
+def test_merge_statuses_single():
+    statuses = [{"source": "a", "results": []}]
+    result = _mod._merge_statuses(statuses)
+    assert json.loads(result) == statuses
+
+
+def test_merge_statuses_multiple():
+    statuses = [
+        {"source": "a", "results": []},
+        {"source": "b", "results": [{"kind": "warning"}]},
+    ]
+    result = _mod._merge_statuses(statuses)
+    assert json.loads(result) == statuses
+
+
+def test_review_status_artifact_prefix():
+    """The prefix is used to filter artifacts from the API."""
+    assert _mod._REVIEW_STATUS_ARTIFACT_PREFIX == "review-status-"
+    # Artifacts with this prefix should be picked up
+    assert "review-status-ci-timings".startswith(_mod._REVIEW_STATUS_ARTIFACT_PREFIX)
+    assert "review-status-review-labels".startswith(_mod._REVIEW_STATUS_ARTIFACT_PREFIX)
+    # Artifacts without it should not
+    assert not "ci-timings-report".startswith(_mod._REVIEW_STATUS_ARTIFACT_PREFIX)
+    assert not "playwright-report".startswith(_mod._REVIEW_STATUS_ARTIFACT_PREFIX)

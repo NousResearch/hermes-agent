@@ -2934,3 +2934,65 @@ class TestAllBlankFallbackAndNonStringText:
         result = self._convert(msg)  # must not raise
         blocks = result["content"]
         assert not any(b.get("type") == "text" for b in blocks)
+
+
+class TestReplayAllBlankFallback:
+    """Regression for the final open review point on #68633 (egilewski):
+
+    ``_relocated_replay_cache_control`` was applied only inside ``if
+    replayed:``. For ``anthropic_content_blocks`` containing only a blank
+    cache-marked text block, ``replayed`` became empty, the function fell
+    through to the main path's ``(empty)`` fallback, and the marker was
+    lost. A signed-thinking block plus the blank marked text also returned
+    without any relocated marker (thinking is not a cacheable carrier).
+    The replay branch now resolves a cacheable ``(empty)`` placeholder when
+    no cacheable block survives the blank filter.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+    def test_sole_blank_marked_replay_block_keeps_marker_on_placeholder(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "text", "text": " ", "cache_control": {"type": "ephemeral"}},
+            ],
+        }
+        result = self._convert(msg)
+        assert result["content"] == [
+            {"type": "text", "text": "(empty)", "cache_control": {"type": "ephemeral"}}
+        ], result["content"]
+
+    def test_thinking_plus_blank_marked_text_keeps_thinking_and_marker(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "thinking", "thinking": "reasoning", "signature": "sig-A"},
+                {"type": "text", "text": "  ", "cache_control": {"type": "ephemeral"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        assert blocks[0] == {"type": "thinking", "thinking": "reasoning", "signature": "sig-A"}
+        marked = [b for b in blocks if isinstance(b.get("cache_control"), dict)]
+        assert len(marked) == 1 and marked[0]["type"] == "text"
+        assert marked[0]["text"].strip(), "placeholder must be non-whitespace"
+
+    def test_thinking_plus_blank_unmarked_text_gets_schema_valid_placeholder(self):
+        """Even without a cache marker, dropping the only text block from a
+        thinking-only replay must leave schema-valid content."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "thinking", "thinking": "reasoning", "signature": "sig-B"},
+                {"type": "text", "text": "\n"},
+            ],
+        }
+        result = self._convert(msg)
+        texts = [b for b in result["content"] if b.get("type") == "text"]
+        assert texts == [{"type": "text", "text": "(empty)"}]

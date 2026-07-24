@@ -108,9 +108,10 @@ def _coerce_fanout(value: Any) -> str:
     ``every_n:<N>`` (N >= 2). The ``every_n`` cadence also accepts the mapping
     form ``{mode: every_n, n: N}`` from hand-edited YAML and normalizes it to
     the canonical string, so the rest of the pipeline (presets, flattened
-    view, runtime) only ever sees one shape. ``every_n:1`` means "run every
-    iteration" and collapses to ``per_iteration``; anything unparseable falls
-    back to ``per_iteration`` (the tolerant-read contract of this module).
+    view, runtime) only ever sees one shape. ``every_n:1`` semantically means
+    "run every iteration" and collapses to ``per_iteration``; anything
+    unparseable falls back to ``user_turn`` (the default — cheapest cadence;
+    see #67199).
     """
     if isinstance(value, dict):
         # Mapping form: {mode: every_n, n: 3}. Non-every_n mapping modes fall
@@ -118,7 +119,9 @@ def _coerce_fanout(value: Any) -> str:
         mode = str(value.get("mode") or "").strip().lower()
         if mode == "every_n":
             n = _coerce_int(value.get("n"), 0)
-            return f"every_n:{n}" if n >= 2 else "per_iteration"
+            if n >= 2:
+                return f"every_n:{n}"
+            return "per_iteration" if n == 1 else "user_turn"
         value = mode
     mode = str(value or "").strip().lower()
     if mode in {"per_iteration", "user_turn"}:
@@ -128,7 +131,9 @@ def _coerce_fanout(value: Any) -> str:
         n = _coerce_int(rest.strip(), 0) if sep else 0
         if n >= 2:
             return f"every_n:{n}"
-    return "per_iteration"
+        if n == 1:
+            return "per_iteration"
+    return "user_turn"
 
 
 def coerce_privacy_filter(value: Any) -> str:
@@ -300,7 +305,7 @@ def _default_preset() -> dict[str, Any]:
         "degraded_reference_policy": "loud",
         "max_tokens": 4096,
         "reference_max_tokens": None,
-        "fanout": "per_iteration",
+        "fanout": "user_turn",
         "enabled": True,
     }
 
@@ -348,16 +353,18 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # judgement, so capping roughly halves per-turn wall time. Does NOT cap
         # the acting aggregator (its output is the user-visible answer).
         "reference_max_tokens": _coerce_int_or_none(raw.get("reference_max_tokens")),
-        # When the reference fan-out runs. "per_iteration" (default) re-runs
-        # the advisors whenever the advisory view changes — i.e. every tool
-        # iteration, so advice tracks live task state. "user_turn" runs the
-        # advisors ONCE per user turn (the original MoA shape): the
-        # aggregator gets their upfront plan-level advice, then acts alone
-        # for the rest of the tool loop. "every_n:<N>" (N >= 2) is the middle
-        # ground: advisors run on the first iteration of each user turn and
-        # every Nth tool iteration after it; in-between iterations reuse the
-        # cached guidance from the last advisor run. Also accepts the mapping
-        # form {mode: every_n, n: N}, normalized to the canonical string.
+        # When the reference fan-out runs. "user_turn" (default) runs the
+        # advisors ONCE per user turn (the original MoA shape, and the
+        # cheapest cadence — #67199): the aggregator gets their upfront
+        # plan-level advice, then acts alone for the rest of the tool loop.
+        # "per_iteration" re-runs the advisors whenever the advisory view
+        # changes — i.e. every tool iteration, so advice tracks live task
+        # state at the cost of multiplying advisor spend by tool-loop depth.
+        # "every_n:<N>" (N >= 2) is the middle ground: advisors run on the
+        # first iteration of each user turn and every Nth tool iteration
+        # after it; in-between iterations reuse the cached guidance from the
+        # last advisor run. Also accepts the mapping form
+        # {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
     }
 
@@ -407,7 +414,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "degraded_reference_policy": active["degraded_reference_policy"],
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
-        "fanout": active.get("fanout", "per_iteration"),
+        "fanout": active.get("fanout", "user_turn"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside
         # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'

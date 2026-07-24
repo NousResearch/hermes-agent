@@ -1703,14 +1703,16 @@ class MoAChatCompletions:
         reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
 
-        # Fan-out cadence. "per_iteration" (default): advisors re-run whenever
-        # the advisory view changes — i.e. every tool iteration, since the
-        # view grows with each tool result. "user_turn": advisors run ONCE per
-        # user turn; subsequent tool iterations reuse that turn's advice and
-        # the aggregator acts alone (the original MoA shape: synthesize at the
-        # start, then let the acting model work). Implemented by hashing only
-        # the prefix up to the LAST USER message so mid-turn growth doesn't
-        # change the signature — iteration 2+ becomes a cache HIT.
+        # Fan-out cadence. "user_turn" (default — cheapest cadence, #67199):
+        # advisors run ONCE per user turn; subsequent tool iterations reuse
+        # that turn's advice and the aggregator acts alone (the original MoA
+        # shape: synthesize at the start, then let the acting model work).
+        # Implemented by hashing only the prefix up to the LAST USER message
+        # so mid-turn growth doesn't change the signature — iteration 2+
+        # becomes a cache HIT. "per_iteration": advisors re-run whenever the
+        # advisory view changes — i.e. every tool iteration, since the view
+        # grows with each tool result; advice tracks live task state at the
+        # cost of multiplying advisor latency/spend by tool-loop depth.
         # "every_n:<N>" (N >= 2): the middle ground (issue #63393 — advisor
         # fan-out multiplies latency/cost by the tool-iteration count).
         # Advisors run on iteration 1 of a user turn and then every Nth tool
@@ -1720,7 +1722,7 @@ class MoAChatCompletions:
         # refreshed against the very latest tool results). The iteration
         # counter is scoped per user turn and resets on a new user message,
         # so every turn starts with fresh advice.
-        fanout_mode = str(preset.get("fanout") or "per_iteration").strip().lower()
+        fanout_mode = str(preset.get("fanout") or "user_turn").strip().lower()
         every_n = 0
         if fanout_mode.startswith("every_n:"):
             try:
@@ -1728,8 +1730,8 @@ class MoAChatCompletions:
             except (TypeError, ValueError):
                 every_n = 0
             if every_n < 2:
-                # Unparseable / degenerate cadence degrades to the default,
-                # mirroring _coerce_fanout's tolerant-read contract.
+                # every_n:1 semantically IS per-iteration; degrade there,
+                # mirroring _coerce_fanout's collapse of degenerate N.
                 fanout_mode = "per_iteration"
         sig_messages = ref_messages
         turn_prefix = ref_messages

@@ -683,6 +683,33 @@ class TestSendTelegramMediaDelivery:
         bot.send_audio.assert_awaited_once()
         bot.send_voice.assert_not_awaited()
 
+    def test_sends_m2a_as_document(self, tmp_path, monkeypatch):
+        audio_path = tmp_path / "clip.m2a"
+        audio_path.write_bytes(b"mpeg-audio")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=9))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "",
+                media_files=[(str(audio_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        bot.send_document.assert_awaited_once()
+        bot.send_audio.assert_not_awaited()
+        bot.send_voice.assert_not_awaited()
+
     def test_missing_media_returns_error_without_leaking_raw_tag(self, monkeypatch):
         bot = MagicMock()
         bot.send_message = AsyncMock()

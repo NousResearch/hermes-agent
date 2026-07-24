@@ -150,6 +150,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +204,27 @@ class TestDocumentDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
+    async def test_m2a_document_is_cached_as_audio(self, adapter):
+        audio_bytes = b"mpeg-audio"
+        file_obj = _make_file_obj(audio_bytes)
+        doc = _make_document(
+            file_name="clip.m2a",
+            mime_type="application/octet-stream",
+            file_size=len(audio_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert event.media_types == ["audio/mpeg"]
+        assert event.media_urls[0].endswith(".m2a")
+        assert os.path.exists(event.media_urls[0])
 
     @pytest.mark.asyncio
     async def test_supported_txt_injects_content(self, adapter):
@@ -628,6 +652,28 @@ class TestSendVoice:
         assert result.success is True
         connected_adapter._bot.send_document.assert_awaited_once()
         connected_adapter._bot.send_audio.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_m2a_falls_back_to_document(self, connected_adapter, tmp_path):
+        """MPEG-2 Layer II is audio, but Telegram sendAudio does not accept M2A."""
+        audio_file = tmp_path / "clip.m2a"
+        audio_file.write_bytes(b"mpeg-audio")
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock()
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_document.assert_awaited_once()
+        connected_adapter._bot.send_audio.assert_not_awaited()
+        connected_adapter._bot.send_voice.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mp3_routes_to_send_audio(self, connected_adapter, tmp_path):

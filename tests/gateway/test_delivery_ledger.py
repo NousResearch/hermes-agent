@@ -109,9 +109,46 @@ class TestSweep:
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is False
         assert claimed[0]["attempts"] == 1
+        # Claim starts the recovery send: state must leave pending so a
+        # crash mid-redelivery is treated as ambiguous on the next boot.
+        assert _row("ob-1")["state"] == "attempting"
         # Claim re-stamps ownership: a second sweep in the same (live)
         # process must not double-claim.
         assert dl.sweep_recoverable() == []
+
+    def test_pending_reclaim_after_prior_attempt_needs_marker(self):
+        """Crash mid-redelivery of a pending row must not silent-duplicate.
+
+        First reclaim of orphaned pending redelivers plainly (send never
+        started). If the process dies after that claim/send starts but
+        before mark_delivered, the next reclaim must carry the recovered
+        marker — even if state was stuck at pending historically.
+        """
+        _record()
+        _orphan("ob-1")
+        first = dl.sweep_recoverable()
+        assert first[0]["needs_marker"] is False
+        assert _row("ob-1")["state"] == "attempting"
+        assert _row("ob-1")["attempts"] == 1
+
+        _orphan("ob-1")
+        second = dl.sweep_recoverable()
+        assert len(second) == 1
+        assert second[0]["needs_marker"] is True
+        assert second[0]["attempts"] == 2
+
+    def test_stuck_pending_with_prior_attempts_needs_marker(self):
+        """Pre-fix rows: pending + attempts>=1 still need the marker."""
+        _record()
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET attempts=1, "
+                "owner_pid=999999999, owner_started_at=1 WHERE obligation_id=?",
+                ("ob-1",),
+            )
+        claimed = dl.sweep_recoverable()
+        assert claimed[0]["needs_marker"] is True
+        assert claimed[0]["attempts"] == 2
 
     def test_dead_owner_attempting_needs_marker(self):
         _record()
@@ -244,6 +281,30 @@ class TestGatewayRedeliverySweep:
         sent = adapter.send.call_args.kwargs
         assert sent["content"].startswith(dl.RECOVERED_MARKER)
         assert sent["content"].endswith("the final answer")
+
+    @pytest.mark.asyncio
+    async def test_second_boot_pending_recovery_carries_marker(self):
+        """Simulate crash after first pending reclaim started send."""
+        _record()
+        _orphan("ob-1")
+        first = self._adapter()
+        n1 = await self._runner(first)._redeliver_pending_obligations()
+        assert n1 == 1
+        assert not first.send.call_args.kwargs["content"].startswith(
+            dl.RECOVERED_MARKER
+        )
+        # Pretend the first recovery send never reached mark_delivered.
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET state='attempting', "
+                "owner_pid=999999999, owner_started_at=1 WHERE obligation_id=?",
+                ("ob-1",),
+            )
+        second = self._adapter()
+        await self._runner(second)._redeliver_pending_obligations()
+        sent = second.send.call_args.kwargs["content"]
+        assert sent.startswith(dl.RECOVERED_MARKER)
+        assert sent.endswith("the final answer")
 
     @pytest.mark.asyncio
     async def test_send_failure_marks_failed_for_next_boot(self):

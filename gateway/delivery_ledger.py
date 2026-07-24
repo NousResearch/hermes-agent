@@ -210,11 +210,13 @@ def sweep_recoverable(
     """Claim undelivered rows owned by dead processes; return them for
     redelivery.
 
-    Claiming atomically re-stamps the owner to THIS process and increments
-    ``attempts``, so a second gateway racing the same sweep cannot
-    double-claim (the UPDATE is guarded on the previous owner stamp).
-    Rows over the attempts cap or older than the stale cutoff transition to
-    'abandoned' instead of being returned.
+    Claiming atomically re-stamps the owner to THIS process, sets
+    ``state='attempting'``, and increments ``attempts``, so a second
+    gateway racing the same sweep cannot double-claim (the UPDATE is
+    guarded on the previous owner stamp) and a crash mid-redelivery is
+    treated as ambiguous on the next boot. Rows over the attempts cap
+    or older than the stale cutoff transition to 'abandoned' instead of
+    being returned.
 
     ``deliverable_platforms`` (platform value strings) restricts claiming to
     platforms the caller can actually send on this boot.  ``attempts`` is the
@@ -254,7 +256,8 @@ def sweep_recoverable(
                 continue
             cursor = conn.execute(
                 """UPDATE delivery_obligations
-                   SET owner_pid=?, owner_started_at=?, attempts=attempts+1,
+                   SET state='attempting',
+                       owner_pid=?, owner_started_at=?, attempts=attempts+1,
                        updated_at=?
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
                 (pid, started, now, oid, owner_pid, owner_pid),
@@ -267,9 +270,12 @@ def sweep_recoverable(
                     "chat_id": chat_id,
                     "thread_id": thread_id,
                     "content": content,
-                    # pending = send never started, redeliver plainly;
-                    # attempting/failed = ambiguous or rejected, carry marker.
-                    "needs_marker": state != "pending",
+                    # pending + attempts==0 = send never started, redeliver
+                    # plainly. attempting/failed, or a prior reclaim that
+                    # already spent an attempt (stuck pending rows from
+                    # older builds), carry the recovered-reply marker so a
+                    # possible platform-side duplicate is labeled.
+                    "needs_marker": state != "pending" or attempts >= 1,
                     "attempts": attempts + 1,
                 })
     return claimed

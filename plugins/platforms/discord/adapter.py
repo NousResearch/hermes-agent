@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
@@ -338,6 +339,68 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+# Matches bounded Discord application-command mention candidates. Command path
+# tokens are validated separately against Discord's Unicode-aware CHAT_INPUT
+# name grammar before any text is rewritten. The path can contain at most three
+# 32-character tokens plus two literal spaces.
+_APP_COMMAND_MENTION_RE = re.compile(r"</([^<>:\r\n]{1,98}):([0-9]+)>")
+
+# Python's stdlib ``re`` has no Unicode script properties. Letters and numbers
+# are covered via their Unicode general categories. This immutable table is the
+# remaining Script=Devanagari or Script=Thai code points whose Unicode 17.0
+# General_Category is not L* or N*. It was generated from the official files at
+# https://www.unicode.org/Public/17.0.0/ucd/{Scripts,UnicodeData}.txt; adjacent
+# code points were compressed into inclusive ranges. Keeping the script-property
+# exceptions explicit also makes behavior independent of Python's bundled
+# unicodedata version (notably, U+11B00-U+11B09 are unassigned in Python 3.11's
+# Unicode 14.0 database).
+_APP_COMMAND_SCRIPT_RANGES = (
+    (0x0900, 0x0903),
+    (0x093A, 0x093C),
+    (0x093E, 0x094F),
+    (0x0955, 0x0957),
+    (0x0962, 0x0963),
+    (0x0970, 0x0970),
+    (0xA8E0, 0xA8F1),
+    (0xA8F8, 0xA8FA),
+    (0xA8FC, 0xA8FC),
+    (0xA8FF, 0xA8FF),
+    (0x11B00, 0x11B09),
+    (0x0E31, 0x0E31),
+    (0x0E34, 0x0E3A),
+    (0x0E47, 0x0E4F),
+    (0x0E5A, 0x0E5B),
+)
+
+
+def _is_valid_app_command_name(name: str) -> bool:
+    """Return whether one token follows Discord's CHAT_INPUT name grammar."""
+    if not 1 <= len(name) <= 32 or name.lower() != name:
+        return False
+
+    for char in name:
+        if char in "-_'" or unicodedata.category(char)[0] in {"L", "N"}:
+            continue
+        codepoint = ord(char)
+        if any(start <= codepoint <= end for start, end in _APP_COMMAND_SCRIPT_RANGES):
+            continue
+        return False
+    return True
+
+
+def _normalize_app_command_mentions(text: str) -> str:
+    """Convert valid ``</name:id>`` payloads back to plain slash text."""
+
+    def replace(match: re.Match) -> str:
+        path = match.group(1)
+        tokens = path.split(" ")
+        if 1 <= len(tokens) <= 3 and all(_is_valid_app_command_name(token) for token in tokens):
+            return "/" + path
+        return match.group(0)
+
+    return _APP_COMMAND_MENTION_RE.sub(replace, text)
 
 
 def check_discord_requirements() -> bool:
@@ -7157,6 +7220,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        # Clicked Discord slash-command suggestions arrive as `</cmd:id>` and
+        # must be normalised back to `/cmd` text before the command dispatch
+        # below; run after mention-stripping so the `</cmd:id>` payload is no
+        # longer adjacent to a bot mention.  See #29528.  The `</` substring
+        # check is a cheap pre-filter; only strip when the regex actually
+        # rewrote something so unrelated content (e.g. `</tag>` with leading
+        # whitespace) is left untouched.
+        if "</" in normalized_content:
+            rewritten = _normalize_app_command_mentions(normalized_content)
+            if rewritten != normalized_content:
+                normalized_content = rewritten.strip()
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:

@@ -75,7 +75,13 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from gateway.platforms.base import MessageType  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    _APP_COMMAND_SCRIPT_RANGES,
+    DiscordAdapter,
+    _is_valid_app_command_name,
+    _normalize_app_command_mentions,
+)
 
 
 class FakeTree:
@@ -1145,3 +1151,304 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
+
+
+# ------------------------------------------------------------------
+# Application-command mention normalisation (clicked slash suggestions)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Bare top-level command, no surrounding text.
+        ("</status:123456789>", "/status"),
+        # Subcommand form: `</name sub:id>` -> `/name sub`.
+        ("</cron list:987654321098765432>", "/cron list"),
+        # Grouped-subcommand form: `</name group sub:id>` -> `/name group sub`.
+        ("</skill manage delete:111222333444555666>", "/skill manage delete"),
+        # Trailing user-typed arguments are preserved verbatim.
+        ("</skill search:42> ocr-and-documents", "/skill search ocr-and-documents"),
+        # Hyphens and underscores in command names are allowed by Discord.
+        ("</my-cmd_x:42>", "/my-cmd_x"),
+        # Discord's CHAT_INPUT grammar is Unicode-aware and permits apostrophes.
+        ("</café:42>", "/café"),
+        ("</नमस्ते:42>", "/नमस्ते"),
+        ("</rock'n_roll:42>", "/rock'n_roll"),
+        ("</café नमस्ते:42>", "/café नमस्ते"),
+        ("</café समूह नमस्ते:42>", "/café समूह नमस्ते"),
+        # Every path token is independently bounded and must use lowercase
+        # wherever Unicode defines a lowercase variant.
+        ("</STATUS:42>", "</STATUS:42>"),
+        (f"</{'a' * 33}:42>", f"</{'a' * 33}:42>"),
+        ("</status Café:42>", "</status Café:42>"),
+        # Punctuation outside Discord's explicit -_' set is rejected.
+        ("</status!:42>", "</status!:42>"),
+        # Discord separates command path tokens with literal spaces, not other
+        # whitespace. Tabs/newlines must not be normalized across boundaries.
+        ("</cron\tlist:42>", "</cron\tlist:42>"),
+        ("</cron\nlist:42>", "</cron\nlist:42>"),
+        ("</cron  list:42>", "</cron  list:42>"),
+        # Multiple application-command mentions in a single message all resolve.
+        ("</status:1> and </help:2>", "/status and /help"),
+        # No application-command mention: pass-through, no rewrites.
+        ("/status", "/status"),
+        ("hello world", "hello world"),
+        # Bot mention syntax is NOT a command mention and must be left alone.
+        ("<@1234567890> what's up", "<@1234567890> what's up"),
+    ],
+)
+def test_normalize_app_command_mentions(raw, expected):
+    assert _normalize_app_command_mentions(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "café",
+        "नमस्ते",
+        "สวัสดี",
+        "rock'n_roll",
+        "\u0970",
+        "\u0e4f",
+        "\ua8e0",
+        "\U00011b00",
+        "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
+        "\u0e47\u0e4f",
+    ],
+)
+def test_valid_app_command_name_accepts_discord_unicode_grammar(name):
+    assert _is_valid_app_command_name(name)
+
+
+def test_app_command_script_ranges_match_unicode_17_property_oracle():
+    """Pin the generated Script=Devanagari/Thai non-L/N range contract."""
+    expected_ranges = (
+        (0x0900, 0x0903),
+        (0x093A, 0x093C),
+        (0x093E, 0x094F),
+        (0x0955, 0x0957),
+        (0x0962, 0x0963),
+        (0x0970, 0x0970),
+        (0xA8E0, 0xA8F1),
+        (0xA8F8, 0xA8FA),
+        (0xA8FC, 0xA8FC),
+        (0xA8FF, 0xA8FF),
+        (0x11B00, 0x11B09),
+        (0x0E31, 0x0E31),
+        (0x0E34, 0x0E3A),
+        (0x0E47, 0x0E4F),
+        (0x0E5A, 0x0E5B),
+    )
+
+    assert _APP_COMMAND_SCRIPT_RANGES == expected_ranges
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "STATUS",
+        "a" * 33,
+        "status!",
+        "has space",
+        "tab\tname",
+        "\u0301",  # Combining mark outside the permitted scripts.
+        "\u0e3f",  # Thai block, but Script=Common.
+        "\u0964",  # Gap between exact Devanagari script ranges.
+    ],
+)
+def test_valid_app_command_name_rejects_discord_boundaries(name):
+    assert not _is_valid_app_command_name(name)
+
+
+def _slash_click_message(channel, *, command_payload, bot_user=None, author_id=42, mention_bot=False):
+    if mention_bot:
+        assert bot_user is not None, "mention_bot=True requires bot_user"
+        content = f"<@{bot_user.id}> {command_payload}"
+        # discord.py mention-detection compares by identity (`user in mentions`);
+        # pass through the exact bot_user object so the strip path fires.
+        mentions = [bot_user]
+    else:
+        content = command_payload
+        mentions = []
+    return SimpleNamespace(
+        author=SimpleNamespace(id=author_id, display_name="Jezza", bot=False, name="jezza"),
+        content=content,
+        channel=channel,
+        attachments=[],
+        message_snapshots=[],
+        mentions=mentions,
+        reference=None,
+        created_at=None,
+        id=12345,
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        type=_discord_mod.MessageType.default,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_dispatched_as_command(adapter, monkeypatch):
+    """A clicked `</status:id>` should reach handle_message as `/status` COMMAND."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload="</status:123456789>")
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == "/status"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_payload,expected_text,expected_type",
+    [
+        ("</café:101>", "/café", MessageType.COMMAND),
+        ("</नमस्ते:102>", "/नमस्ते", MessageType.COMMAND),
+        ("</rock'n_roll:103>", "/rock'n_roll", MessageType.COMMAND),
+        ("</café समूह नमस्ते:104>", "/café समूह नमस्ते", MessageType.COMMAND),
+        ("</\u0970:107>", "/\u0970", MessageType.COMMAND),
+        ("</\u0e4f:108>", "/\u0e4f", MessageType.COMMAND),
+        ("</\ua8e0:109>", "/\ua8e0", MessageType.COMMAND),
+        ("</\U00011b00:110>", "/\U00011b00", MessageType.COMMAND),
+        (
+            f"</{''.join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2))}:111>",
+            "/" + "".join(chr(codepoint) for codepoint in range(0xA8E0, 0xA8F2)),
+            MessageType.COMMAND,
+        ),
+        ("</\u0e47\u0e4f:112>", "/\u0e47\u0e4f", MessageType.COMMAND),
+        ("</STATUS:105>", "</STATUS:105>", MessageType.TEXT),
+        (f"</{'a' * 33}:106>", f"</{'a' * 33}:106>", MessageType.TEXT),
+        ("</\u0301:113>", "</\u0301:113>", MessageType.TEXT),
+        ("</\u0e3f:114>", "</\u0e3f:114>", MessageType.TEXT),
+        ("</\u0964:115>", "</\u0964:115>", MessageType.TEXT),
+    ],
+)
+async def test_clicked_slash_suggestion_enforces_discord_name_grammar(
+    adapter,
+    monkeypatch,
+    command_payload,
+    expected_text,
+    expected_type,
+):
+    """The real ingress path rewrites only valid Unicode CHAT_INPUT names."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload=command_payload)
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == expected_text
+    assert captured[0].message_type == expected_type
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_with_args_preserves_args(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeTextChannel(), command_payload="</skill search:42> ocr-and-documents"
+    )
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "/skill search ocr-and-documents"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_clicked_slash_suggestion_after_bot_mention_still_dispatches(adapter, monkeypatch):
+    """`<@bot> </status:id>` (auto-prepended mention) still arrives as `/status`."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeTextChannel(),
+        command_payload="</status:123456789>",
+        mention_bot=True,
+        bot_user=adapter._client.user,
+    )
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "/status"
+    assert captured[0].message_type == MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_payload,mention_bot",
+    [
+        ("/help", False),
+        ("</help:123456789>", False),
+        ("</help:123456789>", True),
+    ],
+)
+async def test_dm_help_control_and_clicked_suggestions_dispatch_as_commands(
+    adapter, monkeypatch, command_payload, mention_bot
+):
+    """The real DM adapter path keeps literal and clicked `/help` routing aligned."""
+    class _FakeDMChannel:
+        id = 200
+
+    monkeypatch.setattr(_discord_mod, "DMChannel", _FakeDMChannel)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(
+        _FakeDMChannel(),
+        command_payload=command_payload,
+        mention_bot=mention_bot,
+        bot_user=adapter._client.user if mention_bot else None,
+    )
+    msg.guild = None
+
+    await adapter._handle_message(msg)
+
+    assert len(captured) == 1
+    assert captured[0].text == "/help"
+    assert captured[0].message_type == MessageType.COMMAND
+    assert captured[0].source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_plain_text_with_lt_slash_substring_not_misinterpreted(adapter, monkeypatch):
+    """Literal `</` substrings in user text without an `:id>` suffix pass through."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    captured = []
+
+    async def capture(event):
+        captured.append(event)
+
+    adapter.handle_message = capture
+    msg = _slash_click_message(_FakeTextChannel(), command_payload="see </tag> in HTML")
+    await adapter._handle_message(msg)
+
+    assert captured[0].text == "see </tag> in HTML"
+    assert captured[0].message_type == MessageType.TEXT

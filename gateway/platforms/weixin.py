@@ -29,11 +29,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
 WEIXIN_COPY_LINE_WIDTH = 120
+_WEIXIN_MEDIA_MAX_REDIRECTS = 5
+_WEIXIN_MEDIA_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 try:
     import aiohttp
@@ -2091,14 +2093,36 @@ class WeixinAdapter(BasePlatformAdapter):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
         assert self._send_session is not None
-        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
-        # "Timeout context manager should be used inside a task" errors.
+        # Pre-flight is_safe_url alone is insufficient: a public URL can
+        # 302 to link-local / RFC1918 / cloud metadata. Follow redirects
+        # manually and re-validate every hop (same pattern as Discord/Matrix).
         async def _do_fetch():
-            async with self._send_session.get(url) as response:
-                response.raise_for_status()
-                return await response.read()
-        data = await asyncio.wait_for(_do_fetch(), timeout=30)
-        suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
+            current_url = url
+            for _ in range(_WEIXIN_MEDIA_MAX_REDIRECTS + 1):
+                if not is_safe_url(current_url):
+                    raise ValueError(
+                        f"Blocked redirect to private/internal address: {current_url}"
+                    )
+                async with self._send_session.get(
+                    current_url, allow_redirects=False
+                ) as response:
+                    if response.status in _WEIXIN_MEDIA_REDIRECT_STATUSES:
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise ValueError("redirect missing Location")
+                        next_url = urljoin(current_url, location)
+                        if not is_safe_url(next_url):
+                            raise ValueError(
+                                f"Blocked redirect to private/internal address: {next_url}"
+                            )
+                        current_url = next_url
+                        continue
+                    response.raise_for_status()
+                    return await response.read(), current_url
+            raise ValueError("Too many media URL redirects")
+
+        data, final_url = await asyncio.wait_for(_do_fetch(), timeout=30)
+        suffix = Path(final_url.split("?", 1)[0]).suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
             handle.write(data)
             return handle.name

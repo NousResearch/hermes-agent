@@ -209,6 +209,83 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+### Serving Hermes itself over Streamable HTTP
+
+`hermes mcp serve` defaults to stdio for local clients such as Claude Desktop:
+
+```bash
+hermes mcp serve
+```
+
+For hosted or networked MCP clients that require an HTTP URL, Hermes can also serve its own MCP bridge over Streamable HTTP. Keep the process bound to loopback and put your HTTPS ingress (Tailscale Serve/Funnel, Caddy, nginx, a private tunnel, etc.) in front of it:
+
+```bash
+export HERMES_MCP_PSK='use-a-long-random-secret'
+hermes mcp serve \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8666 \
+  --path /mcp \
+  --auth-token-env HERMES_MCP_PSK \
+  --public-base-url https://mcp.example.com \
+  --allowed-host mcp.example.com
+```
+
+The HTTP endpoint accepts the standard Authorization bearer header and the configured PSK header (`X-Hermes-MCP-PSK` by default). For clients that cannot set headers, add `--allow-query-token` to accept `?access_token=` or `?psk=`; this disables Hermes' uvicorn access log, but upstream proxies and clients may still record the URL, so avoid query tokens on internet-exposed endpoints. Keep the Python server on loopback (`127.0.0.1`, `::1`, or `localhost`) behind authenticated HTTPS ingress for remote access. Cleartext non-loopback binds fail closed even when credentials are configured; `--allow-insecure-http` is an explicit trusted-network override and still requires authentication.
+
+Some hosted MCP clients ask for OAuth fields even when you are connecting to a personal bridge. Use OAuth-compatible mode for those clients:
+
+```bash
+hermes mcp serve \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8666 \
+  --path /mcp \
+  --auth-token-env HERMES_MCP_PSK \
+  --oauth-compatible \
+  --public-base-url https://mcp.example.com \
+  --oauth-redirect-uri https://client.example.com/oauth/callback \
+  --allowed-host mcp.example.com \
+  --allowed-origin https://mcp.example.com
+```
+
+This exposes:
+
+- MCP server URL: `https://mcp.example.com/mcp`
+- Authorization URL: `https://mcp.example.com/mcp/authorize`
+- Token URL: `https://mcp.example.com/mcp/token`
+- Authorization-server metadata: `https://mcp.example.com/.well-known/oauth-authorization-server`
+- Protected-resource metadata: `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`
+
+By default, OAuth uses the public client id `hermes-mcp` and the PSK from `--auth-token-env` as its confidential client secret. This keeps the PSK out of authorization URLs, browser history, proxy logs, and redirects. If you set a custom client id with `--oauth-client-id-env`, you must also set `--oauth-client-secret-env`; a client id alone can never mint a bearer token. Authorization-code support is enabled only when at least one exact HTTP-loopback or HTTPS redirect URI is registered with `--oauth-redirect-uri`, and it requires PKCE `S256`. The token endpoint binds each code to the client, registered redirect URI, PKCE challenge, and MCP resource. A failed exchange leaves the code available for a corrected retry; the first successful exchange consumes it atomically, so replay fails. Tokens and authorization codes are opaque, bounded, and stored in memory, so restart the process to invalidate them.
+
+This is a static, single-user confidential-client compatibility facade—not a multi-user OAuth authorization service. It does not implement dynamic client registration, user login/consent, or refresh tokens, so the connecting client must support a preconfigured client id and secret. Local stdio clients such as Claude Desktop continue to use the default transport; remote clients can use the HTTPS MCP URL with PSK bearer authentication when they do not need the compatibility facade.
+
+#### Exposing plugin tools through the MCP server
+
+Hermes plugins that register normal tools with `ctx.register_tool(...)` can also be exposed through `hermes mcp serve`. Keep plugin exposure opt-in so a bridge does not accidentally publish every enabled integration:
+
+```bash
+# Expose all tools from one registered toolset, e.g. a Tesla/Fleet plugin:
+hermes mcp serve \
+  --transport streamable-http \
+  --auth-token-env HERMES_MCP_PSK \
+  --oauth-compatible \
+  --expose-toolset tescmd
+
+# Or expose every tool registered by enabled plugins:
+hermes mcp serve --transport streamable-http \
+  --auth-token-env HERMES_MCP_PSK \
+  --expose-plugin-tools
+
+# Or expose individual registered tools:
+hermes mcp serve --transport streamable-http \
+  --auth-token-env HERMES_MCP_PSK \
+  --expose-tool tescmd_vehicle_list
+```
+
+The MCP server preserves each tool's JSON schema and invokes exposed registry tools through Hermes' normal guarded tool-call pipeline—not directly through the registry dispatcher—so request/execution middleware, plugin approval and block hooks, ACP edit approval, post-call hooks, result transforms, plugin validation, confirmation requirements, redaction, and audit logging still apply. Agent-loop-only tools (`memory`, `todo`, `session_search`, and `delegate_task`) are not exposed because they require live agent state that a stateless MCP callback does not have. For real-world-control plugins, side-effecting tools should continue to require their existing explicit confirmation arguments.
+
 ### OAuth-authenticated HTTP servers
 
 Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
@@ -805,7 +882,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ### Current limits
 
-- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
+- `hermes mcp serve` remains stdio by default. Streamable HTTP is opt-in and should stay on loopback behind authenticated HTTPS ingress for remote use.
 - Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
 - No `claude/channel` push notification protocol yet
 - Text-only sends (no media/attachment sending through `messages_send`)

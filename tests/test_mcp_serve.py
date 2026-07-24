@@ -212,6 +212,7 @@ class _FakeTool:
         self.name = fn.__name__
         self.description = inspect.getdoc(fn) or ""
         self.fn = fn
+        self.parameters = {}
 
 
 class _FakeToolManager:
@@ -220,6 +221,9 @@ class _FakeToolManager:
 
     def add_tool(self, fn):
         self._tools[fn.__name__] = _FakeTool(fn)
+
+    def get_tool(self, name):
+        return self._tools.get(name)
 
     async def call_tool(self, name, args=None):
         return self._tools[name].fn(**(args or {}))
@@ -238,6 +242,11 @@ class _FakeFastMCP:
             return fn
 
         return decorator
+
+    def add_tool(self, fn, name=None, description=None, **_kwargs):
+        self._tool_manager._tools[name or fn.__name__] = _FakeTool(fn)
+        self._tool_manager._tools[name or fn.__name__].name = name or fn.__name__
+        self._tool_manager._tools[name or fn.__name__].description = description or ""
 
 
 @pytest.fixture
@@ -961,6 +970,175 @@ class TestServerCreation:
         bridge = mcp_serve.EventBridge()
         assert mcp_serve.create_mcp_server(event_bridge=bridge) is not None
 
+    def test_create_exposes_selected_registry_toolset(self, populated_sessions_dir, monkeypatch):
+        pytest.importorskip("mcp", reason="MCP SDK not installed")
+        import mcp_serve
+        from tools.registry import registry
+
+        tool_name = "test_mcp_exposed_plugin_tool"
+        registry.register(
+            name=tool_name,
+            toolset="test-mcp-expose",
+            schema={
+                "name": tool_name,
+                "description": "Test exposed plugin-style tool",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string", "description": "Message to echo"},
+                        "confirm": {"type": "boolean", "description": "Safety acknowledgement"},
+                    },
+                    "required": ["message"],
+                    "additionalProperties": False,
+                },
+            },
+            handler=lambda args, **_kwargs: json.dumps({"echo": args}),
+        )
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda force=False: None)
+        try:
+            server = mcp_serve.create_mcp_server(expose_toolsets=["test-mcp-expose"])
+            tool = server._tool_manager.get_tool(tool_name)
+            assert tool is not None
+            assert tool.parameters["properties"]["message"]["type"] == "string"
+        finally:
+            registry.deregister(tool_name)
+
+    def test_registry_tool_wrapper_uses_guarded_dispatch(self, monkeypatch):
+        import mcp_serve
+        import model_tools
+
+        calls = []
+
+        def fake_handle_function_call(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(model_tools, "handle_function_call", fake_handle_function_call)
+        wrapper = mcp_serve._make_registry_tool_wrapper("test_guarded_tool")
+
+        assert json.loads(wrapper(message="hello")) == {"ok": True}
+        assert json.loads(wrapper(message="again")) == {"ok": True}
+        assert calls[0]["function_name"] == "test_guarded_tool"
+        assert calls[0]["function_args"] == {"message": "hello"}
+        assert calls[0]["task_id"].startswith("mcp-serve-")
+        assert calls[0]["session_id"].startswith("mcp-serve-")
+        assert calls[0]["tool_call_id"].startswith("mcp-")
+        assert calls[0]["turn_id"].startswith("mcp-turn-")
+        assert calls[0]["api_request_id"].startswith("mcp-request-")
+        assert calls[0]["task_id"].removeprefix("mcp-serve-") == calls[0][
+            "session_id"
+        ].removeprefix("mcp-serve-")
+        assert calls[0]["task_id"] != calls[1]["task_id"]
+        assert calls[0]["session_id"] != calls[1]["session_id"]
+
+    def test_registry_tool_wrapper_respects_plugin_block(self, monkeypatch):
+        import mcp_serve
+        from tools.registry import registry
+
+        handler = MagicMock(side_effect=AssertionError("blocked handler must not run"))
+        tool_name = "test_mcp_blocked_registry_tool"
+        registry.register(
+            name=tool_name,
+            toolset="test-mcp-expose",
+            schema={
+                "name": tool_name,
+                "description": "Blocked MCP tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=handler,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *_args, **_kwargs: "Blocked by MCP test policy",
+        )
+        try:
+            result = json.loads(mcp_serve._make_registry_tool_wrapper(tool_name)())
+        finally:
+            registry.deregister(tool_name)
+
+        assert "Blocked by MCP test policy" in result["error"]
+        handler.assert_not_called()
+
+    def test_registry_wrapper_omits_optional_non_nullable_none(self, monkeypatch):
+        import mcp_serve
+        import model_tools
+
+        calls = []
+
+        def fake_handle_function_call(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({"ok": True})
+
+        monkeypatch.setattr(
+            model_tools, "handle_function_call", fake_handle_function_call
+        )
+        wrapper = mcp_serve._make_registry_tool_wrapper(
+            "test_optional_args", omit_none_for={"optional"}
+        )
+
+        wrapper(optional=None, nullable=None, required="value")
+
+        assert calls[0]["function_args"] == {
+            "nullable": None,
+            "required": "value",
+        }
+
+    def test_registry_schema_rejects_unexecutable_property_names(self):
+        import mcp_serve
+
+        with pytest.raises(ValueError, match="not a valid Python identifier"):
+            mcp_serve._apply_schema_signature(
+                lambda **_kwargs: None,
+                {
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"foo-bar": {"type": "string"}},
+                    }
+                },
+            )
+
+    def test_agent_loop_tools_are_not_exposed_without_agent_context(
+        self, populated_sessions_dir, monkeypatch
+    ):
+        pytest.importorskip("mcp", reason="MCP SDK not installed")
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda force=False: None)
+
+        with pytest.raises(RuntimeError, match="Agent-loop tools cannot be exposed"):
+            mcp_serve.create_mcp_server(expose_tools=["memory", "todo"])
+
+    def test_fresh_process_discovers_requested_builtin_tool(self, tmp_path):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(tmp_path / "hermes-home")
+        env["HERMES_QUIET"] = "1"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import mcp_serve; "
+                    "server=mcp_serve.create_mcp_server(expose_tools=['read_file']); "
+                    "assert server._tool_manager.get_tool('read_file') is not None"
+                ),
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+
     def test_create_without_mcp_sdk(self, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", False)
@@ -975,6 +1153,137 @@ class TestRunMcpServer:
         with pytest.raises(SystemExit) as exc_info:
             mcp_serve.run_mcp_server()
         assert exc_info.value.code == 1
+
+    def test_stdio_startup_failure_stops_event_bridge(self, monkeypatch):
+        import mcp_serve
+
+        class FakeBridge:
+            instance = None
+
+            def __init__(self):
+                self.started = False
+                self.stopped = False
+                FakeBridge.instance = self
+
+            def start(self):
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "EventBridge", FakeBridge)
+        monkeypatch.setattr(
+            mcp_serve,
+            "create_mcp_server",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("startup failed")),
+        )
+
+        with pytest.raises(RuntimeError, match="startup failed"):
+            mcp_serve.run_mcp_server()
+
+        assert FakeBridge.instance is not None
+        assert FakeBridge.instance.started
+        assert FakeBridge.instance.stopped
+
+    def test_http_rejects_unauthenticated_non_loopback_bind(self, monkeypatch, capsys):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        with pytest.raises(SystemExit) as exc_info:
+            mcp_serve.run_mcp_http_server(host="0.0.0.0")
+
+        assert exc_info.value.code == 1
+        assert "restricted to loopback hosts" in capsys.readouterr().err
+
+    def test_http_requires_explicit_override_for_authenticated_cleartext_bind(
+        self, monkeypatch, capsys
+    ):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setenv("TEST_MCP_PSK", "long-test-secret")
+
+        with pytest.raises(SystemExit) as exc_info:
+            mcp_serve.run_mcp_http_server(
+                host="0.0.0.0", auth_token_env="TEST_MCP_PSK"
+            )
+
+        assert exc_info.value.code == 1
+        assert "--allow-insecure-http" in capsys.readouterr().err
+
+    def test_oauth_rejects_insecure_remote_public_base_url(self, monkeypatch, capsys):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setenv("TEST_MCP_PSK", "long-test-secret")
+        monkeypatch.setattr(
+            mcp_serve,
+            "EventBridge",
+            lambda: (_ for _ in ()).throw(AssertionError("server startup must not begin")),
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            mcp_serve.run_mcp_http_server(
+                host="127.0.0.1",
+                public_base_url="http://mcp.example.com",
+                auth_token_env="TEST_MCP_PSK",
+                oauth_compatible=True,
+            )
+
+        assert exc_info.value.code == 1
+        assert "HTTPS or a loopback" in capsys.readouterr().err
+
+    def test_oauth_rejects_missing_explicit_client_id_secret(self, monkeypatch, capsys):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setenv("TEST_MCP_PSK", "long-test-secret")
+        monkeypatch.delenv("MISSING_MCP_CLIENT_ID", raising=False)
+        monkeypatch.delenv("MISSING_MCP_CLIENT_SECRET", raising=False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            mcp_serve.run_mcp_http_server(
+                auth_token_env="TEST_MCP_PSK",
+                oauth_compatible=True,
+                oauth_client_id_env="MISSING_MCP_CLIENT_ID",
+                oauth_client_secret_env="MISSING_MCP_CLIENT_SECRET",
+            )
+
+        assert exc_info.value.code == 1
+        assert "MISSING_MCP_CLIENT_ID" in capsys.readouterr().err
+
+    def test_http_startup_failure_stops_event_bridge(self, monkeypatch):
+        import mcp_serve
+
+        events = []
+
+        class Bridge:
+            def start(self):
+                events.append("start")
+
+            def stop(self):
+                events.append("stop")
+
+        class Settings:
+            pass
+
+        class Server:
+            settings = Settings()
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "EventBridge", Bridge)
+        monkeypatch.setattr(mcp_serve, "create_mcp_server", lambda **_kwargs: Server())
+        monkeypatch.setattr(
+            mcp_serve,
+            "_configure_transport_security",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("security setup failed")),
+        )
+
+        with pytest.raises(RuntimeError, match="security setup failed"):
+            mcp_serve.run_mcp_http_server()
+
+        assert events == ["start", "stop"]
 
 
 class TestCliIntegration:
@@ -1012,7 +1321,880 @@ class TestCliIntegration:
         args = argparse.Namespace(mcp_action="serve", verbose=True)
         from hermes_cli.mcp_config import mcp_command
         mcp_command(args)
-        mock_run.assert_called_once_with(verbose=True)
+        mock_run.assert_called_once_with(
+            verbose=True,
+            expose_toolsets=[],
+            expose_tools=[],
+            expose_plugin_tools=False,
+        )
+
+    def test_dispatcher_routes_streamable_http(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mock_http = MagicMock()
+        monkeypatch.setattr("mcp_serve.run_mcp_http_server", mock_http)
+
+        import argparse
+        args = argparse.Namespace(
+            mcp_action="serve",
+            transport="streamable-http",
+            verbose=True,
+            host="127.0.0.1",
+            port=9999,
+            path="/mcp",
+            public_base_url="https://example.com",
+            auth_token_env="HERMES_MCP_PSK",
+            auth_header="X-Test-PSK",
+            allow_query_token=True,
+            allow_insecure_http=True,
+            oauth_compatible=True,
+            oauth_client_id_env="HERMES_MCP_CLIENT_ID",
+            oauth_client_secret_env="HERMES_MCP_CLIENT_SECRET",
+            oauth_token_ttl_seconds=600,
+            oauth_code_ttl_seconds=60,
+            oauth_redirect_uri=["https://client.example/cb"],
+            allowed_host=["example.com"],
+            allowed_origin=["https://example.com"],
+            expose_toolset=["tescmd"],
+            expose_tool=["custom_tool"],
+            expose_plugin_tools=True,
+            health_path="/healthz",
+        )
+        from hermes_cli.mcp_config import mcp_command
+        mcp_command(args)
+        mock_http.assert_called_once_with(
+            verbose=True,
+            host="127.0.0.1",
+            port=9999,
+            path="/mcp",
+            public_base_url="https://example.com",
+            auth_token_env="HERMES_MCP_PSK",
+            auth_header="X-Test-PSK",
+            allow_query_token=True,
+            allow_insecure_http=True,
+            oauth_compatible=True,
+            oauth_client_id_env="HERMES_MCP_CLIENT_ID",
+            oauth_client_secret_env="HERMES_MCP_CLIENT_SECRET",
+            token_ttl_seconds=600,
+            code_ttl_seconds=60,
+            oauth_redirect_uris=["https://client.example/cb"],
+            allowed_hosts=["example.com"],
+            allowed_origins=["https://example.com"],
+            expose_toolsets=["tescmd"],
+            expose_tools=["custom_tool"],
+            expose_plugin_tools=True,
+            health_path="/healthz",
+        )
+
+
+class TestHttpAuthHelpers:
+    class _Request:
+        def __init__(self, params=None, data=None):
+            from starlette.datastructures import QueryParams
+            from urllib.parse import urlencode
+
+            self.query_params = QueryParams(params or {})
+            self._body = urlencode(data or {}).encode("utf-8")
+
+        async def body(self):
+            return self._body
+
+    def _route_endpoint(self, app, path):
+        for route in app.routes:
+            if getattr(route, "path", None) == path:
+                return route.endpoint
+        raise AssertionError(f"Route not found: {path}")
+
+    def _call_route(self, app, path, request=None):
+        return asyncio.get_event_loop().run_until_complete(
+            self._route_endpoint(app, path)(request or self._Request())
+        )
+
+    def _json_response(self, response):
+        return json.loads(response.body.decode("utf-8"))
+
+    def test_transport_security_accepts_default_host_headers_with_ports(self):
+        import mcp_serve
+        from mcp.server.transport_security import TransportSecurityMiddleware
+
+        class Settings:
+            transport_security = None
+
+        class Server:
+            settings = Settings()
+
+        server = Server()
+        mcp_serve._configure_transport_security(
+            server,
+            "127.0.0.1",
+            8666,
+            [],
+            [],
+        )
+        middleware = TransportSecurityMiddleware(server.settings.transport_security)
+
+        assert middleware._validate_host("127.0.0.1:8666")
+        assert middleware._validate_host("localhost:8666")
+        security = server.settings.transport_security
+        assert security is not None
+        assert "null" not in getattr(security, "allowed_origins")
+
+    @pytest.mark.asyncio
+    async def test_real_streamable_http_initialize_accepts_default_host_with_port(self):
+        import httpx
+        import mcp_serve
+
+        pytest.importorskip("mcp", reason="MCP SDK not installed")
+        server = mcp_serve.create_mcp_server()
+        server.settings.host = "127.0.0.1"
+        server.settings.port = 8666
+        server.settings.streamable_http_path = "/mcp"
+        server.settings.json_response = True
+        mcp_serve._configure_transport_security(
+            server, "127.0.0.1", 8666, [], []
+        )
+        app = mcp_serve.create_streamable_http_app(server)
+
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8666",
+            ) as client:
+                response = await client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "test-client", "version": "1"},
+                        },
+                    },
+                    headers={"Accept": "application/json, text/event-stream"},
+                )
+
+        assert response.status_code == 200
+        assert response.json()["result"]["serverInfo"]["name"] == "hermes"
+
+    @pytest.mark.asyncio
+    async def test_real_streamable_http_auth_host_and_origin_boundaries(self):
+        import httpx
+        import mcp_serve
+
+        pytest.importorskip("mcp", reason="MCP SDK not installed")
+        server = mcp_serve.create_mcp_server()
+        server.settings.host = "127.0.0.1"
+        server.settings.port = 8666
+        server.settings.streamable_http_path = "/mcp"
+        server.settings.json_response = True
+        mcp_serve._configure_transport_security(
+            server,
+            "127.0.0.1",
+            8666,
+            ["mcp.example.com"],
+            ["https://trusted.example"],
+        )
+        app = mcp_serve.create_streamable_http_app(
+            server,
+            auth_config=mcp_serve.McpHttpAuthConfig(psk="test-server-psk"),
+        )
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "1"},
+            },
+        }
+        accept = "application/json, text/event-stream"
+
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8666",
+            ) as client:
+                unauthenticated = await client.post(
+                    "/mcp", json=initialize, headers={"Accept": accept}
+                )
+                bad_host = await client.post(
+                    "/mcp",
+                    json=initialize,
+                    headers={
+                        "Accept": accept,
+                        "Authorization": "Bearer test-server-psk",
+                        "Host": "attacker.example",
+                    },
+                )
+                bad_origin = await client.post(
+                    "/mcp",
+                    json=initialize,
+                    headers={
+                        "Accept": accept,
+                        "Authorization": "Bearer test-server-psk",
+                        "Origin": "https://attacker.example",
+                    },
+                )
+                accepted = await client.post(
+                    "/mcp",
+                    json=initialize,
+                    headers={
+                        "Accept": accept,
+                        "Authorization": "Bearer test-server-psk",
+                        "Origin": "https://trusted.example",
+                        "Host": "mcp.example.com",
+                    },
+                )
+
+        assert unauthenticated.status_code == 401
+        assert bad_host.status_code == 421
+        assert bad_origin.status_code == 403
+        assert accepted.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_real_streamable_http_oauth_token_initializes_mcp(self):
+        import httpx
+        import mcp_serve
+
+        pytest.importorskip("mcp", reason="MCP SDK not installed")
+        server = mcp_serve.create_mcp_server()
+        server.settings.host = "127.0.0.1"
+        server.settings.port = 8666
+        server.settings.streamable_http_path = "/mcp"
+        server.settings.json_response = True
+        mcp_serve._configure_transport_security(
+            server, "127.0.0.1", 8666, [], []
+        )
+        app = mcp_serve.create_streamable_http_app(
+            server,
+            auth_config=mcp_serve.McpHttpAuthConfig(
+                psk="oauth-test-secret",
+                oauth_compatible=True,
+                public_base_url="http://127.0.0.1:8666",
+                path="/mcp",
+            ),
+        )
+
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8666",
+            ) as client:
+                rejected_token_response = await client.post(
+                    "/mcp/token",
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": "hermes-mcp",
+                        "client_secret": "oauth-test-secret",
+                    },
+                    headers={"Host": "attacker.example"},
+                )
+                token_response = await client.post(
+                    "/mcp/token",
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": "hermes-mcp",
+                        "client_secret": "oauth-test-secret",
+                    },
+                )
+                token = token_response.json()["access_token"]
+                initialize_response = await client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "oauth-test", "version": "1"},
+                        },
+                    },
+                    headers={
+                        "Accept": "application/json, text/event-stream",
+                        "Authorization": f"Bearer {token}",
+                    },
+                )
+
+        assert rejected_token_response.status_code == 421
+        assert token_response.status_code == 200
+        assert initialize_response.status_code == 200
+
+    def test_transport_security_formats_ipv6_host_headers(self):
+        import mcp_serve
+        from mcp.server.transport_security import TransportSecurityMiddleware
+
+        class Settings:
+            transport_security = None
+
+        class Server:
+            settings = Settings()
+
+        server = Server()
+        mcp_serve._configure_transport_security(server, "::1", 8666, [], [])
+        middleware = TransportSecurityMiddleware(server.settings.transport_security)
+
+        assert middleware._validate_host("[::1]:8666")
+        assert mcp_serve._default_http_base_url("::1", 8666) == "http://[::1]:8666"
+
+    def test_transport_security_configuration_fails_closed(self):
+        import mcp_serve
+
+        class Settings:
+            @property
+            def transport_security(self):
+                return None
+
+            @transport_security.setter
+            def transport_security(self, _value):
+                raise RuntimeError("cannot install transport security")
+
+        class Server:
+            settings = Settings()
+
+        with pytest.raises(RuntimeError, match="cannot install transport security"):
+            mcp_serve._configure_transport_security(
+                Server(),
+                "127.0.0.1",
+                8666,
+                [],
+                [],
+            )
+
+    def test_pkce_challenge_methods(self):
+        import mcp_serve
+
+        assert mcp_serve._pkce_challenge("verifier", "plain") == "verifier"
+        assert (
+            mcp_serve._pkce_challenge("verifier", "S256")
+            == "iMnq5o6zALKXGivsnlom_0F5_WYda32GHkxlV7mq7hQ"
+        )
+        assert mcp_serve._pkce_challenge("verifier", "unsupported") is None
+        assert mcp_serve._pkce_challenge("☃", "S256") is None
+
+    def test_default_oauth_identity_keeps_psk_out_of_public_client_id(self):
+        import mcp_serve
+
+        config = mcp_serve.McpHttpAuthConfig(
+            psk="server-psk",
+            oauth_compatible=True,
+        )
+
+        assert config.oauth_client_id == "hermes-mcp"
+        assert config.oauth_client_id != config.psk
+        assert config.oauth_client_secret == "server-psk"
+
+    def test_oauth_store_bounds_public_authorization_codes(self):
+        import mcp_serve
+
+        store = mcp_serve._OAuthTokenStore(max_codes=2)
+        first = store.issue_code("client", "http://127.0.0.1/cb", 300)
+        second = store.issue_code("client", "http://127.0.0.1/cb", 300)
+        third = store.issue_code("client", "http://127.0.0.1/cb", 300)
+
+        assert not store.consume_code(first, "client", "http://127.0.0.1/cb")
+        assert store.consume_code(second, "client", "http://127.0.0.1/cb")
+        assert store.consume_code(third, "client", "http://127.0.0.1/cb")
+
+        rate_limited = mcp_serve._OAuthTokenStore(max_code_issuance_per_minute=2)
+        rate_limited.issue_code("client", "https://client.example/cb", 300)
+        rate_limited.issue_code("client", "https://client.example/cb", 300)
+        with pytest.raises(OverflowError, match="rate exceeded"):
+            rate_limited.issue_code("client", "https://client.example/cb", 300)
+
+    def _make_app(self, auth_config, host="127.0.0.1"):
+        pytest.importorskip("starlette")
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse
+        import mcp_serve
+
+        class Settings:
+            streamable_http_path = "/mcp"
+
+            def __init__(self):
+                self.host = host
+
+        class FakeServer:
+            settings = Settings()
+
+            def streamable_http_app(self):
+                app = Starlette()
+
+                async def mcp(_request):
+                    return JSONResponse({"ok": True})
+
+                app.add_route("/mcp", mcp, methods=["GET", "POST"])
+                return app
+
+        return mcp_serve.create_streamable_http_app(
+            FakeServer(),
+            auth_config=auth_config,
+            health_path="/health",
+        )
+
+    def test_app_rejects_unauthenticated_non_loopback_bind(self):
+        with pytest.raises(ValueError, match="restricted to loopback hosts"):
+            self._make_app(None, host="0.0.0.0")
+
+    def test_psk_auth_accepts_bearer_header_and_query(self):
+        from starlette.datastructures import Headers, QueryParams
+        import mcp_serve
+
+        class Request:
+            def __init__(self, headers=None, query_string=""):
+                self.headers = Headers(headers or {})
+                self.query_params = QueryParams(query_string)
+
+        config = mcp_serve.McpHttpAuthConfig(
+            psk="test-psk",
+            psk_header="X-Test-PSK",
+            allow_query_token=True,
+            path="/mcp",
+        )
+        store = mcp_serve._OAuthTokenStore()
+
+        assert not mcp_serve._is_authenticated(Request(), config, store)
+        assert mcp_serve._is_authenticated(
+            Request(headers={"Authorization": "Bearer test-psk"}),
+            config,
+            store,
+        )
+        assert mcp_serve._is_authenticated(
+            Request(headers={"X-Test-PSK": "test-psk"}),
+            config,
+            store,
+        )
+        assert mcp_serve._is_authenticated(
+            Request(query_string="access_token=test-psk"),
+            config,
+            store,
+        )
+        assert mcp_serve._auth_challenge(config) == "Bearer"
+
+    @pytest.mark.asyncio
+    async def test_http_auth_middleware_enforces_real_asgi_boundary(self):
+        import httpx
+        import mcp_serve
+
+        app = self._make_app(
+            mcp_serve.McpHttpAuthConfig(
+                psk="test-psk",
+                oauth_compatible=True,
+                public_base_url="https://mcp.example.com",
+                path="/mcp",
+            )
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://mcp.example.com",
+        ) as client:
+            unauthenticated = await client.get("/mcp/subpath")
+            authenticated = await client.get(
+                "/mcp",
+                headers={"Authorization": "Bearer test-psk"},
+            )
+            health = await client.get("/health")
+            metadata = await client.get("/.well-known/oauth-authorization-server")
+
+        assert unauthenticated.status_code == 401
+        assert authenticated.status_code == 200
+        assert authenticated.json() == {"ok": True}
+        assert health.status_code == 200
+        assert metadata.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_oauth_token_endpoint_rejects_oversized_form_body(self):
+        import httpx
+        import mcp_serve
+
+        app = self._make_app(
+            mcp_serve.McpHttpAuthConfig(
+                psk="test-psk",
+                oauth_compatible=True,
+                public_base_url="https://mcp.example.com",
+                path="/mcp",
+            )
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://mcp.example.com",
+        ) as client:
+            response = await client.post(
+                "/mcp/token",
+                content=b"x" * (mcp_serve._OAUTH_FORM_BODY_LIMIT + 1),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        assert response.status_code == 413
+        assert response.json()["error"] == "invalid_request"
+
+    def test_mcp_auth_boundary_covers_subpaths_but_not_oauth_endpoints(self):
+        import mcp_serve
+
+        config = mcp_serve.McpHttpAuthConfig(
+            psk="test-psk",
+            oauth_compatible=True,
+            path="/mcp",
+        )
+
+        assert mcp_serve._is_protected_mcp_http_path(config, "/mcp")
+        assert mcp_serve._is_protected_mcp_http_path(config, "/mcp/")
+        assert mcp_serve._is_protected_mcp_http_path(config, "/mcp/subpath")
+        assert not mcp_serve._is_protected_mcp_http_path(config, "/mcp/authorize")
+        assert not mcp_serve._is_protected_mcp_http_path(config, "/mcp/token")
+        assert not mcp_serve._is_protected_mcp_http_path(config, "/health")
+
+    def test_oauth_compatible_metadata_and_token_flows(self):
+        pytest.importorskip("starlette")
+        import mcp_serve
+
+        app = self._make_app(mcp_serve.McpHttpAuthConfig(
+            psk="client-as-psk",
+            allow_query_token=False,
+            oauth_compatible=True,
+            public_base_url="https://mcp.example.com",
+            path="/mcp",
+            token_ttl_seconds=600,
+            code_ttl_seconds=60,
+            allowed_redirect_uris=["https://client.example/cb"],
+        ))
+
+        meta = self._call_route(app, "/.well-known/oauth-authorization-server")
+        assert meta.status_code == 200
+        meta_json = self._json_response(meta)
+        assert meta_json["authorization_endpoint"] == "https://mcp.example.com/mcp/authorize"
+        assert "client_credentials" in meta_json["grant_types_supported"]
+        assert meta_json["code_challenge_methods_supported"] == ["S256"]
+
+        resource = self._call_route(app, "/.well-known/oauth-protected-resource/mcp")
+        assert resource.status_code == 200
+        assert self._json_response(resource)["resource"] == "https://mcp.example.com/mcp"
+
+        assert "resource_metadata=" in mcp_serve._auth_challenge(
+            mcp_serve.McpHttpAuthConfig(
+                psk="client-as-psk",
+                oauth_compatible=True,
+                public_base_url="https://mcp.example.com",
+                path="/mcp",
+            )
+        )
+
+        token_response = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={
+                "grant_type": "client_credentials",
+                "client_id": "hermes-mcp",
+                "client_secret": "client-as-psk",
+            }),
+        )
+        assert token_response.status_code == 200
+        bearer = self._json_response(token_response)["access_token"]
+        assert bearer
+        assert token_response.headers["cache-control"] == "no-store"
+        assert token_response.headers["pragma"] == "no-cache"
+
+        verifier = "v" * 43
+        challenge = mcp_serve._pkce_challenge(verifier, "S256")
+        authorize = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(params={
+                "response_type": "code",
+                "client_id": "hermes-mcp",
+                "redirect_uri": "https://client.example/cb",
+                "state": "abc",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }),
+        )
+        assert authorize.status_code == 302
+        assert "code=" in authorize.headers["location"]
+        assert "state=abc" in authorize.headers["location"]
+        code = authorize.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+        code_token = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={
+                "grant_type": "authorization_code",
+                "client_id": "hermes-mcp",
+                "client_secret": "client-as-psk",
+                "code": code,
+                "redirect_uri": "https://client.example/cb",
+                "code_verifier": verifier,
+            }),
+        )
+        assert code_token.status_code == 200
+
+    def test_oauth_authorize_rejects_unlisted_redirect_uri(self):
+        pytest.importorskip("starlette")
+        import mcp_serve
+
+        app = self._make_app(mcp_serve.McpHttpAuthConfig(
+            psk="client-as-psk",
+            oauth_compatible=True,
+            public_base_url="https://mcp.example.com",
+            path="/mcp",
+            allowed_redirect_uris=["https://client.example/cb"],
+        ))
+
+        response = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(params={
+                "response_type": "code",
+                "client_id": "hermes-mcp",
+                "redirect_uri": "https://attacker.example/cb",
+            }),
+        )
+        assert response.status_code == 400
+        assert self._json_response(response)["error_description"] == "redirect_uri is not allowed"
+
+    def test_oauth_authorize_requires_s256_pkce(self):
+        pytest.importorskip("starlette")
+        import mcp_serve
+
+        redirect_uri = "https://client.example/cb"
+        app = self._make_app(
+            mcp_serve.McpHttpAuthConfig(
+                psk="client-as-psk",
+                oauth_compatible=True,
+                public_base_url="https://mcp.example.com",
+                path="/mcp",
+                allowed_redirect_uris=[redirect_uri],
+            )
+        )
+
+        base = {
+            "response_type": "code",
+            "client_id": "hermes-mcp",
+            "redirect_uri": redirect_uri,
+        }
+        missing = self._call_route(
+            app, "/mcp/authorize", self._Request(params=base)
+        )
+        plain = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(
+                params={
+                    **base,
+                    "code_challenge": "c" * 43,
+                    "code_challenge_method": "plain",
+                }
+            ),
+        )
+
+        assert missing.status_code == 400
+        assert plain.status_code == 400
+        assert "PKCE S256" in self._json_response(missing)["error_description"]
+
+    def test_oauth_authorize_rejects_loopback_redirect_without_registration(self):
+        pytest.importorskip("starlette")
+        import mcp_serve
+
+        app = self._make_app(mcp_serve.McpHttpAuthConfig(
+            psk="client-as-psk",
+            oauth_compatible=True,
+            public_base_url="https://mcp.example.com",
+            path="/mcp",
+        ))
+
+        metadata = self._call_route(app, "/.well-known/oauth-authorization-server")
+        metadata_json = self._json_response(metadata)
+        assert metadata_json["grant_types_supported"] == ["client_credentials"]
+        assert "authorization_endpoint" not in metadata_json
+
+        response = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(params={
+                "response_type": "code",
+                "client_id": "hermes-mcp",
+                "redirect_uri": "http://127.0.0.1:54321/callback",
+                "code_challenge": "c" * 43,
+                "code_challenge_method": "S256",
+            }),
+        )
+        assert response.status_code == 400
+        assert "not configured" in self._json_response(response)["error_description"]
+
+    def test_oauth_redirect_validation_rejects_insecure_remote_and_fragments(self):
+        import mcp_serve
+
+        config = mcp_serve.McpHttpAuthConfig(
+            psk="server-psk",
+            oauth_compatible=True,
+            allowed_redirect_uris=[
+                "http://client.example/cb",
+                "https://client.example/cb#fragment",
+            ],
+        )
+
+        assert not mcp_serve._oauth_redirect_uri_allowed(
+            config, "http://client.example/cb"
+        )
+        assert not mcp_serve._oauth_redirect_uri_allowed(
+            config, "https://client.example/cb#fragment"
+        )
+
+    def test_oauth_explicit_client_id_without_secret_cannot_get_token(self):
+        pytest.importorskip("starlette")
+        import mcp_serve
+
+        app = self._make_app(mcp_serve.McpHttpAuthConfig(
+            psk="server-psk",
+            oauth_compatible=True,
+            oauth_client_id="public-client",
+            public_base_url="https://mcp.example.com",
+            path="/mcp",
+            allowed_redirect_uris=["https://client.example/cb"],
+        ))
+
+        token_response = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={"grant_type": "client_credentials", "client_id": "public-client"}),
+        )
+        assert token_response.status_code == 401
+        assert self._json_response(token_response)["error"] == "invalid_client"
+        assert token_response.headers["cache-control"] == "no-store"
+        assert token_response.headers["pragma"] == "no-cache"
+
+    def test_oauth_authorization_code_s256_pkce_and_redirect_binding(self):
+        pytest.importorskip("starlette")
+        from urllib.parse import parse_qs, urlparse
+        import mcp_serve
+
+        verifier = "v" * 43
+        challenge = mcp_serve._pkce_challenge(verifier, "S256")
+        redirect_uri = "https://client.example/cb"
+        app = self._make_app(
+            mcp_serve.McpHttpAuthConfig(
+                psk="client-as-psk",
+                oauth_compatible=True,
+                public_base_url="https://mcp.example.com",
+                path="/mcp",
+                token_ttl_seconds=600,
+                code_ttl_seconds=60,
+                allowed_redirect_uris=[redirect_uri],
+            )
+        )
+
+        authorize = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(params={
+                "response_type": "code",
+                "client_id": "hermes-mcp",
+                "redirect_uri": redirect_uri,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }),
+        )
+        assert authorize.status_code == 302
+        code = parse_qs(urlparse(authorize.headers["location"]).query)["code"][0]
+        grant = {
+            "grant_type": "authorization_code",
+            "client_id": "hermes-mcp",
+            "client_secret": "client-as-psk",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+
+        wrong_redirect = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={**grant, "redirect_uri": "https://attacker.example/cb", "code_verifier": verifier}),
+        )
+        assert wrong_redirect.status_code == 400
+        assert self._json_response(wrong_redirect)["error"] == "invalid_grant"
+
+        wrong_resource = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(
+                data={
+                    **grant,
+                    "code_verifier": verifier,
+                    "resource": "https://attacker.example/mcp",
+                }
+            ),
+        )
+        assert wrong_resource.status_code == 400
+        assert self._json_response(wrong_resource)["error"] == "invalid_target"
+
+        valid_after_wrong_redirect = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={**grant, "code_verifier": verifier}),
+        )
+        assert valid_after_wrong_redirect.status_code == 200
+
+        authorize = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(params={
+                "response_type": "code",
+                "client_id": "hermes-mcp",
+                "redirect_uri": redirect_uri,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }),
+        )
+        assert authorize.status_code == 302
+        code = parse_qs(urlparse(authorize.headers["location"]).query)["code"][0]
+        grant["code"] = code
+
+        wrong_verifier = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={**grant, "code_verifier": "x" * 43}),
+        )
+        assert wrong_verifier.status_code == 400
+        assert self._json_response(wrong_verifier)["error"] == "invalid_grant"
+
+        valid_after_wrong_verifier = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={**grant, "code_verifier": verifier}),
+        )
+        assert valid_after_wrong_verifier.status_code == 200
+
+        authorize = self._call_route(
+            app,
+            "/mcp/authorize",
+            self._Request(params={
+                "response_type": "code",
+                "client_id": "hermes-mcp",
+                "redirect_uri": redirect_uri,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }),
+        )
+        assert authorize.status_code == 302
+        code = parse_qs(urlparse(authorize.headers["location"]).query)["code"][0]
+        grant["code"] = code
+
+        token = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={**grant, "code_verifier": verifier}),
+        )
+        assert token.status_code == 200
+        assert self._json_response(token)["token_type"] == "Bearer"
+
+        replay = self._call_route(
+            app,
+            "/mcp/token",
+            self._Request(data={**grant, "code_verifier": verifier}),
+        )
+        assert replay.status_code == 400
+        assert self._json_response(replay)["error"] == "invalid_grant"
 
 
 # ---------------------------------------------------------------------------

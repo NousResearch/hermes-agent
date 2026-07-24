@@ -1999,6 +1999,10 @@ class PluginManager:
             )
         return result
 
+    def get_registered_tool_names(self) -> Set[str]:
+        """Return a snapshot of tool names registered by enabled plugins."""
+        return set(self._plugin_tool_names)
+
     # -----------------------------------------------------------------------
     # Plugin skill lookups
     # -----------------------------------------------------------------------

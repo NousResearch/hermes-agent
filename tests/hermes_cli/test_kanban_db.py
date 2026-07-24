@@ -3895,6 +3895,52 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
+def test_complete_review_task_transitions_to_done(kanban_home):
+    """Review tasks should be completable after manual merge/reconciliation."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merged PR handoff", assignee="alice")
+        _set_task_status(conn, t, "review")
+
+        assert kb.complete_task(conn, t, summary="merged and verified")
+
+        row = conn.execute(
+            "SELECT status, completed_at, result FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+    assert row["status"] == "done"
+    assert row["completed_at"] is not None
+    assert row["result"] is None
+
+
+def test_complete_review_task_with_matching_expected_run_id_succeeds(kanban_home):
+    """A review task with its active run should complete by matching run id."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merged PR handoff", assignee="alice")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
+        _set_task_status(conn, t, "review")
+
+        assert kb.complete_task(
+            conn,
+            t,
+            summary="merged and verified",
+            expected_run_id=run_id,
+        )
+
+        row = conn.execute(
+            "SELECT status, current_run_id, completed_at FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+    assert row["status"] == "done"
+    assert row["current_run_id"] is None
+    assert row["completed_at"] is not None
+
+
 def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
     """dispatch_once dry-run sees review tasks and reports them as spawned."""
     with kb.connect() as conn:

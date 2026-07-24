@@ -4494,6 +4494,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             flush_stdin()
         except Exception:
             pass
+        # #60920: The interrupt response was already rendered via Panel and
+        # recorded in _OUTPUT_HISTORY by _cprint. Clear history now so
+        # _force_full_redraw → _replay_output_history doesn't duplicate
+        # the already-visible message (#60920). The /redraw + Ctrl+L
+        # paths intentionally keep replay for scrollback recovery.
+        _OUTPUT_HISTORY.clear()
         self._force_full_redraw()
 
     def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:

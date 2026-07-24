@@ -2068,6 +2068,140 @@ COMMIT;
 """
 
 
+PRODUCTION_ROLE_BOOTSTRAP_SQL = r"""
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '2min';
+SELECT pg_catalog.pg_advisory_xact_lock(4841739663211427921);
+
+DO $production_role_bootstrap$
+BEGIN
+    IF pg_catalog.current_database() <> 'ai_platform_brain'
+       OR pg_catalog.current_setting('server_version_num')::integer / 10000 <> 18
+       OR CURRENT_USER <> SESSION_USER THEN
+        RAISE EXCEPTION 'production role bootstrap identity invalid';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'canonical_brain_migration_owner'
+    ) THEN
+        EXECUTE
+            'CREATE ROLE canonical_brain_migration_owner '
+            'NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE '
+            'NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'canonical_brain_writer'
+    ) THEN
+        EXECUTE
+            'CREATE ROLE canonical_brain_writer '
+            'NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE '
+            'NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'muncho_production_writer_login'
+    ) THEN
+        EXECUTE
+            'CREATE ROLE muncho_production_writer_login '
+            'NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE '
+            'NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'canonical_brain_migration_owner'
+           AND NOT rolcanlogin AND NOT rolinherit
+           AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+           AND NOT rolreplication AND NOT rolbypassrls
+           AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+           AND rolconfig IS NULL
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'canonical_brain_writer'
+           AND NOT rolcanlogin AND rolinherit
+           AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+           AND NOT rolreplication AND NOT rolbypassrls
+           AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+           AND rolconfig IS NULL
+    ) OR NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles
+         WHERE rolname = 'muncho_production_writer_login'
+           AND NOT rolcanlogin AND rolinherit
+           AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+           AND NOT rolreplication AND NOT rolbypassrls
+           AND rolconnlimit = -1 AND rolvaliduntil IS NULL
+           AND rolconfig IS NULL
+    ) THEN
+        RAISE EXCEPTION 'production role bootstrap role contract invalid';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_auth_members AS membership
+          JOIN pg_catalog.pg_roles AS granted
+            ON granted.oid = membership.roleid
+          JOIN pg_catalog.pg_roles AS member
+            ON member.oid = membership.member
+         WHERE granted.rolname IN (
+                'canonical_brain_migration_owner',
+                'canonical_brain_writer',
+                'muncho_production_writer_login'
+               )
+            OR member.rolname IN (
+                'canonical_brain_migration_owner',
+                'canonical_brain_writer',
+                'muncho_production_writer_login'
+               )
+    ) THEN
+        RAISE EXCEPTION 'production role bootstrap membership contract invalid';
+    END IF;
+END
+$production_role_bootstrap$;
+
+REVOKE ALL PRIVILEGES ON DATABASE ai_platform_brain FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON DATABASE ai_platform_brain
+    FROM canonical_brain_migration_owner;
+REVOKE ALL PRIVILEGES ON DATABASE ai_platform_brain
+    FROM canonical_brain_writer;
+REVOKE ALL PRIVILEGES ON DATABASE ai_platform_brain
+    FROM muncho_production_writer_login;
+GRANT CONNECT ON DATABASE ai_platform_brain TO canonical_brain_writer;
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM canonical_brain_migration_owner;
+REVOKE ALL ON SCHEMA public FROM canonical_brain_writer;
+REVOKE ALL ON SCHEMA public FROM muncho_production_writer_login;
+GRANT USAGE ON SCHEMA public TO canonical_brain_migration_owner;
+
+DO $production_role_bootstrap_contract$
+BEGIN
+    IF NOT pg_catalog.has_database_privilege(
+        'canonical_brain_writer', 'ai_platform_brain', 'CONNECT'
+    ) OR pg_catalog.has_database_privilege(
+        'canonical_brain_writer', 'ai_platform_brain', 'TEMP'
+    ) OR pg_catalog.has_database_privilege(
+        'canonical_brain_writer', 'ai_platform_brain', 'CREATE'
+    ) OR NOT pg_catalog.has_schema_privilege(
+        'canonical_brain_migration_owner', 'public', 'USAGE'
+    ) OR pg_catalog.has_schema_privilege(
+        'canonical_brain_migration_owner', 'public', 'CREATE'
+    ) OR pg_catalog.has_schema_privilege(
+        'canonical_brain_writer', 'public', 'USAGE'
+    ) OR pg_catalog.has_schema_privilege(
+        'canonical_brain_writer', 'public', 'CREATE'
+    ) THEN
+        RAISE EXCEPTION 'production role bootstrap privilege contract invalid';
+    END IF;
+END
+$production_role_bootstrap_contract$;
+COMMIT;
+"""
+
+
 def _database_state(plan: Mapping[str, Any]) -> str:
     raw = _exact(
         _psql_json(plan, STATE_SQL),
@@ -3157,6 +3291,11 @@ def _database_apply(plan: Mapping[str, Any]) -> Mapping[str, Any]:
             artifact_name="database_apply",
             legacy=False,
         )
+    if state in {"legacy", "reconciled"}:
+        target = _validate_target(plan["target"])
+        if target["writer_login"] != "muncho_production_writer_login":
+            raise ArtifactError("artifact_writer_login_invalid")
+        _run_psql(plan, PRODUCTION_ROLE_BOOTSTRAP_SQL, read_only=False)
     if state == "legacy":
         _database_projection(plan, legacy=True)
         reconcile_settings = {

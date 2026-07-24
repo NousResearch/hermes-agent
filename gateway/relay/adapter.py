@@ -225,7 +225,29 @@ class RelayAdapter(BasePlatformAdapter):
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
 
     async def _on_inbound(self, event) -> None:
-        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        """Bridge a connector-delivered MessageEvent into the normal adapter path.
+
+        Reject events whose self-declared ``source.platform`` isn't one this
+        connection actually advertised at hello. Without this, a mis-stamped
+        (or malicious) platform value on a single inbound frame collides
+        build_session_key() with a different platform's real chat_id, since
+        the key is a pure function of the SessionSource fields and doesn't
+        know which transport delivered the event.
+        """
+        src = getattr(event, "source", None)
+        src_platform = getattr(src, "platform", None)
+        src_platform_value = getattr(src_platform, "value", src_platform)
+        if (
+            src_platform_value
+            and src_platform_value != "relay"
+            and not self._platform_is_fronted(src_platform_value)
+        ):
+            logger.warning(
+                "relay: rejecting inbound event claiming platform=%r (chat_id=%r) "
+                "— this connection never advertised that platform at hello",
+                src_platform_value, getattr(src, "chat_id", None),
+            )
+            return
         self._capture_scope(event)
         await self.handle_message(event)
 

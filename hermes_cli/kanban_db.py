@@ -8819,6 +8819,33 @@ def _default_spawn(
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
+    # Plugins may contribute additional environment for the worker session —
+    # observability endpoints, trace credentials, feature pins. The worker
+    # subprocess env is the only channel that also reaches nested coding
+    # agents (ACP claude-code / codex children inherit it), so this is where
+    # e.g. OTLP telemetry wiring must happen. Contributions fill gaps only:
+    # every key the dispatcher pinned above always wins, so a plugin can
+    # never redirect kanban paths, profiles or timeouts.
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        for contributed in invoke_hook(
+            "contribute_worker_env",
+            task_id=task.id,
+            board=resolved_board,
+            workspace=workspace,
+            branch=task.branch_name or "",
+            run_id=task.current_run_id,
+            profile=profile_arg,
+        ):
+            if not isinstance(contributed, dict):
+                continue
+            for key, value in contributed.items():
+                if isinstance(key, str) and key and value is not None:
+                    env.setdefault(key, str(value))
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("contribute_worker_env hook failed: %s", exc)
+
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,

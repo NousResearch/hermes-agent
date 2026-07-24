@@ -73,6 +73,21 @@ export function matchesAllowedSender(senderId, senderAltId, allowedUsers, sessio
     || matchesAllowedUser(senderAltId, allowedUsers, sessionDir);
 }
 
+export function matchesInboundWhatsAppGroup({
+  chatId,
+  groupPolicy,
+  groupAllowedUsers,
+  sessionDir,
+}) {
+  if (groupPolicy === 'disabled' || groupPolicy === 'pairing') {
+    return false;
+  }
+  if (groupPolicy === 'allowlist') {
+    return matchesAllowedUser(chatId, groupAllowedUsers, sessionDir);
+  }
+  return groupPolicy === 'open';
+}
+
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   // Empty allowlist = NO ONE allowed (secure default, #8389).  Operators
   // who want an open bot must set ``WHATSAPP_ALLOWED_USERS=*`` explicitly.

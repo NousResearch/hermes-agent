@@ -18,9 +18,48 @@ import { generatedImageFromResult } from '@/lib/generated-images'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 
+// Module-level dedup guard for `@assistant-ui/react`'s part-rendering quirk:
+// when a message has both `tool-call` and `text` parts, the framework may mount
+// the tool-call's Fallback component in two locations simultaneously, producing
+// duplicate `GeneratedImage` instances (with matching `toolCallId`). The Set
+// tracks live tool call IDs during the render pass so only the first mount
+// renders the image card; the duplicate renders nothing.
+//
+// The set is populated during the render phase (synchronous, single-threaded)
+// so the first mount always wins, and cleaned up via useEffect on unmount so
+// future messages with new tool calls render correctly.
+const _renderedImageToolCallIds = new Set<string>()
+
 const ImageGenerateTool: FC<ToolCallMessagePartProps> = props => {
-  const { args, result } = props
+  const { args, result, toolCallId } = props
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
+  const dedupKey = toolCallId || 'image_generate'
+
+  // Module-level dedup against a framework issue where the same tool-call
+  // Fallback mounts in two locations when the message has both text and tool-
+  // call parts. Only the first mount renders the image card; duplicates render
+  // nothing. The ref tracks ownership so only the instance that added to the
+  // set removes itself on unmount (the duplicate must not delete the primary's
+  // entry).
+  const isDuplicate = _renderedImageToolCallIds.has(dedupKey)
+  const owned = useRef(false)
+
+  if (!isDuplicate) {
+    _renderedImageToolCallIds.add(dedupKey)
+    owned.current = true
+  }
+
+  useEffect(() => {
+    return () => {
+      if (owned.current) {
+        _renderedImageToolCallIds.delete(dedupKey)
+      }
+    }
+  }, [dedupKey])
+
+  if (isDuplicate) {
+    return null
+  }
 
   // The image card owns successful generations. Failed or malformed results
   // still need the normal tool row: it extracts the error text and gives the

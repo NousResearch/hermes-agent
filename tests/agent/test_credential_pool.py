@@ -3422,6 +3422,7 @@ def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # _sync_anthropic_entry_from_credentials_file — parity fix tests
 # ---------------------------------------------------------------------------
 
@@ -3698,3 +3699,136 @@ class TestCredentialPoolQueryLocking:
             inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for per-credential base_url (PR #54524 follow-up).
+# teknium1 sweeper review (Jul 2026) identified three gaps:
+#   1. _try_resolve_from_custom_pool returned the primary base_url, not the
+#      selected entry's URL — so the first request after rotation hit the
+#      wrong endpoint.
+#   2. get_custom_provider_pool_key only matched top-level custom_providers
+#      base_url values, so an agent switched to a nested credential's URL
+#      no longer resolved back to its pool key.
+#   3. recover_with_credential_pool's guard (#33088/#33163) relies on
+#      get_custom_provider_pool_key and therefore inherited gap #2, skipping
+#      rotation/refresh for any agent on a nested credential URL.
+# These tests pin all three paths.
+# ---------------------------------------------------------------------------
+
+
+def test_seed_custom_pool_includes_per_credential_base_urls(tmp_path, monkeypatch):
+    """The `credentials:` list under custom_providers must seed pool entries
+    with distinct per-credential base_url values, all in the same pool bucket."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "cloudflare-workers-ai",
+                "base_url": "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_1/ai/v1",
+                "api_key": "cf-key-1",
+                "credentials": [
+                    {
+                        "api_key": "cf-key-2",
+                        "base_url": "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1",
+                        "label": "cf-account-2",
+                    },
+                    {
+                        "api_key": "cf-key-3",
+                        "base_url": "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_3/ai/v1",
+                        "label": "cf-account-3",
+                    },
+                ],
+            }
+        ],
+        "credential_pool_strategies": {
+            "custom:cloudflare-workers-ai": "round_robin",
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:cloudflare-workers-ai")
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 3
+    urls = {e.base_url for e in entries}
+    assert urls == {
+        "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_1/ai/v1",
+        "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1",
+        "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_3/ai/v1",
+    }
+
+
+def test_get_custom_provider_pool_key_matches_nested_credential_url(tmp_path, monkeypatch):
+    """get_custom_provider_pool_key must resolve a secondary credential's
+    base_url back to the same pool key as the primary — otherwise the
+    recovery guard in recover_with_credential_pool cannot recognise the
+    agent as a member of the pool after rotation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    primary_url = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_1/ai/v1"
+    secondary_url = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "cloudflare-workers-ai",
+                "base_url": primary_url,
+                "api_key": "cf-key-1",
+                "credentials": [
+                    {
+                        "api_key": "cf-key-2",
+                        "base_url": secondary_url,
+                        "label": "cf-account-2",
+                    },
+                ],
+            }
+        ],
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key
+
+    assert get_custom_provider_pool_key(primary_url) == "custom:cloudflare-workers-ai"
+    assert get_custom_provider_pool_key(secondary_url) == "custom:cloudflare-workers-ai"
+    # A URL that matches neither the primary nor any nested credential
+    # must still return None (guard stays armed for foreign endpoints).
+    assert get_custom_provider_pool_key("https://other.example.com/v1") is None
+
+
+def test_get_custom_provider_pool_key_matches_cliqued_nested_url(tmp_path, monkeypatch):
+    """When provider_name is given, the name-match short-circuit must still
+    return the correct pool key for a URL that only appears in the nested
+    credentials list (no regression in the name-match precedence path)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "cloudflare-workers-ai",
+                "base_url": "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_1/ai/v1",
+                "api_key": "cf-key-1",
+                "credentials": [
+                    {
+                        "api_key": "cf-key-2",
+                        "base_url": "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1",
+                    },
+                ],
+            }
+        ],
+    }))
+
+    from agent.credential_pool import get_custom_provider_pool_key
+
+    secondary_url = "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_2/ai/v1"
+    assert (
+        get_custom_provider_pool_key(secondary_url, provider_name="cloudflare-workers-ai")
+        == "custom:cloudflare-workers-ai"
+    )

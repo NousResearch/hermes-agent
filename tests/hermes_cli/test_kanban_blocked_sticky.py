@@ -99,6 +99,33 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         assert kb.get_task(conn, child).status == "blocked"
 
 
+def test_initial_status_blocked_task_is_sticky_and_not_auto_promoted(kanban_home: Path) -> None:
+    """A task explicitly created as blocked is an operator safety hold.
+
+    It must not be promoted by the next dispatcher recompute just because it
+    has no parents. This protects create-only staging/no-dispatch workflows
+    where `hermes kanban create --initial-status blocked` is used as the
+    safety boundary before any worker can claim the task.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="staged candidate only",
+            assignee="default",
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        promoted = kb.recompute_ready(conn)
+
+        after_recompute = kb.get_task(conn, tid)
+        assert after_recompute is not None
+        assert promoted == 0
+        assert after_recompute.status == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # Circuit-breaker blocks still auto-recover (preserve #40c1decb3 intent)
 # ---------------------------------------------------------------------------

@@ -248,11 +248,12 @@ def _cmd_resume(args) -> int:
 
 def _cmd_pin(args) -> int:
     from tools import skill_usage
-    if not skill_usage.is_agent_created(args.skill):
-        print(
-            f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
-            "(only agent-created skills participate in curation)"
-        )
+    if not skill_usage.is_curation_eligible(args.skill):
+        if skill_usage.is_hub_installed(args.skill):
+            reason = "hub-installed skills are never curator-managed"
+        else:
+            reason = "bundled built-ins require curator.prune_builtins=true"
+        print(f"curator: '{args.skill}' cannot be pinned ({reason})")
         return 1
     skill_usage.set_pinned(args.skill, True)
     print(f"curator: pinned '{args.skill}' (will bypass auto-transitions)")
@@ -261,11 +262,12 @@ def _cmd_pin(args) -> int:
 
 def _cmd_unpin(args) -> int:
     from tools import skill_usage
-    if not skill_usage.is_agent_created(args.skill):
-        print(
-            f"curator: '{args.skill}' is bundled or hub-installed — "
-            "there's nothing to unpin (curator only tracks agent-created skills)"
-        )
+    if not skill_usage.is_curation_eligible(args.skill):
+        if skill_usage.is_hub_installed(args.skill):
+            reason = "hub-installed skills are never curator-managed"
+        else:
+            reason = "bundled built-ins require curator.prune_builtins=true"
+        print(f"curator: '{args.skill}' cannot be unpinned ({reason})")
         return 1
     skill_usage.set_pinned(args.skill, False)
     print(f"curator: unpinned '{args.skill}'")

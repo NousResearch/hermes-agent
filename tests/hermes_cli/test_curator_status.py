@@ -109,6 +109,40 @@ def _capture_status(curator_cli) -> str:
     return buf.getvalue()
 
 
+def test_pin_and_unpin_allow_bundled_when_prune_builtins_enabled(curator_status_env, monkeypatch, capsys):
+    env = curator_status_env
+    env["make_skill"]("bundled-one")
+    (env["skills"] / ".bundled_manifest").write_text(
+        "bundled-one:abc\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(env["skill_usage"], "_prune_builtins_enabled", lambda: True)
+
+    assert env["curator_cli"]._cmd_pin(Namespace(skill="bundled-one")) == 0
+    assert env["skill_usage"].get_record("bundled-one")["pinned"] is True
+    assert "pinned 'bundled-one'" in capsys.readouterr().out
+
+    assert env["curator_cli"]._cmd_unpin(Namespace(skill="bundled-one")) == 0
+    assert env["skill_usage"].get_record("bundled-one")["pinned"] is False
+    assert "unpinned 'bundled-one'" in capsys.readouterr().out
+
+
+def test_pin_still_refuses_hub_skill_even_when_prune_builtins_enabled(curator_status_env, monkeypatch, capsys):
+    env = curator_status_env
+    env["make_skill"]("hub-one")
+    hub = env["skills"] / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        '{"installed": {"hub-one": {}}}', encoding="utf-8",
+    )
+    monkeypatch.setattr(env["skill_usage"], "_prune_builtins_enabled", lambda: True)
+
+    assert env["curator_cli"]._cmd_pin(Namespace(skill="hub-one")) == 1
+    assert env["skill_usage"].load_usage() == {}
+    out = capsys.readouterr().out
+    assert "hub-one" in out
+    assert "hub-installed skills are never curator-managed" in out
+
+
 def test_status_shows_most_and_least_used_sections(curator_status_env):
     env = curator_status_env
     env["make_skill"]("top-dog")

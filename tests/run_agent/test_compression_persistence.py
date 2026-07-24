@@ -391,3 +391,152 @@ class TestGatewayHistoryOffsetAfterSplit:
         assert len(new_messages) == 0, (
             "Expected 0 messages with stale offset=200 (demonstrates the bug)"
         )
+
+
+class TestStoredPromptCwdDrift:
+    """Verify that stored system prompts are rejected when cwd changed."""
+
+    def _make_agent(self, model="test/model", provider="openrouter"):
+        class _Agent:
+            pass
+
+        agent = _Agent()
+        agent.model = model
+        agent.provider = provider
+        return agent
+
+    def test_stored_prompt_stale_when_cwd_differs(self):
+        """Different cwd should force a prompt rebuild."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = (
+            "Current working directory: /project/old\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("os.getcwd", return_value="/project/new"):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+                "Expected False when stored cwd differs from current cwd"
+            )
+
+    def test_stored_prompt_fresh_when_cwd_matches(self):
+        """Matching cwd should allow prompt reuse."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        current_cwd = "/project/current"
+        stored_prompt = (
+            f"Current working directory: {current_cwd}\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("os.getcwd", return_value=current_cwd):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "Expected True when stored cwd matches current cwd"
+            )
+
+    def test_stored_prompt_stale_when_runtime_surface_differs(self):
+        """A stored prompt built for a different platform must not be reused."""
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        stored_prompt = (
+            "Platform: desktop\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+        agent = self._make_agent()
+        agent.platform = "cli"
+        assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+            "Expected False when stored prompt is for 'desktop' but the "
+            "current session runs on 'cli'"
+        )
+
+    def test_stored_prompt_fresh_when_platform_matches(self):
+        """Matching platform allows prompt reuse."""
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        agent.platform = "desktop"
+        stored_prompt = (
+            "Platform: desktop\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+        assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+            "Expected True when stored platform matches the current platform"
+        )
+
+    def test_stored_prompt_fresh_when_terminal_cwd_matches(self):
+        """Gateway: stored cwd equals TERMINAL_CWD -> reuse via resolve_agent_cwd.
+
+        The gateway sets TERMINAL_CWD to the configured project dir, which differs
+        from the process launch dir (os.getcwd()). Reuse must key off
+        resolve_agent_cwd(), not os.getcwd(), or every gateway turn would falsely
+        rebuild the system prompt.
+        """
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        with tempfile.TemporaryDirectory() as term_cwd:
+            stored_prompt = (
+                f"Current working directory: {term_cwd}\n"
+                "Model: test/model\n"
+                "Provider: openrouter\n"
+            )
+            with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
+                assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                    "Expected True when stored cwd equals TERMINAL_CWD "
+                    "(gateway launch dir differs from configured cwd)"
+                )
+
+    def test_stored_prompt_stale_when_terminal_cwd_differs(self):
+        """Gateway: stored cwd differs from TERMINAL_CWD -> rebuild."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        with tempfile.TemporaryDirectory() as term_cwd, tempfile.TemporaryDirectory() as other_cwd:
+            stored_prompt = (
+                f"Current working directory: {other_cwd}\n"
+                "Model: test/model\n"
+                "Provider: openrouter\n"
+            )
+            with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
+                assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+                    "Expected False when stored cwd differs from TERMINAL_CWD"
+                )
+
+    def test_built_prompt_contains_platform_line(self):
+        """The built system prompt must carry a Platform: line so drift detection works."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+        from agent.system_prompt import build_system_prompt_parts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    provider="openrouter",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id="platform-test",
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            agent.platform = "cli"
+            parts = build_system_prompt_parts(agent)
+            assert "Platform: cli" in parts["volatile"], (
+                "Built prompt missing 'Platform: cli' — drift detection cannot read it"
+            )

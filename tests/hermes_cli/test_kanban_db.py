@@ -1917,28 +1917,13 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+def test_respawn_guard_pr_comment_is_delivery_metadata(kanban_home):
+    """A PR URL alone does not override the card's runnable lifecycle state."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
             conn, t, "worker",
-            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
-        )
-        reason = kb.check_respawn_guard(conn, t)
-    assert reason == "active_pr"
-
-
-def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
-    """A GitHub PR URL in a comment older than the PR window does not block."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="old-pr", assignee="alice")
-        old_ts = int(time.time()) - kb._RESPAWN_GUARD_PR_WINDOW - 60
-        conn.execute(
-            "INSERT INTO task_comments (task_id, author, body, created_at) "
-            "VALUES (?, 'worker', "
-            "'PR: https://github.com/totemx-AI/subsidysmart/pull/10', ?)",
-            (t, old_ts),
+            "PR created: https://github.com/example/project/pull/42",
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason is None
@@ -2015,10 +2000,10 @@ def test_dispatch_respawn_guard_skips_recent_success(
         assert kb.get_task(conn, t).status == "ready"  # not blocked, just skipped
 
 
-def test_dispatch_respawn_guard_skips_active_pr(
+def test_dispatch_pr_comment_does_not_change_ready_spawnability(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once skips (but does not block) a task with an active PR comment."""
+    """A ready card remains runnable after a worker records its PR URL."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -2028,15 +2013,54 @@ def test_dispatch_respawn_guard_skips_active_pr(
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
             conn, t, "worker",
-            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+            "Opened https://github.com/example/project/pull/99",
         )
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
 
-    assert (t, "active_pr") in res.respawn_guarded
-    assert t not in spawned_ids
+    assert t in spawned_ids
+    assert not res.respawn_guarded
     assert t not in res.auto_blocked
     with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "ready"
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "running"
+
+
+def test_pr_delivery_metadata_defers_to_block_and_explicit_continuation(
+    kanban_home, all_assignees_spawnable
+):
+    """Blocked cards stay parked; unblocking resumes the same card and workspace."""
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append((task.id, workspace))
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-fix", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Draft PR: https://github.com/example/project/pull/100",
+        )
+        task = kb.get_task(conn, t)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        assert kb.block_task(conn, t, reason="review-required")
+
+        parked = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert not parked.spawned
+        assert not spawned
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "blocked"
+
+        assert kb.unblock_task(conn, t)
+        resumed = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert [task_id for task_id, _, _ in resumed.spawned] == [t]
+        assert spawned == [(t, str(workspace))]
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "running"
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

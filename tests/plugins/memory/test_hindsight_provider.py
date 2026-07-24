@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import plugins.memory.hindsight as hindsight
 from hermes_cli.memory_setup import _CANCELLED
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
@@ -27,6 +28,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _fetch_hindsight_api_version,
 )
 
 
@@ -141,6 +143,61 @@ def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mod
         "timeout": 120.0,
         "api_key": "test-key",
     }
+
+
+class _FakeVersionResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "_FakeVersionResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
+
+
+def test_fetch_hindsight_api_version_bounds_response_read(monkeypatch):
+    response = _FakeVersionResponse(b'{"version": "0.5.6"}')
+    captured = []
+
+    def _urlopen(req, timeout):
+        captured.append((req, timeout))
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    assert _fetch_hindsight_api_version(
+        "https://api.example.test",
+        "hindsight-key",
+        timeout=3.0,
+    ) == "0.5.6"
+    assert response.read_sizes == [
+        hindsight._HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES + 1
+    ]
+    assert captured[0][0].full_url == "https://api.example.test/version"
+    assert captured[0][1] == 3.0
+
+
+def test_fetch_hindsight_api_version_rejects_oversized_response(monkeypatch):
+    response = _FakeVersionResponse(
+        b"x" * (hindsight._HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES + 1)
+    )
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *args, **kwargs: response,
+    )
+
+    assert _fetch_hindsight_api_version("https://api.example.test") is None
+    assert response.read_sizes == [
+        hindsight._HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES + 1
+    ]
 
 
 class _FakeSessionDB:

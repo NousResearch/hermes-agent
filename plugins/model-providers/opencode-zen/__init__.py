@@ -77,16 +77,22 @@ class OpenCodeGoProfile(ProviderProfile):
             return extra_body, top_level
 
         if _is_kimi_k2_model(model):
-            # Kimi K2 on OpenCode Go uses Moonshot's native wire shape:
-            # extra_body.thinking (binary toggle) + top-level reasoning_effort
-            # (low|medium|high). Mirrors the KimiProfile (api.moonshot.ai/v1).
+            # OCG's Kimi route accepts top-level reasoning_effort but rejects
+            # Moonshot's native extra_body.thinking toggle with HTTP 400:
+            #   "cannot specify both 'thinking' and 'reasoning_effort'", or
+            #   "Extra inputs are not permitted, field: 'extra_body'".
+            # Keep OCG on the OpenAI-compatible single-control shape: emit
+            # ONLY top-level reasoning_effort, never extra_body["thinking"].
+            # This differs from KimiProfile (api.moonshot.ai/v1), which uses
+            # the native Moonshot shape.
             if not isinstance(reasoning_config, dict):
                 # No config → leave server defaults alone.
                 return extra_body, top_level
 
             enabled = reasoning_config.get("enabled") is not False
             if not enabled:
-                extra_body["thinking"] = {"type": "disabled"}
+                # Disabled → emit nothing. Do NOT send extra_body["thinking"]
+                # because OCG would reject it with 400.
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
@@ -94,11 +100,7 @@ class OpenCodeGoProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "high"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
-
-            # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
-            # only send extra_body["thinking"] when no reasoning_effort is set.
-            if "reasoning_effort" not in top_level:
-                extra_body["thinking"] = {"type": "enabled"}
+            # Unknown effort ("minimal", etc.) → emit nothing, let the server pick.
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):
@@ -129,7 +131,6 @@ class OpenCodeGoProfile(ProviderProfile):
 
 opencode_zen = ProviderProfile(
     name="opencode-zen",
-    aliases=("opencode", "opencode_zen", "zen"),
     env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1",
     default_aux_model="gemini-3-flash",
@@ -137,7 +138,6 @@ opencode_zen = ProviderProfile(
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go",
-    aliases=("opencode_go", "go", "opencode-go-sub"),
     env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1",
     default_aux_model="glm-5",

@@ -1,0 +1,7 @@
+name: web-mmx-cli
+version: 1.0.0
+description: "Web search via the MiniMax CLI (`mmx`). Backed by the MiniMax Token Plan — no separate API key, costs against the existing weekly quota. Install: `npm install -g mmx-cli` then `mmx auth login --api-key $MINIMAX_API_KEY`."
+author: FishRaposo
+kind: backend
+provides_web_providers:
+  - mmx_cli

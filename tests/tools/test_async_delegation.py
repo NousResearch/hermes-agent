@@ -217,6 +217,12 @@ def test_interrupt_all_signals_running_children():
         model="m", session_key="", runner=blocker,
         interrupt_fn=interrupt_fn, max_async_children=3,
     )
+    # Wait for the delegation to register as "running" before interrupting.
+    # The daemon thread may not have started yet if we call interrupt_all
+    # immediately, causing a race where interrupt_all sees zero records.
+    deadline = time.monotonic() + 2
+    while ad.active_count() < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
     n = ad.interrupt_all(reason="test")
     assert n == 1
     assert interrupted["count"] == 1

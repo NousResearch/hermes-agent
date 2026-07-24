@@ -44,6 +44,8 @@ describe('shouldPassThroughToGlobalHandler', () => {
   it('always passes through non-voice global control keys', () => {
     expect(shouldPassThroughToGlobalHandler('c', key({ ctrl: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true, meta: true }))).toBe(false)
+    expect(shouldPassThroughToGlobalHandler('x', key({ ctrl: true, super: true }))).toBe(false)
     expect(shouldPassThroughToGlobalHandler('', key({ escape: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)

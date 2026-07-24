@@ -8,6 +8,7 @@ import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
+  isLiteralCtrl,
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
@@ -1486,7 +1487,7 @@ export const shouldPassThroughToGlobalHandler = (
   voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
 ): boolean =>
   (key.ctrl && input === 'c') ||
-  (key.ctrl && input === 'x') ||
+  isLiteralCtrl(key, input, 'x') ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

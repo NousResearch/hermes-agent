@@ -435,3 +435,33 @@ class TestScreenshotCleanup:
         from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
         _last_screenshot_cleanup_by_dir.clear()
         _cleanup_old_screenshots(Path("/nonexistent/dir"), max_age_hours=24)  # Should not raise
+
+# Tests for markdown artifact stripping from MEDIA paths
+class TestExtractMediaMarkdownArtifacts:
+    """Test that *_ markdown artifacts are stripped from MEDIA paths."""
+
+    def test_bold_wrapped_path(self):
+        """Mistral wraps MEDIA tags in bold: **MEDIA:/tmp/audio.mp3**"""
+        content = "Here is the file: **MEDIA:/tmp/audio.mp3**"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/audio.mp3"
+        assert "*" not in media[0][0]
+
+    def test_italic_wrapped_path(self):
+        content = "*MEDIA:/tmp/test.wav*"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/test.wav"
+
+    def test_underscore_wrapped_path(self):
+        content = "_MEDIA:/tmp/file.pdf_"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/file.pdf"
+
+    def test_mixed_bold_with_trailing_punctuation(self):
+        content = "**MEDIA:/tmp/audio.mp3**."
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/audio.mp3"

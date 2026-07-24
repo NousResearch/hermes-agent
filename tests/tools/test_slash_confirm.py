@@ -195,3 +195,81 @@ class TestClearIfStale:
     def test_returns_false_for_missing_entry(self):
         cleared = slash_confirm.clear_if_stale("nobody")
         assert cleared is False
+
+
+class TestResolveNoHandler:
+    @pytest.mark.asyncio
+    async def test_resolve_with_falsy_handler_returns_none(self):
+        """When the stored handler is None/falsy, resolve returns None."""
+        slash_confirm.register("sess1", "cid1", "cmd", None)  # type: ignore[arg-type]
+        result = await slash_confirm.resolve("sess1", "cid1", "once")
+        assert result is None
+        # Entry should still be popped.
+        assert slash_confirm.get_pending("sess1") is None
+
+
+class TestResolveSyncCompat:
+    """Cover resolve_sync_compat — the sync wrapper for cross-thread callbacks."""
+
+    def test_success_path(self):
+        async def handler(choice):
+            return f"sync {choice}"
+
+        slash_confirm.register("sess1", "cid1", "cmd", handler)
+
+        loop = asyncio.new_event_loop()
+        import threading
+
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            result = slash_confirm.resolve_sync_compat(loop, "sess1", "cid1", "once")
+            assert result == "sync once"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=5)
+            loop.close()
+
+    def test_no_pending_returns_none(self):
+        loop = asyncio.new_event_loop()
+        import threading
+
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            result = slash_confirm.resolve_sync_compat(loop, "nobody", "cid1", "once")
+            assert result is None
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=5)
+            loop.close()
+
+    def test_none_loop_returns_none(self):
+        async def handler(choice):
+            return "x"
+
+        slash_confirm.register("sess1", "cid1", "cmd", handler)
+        result = slash_confirm.resolve_sync_compat(None, "sess1", "cid1", "once")  # type: ignore[arg-type]
+        assert result is None
+
+    def test_handler_exception_returns_error_string(self):
+        """When the handler raises, resolve returns an error string;
+        resolve_sync_compat forwards it."""
+        async def handler(choice):
+            raise RuntimeError("sync boom")
+
+        slash_confirm.register("sess1", "cid1", "cmd", handler)
+
+        loop = asyncio.new_event_loop()
+        import threading
+
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            result = slash_confirm.resolve_sync_compat(loop, "sess1", "cid1", "once")
+            assert result is not None
+            assert "sync boom" in result
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=5)
+            loop.close()

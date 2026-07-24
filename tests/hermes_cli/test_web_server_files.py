@@ -438,6 +438,90 @@ def test_stream_upload_large_file_under_cap_succeeds(forced_files_client, monkey
     assert file_path.read_bytes() == payload
 
 
+def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client, tmp_path):
+    """Dangling symlinks should appear in listings with broken_link: true."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    valid = root / "valid.txt"
+    valid.write_text("hello")
+
+    broken = root / "broken_link"
+    outside_broken = root / "outside_broken_link"
+    try:
+        broken.symlink_to(root / "nonexistent_target")
+        outside_broken.symlink_to(tmp_path / "outside_nonexistent_target")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    resp = client.get("/api/files", params={"path": str(root)})
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    names = [e["name"] for e in entries]
+    assert "valid.txt" in names
+    assert "broken_link" in names
+    assert "outside_broken_link" in names
+
+    broken_entry = next(e for e in entries if e["name"] == "broken_link")
+    assert broken_entry["broken_link"] is True
+    assert broken_entry["path"] == str(broken)
+    assert broken_entry["size"] is None
+    assert broken_entry["mtime"] is None
+    assert broken_entry["mime_type"] is None
+    assert broken_entry["is_directory"] is False
+
+    outside_entry = next(e for e in entries if e["name"] == "outside_broken_link")
+    assert outside_entry["broken_link"] is True
+    assert outside_entry["path"] == str(outside_broken)
+
+
+def test_managed_file_entry_reuses_symlink_stat_snapshot(tmp_path, monkeypatch):
+    """A target disappearing after its first stat must not turn the listing into a 500."""
+    root = tmp_path.resolve()
+    target = root / "target.txt"
+    target.write_text("x")
+    link = root / "link"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    original_resolve = web_server.Path.resolve
+    original_stat = web_server.Path.stat
+    resolved_target = original_resolve(link)
+    target_stat_calls = 0
+
+    def stable_resolve(path, *args, **kwargs):
+        if path == link:
+            return resolved_target
+        return original_resolve(path, *args, **kwargs)
+
+    def disappearing_target_stat(path, *args, **kwargs):
+        nonlocal target_stat_calls
+        if path == resolved_target:
+            target_stat_calls += 1
+            if target_stat_calls == 2:
+                raise FileNotFoundError(str(path))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server.Path, "resolve", stable_resolve)
+    monkeypatch.setattr(web_server.Path, "stat", disappearing_target_stat)
+
+    entry = web_server._managed_file_entry(
+        web_server.ManagedFilesPolicy(
+            default_path=root,
+            locked_root=root,
+            can_change_path=False,
+        ),
+        link,
+    )
+
+    assert entry["name"] == "link"
+    assert entry["path"] == str(resolved_target)
+    assert entry["size"] == 1
+    assert target_stat_calls == 1
+
+
 def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
     """A client disconnect mid-stream (asyncio.CancelledError) must not leak a temp file.
 

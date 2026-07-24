@@ -978,7 +978,7 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
     if actions:
         lines.append(f"Actions: {', '.join(actions)}")
 
-    text_content = "\n".join(lines[:12]).strip() or FALLBACK_INTERACTIVE_TEXT
+    text_content = "\n".join(lines).strip() or FALLBACK_INTERACTIVE_TEXT
     return FeishuNormalizedMessage(
         raw_type=message_type,
         text_content=text_content,
@@ -3278,6 +3278,24 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> None:
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
 
+        # merge_forward as current message: the websocket event payload only
+        # contains a title/summary placeholder — the real sub-messages must be
+        # fetched via the API. Fetch items once, then extract both text and
+        # media from the same response.
+        raw_type = (getattr(message, "message_type", "") or "").strip().lower()
+        if raw_type == "merge_forward" and message_id and self._client:
+            items = await self._fetch_message_items(message_id)
+            if items:
+                full_text = await self._extract_message_text_from_items(message_id, items)
+                if full_text:
+                    text = full_text
+                fwd_media_urls, fwd_media_types = await self._extract_merge_forward_media(items)
+                if fwd_media_urls:
+                    media_urls.extend(fwd_media_urls)
+                    media_types.extend(fwd_media_types)
+                    if inbound_type == MessageType.TEXT:
+                        inbound_type = MessageType.PHOTO
+
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -3300,7 +3318,31 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        reply_to_text: Optional[str] = None
+        reply_media_urls: List[str] = []
+        reply_media_types: List[str] = []
+        if reply_to_message_id:
+            (
+                reply_to_text,
+                reply_media_urls,
+                reply_media_types,
+            ) = await self._fetch_reply_context(reply_to_message_id)
+
+        # If the replied-to message contains images (e.g. user quotes a photo
+        # and @bot asks to analyze it), merge them into the current message's
+        # media_urls so the agent can see the image. Duplicates are filtered so
+        # re-quoting an image the current message already includes does not
+        # double-count it.
+        if reply_media_urls:
+            appended = False
+            for url, mtype in zip(reply_media_urls, reply_media_types):
+                if url in media_urls:
+                    continue
+                media_urls.append(url)
+                media_types.append(mtype)
+                appended = True
+            if appended and inbound_type == MessageType.TEXT:
+                inbound_type = MessageType.PHOTO
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -4214,38 +4256,253 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Failed to fetch bot names for %s", bot_ids, exc_info=True)
             return None
 
-    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+    # =========================================================================
+    # Message lookup: query / parse separation
+    # =========================================================================
+
+    async def _fetch_message_items(self, message_id: str) -> Sequence[Any]:
+        """Single Feishu message.get — the only method that calls the SDK lookup.
+
+        Returns the response items tuple, or an empty tuple on failure.
+        """
         if not self._client or not message_id:
-            return None
-        if message_id in self._message_text_cache:
-            self._message_text_cache.move_to_end(message_id)
-            return self._message_text_cache[message_id]
+            return ()
         try:
             request = self._build_get_message_request(message_id)
             response = await self._run_blocking(self._client.im.v1.message.get, request)
             if not response or getattr(response, "success", lambda: False)() is False:
                 code = getattr(response, "code", "unknown")
                 msg = getattr(response, "msg", "message lookup failed")
-                logger.warning("[Feishu] Failed to fetch parent message %s: [%s] %s", message_id, code, msg)
-                return None
-            items = getattr(getattr(response, "data", None), "items", None) or []
-            parent = items[0] if items else None
-            body = getattr(parent, "body", None)
-            msg_type = getattr(parent, "msg_type", "") or ""
-            raw_content = getattr(body, "content", "") or ""
-            parent_mentions = getattr(parent, "mentions", None) if parent else None
-            text = self._extract_text_from_raw_content(
-                msg_type=msg_type,
-                raw_content=raw_content,
-                mentions=parent_mentions,
-            )
-            self._message_text_cache[message_id] = text
-            while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
-                self._message_text_cache.popitem(last=False)
-            return text
+                logger.warning("[Feishu] Failed to fetch message %s: [%s] %s", message_id, code, msg)
+                return ()
+            return tuple(getattr(getattr(response, "data", None), "items", None) or ())
         except Exception:
-            logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
+            logger.warning("[Feishu] Failed to fetch message %s", message_id, exc_info=True)
+            return ()
+
+    async def _extract_message_text_from_items(
+        self,
+        message_id: str,
+        items: Sequence[Any],
+    ) -> Optional[str]:
+        """Parse agent-readable text from already-fetched message items."""
+        parent = items[0] if items else None
+        if parent is None:
             return None
+
+        body = getattr(parent, "body", None)
+        msg_type = (getattr(parent, "msg_type", "") or "").strip().lower()
+        raw_content = getattr(body, "content", "") or ""
+        parent_mentions = getattr(parent, "mentions", None)
+
+        # merge_forward parent body is the placeholder string "Merged and
+        # Forwarded Message". The real sub-messages live in items[1:] with
+        # an upper_message_id pointing back to the parent. Aggregate their
+        # textual content so the agent can see what was forwarded.
+        if msg_type == "merge_forward":
+            return await self._extract_merge_forward_text(message_id, items)
+
+        return self._extract_text_from_raw_content(
+            msg_type=msg_type,
+            raw_content=raw_content,
+            mentions=parent_mentions,
+        )
+
+    async def _extract_reply_media_from_items(
+        self,
+        message_id: str,
+        items: Sequence[Any],
+    ) -> tuple[List[str], List[str]]:
+        """Extract media resources from already-fetched message items.
+
+        The parent-message lookup is owned by the caller so that text and media
+        reuse the same API response — no duplicate message.get.
+        """
+        if not message_id or not items:
+            return [], []
+        try:
+            parent = items[0] if items else None
+            if not parent:
+                return [], []
+
+            msg_type = (getattr(parent, "msg_type", "") or "").strip().lower()
+            body = getattr(parent, "body", None)
+            raw_content = getattr(body, "content", "") or ""
+
+            if msg_type == "merge_forward":
+                return await self._extract_merge_forward_media(items)
+
+            # Only process media-bearing message types
+            if msg_type not in {"image", "post", "sticker", "file", "media"}:
+                return [], []
+
+            normalized = normalize_feishu_message(
+                message_type=msg_type,
+                raw_content=raw_content,
+                mentions=getattr(parent, "mentions", None),
+                bot=self._bot_identity(),
+            )
+            return await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
+            )
+        except Exception:
+            logger.debug("[Feishu] Failed to extract reply media for %s", message_id, exc_info=True)
+            return [], []
+
+    def _cache_message_text(self, message_id: str, text: Optional[str]) -> None:
+        """Write to the LRU text cache with eviction."""
+        self._message_text_cache[message_id] = text
+        self._message_text_cache.move_to_end(message_id)
+        while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+            self._message_text_cache.popitem(last=False)
+
+    # =========================================================================
+    # Public entry points (preserve existing interface)
+    # =========================================================================
+
+    async def _fetch_message_text(self, message_id: str) -> Optional[str]:
+        """Fetch and cache the text of a single message (compatibility wrapper)."""
+        if not self._client or not message_id:
+            return None
+        if message_id in self._message_text_cache:
+            self._message_text_cache.move_to_end(message_id)
+            return self._message_text_cache[message_id]
+
+        items = await self._fetch_message_items(message_id)
+        if not items:
+            return None
+
+        text = await self._extract_message_text_from_items(message_id, items)
+        self._cache_message_text(message_id, text)
+        return text
+
+    async def _fetch_reply_context(
+        self,
+        message_id: str,
+    ) -> tuple[Optional[str], List[str], List[str]]:
+        """Fetch quoted text and media from a single parent-message lookup.
+
+        This is the preferred entry point when both text and media are needed
+        for a replied-to message — it guarantees only one message.get call.
+        """
+        items = await self._fetch_message_items(message_id)
+        if not items:
+            return None, [], []
+
+        text = await self._extract_message_text_from_items(message_id, items)
+        self._cache_message_text(message_id, text)
+
+        media_urls, media_types = await self._extract_reply_media_from_items(
+            message_id, items
+        )
+        return text, media_urls, media_types
+
+    # =========================================================================
+    # Merge-forward sub-message aggregation
+    # =========================================================================
+
+    async def _extract_merge_forward_media(
+        self,
+        items: Sequence[Any],
+    ) -> tuple[List[str], List[str]]:
+        """Extract images from merge_forward sub-messages.
+
+        Each sub-message's own message_id is used for the image download API
+        because Feishu requires the owning message_id — using the parent
+        merge_forward ID returns 234003 'File not in msg'.
+        """
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        max_images = 10
+        for it in items[1:]:
+            if len(media_urls) >= max_images:
+                break
+            sub_type = (getattr(it, "msg_type", "") or "").strip().lower()
+            if sub_type not in ("image", "post"):
+                continue
+            sub_message_id = getattr(it, "message_id", "") or ""
+            if not sub_message_id:
+                continue
+            body = getattr(it, "body", None)
+            sub_raw = getattr(body, "content", "") or ""
+            normalized = normalize_feishu_message(
+                message_type=sub_type,
+                raw_content=sub_raw,
+                mentions=getattr(it, "mentions", None),
+                bot=self._bot_identity(),
+            )
+            for image_key in normalized.image_keys:
+                if len(media_urls) >= max_images:
+                    break
+                cached_path, media_type = await self._download_feishu_image(
+                    message_id=sub_message_id,
+                    image_key=image_key,
+                )
+                if cached_path:
+                    media_urls.append(cached_path)
+                    media_types.append(media_type)
+        return media_urls, media_types
+
+    async def _extract_merge_forward_text(
+        self,
+        parent_id: str,
+        items: Sequence[Any],
+    ) -> Optional[str]:
+        """Aggregate sub-messages of a merge_forward into a single text blob.
+
+        items[0] is the merge_forward placeholder. items[1:] are the
+        sub-messages — each carries its own msg_type/body/sender/mentions and
+        an upper_message_id that points back to parent_id (directly, or via a
+        nested merge_forward). Lines are formatted as ``<sender>: <text>`` so
+        the agent sees who sent what.
+        """
+        sub_items = [it for it in items[1:] if it is not None]
+        if not sub_items:
+            return FALLBACK_FORWARD_TEXT
+
+        # Resolve sender display names in one go (one batch API call max).
+        sender_open_ids: List[str] = []
+        for it in sub_items:
+            sender = getattr(it, "sender", None)
+            sid = getattr(sender, "id", None) or ""
+            sid_type = getattr(sender, "id_type", None) or ""
+            if sid and sid_type == "open_id" and sid not in sender_open_ids:
+                sender_open_ids.append(sid)
+        for oid in sender_open_ids:
+            try:
+                await self._resolve_sender_name_from_api(oid, is_bot=False)
+            except Exception:
+                logger.debug("[Feishu] Failed to resolve sender name %s for merge_forward", oid, exc_info=True)
+
+        lines: List[str] = []
+        for it in sub_items:
+            body = getattr(it, "body", None)
+            sub_type = getattr(it, "msg_type", "") or ""
+            sub_raw = getattr(body, "content", "") or ""
+            sub_mentions = getattr(it, "mentions", None)
+            sub_text = self._extract_text_from_raw_content(
+                msg_type=sub_type,
+                raw_content=sub_raw,
+                mentions=sub_mentions,
+            )
+            if not sub_text:
+                if sub_type in ("image", "sticker"):
+                    sub_text = "[Image]"
+                else:
+                    continue
+            sender = getattr(it, "sender", None)
+            sid = getattr(sender, "id", None) or ""
+            display = self._get_cached_sender_name(sid) or "unknown"
+            lines.append(f"{display}: {sub_text}")
+
+        if not lines:
+            return FALLBACK_FORWARD_TEXT
+        # Cap to avoid blowing context with a 100-message forward.
+        max_lines = 50
+        if len(lines) > max_lines:
+            lines = lines[:max_lines] + [f"... ({len(sub_items) - max_lines} more sub-messages truncated)"]
+        return "[Merged forward, {} messages]\n".format(len(sub_items)) + "\n".join(lines)
 
     def _extract_text_from_raw_content(
         self,
@@ -4263,6 +4520,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
+        if not placeholder:
+            return None
         return str(placeholder).strip() or None
 
     @staticmethod
@@ -4926,7 +5185,20 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_get_message_request(message_id: str) -> Any:
         if "GetMessageRequest" in globals():
-            return GetMessageRequest.builder().message_id(message_id).build()
+            request = GetMessageRequest.builder().message_id(message_id).build()
+            # Request the user-facing rendered card content. Without this,
+            # JSON 2.0 cards (tables, collapsible panels, etc.) sent to/queried
+            # by clients below the required version return only a fallback
+            # "please upgrade your client" placeholder instead of the real
+            # content. With it, Feishu renders the card body to markdown
+            # (tables become markdown tables), which the agent can read.
+            try:
+                queries = list(getattr(request, "queries", None) or [])
+                queries.append(("card_msg_content_type", "user_card_content"))
+                request.queries = queries
+            except Exception:
+                pass
+            return request
         return SimpleNamespace(message_id=message_id)
 
     @staticmethod

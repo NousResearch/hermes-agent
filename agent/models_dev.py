@@ -165,6 +165,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "huggingface": "huggingface",
     "gemini": "google",
     "google": "google",
+    "vertex": "google-vertex",
     "xai": "xai",
     # xAI OAuth is an authentication/transport path for the same xAI model
     # catalog, so model metadata should resolve through the xAI provider.

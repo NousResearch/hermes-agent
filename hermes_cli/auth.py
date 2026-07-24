@@ -1393,6 +1393,15 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
         return True
     if normalized.startswith("custom:"):
         return True
+    # Provider plugin profiles (e.g. vertex, bedrock) don't appear in
+    # the auth.py PROVIDER_REGISTRY, so resolve_provider fails. Check
+    # the provider plugin system as a fallback.
+    try:
+        from providers import get_provider_profile
+        if get_provider_profile(normalized) is not None:
+            return True
+    except Exception:
+        pass
     try:
         resolve_provider(normalized)
     except AuthError:

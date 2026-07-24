@@ -1910,7 +1910,8 @@ def list_authenticated_providers(
         pconfig = PROVIDER_REGISTRY.get(hermes_id)
         # Skip non-API-key auth providers here — they are handled in
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
-        if pconfig and pconfig.auth_type != "api_key":
+        # Exception: auth_type="vertex" is handled inline below.
+        if pconfig and pconfig.auth_type not in ("api_key", "vertex"):
             continue
         # models.dev catalogs include providers Hermes may not route yet.
         # Gate on runtime capability rather than registry membership: special
@@ -1918,15 +1919,27 @@ def list_authenticated_providers(
         from hermes_cli.auth import is_runtime_provider_routable
         if not is_runtime_provider_routable(hermes_id):
             continue
-        if pconfig and pconfig.api_key_env_vars:
+        env_vars: list[str] = []
+        if pconfig and pconfig.auth_type == "vertex":
+            # Vertex uses has_vertex_api_key() — no standard env-var check
+            pass
+        elif pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
             env_vars = pdata.get("env", [])
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Check if any env var is set (or Vertex API key is present)
+        has_creds = False
+        if hermes_id == "vertex":
+            try:
+                from agent.vertex_adapter import has_vertex_api_key
+                has_creds = has_vertex_api_key()
+            except Exception:
+                has_creds = False
+        else:
+            has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store

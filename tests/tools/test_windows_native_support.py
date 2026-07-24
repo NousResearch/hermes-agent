@@ -1139,6 +1139,8 @@ class TestWindowlessGatewayRestartSpec:
         # Everything after the interpreter is byte-for-byte preserved.
         assert new_argv[1:] == argv[1:]
         assert cwd == "C:/hermes"
+        assert env["PYTHONIOENCODING"] == "utf-8"
+        assert env["PYTHONUTF8"] == "1"
         assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
         assert "PYTHONPATH" in env
 

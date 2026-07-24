@@ -393,7 +393,7 @@ def _build_gateway_cmd_script(
 
     The script:
       - cd's into a stable working directory
-      - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
+      - exports HERMES_HOME, PYTHONIOENCODING, PYTHONUTF8, VIRTUAL_ENV
       - invokes ``python -m hermes_cli.main [--profile X] gateway run``
 
     The .cmd is a compatibility/manual-run artifact: service persistence
@@ -410,6 +410,7 @@ def _build_gateway_cmd_script(
     lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
+    lines.append('set "PYTHONUTF8=1"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
@@ -495,6 +496,7 @@ def _build_gateway_vbs_script(
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
         f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
+        f"env.Item({_quote_vbs_string('PYTHONUTF8')}) = {_quote_vbs_string('1')}",
         f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
         f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(_preserve_hermes_home_path(venv_dir))}",
         # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
@@ -791,6 +793,7 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
     env_overlay = {
         "HERMES_HOME": hermes_home,
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
         "HERMES_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir),
     }
@@ -858,6 +861,7 @@ def windowless_gateway_restart_spec(
 
     env_overlay: dict[str, str] = {
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
         "HERMES_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": str(venv_dir),
     }

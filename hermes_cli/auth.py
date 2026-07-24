@@ -5536,6 +5536,9 @@ def _refresh_access_token(
     client_id: str,
     refresh_token: str,
 ) -> Dict[str, Any]:
+    # Nous refresh tokens are single-use. A transport timeout can happen after
+    # the portal consumes and rotates the token, so replaying this POST can
+    # trigger reuse detection and revoke the session chain.
     response = client.post(
         f"{portal_base_url}/api/oauth/token",
         headers={"x-nous-refresh-token": refresh_token},

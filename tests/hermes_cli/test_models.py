@@ -90,6 +90,34 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
+    def test_retries_transient_live_catalog_failure(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}}]}'
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        opener = MagicMock(
+            side_effect=[
+                TimeoutError("catalog timeout"),
+                TimeoutError("catalog timeout"),
+                _Resp(),
+            ]
+        )
+        with (
+            patch("hermes_cli.models._urlopen_model_catalog_request", opener),
+            patch("tools.http_tools.time.sleep"),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == [("anthropic/claude-opus-4.8", "recommended")]
+        assert opener.call_count == 3
+
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.
 

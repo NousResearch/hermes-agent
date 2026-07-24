@@ -9,10 +9,12 @@ jobs; it reports the profile-scoped commands operators should run next.
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import json
 import os
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -104,10 +106,34 @@ def jobs_file_for(home: Path) -> Path:
     return home / "cron" / "jobs.json"
 
 
+def _secure_dir(path: Path) -> None:
+    try:
+        os.chmod(path, 0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _secure_file(path: Path) -> None:
+    try:
+        if path.exists():
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def ensure_cron_store(home: Path) -> None:
+    cron_dir = home / "cron"
+    output_dir = cron_dir / "output"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(cron_dir)
+    _secure_dir(output_dir)
+
+
 @contextlib.contextmanager
 def jobs_store_lock(home: Path):
+    ensure_cron_store(home)
     cron_dir = home / "cron"
-    cron_dir.mkdir(parents=True, exist_ok=True)
     lock_file = cron_dir / ".jobs.lock"
     handle = lock_file.open("a+", encoding="utf-8")
     try:
@@ -139,13 +165,16 @@ def _now_stamp() -> str:
 
 def _atomic_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    _secure_dir(path.parent)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        with tmp.open("w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        _secure_file(path)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -443,7 +472,7 @@ def apply_stage(manifest: Manifest, *, default_home: Path) -> dict[str, Any]:
             skipped[move.job_id] = "source_job_missing"
             continue
         target_home = profile_home(default_home, move.target_profile)
-        target_home.joinpath("cron").mkdir(parents=True, exist_ok=True)
+        ensure_cron_store(target_home)
         target_home.joinpath("scripts").mkdir(parents=True, exist_ok=True)
         if move.script_copy:
             source = Path(move.script_copy["source"])
@@ -511,46 +540,58 @@ def apply_cutover(
             target_home = profile_home(default_home, move.target_profile)
             with jobs_store_lock(target_home):
                 target_jobs, target_metadata = load_jobs_for_home(target_home)
+                staged_target_job = next(
+                    (target_job for target_job in target_jobs if is_same_staged_job(target_job, source_job)),
+                    None,
+                )
+                if staged_target_job is None:
+                    skipped[move.job_id] = "target_job_not_staged"
+                    continue
                 if move.target_profile not in backups:
                     backup = backup_jobs_file(target_home)
                     backups[move.target_profile] = str(backup) if backup else None
-                updated = False
-                for target_job in target_jobs:
-                    if is_same_staged_job(target_job, source_job):
-                        now = datetime.now(timezone.utc).isoformat()
-                        target_job["enabled"] = True
-                        target_job["state"] = "scheduled"
-                        target_job["next_run_at"] = None
-                        target_job.pop("paused_reason", None)
-                        target_job.pop("paused_at", None)
-                        meta = dict(target_job.get(MIGRATION_KEY) or {})
-                        meta["cutover_at"] = now
-                        target_job[MIGRATION_KEY] = meta
-                        updated = True
-                        break
-                if not updated:
-                    skipped[move.job_id] = "target_job_not_staged"
-                    continue
                 if source_backup is None:
                     source_backup = backup_jobs_file(source_home)
-                save_jobs_for_home(target_home, target_jobs, target_metadata, lock=False)
-            changed_profiles.add(move.target_profile)
 
-            if remove_source:
-                source_jobs = [job for job in source_jobs if str(job.get("id") or "") != move.job_id]
-            else:
-                source_job["enabled"] = False
-                source_job["state"] = "paused"
-                source_job["paused_reason"] = "profile_migration_cutover"
-                source_job["paused_at"] = datetime.now(timezone.utc).isoformat()
+                source_snapshot = copy.deepcopy(source_jobs)
+                if remove_source:
+                    source_jobs = [job for job in source_jobs if str(job.get("id") or "") != move.job_id]
+                else:
+                    source_job["enabled"] = False
+                    source_job["state"] = "paused"
+                    source_job["paused_reason"] = "profile_migration_cutover"
+                    source_job["paused_at"] = datetime.now(timezone.utc).isoformat()
+
+                now = datetime.now(timezone.utc).isoformat()
+                staged_target_job["enabled"] = True
+                staged_target_job["state"] = "scheduled"
+                staged_target_job["next_run_at"] = None
+                staged_target_job.pop("paused_reason", None)
+                staged_target_job.pop("paused_at", None)
+                meta = dict(staged_target_job.get(MIGRATION_KEY) or {})
+                meta["cutover_at"] = now
+                staged_target_job[MIGRATION_KEY] = meta
+
+                try:
+                    save_jobs_for_home(source_home, source_jobs, source_metadata, lock=False)
+                    save_jobs_for_home(target_home, target_jobs, target_metadata, lock=False)
+                except Exception as exc:
+                    source_jobs = source_snapshot
+                    source_by_id = _index_jobs(source_jobs)
+                    try:
+                        save_jobs_for_home(source_home, source_jobs, source_metadata, lock=False)
+                    except Exception as rollback_exc:
+                        raise RuntimeError(
+                            f"failed to roll back source cutover after target write error: {rollback_exc}"
+                        ) from exc
+                    raise
+
+            changed_profiles.add(move.target_profile)
+            source_by_id = _index_jobs(source_jobs)
             cutover.append(move.job_id)
 
         if cutover:
             backups[SOURCE_PROFILE] = str(source_backup) if source_backup else None
-            if remove_source:
-                save_jobs_for_home(source_home, source_jobs, source_metadata, lock=False)
-            else:
-                save_jobs_for_home(source_home, list(source_by_id.values()), source_metadata, lock=False)
     return {
         "cutover": cutover,
         "skipped": skipped,

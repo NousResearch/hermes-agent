@@ -40,6 +40,10 @@ def make_script(home: Path, name: str, content: str = "print('ok')\n", mode: int
     return path
 
 
+def mode_bits(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
 def test_manifest_marks_script_copies_shadow_jobs_gateways_and_default_keeps(tmp_path):
     default_home = tmp_path / ".hermes"
     make_script(default_home, "lead_check.py")
@@ -91,7 +95,10 @@ def test_manifest_blocks_missing_skills_unsafe_scripts_and_collisions(tmp_path):
 def test_apply_stage_copies_scripts_preserves_mode_and_leaves_source_active(tmp_path):
     default_home = tmp_path / ".hermes"
     script = make_script(default_home, "lead_check.sh", "#!/usr/bin/env bash\necho ok\n", 0o755)
-    write_jobs(default_home, [{"id": "j1", "name": "crm-lead-check", "script": "lead_check.sh", "no_agent": True}])
+    write_jobs(
+        default_home,
+        [{"id": "j1", "name": "crm-lead-check", "script": "lead_check.sh", "no_agent": True, "enabled": True}],
+    )
 
     manifest = rebalance.build_manifest(default_home, default_home=default_home)
     result = rebalance.apply_stage(manifest, default_home=default_home)
@@ -110,6 +117,37 @@ def test_apply_stage_copies_scripts_preserves_mode_and_leaves_source_active(tmp_
     assert target_jobs[0]["next_run_at"] is None
     assert target_jobs[0]["profile_migration"]["source_job_id"] == "j1"
     assert read_jobs(default_home)[0]["enabled"] is True
+
+
+def test_apply_stage_secures_new_target_cron_store(tmp_path):
+    default_home = tmp_path / ".hermes"
+    make_script(default_home, "lead_check.py")
+    write_jobs(default_home, [{"id": "j1", "name": "crm-lead-check", "script": "lead_check.py", "no_agent": True}])
+
+    manifest = rebalance.build_manifest(default_home, default_home=default_home)
+    rebalance.apply_stage(manifest, default_home=default_home)
+
+    target_home = default_home / "profiles" / "rva-leads"
+    assert mode_bits(target_home / "cron") == 0o700
+    assert mode_bits(target_home / "cron" / "output") == 0o700
+    assert mode_bits(target_home / "cron" / "jobs.json") == 0o600
+
+
+def test_atomic_write_creates_temp_file_owner_only(tmp_path, monkeypatch):
+    jobs_file = tmp_path / "cron" / "jobs.json"
+    original_replace = rebalance.os.replace
+    observed: dict[str, int] = {}
+
+    def inspect_temp_mode(source, target):
+        observed["temp_mode"] = mode_bits(Path(source))
+        original_replace(source, target)
+
+    monkeypatch.setattr(rebalance.os, "replace", inspect_temp_mode)
+
+    rebalance._atomic_write_json(jobs_file, {"jobs": []})
+
+    assert observed == {"temp_mode": 0o600}
+    assert mode_bits(jobs_file) == 0o600
 
 
 def test_apply_stage_skips_source_job_removed_after_manifest(tmp_path):
@@ -151,9 +189,85 @@ def test_cutover_enables_verified_script_job_and_removes_source_when_requested(t
     assert "cutover_at" in target_job["profile_migration"]
 
 
+@pytest.mark.parametrize("remove_source", [False, True])
+def test_cutover_makes_source_non_runnable_before_enabling_target(tmp_path, monkeypatch, remove_source):
+    default_home = tmp_path / ".hermes"
+    make_script(default_home, "lead_check.py")
+    write_jobs(
+        default_home,
+        [{"id": "j1", "name": "crm-lead-check", "script": "lead_check.py", "no_agent": True, "enabled": True}],
+    )
+    manifest = rebalance.build_manifest(default_home, default_home=default_home)
+    rebalance.apply_stage(manifest, default_home=default_home)
+
+    target_home = (default_home / "profiles" / "rva-leads").resolve()
+    original_save = rebalance.save_jobs_for_home
+    observed: dict[str, bool] = {}
+
+    def observing_save(home: Path, jobs, metadata=None, *, lock=True):
+        resolved_home = home.resolve()
+        if resolved_home == target_home:
+            source_jobs = read_jobs(default_home)
+            observed["source_runnable_before_target_save"] = any(
+                job.get("enabled", True) for job in source_jobs if job.get("id") == "j1"
+            )
+            observed["target_runnable_before_target_save"] = read_jobs(target_home)[0]["enabled"]
+        return original_save(home, jobs, metadata, lock=lock)
+
+    monkeypatch.setattr(rebalance, "save_jobs_for_home", observing_save)
+
+    result = rebalance.apply_cutover(
+        manifest,
+        default_home=default_home,
+        verified_job_ids={"j1"},
+        remove_source=remove_source,
+    )
+
+    assert result["cutover"] == ["j1"]
+    assert observed == {
+        "source_runnable_before_target_save": False,
+        "target_runnable_before_target_save": False,
+    }
+
+
+def test_cutover_rolls_source_back_if_target_save_fails(tmp_path, monkeypatch):
+    default_home = tmp_path / ".hermes"
+    make_script(default_home, "lead_check.py")
+    write_jobs(
+        default_home,
+        [{"id": "j1", "name": "crm-lead-check", "script": "lead_check.py", "no_agent": True, "enabled": True}],
+    )
+    manifest = rebalance.build_manifest(default_home, default_home=default_home)
+    rebalance.apply_stage(manifest, default_home=default_home)
+
+    target_home = (default_home / "profiles" / "rva-leads").resolve()
+    original_save = rebalance.save_jobs_for_home
+
+    def failing_save(home: Path, jobs, metadata=None, *, lock=True):
+        if home.resolve() == target_home:
+            raise OSError("target write failed")
+        return original_save(home, jobs, metadata, lock=lock)
+
+    monkeypatch.setattr(rebalance, "save_jobs_for_home", failing_save)
+
+    with pytest.raises(OSError, match="target write failed"):
+        rebalance.apply_cutover(
+            manifest,
+            default_home=default_home,
+            verified_job_ids={"j1"},
+            remove_source=True,
+        )
+
+    assert read_jobs(default_home)[0]["enabled"] is True
+    assert read_jobs(target_home)[0]["enabled"] is False
+
+
 def test_cutover_keeps_agent_shadow_until_accepted(tmp_path):
     default_home = tmp_path / ".hermes"
-    write_jobs(default_home, [{"id": "agent", "name": "crm-daily-scan", "prompt": "scan crm"}])
+    write_jobs(
+        default_home,
+        [{"id": "agent", "name": "crm-daily-scan", "prompt": "scan crm", "enabled": True}],
+    )
     manifest = rebalance.build_manifest(default_home, default_home=default_home)
     rebalance.apply_stage(manifest, default_home=default_home)
 

@@ -28,6 +28,10 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
+def _ps_line(pid: int, cmd: str) -> str:
+    return f"{pid:>7} {cmd}"
+
+
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
         with patch("hermes_cli.main._find_stale_dashboard_pids",
@@ -77,6 +81,25 @@ class TestDashboardStop:
         assert exc.value.code == 0
         out = capsys.readouterr().out
         assert "No hermes dashboard processes running" in out
+
+    def test_stop_ignores_desktop_embedded_backend(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        with patch("subprocess.run") as mock_run, \
+             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
+             pytest.raises(SystemExit) as exc:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(
+                    12345,
+                    "python3 -m hermes_cli.main serve --desktop-embedded --port 0",
+                ) + "\n",
+                stderr="",
+            )
+            cmd_dashboard(_ns(stop=True))
+
+        assert exc.value.code == 0
+        mock_kill.assert_not_called()
+        assert "No hermes dashboard processes running" in capsys.readouterr().out
 
     def test_stop_kills_and_exits_zero_when_all_killed(self, capsys):
         """After the kill, if the second scan returns empty we exit 0."""

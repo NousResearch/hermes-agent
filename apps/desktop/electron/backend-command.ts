@@ -11,6 +11,12 @@
 //
 // These helpers are pure so they can be unit-tested without Electron.
 
+export const DESKTOP_EMBEDDED_BACKEND_ARG = '--desktop-embedded'
+
+function stripDesktopEmbeddedBackendArg(args: string[]) {
+  return args.filter(arg => arg !== DESKTOP_EMBEDDED_BACKEND_ARG)
+}
+
 /**
  * Build the canonical headless backend argv (always `serve`).
  * @param {string} [profile] optional Hermes profile to pin via `--profile`.
@@ -18,23 +24,25 @@
 export function serveBackendArgs(profile?: string) {
   const head = profile ? ['--profile', profile] : []
 
-  return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
+  return [...head, 'serve', DESKTOP_EMBEDDED_BACKEND_ARG, '--host', '127.0.0.1', '--port', '0']
 }
 
 /**
  * Rewrite a resolved backend argv from `serve` to the legacy
- * `dashboard --no-open` form, preserving every other argument (incl. a leading
- * `-m hermes_cli.main` and any `--profile <name>`). Returns a copy; if there is
- * no `serve` token the argv is returned unchanged.
+ * `dashboard --no-open` form, preserving every public argument (incl. a leading
+ * `-m hermes_cli.main` and any `--profile <name>`). The desktop-only process
+ * marker is stripped because older runtimes do not know that hidden flag.
+ * Returns a copy; if there is no `serve` token the argv is otherwise unchanged.
  */
-export function dashboardFallbackArgs(args) {
-  const i = args.indexOf('serve')
+export function dashboardFallbackArgs(args: string[]) {
+  const stripped = stripDesktopEmbeddedBackendArg(args)
+  const i = stripped.indexOf('serve')
 
   if (i === -1) {
-    return args.slice()
+    return stripped
   }
 
-  return [...args.slice(0, i), 'dashboard', '--no-open', ...args.slice(i + 1)]
+  return [...stripped.slice(0, i), 'dashboard', '--no-open', ...stripped.slice(i + 1)]
 }
 
 /**

@@ -66,6 +66,14 @@ def _add_server_runtime_args(parser) -> None:
         default="",
         help=argparse.SUPPRESS,
     )
+    # Internal marker set by Hermes Desktop for backends it owns.  Process-table
+    # lifecycle scans use the visible argv marker to avoid killing embedded
+    # desktop children when a user runs `hermes dashboard --stop`.
+    parser.add_argument(
+        "--desktop-embedded",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     # Lifecycle flags — mutually exclusive with each other and with the
     # start-a-server flags above (if both are passed, --stop / --status win
     # because they exit before the server is started).  The server has no

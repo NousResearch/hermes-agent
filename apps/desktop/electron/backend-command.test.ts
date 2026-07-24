@@ -2,14 +2,28 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { dashboardFallbackArgs, serveBackendArgs, sourceDeclaresServe } from './backend-command'
+import {
+  dashboardFallbackArgs,
+  DESKTOP_EMBEDDED_BACKEND_ARG,
+  serveBackendArgs,
+  sourceDeclaresServe
+} from './backend-command'
 
 test('serveBackendArgs builds a headless serve invocation', () => {
-  assert.deepEqual(serveBackendArgs(), ['serve', '--host', '127.0.0.1', '--port', '0'])
+  assert.deepEqual(serveBackendArgs(), ['serve', DESKTOP_EMBEDDED_BACKEND_ARG, '--host', '127.0.0.1', '--port', '0'])
 })
 
 test('serveBackendArgs pins a profile when provided', () => {
-  assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
+  assert.deepEqual(serveBackendArgs('worker'), [
+    '--profile',
+    'worker',
+    'serve',
+    DESKTOP_EMBEDDED_BACKEND_ARG,
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
 })
 
 test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -m prefix', () => {
@@ -28,6 +42,34 @@ test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -
 
 test('dashboardFallbackArgs preserves a --profile flag ahead of serve', () => {
   const serve = ['-m', 'hermes_cli.main', '--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0']
+  assert.deepEqual(dashboardFallbackArgs(serve), [
+    '-m',
+    'hermes_cli.main',
+    '--profile',
+    'worker',
+    'dashboard',
+    '--no-open',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
+})
+
+test('dashboardFallbackArgs strips the desktop embedded marker for old runtimes', () => {
+  const serve = [
+    '-m',
+    'hermes_cli.main',
+    '--profile',
+    'worker',
+    'serve',
+    DESKTOP_EMBEDDED_BACKEND_ARG,
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ]
+
   assert.deepEqual(dashboardFallbackArgs(serve), [
     '-m',
     'hermes_cli.main',

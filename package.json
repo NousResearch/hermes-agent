@@ -40,6 +40,7 @@
   },
   "overrides": {
     "lodash": "4.18.1",
+    "shell-quote": "1.9.0",
     "yauzl": "^3.3.1"
   },
   "engines": {

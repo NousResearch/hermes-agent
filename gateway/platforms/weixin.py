@@ -2241,13 +2241,17 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         ret = result.get("ret")
         if ret is not None and ret != 0:
+            errcode = result.get("errcode")
             errmsg = result.get("errmsg", "unknown error")
-            if ret in (STALE_SESSION_RET, DEAD_SESSION_RET):
+            if (ret == SESSION_EXPIRED_ERRCODE
+                    or errcode == SESSION_EXPIRED_ERRCODE
+                    or _is_stale_session_ret(ret, errcode, errmsg)
+                    or ret == DEAD_SESSION_RET):
                 raise SessionExpiredError(
-                    f"iLink session expired: ret={ret} errmsg={errmsg}"
+                    f"iLink session expired: ret={ret} errcode={errcode} errmsg={errmsg}"
                 )
             raise RuntimeError(
-                f"iLink sendmessage error: ret={ret} errmsg={errmsg}"
+                f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
             )
         return last_message_id
 

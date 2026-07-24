@@ -3922,6 +3922,78 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_profile_switch_status_and_selection(monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    monkeypatch.setattr("hermes_constants.display_hermes_home", lambda: "~/.hermes")
+    selected = []
+    monkeypatch.setattr("hermes_cli.profiles.set_active_profile", selected.append)
+
+    status = server.handle_request(
+        {"id": "1", "method": "profile.switch", "params": {}}
+    )
+    switched = server.handle_request(
+        {
+            "id": "2",
+            "method": "profile.switch",
+            "params": {"name": "Coder"},
+        }
+    )
+
+    assert status["result"] == {
+        "profile": "default",
+        "home": "~/.hermes",
+        "relaunch": False,
+    }
+    assert switched["result"]["profile"] == "coder"
+    assert switched["result"]["relaunch"] is True
+    assert selected == ["Coder"]
+
+
+def test_profile_switch_rejects_busy_session(monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    server._sessions["sid"] = {"running": True}
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "profile.switch",
+                "params": {"session_id": "sid", "name": "coder"},
+            }
+        )
+    finally:
+        server._sessions.clear()
+
+    assert response["error"]["code"] == 4009
+    assert "session busy" in response["error"]["message"]
+
+
+def test_profile_switch_rejects_websocket_transport(monkeypatch):
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    class _WebTransport:
+        def write(self, obj):
+            return True
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    token = bind_transport(_WebTransport())
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "profile.switch",
+                "params": {"name": "coder"},
+            }
+        )
+    finally:
+        reset_transport(token)
+
+    assert response["error"]["code"] == 4003
+    assert "standalone terminal chat" in response["error"]["message"]
+
+
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
     import yaml

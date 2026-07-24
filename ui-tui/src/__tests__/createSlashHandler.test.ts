@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
+import {
+  DASHBOARD_EXIT_DISABLED_MESSAGE,
+  DASHBOARD_PROFILE_SWITCH_DISABLED_MESSAGE,
+  DASHBOARD_UPDATE_DISABLED_MESSAGE
+} from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
@@ -149,6 +153,49 @@ describe('createSlashHandler', () => {
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
 
     vi.useRealTimers()
+  })
+
+  it('switches profiles through the native RPC and exits for parent relaunch', async () => {
+    vi.useFakeTimers()
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ profile: 'coder', relaunch: true }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/profile coder')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('profile.switch', {
+      name: 'coder',
+      session_id: 'sid-abc'
+    })
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith("switching to profile 'coder'...")
+    })
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.dieWithCode).toHaveBeenCalledWith(43)
+
+    vi.useRealTimers()
+  })
+
+  it('shows the runtime profile without exiting', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ home: '~/.hermes/profiles/coder', profile: 'coder', relaunch: false }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/profile')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('profile: coder\nhome: ~/.hermes/profiles/coder')
+    })
+    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
+  })
+
+  it('directs dashboard users to the existing profile dropdown', () => {
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/profile coder')).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_PROFILE_SWITCH_DISABLED_MESSAGE)
   })
 
   it('routes /status to live session.status instead of slash worker', async () => {
@@ -754,7 +801,7 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
   })
 
-  it('lets exact catalog commands win over longer prefix matches', async () => {
+  it('lets exact local commands win over longer catalog prefix matches', () => {
     const ctx = buildCtx({
       local: {
         catalog: {
@@ -767,12 +814,10 @@ describe('createSlashHandler', () => {
     })
 
     expect(createSlashHandler(ctx)('/profile')).toBe(true)
-    await vi.waitFor(() => {
-      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
-        command: 'profile',
-        session_id: null
-      })
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('profile.switch', {
+      session_id: null
     })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
   })
 

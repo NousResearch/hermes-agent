@@ -2323,6 +2323,17 @@ def _launch_tui(
         print()
         relaunch(["update"], preserve_inherited=False)
 
+    # Exit code 43 = standalone TUI selected a profile. The RPC validated and
+    # persisted the target before the child exited, so relaunch a fresh TUI
+    # process under that profile instead of mutating HERMES_HOME in place.
+    if code == 43:
+        from hermes_cli.profiles import get_active_profile
+        from hermes_cli.relaunch import relaunch
+
+        profile = get_active_profile()
+        print(f"\nSwitching to profile '{profile}'...\n")
+        relaunch(["--profile", profile, "--tui", "chat"], preserve_inherited=False)
+
     sys.exit(code)
 
 

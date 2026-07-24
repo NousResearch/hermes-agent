@@ -139,6 +139,12 @@ export interface ConfigSetResponse {
   warning?: string
 }
 
+export interface ProfileSwitchResponse {
+  home?: string
+  profile: string
+  relaunch: boolean
+}
+
 export interface SetupStatusResponse {
   provider_configured?: boolean
 }

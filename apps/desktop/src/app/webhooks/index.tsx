@@ -1,12 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
@@ -57,6 +55,7 @@ import {
   PanelRowMenu,
   PanelSectionLabel
 } from '../overlays/panel'
+import { ListRow, ToggleRow } from '../settings/primitives'
 
 const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
 
@@ -437,21 +436,27 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
           </DialogHeader>
 
           {created ? (
-            <div className="grid gap-4">
-              <div className="grid gap-1.5">
-                <span className="text-xs font-medium text-muted-foreground">{w.webhookUrl}</span>
-                <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.url}</span>
-                  <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.url} />
-                </div>
-              </div>
-              <div className="grid gap-1.5">
-                <span className="text-xs font-medium text-muted-foreground">{w.secretOnce}</span>
-                <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.secret}</span>
-                  <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.secret} />
-                </div>
-              </div>
+            <div className="grid gap-2">
+              <ListRow
+                action={
+                  <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.url}</span>
+                    <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.url} />
+                  </div>
+                }
+                title={w.webhookUrl}
+                wide
+              />
+              <ListRow
+                action={
+                  <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs">{created.secret}</span>
+                    <CopyButton appearance="icon" buttonSize="icon-sm" label={w.copy} text={created.secret} />
+                  </div>
+                }
+                title={w.secretOnce}
+                wide
+              />
               <DialogFooter>
                 <Button onClick={closeCreate} size="sm">
                   {w.done}
@@ -459,42 +464,58 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
               </DialogFooter>
             </div>
           ) : (
-            <div className="grid gap-4">
-              <Field htmlFor="webhook-name" label={w.fieldName}>
-                <Input
-                  autoFocus
-                  id="webhook-name"
-                  onChange={e => setName(e.target.value)}
-                  placeholder={w.fieldNamePlaceholder}
-                  value={name}
-                />
-              </Field>
-              <Field htmlFor="webhook-description" label={w.fieldDescription}>
-                <Input
-                  id="webhook-description"
-                  onChange={e => setDescription(e.target.value)}
-                  placeholder={w.fieldDescriptionPlaceholder}
-                  value={description}
-                />
-              </Field>
-              <Field htmlFor="webhook-events" label={w.fieldEvents}>
-                <Input
-                  id="webhook-events"
-                  onChange={e => setEvents(e.target.value)}
-                  placeholder={w.fieldEventsPlaceholder}
-                  value={events}
-                />
-              </Field>
-              <Field htmlFor="webhook-skills" label={w.fieldSkills}>
-                <Input
-                  id="webhook-skills"
-                  onChange={e => setSkills(e.target.value)}
-                  placeholder={w.fieldSkillsPlaceholder}
-                  value={skills}
-                />
-              </Field>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field htmlFor="webhook-deliver" label={w.fieldDeliver}>
+            <div className="grid gap-1">
+              <ListRow
+                action={
+                  <Input
+                    autoFocus
+                    id="webhook-name"
+                    onChange={e => setName(e.target.value)}
+                    placeholder={w.fieldNamePlaceholder}
+                    value={name}
+                  />
+                }
+                title={<label htmlFor="webhook-name">{w.fieldName}</label>}
+                wide
+              />
+              <ListRow
+                action={
+                  <Input
+                    id="webhook-description"
+                    onChange={e => setDescription(e.target.value)}
+                    placeholder={w.fieldDescriptionPlaceholder}
+                    value={description}
+                  />
+                }
+                title={<label htmlFor="webhook-description">{w.fieldDescription}</label>}
+                wide
+              />
+              <ListRow
+                action={
+                  <Input
+                    id="webhook-events"
+                    onChange={e => setEvents(e.target.value)}
+                    placeholder={w.fieldEventsPlaceholder}
+                    value={events}
+                  />
+                }
+                title={<label htmlFor="webhook-events">{w.fieldEvents}</label>}
+                wide
+              />
+              <ListRow
+                action={
+                  <Input
+                    id="webhook-skills"
+                    onChange={e => setSkills(e.target.value)}
+                    placeholder={w.fieldSkillsPlaceholder}
+                    value={skills}
+                  />
+                }
+                title={<label htmlFor="webhook-skills">{w.fieldSkills}</label>}
+                wide
+              />
+              <ListRow
+                action={
                   <Select onValueChange={setDeliver} value={deliver}>
                     <SelectTrigger className="h-9 rounded-md" id="webhook-deliver">
                       <SelectValue />
@@ -507,28 +528,29 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                       ))}
                     </SelectContent>
                   </Select>
-                </Field>
-                <div className="grid gap-1.5">
-                  <span className="text-xs font-medium text-muted-foreground">{w.fieldDeliverOnly}</span>
-                  <label className="flex items-start gap-2 text-sm text-muted-foreground">
-                    <Checkbox
-                      checked={deliverOnly}
-                      className="mt-[3px] shrink-0"
-                      onCheckedChange={value => setDeliverOnly(value === true)}
-                    />
-                    <span className="leading-snug">{w.fieldDeliverOnlyHint}</span>
-                  </label>
-                </div>
-              </div>
-              <Field htmlFor="webhook-prompt" label={w.fieldPrompt}>
-                <Textarea
-                  className="min-h-[80px]"
-                  id="webhook-prompt"
-                  onChange={e => setPrompt(e.target.value)}
-                  placeholder={w.fieldPromptPlaceholder}
-                  value={prompt}
-                />
-              </Field>
+                }
+                title={<label htmlFor="webhook-deliver">{w.fieldDeliver}</label>}
+                wide
+              />
+              <ToggleRow
+                checked={deliverOnly}
+                description={w.fieldDeliverOnlyHint}
+                label={w.fieldDeliverOnly}
+                onChange={setDeliverOnly}
+              />
+              <ListRow
+                action={
+                  <Textarea
+                    className="min-h-[80px]"
+                    id="webhook-prompt"
+                    onChange={e => setPrompt(e.target.value)}
+                    placeholder={w.fieldPromptPlaceholder}
+                    value={prompt}
+                  />
+                }
+                title={<label htmlFor="webhook-prompt">{w.fieldPrompt}</label>}
+                wide
+              />
               <DialogFooter>
                 <Button disabled={creating} onClick={() => void handleCreate()} size="sm">
                   {creating ? w.creating : w.create}
@@ -661,24 +683,5 @@ function WebhookDetail({
         </div>
       ) : null}
     </PanelDetail>
-  )
-}
-
-function Field({
-  children,
-  htmlFor,
-  label
-}: {
-  children: React.ReactNode
-  htmlFor: string
-  label: string
-}) {
-  return (
-    <div className="grid gap-1.5">
-      <label className="text-xs font-medium text-muted-foreground" htmlFor={htmlFor}>
-        {label}
-      </label>
-      {children}
-    </div>
   )
 }

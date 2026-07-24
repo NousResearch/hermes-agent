@@ -167,8 +167,9 @@ class TestSearchContentNewlineWarning:
         )
 
         assert res.error is None
-        assert res.total_count == 0
-        assert res.warning is not None
+        # needle matches 5 files; no warning because total_count != 0
+        assert res.total_count == 5
+        assert res.warning is None
 
     def test_literal_backslash_n_pattern_does_not_warn(self, match_tree):
         res = _ops(match_tree).search(

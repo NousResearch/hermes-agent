@@ -11,6 +11,14 @@
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
 
+      mkCheck = name: attrs: script:
+        pkgs.runCommand name attrs (''
+          set -e
+        '' + script + ''
+          mkdir -p $out
+          echo "ok" > $out/result
+        '');
+
       # Auto-generated config key reference — always in sync with Python
       configKeys = pkgs.runCommand "hermes-config-keys" {} ''
         set -euo pipefail
@@ -49,35 +57,28 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
           failures = builtins.filter (r: !r.result.success) results;
           failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
-        in pkgs.runCommand "hermes-cross-eval" { } (
+        in mkCheck "hermes-cross-eval" { } (
           if failures != [] then
             throw "Package fails to evaluate on:\n${failMsg}"
           else ''
             echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
-            mkdir -p $out
-            echo "ok" > $out/result
           ''
         );
 
         # Verify the default package builds successfully (cross-platform).
         # On Linux the runtime checks below already depend on the package,
         # but this ensures darwin builders also build it during flake check.
-        build-package = pkgs.runCommand "hermes-build-package" { } ''
+        build-package = mkCheck "hermes-build-package" { } ''
           echo "PASS: package built at ${hermes-agent}"
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify the devShell builds successfully (cross-platform).
-        build-devshell = pkgs.runCommand "hermes-build-devshell" { } ''
+        build-devshell = mkCheck "hermes-build-devshell" { } ''
           echo "PASS: devShell built at ${self'.devShells.default}"
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
-        package-contents = pkgs.runCommand "hermes-package-contents" { } ''
-          set -e
+        package-contents = mkCheck "hermes-package-contents" { } ''
           echo "=== Checking binaries ==="
           test -x ${hermes-agent}/bin/hermes || (echo "FAIL: hermes binary missing"; exit 1)
           test -x ${hermes-agent}/bin/hermes-agent || (echo "FAIL: hermes-agent binary missing"; exit 1)
@@ -88,26 +89,20 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: Version check"
 
           echo "=== All checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify every pyproject.toml [project.scripts] entry has a wrapped binary
-        entry-points-sync = pkgs.runCommand "hermes-entry-points-sync" { } ''
-          set -e
+        entry-points-sync = mkCheck "hermes-entry-points-sync" { } ''
           echo "=== Checking entry points match pyproject.toml [project.scripts] ==="
           for bin in hermes hermes-agent hermes-acp; do
             test -x ${hermes-agent}/bin/$bin || (echo "FAIL: $bin binary missing from Nix package"; exit 1)
             echo "PASS: $bin present"
           done
 
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify CLI subcommands are accessible
-        cli-commands = pkgs.runCommand "hermes-cli-commands" { } ''
-          set -e
+        cli-commands = mkCheck "hermes-cli-commands" { } ''
           export HOME=$(mktemp -d)
 
           echo "=== Checking hermes --help ==="
@@ -116,13 +111,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: All subcommands accessible"
 
           echo "=== All CLI checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify bundled skills are present in the package
-        bundled-skills = pkgs.runCommand "hermes-bundled-skills" { } ''
-          set -e
+        bundled-skills = mkCheck "hermes-bundled-skills" { } ''
           echo "=== Checking bundled skills ==="
           test -d ${hermes-agent}/share/hermes-agent/skills || (echo "FAIL: skills directory missing"; exit 1)
           echo "PASS: skills directory exists"
@@ -147,13 +139,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: $OPT_COUNT optional skills found, HERMES_OPTIONAL_SKILLS set in wrapper"
 
           echo "=== All bundled skills checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify bundled plugins (platforms, memory, context_engine) are present
-        bundled-plugins = pkgs.runCommand "hermes-bundled-plugins" { } ''
-          set -e
+        bundled-plugins = mkCheck "hermes-bundled-plugins" { } ''
           echo "=== Checking bundled plugins ==="
           test -d ${hermes-agent}/share/hermes-agent/plugins || (echo "FAIL: plugins directory missing"; exit 1)
           echo "PASS: plugins directory exists"
@@ -167,15 +156,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: HERMES_BUNDLED_PLUGINS set in wrapper"
 
           echo "=== All bundled plugins checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify bundled i18n locale catalogs are present and resolvable.
         # Regression for #23943 / #27632 / #35374 — sealed Nix venvs dropped
         # locales/, surfacing raw i18n keys like gateway.reset.header_default.
-        bundled-locales = pkgs.runCommand "hermes-bundled-locales" { } ''
-          set -e
+        bundled-locales = mkCheck "hermes-bundled-locales" { } ''
           echo "=== Checking bundled locales ==="
           test -d ${hermes-agent}/share/hermes-agent/locales || (echo "FAIL: locales directory missing"; exit 1)
           echo "PASS: locales directory exists"
@@ -203,8 +189,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: i18n renders a human string via the wrapper override"
 
           echo "=== All bundled locales checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify bundled optional-mcps catalog is present and resolvable.
@@ -236,8 +220,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Verify bundled TUI is present and compiled
-        bundled-tui = pkgs.runCommand "hermes-bundled-tui" { } ''
-          set -e
+        bundled-tui = mkCheck "hermes-bundled-tui" { } ''
           echo "=== Checking bundled TUI ==="
           test -d ${hermes-agent}/ui-tui || (echo "FAIL: ui-tui directory missing"; exit 1)
           echo "PASS: ui-tui directory exists"
@@ -252,14 +235,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: HERMES_TUI_DIR set in wrapper"
 
           echo "=== All bundled TUI checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify HERMES_NODE is set in wrapper and points to Node 20+
         # (string-width uses the /v regex flag which requires Node 20+)
-        hermes-node = pkgs.runCommand "hermes-node-version" { } ''
-          set -e
+        hermes-node = mkCheck "hermes-node-version" { } ''
           echo "=== Checking HERMES_NODE in wrapper ==="
           grep -q "HERMES_NODE" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_NODE not set in wrapper"; exit 1)
@@ -275,13 +255,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: Node v$NODE_MAJOR >= 20"
 
           echo "=== All HERMES_NODE checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify HERMES_MANAGED guard works on all mutation commands
-        managed-guard = pkgs.runCommand "hermes-managed-guard" { } ''
-          set -e
+        managed-guard = mkCheck "hermes-managed-guard" { } ''
           export HOME=$(mktemp -d)
 
           check_blocked() {
@@ -297,8 +274,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
 
           echo "=== All guard checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify extraPythonPackages PYTHONPATH injection
@@ -307,8 +282,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           hermesWithExtra = hermes-agent.override {
             extraPythonPackages = [ testPkg ];
           };
-        in pkgs.runCommand "hermes-extra-python-packages" { } ''
-          set -e
+        in mkCheck "hermes-extra-python-packages" { } ''
           echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
 
           grep -q "PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
@@ -326,8 +300,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: base package clean"
 
           echo "=== All extraPythonPackages checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Verify extraDependencyGroups passes through to python.nix
@@ -335,8 +307,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           hermesWithGroups = hermes-agent.override {
             extraDependencyGroups = [ "honcho" ];
           };
-        in pkgs.runCommand "hermes-extra-dependency-groups" { } ''
-          set -e
+        in mkCheck "hermes-extra-dependency-groups" { } ''
           echo "=== Checking extraDependencyGroups override evaluates ==="
 
           # Eval-only: verify the override produces valid derivation paths
@@ -347,21 +318,16 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: extraDependencyGroups override evaluates cleanly"
 
           echo "=== All extraDependencyGroups checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # Regression guard: messaging deps live outside [all], so the
         # #messaging variant must actually ship discord.py — otherwise
         # `nix profile install .#messaging` regresses to the broken default.
-        messaging-variant = pkgs.runCommand "hermes-messaging-variant" { } ''
-          set -e
+        messaging-variant = mkCheck "hermes-messaging-variant" { } ''
           echo "=== Checking discord.py importable from messaging variant ==="
           ${self'.packages.messaging.hermesVenv}/bin/python3 -c \
             "import discord; print(discord.__version__)"
           echo "PASS: discord.py importable from messaging variant venv"
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
 
         # ── Config merge + round-trip test ────────────────────────────────
@@ -424,10 +390,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 - USER_VAR
           '';
 
-        in pkgs.runCommand "hermes-config-roundtrip" {
+        in mkCheck "hermes-config-roundtrip" {
           nativeBuildInputs = [ pkgs.jq ];
         } ''
-          set -e
           export HOME=$(mktemp -d)
           ERRORS=""
 
@@ -574,8 +539,6 @@ json.dump(load_config(), sys.stdout, default=str)
 
           echo ""
           echo "=== All 7 merge scenarios passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
         '';
       };
     };

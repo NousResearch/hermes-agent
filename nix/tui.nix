@@ -1,5 +1,5 @@
 # nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
-{ pkgs, hermesNpmLib, ... }:
+{ pkgs, lib, hermesNpmLib, ... }:
 let
   npm = hermesNpmLib.mkNpmPassthru {
     dirs = [
@@ -35,4 +35,11 @@ pkgs.buildNpmPackage (npm // {
 
     runHook postInstall
   '';
+
+  meta = with lib; {
+    description = "Ink/React terminal user interface for Hermes Agent";
+    homepage = "https://github.com/NousResearch/hermes-agent";
+    license = licenses.mit;
+    platforms = platforms.unix;
+  };
 })

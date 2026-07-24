@@ -1,5 +1,5 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
-{ pkgs, hermesNpmLib, ... }:
+{ pkgs, lib, hermesNpmLib, ... }:
 let
   # @hermes/shared ships as a file: workspace dep of web, so its source
   # must be in the filtered src tree too.
@@ -38,4 +38,11 @@ pkgs.buildNpmPackage (npm // {
     cp -r web/dist $out
     runHook postInstall
   '';
+
+  meta = with lib; {
+    description = "Web dashboard frontend for Hermes Agent";
+    homepage = "https://github.com/NousResearch/hermes-agent";
+    license = licenses.mit;
+    platforms = platforms.unix;
+  };
 })

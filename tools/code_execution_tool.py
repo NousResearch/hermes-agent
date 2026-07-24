@@ -570,10 +570,18 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    session_id: str = "",
 ):
     """
     Accept one client connection and dispatch tool-call requests until
     the client disconnects or the call limit is reached.
+
+    ``session_id`` is forwarded to ``handle_function_call`` so nested tool
+    calls (e.g. ``read_file`` invoked by ``execute_code``) receive the
+    same session context as the parent — without it, plugin hooks
+    ``on_pre_tool_call`` / ``on_post_tool_call`` see an empty session_id
+    and cannot correlate the nested call with the originating turn
+    (#51931).
     """
     from model_tools import handle_function_call
 
@@ -666,7 +674,8 @@ def _rpc_server_loop(
                         sys.stdout = devnull
                         sys.stderr = devnull
                         result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
+                            tool_name, tool_args, task_id=task_id,
+                            session_id=session_id,
                         )
                     finally:
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
@@ -850,12 +859,16 @@ def _rpc_poll_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    session_id: str = "",
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
     Runs in a background thread.  Each ``env.execute()`` spawns an
     independent process, so these calls run safely concurrent with the
     script-execution thread.
+
+    ``session_id`` is forwarded to ``handle_function_call`` so nested tool
+    calls receive the same session context as the parent (#51931).
     """
     from model_tools import handle_function_call
 
@@ -951,7 +964,8 @@ def _rpc_poll_loop(
                             sys.stdout = devnull
                             sys.stderr = devnull
                             tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
+                                tool_name, tool_args, task_id=task_id,
+                                session_id=session_id,
                             )
                         finally:
                             sys.stdout, sys.stderr = _real_stdout, _real_stderr
@@ -993,10 +1007,22 @@ def _rpc_poll_loop(
             stop_event.wait(poll_interval)
 
 
+def _resolve_rpc_session_id(session_id: Optional[str]) -> str:
+    """Return the explicit session id, falling back to legacy session context."""
+    if session_id is not None:
+        return session_id
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        return ""
+
+
 def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    session_id: Optional[str] = None,
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -1064,12 +1090,14 @@ def _execute_remote(
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (see tools.thread_context) — else sandbox RPC tool calls lose approval
         # routing (#33057).
+        # Resolve on the parent thread for explicit forwarding (#51931).
+        _rpc_session_id = _resolve_rpc_session_id(session_id)
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop),
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event, rpc_token,
+                sandbox_tools, stop_event, rpc_token, _rpc_session_id,
             ),
             daemon=True,
         )
@@ -1189,6 +1217,7 @@ def execute_code(
     code: str,
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1202,6 +1231,7 @@ def execute_code(
         task_id:       Session task ID for tool isolation (terminal env, etc.).
         enabled_tools: Tool names enabled in the current session. The sandbox
                        gets the intersection with SANDBOX_ALLOWED_TOOLS.
+        session_id:    Parent session ID forwarded to nested sandbox tool calls.
 
     Returns:
         JSON string with execution results.
@@ -1250,7 +1280,7 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(code, task_id, enabled_tools, session_id=session_id)
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1340,11 +1370,20 @@ def execute_code(
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (see tools.thread_context) — else gateway sandbox tool calls silently
         # auto-approve dangerous commands (#33057, #30882).
+        # Resolve the session_id here (on the parent thread) so it can be
+        # passed explicitly to the RPC thread —
+        # propagate_context_to_thread copies ContextVars, but
+        # handle_function_call reads session_id as a parameter, not from a
+        # ContextVar, so without explicit forwarding nested tool hooks
+        # (on_pre_tool_call / on_post_tool_call) see an empty session_id
+        # (#51931).
+        _rpc_session_id = _resolve_rpc_session_id(session_id)
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+                tool_call_counter, max_tool_calls, sandbox_tools, stop_event,
+                rpc_token, _rpc_session_id,
             ),
             daemon=True,
         )
@@ -1999,7 +2038,8 @@ registry.register(
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
         task_id=kw.get("task_id"),
-        enabled_tools=kw.get("enabled_tools")),
+        enabled_tools=kw.get("enabled_tools"),
+        session_id=kw.get("session_id")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
     max_result_size_chars=100_000,

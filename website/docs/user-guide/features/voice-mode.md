@@ -1,12 +1,12 @@
 ---
 sidebar_position: 10
 title: "Voice Mode"
-description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels)"
+description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord, Discord voice channels, and Voice server rooms"
 ---
 
 # Voice Mode
 
-Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
+Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels or Voice server rooms. Voice is useful for language learning, study practice, and hands-free help while walking, cleaning, cooking, or doing other work away from the keyboard.
 
 If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
@@ -33,6 +33,7 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 | **Interactive Voice** | CLI | Press Ctrl+B to record, agent auto-detects silence and responds |
 | **Auto Voice Reply** | Telegram, Discord | Agent sends spoken audio alongside text responses |
 | **Voice Channel** | Discord | Bot joins VC, listens to users speaking, speaks replies back |
+| **Voice server Room** | Local WebRTC / Voice server transport | Hermes subscribes to an always-on room and replies through Voice server STT/TTS |
 
 ## Requirements
 
@@ -387,6 +388,106 @@ Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users
 # ~/.hermes/.env
 DISCORD_ALLOWED_USERS=284102345871466496
 ```
+
+---
+
+## Voice Server Rooms
+
+Voice server room mode lets Hermes join a live browser/WebRTC room, phone call, or other realtime voice transport through an external room server.
+
+A local voice-server plugin provides the room runtime. The voice server handles the audio runtime: WebRTC, RNNoise filtering, VAD, turn analysis, STT/TTS, barge-in, playback, and user/assistant aggregation. Hermes handles the long-running session, tools, memory, approvals, and text response.
+
+### Environment Variables
+
+```bash
+# ~/.hermes/.env
+VOICE_SERVER_ENABLED=true
+VOICE_SERVER_ROOM_URL=ws://127.0.0.1:7860/events
+VOICE_SERVER_ROOM_ID=default
+VOICE_SERVER_ALLOWED_USERS=caller
+```
+
+For persistent config, put the room URL in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  voice_server:
+    enabled: true
+    extra:
+      url: ws://127.0.0.1:7860/events
+      room_id: default
+```
+
+### Daily Use
+
+```bash
+hermes gateway run --accept-hooks
+```
+
+Keep the voice-server room runtime installed as a service. Then open its browser room URL and talk:
+
+```text
+http://127.0.0.1:7860/auto-client/
+```
+
+The browser room may connect to microphone/audio transport automatically, but
+Hermes does not create the first voice conversation from page load alone. Press
+the room's **New Call** button to emit a structured `inbound_call` event with a
+caller object. Hermes maps that call event to a fresh `voice_server` session for
+that room/caller/call id while the room, `/events` socket, and gateway process
+keep running. Pressing **New Call** again starts another fresh session; it is
+not a reset, delete, resume, transcript injection, or gateway restart path.
+
+The plugin skills are setup helpers. Use the install skill when adding or updating the plugin, and use the local-room skill when you need Hermes to start or debug the room for you. For normal use, you do not need a skill prompt; just open the room URL. For the full local voice-server walkthrough, see [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes#use-case-4-voice-server-room).
+
+### How It Works
+
+When Hermes connects to the room socket, it:
+
+1. **Starts** the bot with `start_bot`
+2. **Receives** a structured `inbound_call` event when the user presses **New Call**
+3. **Creates** a fresh session for that call id and caller data
+4. **Receives** finalized user turns as `transcript`
+5. **Processes** through the full agent pipeline for that call session
+6. **Sends** `assistant_reply` or append-only `assistant_llm_*` stream events back to the room
+7. **Reconciles** interrupted speech from `assistant_spoken`
+
+Hermes does not call TTS directly in this mode. The voice server speaks replies through its normal audio pipeline.
+
+### Outbound Calls
+
+Outbound calls use the same new-session-only boundary. Hermes sends
+`start_outbound_call` to the connected voice server with `room_id`, `call_id`,
+an opaque `target`, and optional `context` or `metadata`. The `target` may be a
+string or an object; Hermes does not define a phone/contact schema and does not
+own provider transport setup.
+
+Hermes does not send a `session_id` or resume/acquire field for outbound calls.
+When the voice server reports `call_started` with the call id, Hermes creates a
+fresh `voice_server` session. Transcript events carrying that call id route to
+that fresh session, and separate call ids stay isolated from one another.
+
+### Access Control
+
+Only users listed in `VOICE_SERVER_ALLOWED_USERS` can interact through the voice server.
+
+```bash
+# ~/.hermes/.env
+VOICE_SERVER_ALLOWED_USERS=caller
+```
+
+### Troubleshooting
+
+If Hermes does not reply:
+
+1. Check the browser has microphone permission.
+2. Check `/events` reports `transport_connected: true` and `pipeline_started: true`.
+3. Check `DEEPGRAM_API_KEY` is set in the plugin `.env`.
+4. Check `ELEVENLABS_API_KEY` or switch the plugin to a local/fallback TTS provider.
+5. Watch `~/.hermes/logs/gateway.log` for `inbound message: platform=voice_server`.
+6. If the log says `Unauthorized user: caller`, add `VOICE_SERVER_ALLOWED_USERS=caller` to `~/.hermes/.env` and restart the gateway.
+
+If the room URL works but the gateway does not connect, verify `VOICE_SERVER_ROOM_URL` points at the WebSocket URL, for example `ws://127.0.0.1:7860/events`, not the browser URL.
 
 ---
 

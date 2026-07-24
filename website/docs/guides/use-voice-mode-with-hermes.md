@@ -1,7 +1,7 @@
 ---
 sidebar_position: 8
 title: "Use Voice Mode with Hermes"
-description: "A practical guide to setting up and using Hermes voice mode across CLI, Telegram, Discord, and Discord voice channels"
+description: "A practical guide to setting up and using Hermes voice mode across CLI, Telegram, Discord, Discord voice channels, and voice server rooms"
 ---
 
 # Use Voice Mode with Hermes
@@ -20,22 +20,24 @@ Voice mode is especially useful when:
 - you want a hands-free CLI workflow
 - you want spoken responses in Telegram or Discord
 - you want Hermes sitting in a Discord voice channel for live conversation
-- you want quick idea capture, debugging, or back-and-forth while walking around instead of typing
+- you want Hermes in a local voice-server/WebRTC room with browser debugging
+- you want language practice, study help, or back-and-forth conversation while walking, cleaning, cooking, or doing other hands-busy work
 
 ## Choose your voice mode setup
 
-There are really three different voice experiences in Hermes.
+There are four different voice experiences in Hermes.
 
 | Mode | Best for | Platform |
 |---|---|---|
 | Interactive microphone loop | Personal hands-free use while coding or researching | CLI |
 | Voice replies in chat | Spoken responses alongside normal messaging | Telegram, Discord |
 | Live voice channel bot | Group or personal live conversation in a VC | Discord voice channels |
+| Voice server room | Natural hands-free conversation, language practice, browser/WebRTC testing, and plugin-provided Discord/phone/WhatsApp transports | voice-server-compatible room |
 
 A good path is:
 1. get text working first
 2. enable voice replies second
-3. move to Discord voice channels last if you want the full experience
+3. move to Discord voice channels or voice server rooms last if you want the full experience
 
 ## Step 1: make sure normal Hermes works first
 
@@ -386,6 +388,127 @@ In a Discord text channel where the bot is present:
 - keep `DISCORD_ALLOWED_USERS` tight
 - use a dedicated bot/testing channel at first
 - verify STT and TTS work in ordinary text-chat voice mode before trying VC mode
+
+## Use case 4: Voice-server room
+
+This is the room-runtime mode.
+
+Hermes subscribes to a voice-server event socket, receives finalized user speech as gateway messages, runs the normal agent pipeline, and sends replies back to the room. A local voice-server plugin provides the room runtime and owns WebRTC, RNNoise, VAD, Smart Turn, STT/TTS, barge-in, playback, and browser debugging.
+
+This extra runtime is needed because live voice is not just "record, transcribe, reply." The room has to decide speech boundaries with VAD, aggregate partial STT into one user turn, detect when the user is done, and handle assistant audio while the user interrupts. It is also the right place for token streaming: Hermes can produce assistant text for one turn, while the voice server buffers, speaks, interrupts, and reports what was actually spoken for that same turn.
+
+## One-time plugin setup
+
+Install and enable a voice-server plugin once:
+
+```bash
+hermes plugins install <voice-server-plugin-url> --enable
+```
+
+Restart Hermes so the plugin and gateway platform are loaded:
+
+```bash
+hermes gateway install
+hermes gateway restart
+hermes gateway status
+```
+
+Configure the plugin runtime in the plugin checkout:
+
+```bash
+# voice-server-plugin/.env
+DEEPGRAM_API_KEY=...
+ELEVENLABS_API_KEY=...
+
+# voice-server-plugin/.config
+VOICE_SERVER_STT_PROVIDER=local
+VOICE_SERVER_LOCAL_STT_MODEL=base
+VOICE_SERVER_TTS_PROVIDER=kokoro
+VOICE_SERVER_TRANSPORT=webrtc
+```
+
+Point Hermes gateway at the room:
+
+```bash
+VOICE_SERVER_ENABLED=true
+VOICE_SERVER_ROOM_URL=ws://127.0.0.1:7860/events
+VOICE_SERVER_ROOM_ID=default
+VOICE_SERVER_ALLOWED_USERS=caller
+```
+
+## Daily use
+
+After setup, the normal path is just opening the local room URL:
+
+```text
+http://127.0.0.1:7860/auto-client/
+```
+
+The page may auto-connect the browser audio transport. That only readies the
+room; it does not create the first Hermes voice session. Press the room's **New
+Call** button to send a structured `inbound_call` event over `/events` with a
+caller object and call id. Hermes uses those room/source fields to create a fresh
+`voice_server` session for the call while the room server, WebSocket, and
+gateway keep running. Repeated button presses create separate fresh sessions.
+This is not a reset, delete, arbitrary resume, transcript injection, or
+free-text command flow.
+
+Keep the gateway and room runtime running as services:
+
+```bash
+hermes gateway run --accept-hooks
+```
+
+You do not need a skill prompt for normal use. The plugin setup helpers are still useful for first install, updates, and debugging: use its install/update helper to install or repair the plugin, and use its local-room helper when you want Hermes to start a foreground room or print the room URL.
+
+Allow microphone access, then say a short test sentence. In `~/.hermes/logs/gateway.log`, you should see:
+
+```text
+inbound message: platform=voice_server
+response ready: platform=voice_server
+```
+
+### What happens when connected
+
+- the browser connects to the voice-server room
+- Hermes sends `start_bot`
+- the user presses **New Call**
+- the voice server emits structured `inbound_call` caller data
+- Hermes creates a fresh session for that call id/source
+- the voice server emits `transcript`
+- Hermes replies through that call session
+- The voice server speaks `assistant_reply` or streams `assistant_llm_*` deltas
+- The voice server emits `assistant_spoken`
+
+Hermes does not call TTS directly in this mode. All audio output goes through the voice server.
+
+### Outbound call protocol
+
+The first outbound call protocol is new-session only. Hermes can ask the
+connected voice server to start a call by sending `start_outbound_call` with:
+
+- `room_id`
+- `call_id`
+- `target`
+- optional `context`
+- optional `metadata`
+
+`target` is opaque to Hermes and may be either a string or an object. Hermes
+does not define a phone/contact schema, does not configure the provider
+transport, and does not send a `session_id` or other resume/acquire field for
+the call. When the voice server emits `call_started` with the call id, Hermes
+creates a fresh `voice_server` session for that call. Later `transcript` events
+with the same `call_id` route into that fresh session; different call ids route
+to separate sessions.
+
+### Best practices for voice-server use
+
+- keep `VOICE_SERVER_ALLOWED_USERS` tight
+- verify the room reports `bot_started`, `transport_connected`, and `pipeline_started`
+- use the local browser room first before testing phone, WhatsApp, Discord, or other transports
+- keep STT/TTS provider settings in the plugin `.config`, not in Hermes core config
+
+Interrupted speech is reconciled by turn id. If The voice server reports only partial speech, Hermes keeps only the spoken text in history; if nothing was spoken, Hermes removes that assistant turn.
 
 ## Voice quality recommendations
 

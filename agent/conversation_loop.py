@@ -6199,7 +6199,9 @@ def run_conversation(
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
-                final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                final_msg = agent._apply_assistant_message_metadata(
+                    agent._build_assistant_message(assistant_message, finish_reason)
+                )
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a

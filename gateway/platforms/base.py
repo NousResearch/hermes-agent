@@ -86,6 +86,31 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     return metadata
 
 
+def _participant_metadata_for_source(source) -> dict | None:
+    """Build metadata needed by voice/calling transports to address a participant."""
+    if _platform_name(getattr(source, "platform", None)) != "voice_server":
+        return None
+    participant_id = getattr(source, "user_id", None)
+    if participant_id is None:
+        return None
+    return {"participant_id": str(participant_id)}
+
+
+def _outbound_metadata_for_source(
+    source,
+    reply_to_message_id: str | None = None,
+) -> dict | None:
+    """Build outbound metadata shared by normal sends, streaming, and retries."""
+    metadata: dict = {}
+    thread_metadata = _thread_metadata_for_source(source, reply_to_message_id)
+    if thread_metadata:
+        metadata.update(thread_metadata)
+    participant_metadata = _participant_metadata_for_source(source)
+    if participant_metadata:
+        metadata.update(participant_metadata)
+    return metadata or None
+
+
 def _mark_notify_metadata(metadata: dict | None) -> dict:
     """Clone metadata and mark a user-visible reply as notify-worthy."""
     notify_metadata = dict(metadata) if metadata else {}
@@ -512,7 +537,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, _coerce_grouping_bool, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
@@ -2469,13 +2494,14 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        self._authorizer: Optional[Callable[[Any], bool]] = None
+
         # Cross-HERMES_HOME token takeover is armed by GatewayRunner only for
         # an adapter's initial connect during an explicit ``gateway run
         # --replace`` startup.  Ordinary starts and every reconnect fail safe
         # through the existing retryable conflict path.
         self._platform_lock_takeover_allowed = False
         self._platform_lock_takeover_attempted = False
-        
         # Track active message handlers per session for interrupt support.
         # _active_sessions stores the per-session interrupt Event; _session_tasks
         # maps session → the specific Task currently processing it so that
@@ -3065,13 +3091,25 @@ class BasePlatformAdapter(ABC):
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
-        
+
         Used by adapters that need to check if a thread/conversation
         has an active session before processing messages (e.g., Slack
         thread replies without explicit mentions).
         """
         self._session_store = session_store
-    
+
+    def set_authorizer(self, authorizer: Optional[Callable[[Any], bool]]) -> None:
+        """Wire the runner's allowlist check for adapter-side session creation.
+
+        Most platforms enforce the allowlist via ``set_message_handler`` because
+        messages are the only entry that creates session state. Adapters that
+        create sessions from non-message events (e.g. voice call lifecycle events
+        like ``inbound_call`` / ``call_started``) must call this authorizer on
+        the derived ``SessionSource`` before touching the session store so an
+        unauthorized participant cannot provision session identifiers.
+        """
+        self._authorizer = authorizer
+
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -4705,6 +4743,22 @@ class BasePlatformAdapter(ABC):
             task.add_done_callback(self._expected_cancelled_tasks.discard)
         return True
 
+    def _session_key_for_source(self, source: SessionSource) -> str:
+        extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
+        group_sessions_per_user = _coerce_grouping_bool(
+            extra.get("group_sessions_per_user"),
+            True,
+        )
+        thread_sessions_per_user = _coerce_grouping_bool(
+            extra.get("thread_sessions_per_user"),
+            False,
+        )
+        return build_session_key(
+            source,
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
+        )
+
     async def cancel_session_processing(
         self,
         session_key: str,
@@ -4802,7 +4856,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
-        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        thread_meta = _outbound_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
         try:
             response = await self._message_handler(event)
@@ -4870,11 +4924,7 @@ class BasePlatformAdapter(ABC):
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = self._session_key_for_source(event.source)
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -4923,7 +4973,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                    _thread_meta = _outbound_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
@@ -4974,9 +5024,7 @@ class BasePlatformAdapter(ABC):
                         self.name, session_key,
                     )
                     try:
-                        _thread_meta = _thread_metadata_for_source(
-                            event.source, _reply_anchor_for_event(event)
-                        )
+                        _thread_meta = _outbound_metadata_for_source(event.source, _reply_anchor_for_event(event))
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
                         if _text:
@@ -5093,15 +5141,31 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        
+
+        def _with_session_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+            data = dict(metadata or {})
+            data["_hermes_session_key"] = session_key
+            try:
+                entry = getattr(getattr(self, "_session_store", None), "_entries", {}).get(session_key)
+                if entry is not None and getattr(entry, "session_id", None):
+                    data["_hermes_session_id"] = entry.session_id
+            except Exception:
+                pass
+            return data
+
+        def _clear_next_reply_turn_id() -> None:
+            clear_next_reply_turn_id = getattr(self, "clear_next_reply_turn_id", None)
+            if callable(clear_next_reply_turn_id):
+                clear_next_reply_turn_id(session_key)
+
         # Start continuous typing indicator (refreshes every 2 seconds).
         # Gated per-platform: when typing_indicator=False the refresh loop is
         # never spawned, so no "typing…" / "is thinking…" status is shown.
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
-        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        _outbound_metadata = _outbound_metadata_for_source(event.source, _reply_anchor_for_event(event))
         typing_task: Optional[asyncio.Task] = None
         if getattr(self.config, "typing_indicator", True):
-            _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
+            _keep_typing_kwargs: Dict[str, Any] = {"metadata": _outbound_metadata}
             try:
                 _keep_typing_sig = inspect.signature(self._keep_typing)
             except (TypeError, ValueError):
@@ -5119,9 +5183,9 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
-                metadata=_thread_metadata,
+                metadata=_outbound_metadata,
             )
-        
+
         try:
             await self._run_processing_hook("on_processing_start", event)
 
@@ -5159,6 +5223,7 @@ class BasePlatformAdapter(ABC):
                 response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                _clear_next_reply_turn_id()
             if response:
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files
@@ -5217,7 +5282,7 @@ class BasePlatformAdapter(ABC):
                 # the existing notify=True marker. Clone once so typing/status
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _final_thread_metadata = _mark_notify_metadata(_outbound_metadata)
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5362,6 +5427,8 @@ class BasePlatformAdapter(ABC):
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
                         )
+                else:
+                    _clear_next_reply_turn_id()
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -5536,7 +5603,7 @@ class BasePlatformAdapter(ABC):
                     # Tests stub create_task() with non-hashable sentinels; tolerate.
                     pass
                 return  # Drain task owns the session now.
-                
+
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
             outcome = ProcessingOutcome.CANCELLED
@@ -5551,7 +5618,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                _error_thread_metadata = _outbound_metadata_for_source(event.source, _reply_anchor_for_event(event))
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
@@ -5559,7 +5626,7 @@ class BasePlatformAdapter(ABC):
                         f"{error_detail}\n"
                         "Try again or use /reset to start a fresh session."
                     ),
-                    metadata=_thread_metadata,
+                    metadata=_error_thread_metadata,
                 )
             except Exception as notify_err:
                 logger.error(
@@ -5610,7 +5677,7 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 None,
-                metadata=_thread_metadata,
+                metadata=_outbound_metadata,
                 stop_attempts=1,
             )
             # Final drain/release boundary: force-flush any timer that missed

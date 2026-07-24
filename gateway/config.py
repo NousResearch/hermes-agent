@@ -300,7 +300,9 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    VOICE_SERVER = "voice_server"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
+
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -828,6 +830,11 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     ),
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
+    ),
+    Platform.VOICE_SERVER: lambda cfg: bool(cfg.extra.get("url")),
+    Platform.DINGTALK: lambda cfg: bool(
+        (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
+        and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
     # Relay dials OUT to a connector; it is "connected" once an endpoint URL is
     # configured (extra["relay_url"] or extra["url"]). The capability descriptor
@@ -2116,6 +2123,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         api_server_model_name = getenv("API_SERVER_MODEL_NAME", "")
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
+
+    # Voice server room gateway.
+    voice_server_enabled = os.getenv("VOICE_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
+    voice_server_url = os.getenv("VOICE_SERVER_ROOM_URL", "")
+    if voice_server_enabled or voice_server_url:
+        if Platform.VOICE_SERVER not in config.platforms:
+            config.platforms[Platform.VOICE_SERVER] = PlatformConfig()
+        config.platforms[Platform.VOICE_SERVER].enabled = True
+        if voice_server_url:
+            config.platforms[Platform.VOICE_SERVER].extra["url"] = voice_server_url
+        voice_server_room_id = os.getenv("VOICE_SERVER_ROOM_ID", "")
+        if voice_server_room_id:
+            config.platforms[Platform.VOICE_SERVER].extra["room_id"] = voice_server_room_id
 
     # Webhook platform
     webhook_enabled = is_truthy_value(getenv("WEBHOOK_ENABLED", ""))

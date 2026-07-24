@@ -71,6 +71,40 @@ async def test_preprocess_keeps_plain_text_for_default_group_sessions():
 
 
 @pytest.mark.asyncio
+async def test_preprocess_prefixes_sender_for_platform_grouping_override():
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.VOICE_SERVER: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "url": "ws://127.0.0.1:7860/events",
+                        "group_sessions_per_user": False,
+                    },
+                ),
+            },
+            group_sessions_per_user=True,
+        )
+    )
+    source = SessionSource(
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_name="Personal Room",
+        chat_type="channel",
+        user_name="Caller",
+    )
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "[Caller] hello"
+
+
+@pytest.mark.asyncio
 async def test_preprocess_includes_slack_author_mention_for_shared_thread():
     """Shared Slack threads expose the current author's verifiable user ID
     next to the display name so 'mention me again' requests can bind the

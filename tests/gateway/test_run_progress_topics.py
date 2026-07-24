@@ -21,6 +21,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.sent = []
         self.edits = []
         self.typing = []
+        self.voice_events = []
+        self.held_spoken_turns = []
+        self.released_spoken_turns = []
+        self.cleaned_voice_streams = []
+        self._voice_turn_id = None
+        self._voice_seq = 0
+        self._voice_turn_counter = 0
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -57,6 +64,70 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str):
         return {"id": chat_id}
+
+    async def start_assistant_stream(self, chat_id, metadata=None) -> SendResult:
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if not metadata.get("turn_id") and not metadata.get("_voice_server_turn_id"):
+            self._voice_turn_counter += 1
+            metadata["_voice_server_turn_id"] = f"voice-turn-{self._voice_turn_counter}"
+        self._voice_turn_id = str(metadata.get("turn_id") or metadata.get("_voice_server_turn_id"))
+        self._voice_seq = 0
+        self.voice_events.append(
+            {
+                "type": "assistant_llm_start",
+                "chat_id": chat_id,
+                "turn_id": self._voice_turn_id,
+                "seq": self._voice_seq,
+            }
+        )
+        return SendResult(success=True)
+
+    async def push_assistant_delta(self, chat_id, text, metadata=None) -> SendResult:
+        self._voice_seq += 1
+        self.voice_events.append(
+            {
+                "type": "assistant_llm_text",
+                "chat_id": chat_id,
+                "turn_id": self._voice_turn_id or "voice-turn-1",
+                "seq": self._voice_seq,
+                "text": text,
+            }
+        )
+        return SendResult(success=True)
+
+    async def end_assistant_stream(self, chat_id, metadata=None) -> SendResult:
+        self._voice_seq += 1
+        self.voice_events.append(
+            {
+                "type": "assistant_llm_end",
+                "chat_id": chat_id,
+                "turn_id": self._voice_turn_id or "voice-turn-1",
+                "seq": self._voice_seq,
+            }
+        )
+        return SendResult(success=True)
+
+    async def abort_assistant_stream(self, chat_id, metadata=None) -> SendResult:
+        self._voice_seq += 1
+        self.voice_events.append(
+            {
+                "type": "assistant_llm_abort",
+                "chat_id": chat_id,
+                "turn_id": self._voice_turn_id or "voice-turn-1",
+                "seq": self._voice_seq,
+            }
+        )
+        return SendResult(success=True)
+
+    def hold_pending_spoken_turn(self, turn_id) -> None:
+        self.held_spoken_turns.append(str(turn_id))
+
+    def release_pending_spoken_turn(self, turn_id) -> None:
+        self.released_spoken_turns.append(str(turn_id))
+
+    def cleanup_assistant_stream(self, metadata=None) -> None:
+        metadata = metadata if isinstance(metadata, dict) else {}
+        self.cleaned_voice_streams.append(str(metadata.get("turn_id") or metadata.get("_voice_server_turn_id")))
 
 
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
@@ -173,6 +244,123 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         raise AssertionError("non-editable adapters should not receive edit_message calls")
+
+
+def test_voice_final_matcher_requires_visible_content_match():
+    from gateway.run import _assistant_message_matches_voice_final, _stamp_voice_turn_id_on_final_assistant
+
+    assert _assistant_message_matches_voice_final(
+        {"role": "assistant", "content": "final answer"},
+        "final answer",
+    )
+    assert not _assistant_message_matches_voice_final(
+        {"role": "assistant", "content": "intermediate note"},
+        "final answer",
+    )
+    assert not _assistant_message_matches_voice_final(
+        {"role": "assistant", "content": ""},
+        "final answer",
+    )
+    assert _assistant_message_matches_voice_final(
+        {
+            "role": "assistant",
+            "content": "final answer",
+            "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
+        },
+        "final answer",
+    )
+    messages = [
+        {"role": "assistant", "content": "raw final answer"},
+    ]
+    assert _stamp_voice_turn_id_on_final_assistant(
+        messages,
+        visible_final="decorated final answer",
+        voice_turn_id="turn-1",
+    )
+    assert messages[-1]["voice_turn_id"] == "turn-1"
+    assert _stamp_voice_turn_id_on_final_assistant(
+        messages,
+        visible_final="raw final answer",
+        voice_turn_id="turn-2",
+    )
+    assert messages[-1]["voice_turn_id"] == "turn-2"
+
+
+def test_voice_server_partial_streaming_defaults_on():
+    from gateway.voice_stream import partial_llm_streaming_enabled
+
+    adapter = SimpleNamespace(config=SimpleNamespace(extra={}))
+
+    assert partial_llm_streaming_enabled({}, adapter) is True
+    assert partial_llm_streaming_enabled(
+        {
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": False},
+                    }
+                }
+            }
+        },
+        adapter,
+    ) is False
+    assert partial_llm_streaming_enabled(
+        {},
+        SimpleNamespace(config=SimpleNamespace(extra={"partial_llm_streaming": False})),
+    ) is False
+
+
+class VoiceStreamTextFailureAdapter(ProgressCaptureAdapter):
+    async def push_assistant_delta(self, chat_id, text, metadata=None) -> SendResult:
+        if self.voice_events:
+            text_count = sum(1 for event in self.voice_events if event["type"] == "assistant_llm_text")
+            if text_count >= 1:
+                return SendResult(success=False, error="text stream failed", retryable=True)
+        return await super().push_assistant_delta(chat_id, text, metadata=metadata)
+
+
+class VoiceStreamEndFailureAdapter(ProgressCaptureAdapter):
+    async def end_assistant_stream(self, chat_id, metadata=None) -> SendResult:
+        return SendResult(success=False, error="end stream failed", retryable=True)
+
+
+class VoiceStreamSecondEndFailureAdapter(ProgressCaptureAdapter):
+    """Fail end_assistant_stream only on the FINAL streamed segment.
+
+    Lets the preamble segment complete cleanly, then fails the final
+    segment's end. Used to verify that a multi-segment streamed turn
+    keeps the completed preamble's voice_turn_id even when the later
+    segment fails.
+    """
+
+    async def end_assistant_stream(self, chat_id, metadata=None) -> SendResult:
+        end_count = sum(
+            1 for event in self.voice_events if event["type"] == "assistant_llm_end"
+        )
+        if end_count >= 1:
+            return SendResult(success=False, error="final segment end failed", retryable=True)
+        return await super().end_assistant_stream(chat_id, metadata=metadata)
+
+
+class SlowVoiceStreamEndAdapter(ProgressCaptureAdapter):
+    async def end_assistant_stream(self, chat_id, metadata=None) -> SendResult:
+        await asyncio.sleep(10)
+        return await super().end_assistant_stream(chat_id, metadata=metadata)
+
+
+class SlowVoiceStreamTextAdapter(ProgressCaptureAdapter):
+    async def push_assistant_delta(self, chat_id, text, metadata=None) -> SendResult:
+        await asyncio.sleep(10)
+        return await super().push_assistant_delta(chat_id, text, metadata=metadata)
+
+
+class RecordingVoiceStreamAdapter(ProgressCaptureAdapter):
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.__class__.instances.append(self)
 
 
 class FakeAgent:
@@ -761,6 +949,218 @@ class StreamingRefineAgent:
         }
 
 
+class VoicePartialAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Hello")
+            self.stream_delta_callback(", voice.")
+        return {
+            "final_response": "Hello, voice.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class VoicePreviewedPartialFailureAgent(VoicePartialAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        result = super().run_conversation(message, conversation_history=conversation_history, task_id=task_id)
+        result["response_previewed"] = True
+        return result
+
+
+class VoicePartialMediaAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Hello")
+            self.stream_delta_callback(", voice.")
+        return {
+            "final_response": "Hello, voice.",
+            "messages": [
+                {"role": "tool", "content": '{"audio": "MEDIA:/tmp/voice-reply.wav"}'},
+            ],
+            "api_calls": 1,
+        }
+
+
+class QueuedVoicePartialMediaAgent:
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            if self.stream_delta_callback:
+                self.stream_delta_callback("Hello")
+                self.stream_delta_callback(", voice.")
+            return {
+                "final_response": "Hello, voice.",
+                "messages": [
+                    {"role": "tool", "content": '{"audio": "MEDIA:/tmp/voice-reply.wav"}'},
+                ],
+                "api_calls": 1,
+            }
+        return {
+            "final_response": "follow-up done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class VoicePartialHistoryAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Hello")
+            self.stream_delta_callback(", voice.")
+        return {
+            "final_response": "Hello, voice.",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "Hello, voice."},
+            ],
+            "api_calls": 1,
+        }
+
+
+class VoicePartialToolCallContentAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Tool-call final.")
+        return {
+            "final_response": "Tool-call final.",
+            "messages": [
+                {"role": "user", "content": message},
+                {
+                    "role": "assistant",
+                    "content": "Tool-call final.",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "noop", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ],
+            "api_calls": 1,
+        }
+
+
+class CapturingHistoryAgent:
+    conversation_history = None
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).conversation_history = conversation_history
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class VoiceFullHistoryAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "Hello, voice.",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "Hello, voice."},
+            ],
+            "api_calls": 1,
+        }
+
+
+class VoiceToolPreambleAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Let me check that first.")
+        return {
+            "final_response": "The final answer is 42.",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "Let me check that first."},
+                {"role": "tool", "content": "42", "tool_call_id": "call-1"},
+                {"role": "assistant", "content": "The final answer is 42."},
+            ],
+            "api_calls": 2,
+        }
+
+
+class VoicePreambleHistoryAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Let me check that first.")
+        return {
+            "final_response": "The final answer is 42.",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "Let me check that first."},
+                {"role": "assistant", "content": "The final answer is 42."},
+            ],
+            "api_calls": 2,
+        }
+
+
+class VoiceToolBoundaryAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Let me check that first.")
+            self.stream_delta_callback(None)
+            self.stream_delta_callback("\n\nThe final answer is 42.")
+        return {
+            "final_response": "The final answer is 42.",
+            "messages": [],
+            "api_calls": 2,
+        }
+
+
+class RaisingVoicePartialAgent:
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("Hello")
+        raise RuntimeError("voice partial failure")
+
+
 class QueuedCommentaryAgent:
     calls = 0
 
@@ -869,7 +1269,9 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    user_id=None,
     adapter_cls=ProgressCaptureAdapter,
+    history=None,
 ):
     if config_data:
         import yaml
@@ -896,6 +1298,7 @@ async def _run_with_agent(
         chat_id=chat_id,
         chat_type=chat_type,
         thread_id=thread_id,
+        user_id=user_id,
     )
     session_key = f"agent:main:{platform.value}:{chat_type}:{chat_id}"
     if thread_id:
@@ -911,7 +1314,7 @@ async def _run_with_agent(
     result = await runner._run_agent(
         message="hello",
         context_prompt="",
-        history=[],
+        history=[] if history is None else history,
         source=source,
         session_id=session_id,
         session_key=session_key,
@@ -1258,6 +1661,669 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_run_agent_voice_server_default_partial_stream_suppresses_final_reply(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialAgent,
+        session_id="sess-voice-partials",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {
+                            "url": "ws://127.0.0.1:7860/events",
+                            "room_id": "personal-room",
+                        },
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "Hello, voice."
+    assert result.get("already_sent") is True
+    assert [call["content"] for call in adapter.sent] == []
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_text",
+        "assistant_llm_end",
+    ]
+    assert [call.get("text") for call in adapter.voice_events if call["type"] == "assistant_llm_text"] == [
+        "Hello",
+        ", voice.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_tags_final_assistant_message(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialHistoryAgent,
+        session_id="sess-voice-partials-history",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {
+                            "url": "ws://127.0.0.1:7860/events",
+                            "room_id": "personal-room",
+                            "partial_llm_streaming": True,
+                        },
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    turn_id = next(call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start")
+    assert result["messages"][-1]["voice_turn_id"] == turn_id
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_tags_tool_call_content_for_reconciliation(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialToolCallContentAgent,
+        session_id="sess-voice-partials-tool-call-content",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {
+                            "url": "ws://127.0.0.1:7860/events",
+                            "room_id": "personal-room",
+                            "partial_llm_streaming": True,
+                        },
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    turn_id = next(call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start")
+    assert result["voice_turn_id"] == turn_id
+    assert result["voice_turn_ids"] == [turn_id]
+    assert result["messages"][-1]["voice_turn_id"] == turn_id
+
+
+@pytest.mark.asyncio
+async def test_run_agent_strips_voice_metadata_from_rich_replay_messages(monkeypatch, tmp_path):
+    history = [
+        {
+            "role": "assistant",
+            "content": "Tool-call final.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }
+            ],
+            "timestamp": 123,
+            "voice_turn_id": "voice-turn-1",
+            "voice_interrupted": True,
+            "voice_planned_content": "Tool-call final.",
+            "voice_spoken_content": "Tool-call",
+        },
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+    ]
+
+    await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CapturingHistoryAgent,
+        session_id="sess-rich-replay-voice-metadata",
+        history=history,
+    )
+
+    replay_msg = CapturingHistoryAgent.conversation_history[0]
+    assert replay_msg["tool_calls"] == history[0]["tool_calls"]
+    assert "timestamp" not in replay_msg
+    assert "voice_turn_id" not in replay_msg
+    assert "voice_interrupted" not in replay_msg
+    assert "voice_planned_content" not in replay_msg
+    assert "voice_spoken_content" not in replay_msg
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_full_reply_tags_final_assistant_message(monkeypatch, tmp_path):
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoiceFullHistoryAgent,
+        session_id="sess-voice-full-history",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {
+                            "url": "ws://127.0.0.1:7860/events",
+                            "room_id": "personal-room",
+                            "partial_llm_streaming": False,
+                        },
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    turn_id = result["messages"][-1]["voice_turn_id"]
+    assert turn_id.startswith("voice_server-")
+    assert result["voice_turn_id"] == turn_id
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_media_suffix_suppresses_replayed_text(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialMediaAgent,
+        session_id="sess-voice-partials-media",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {
+                            "url": "ws://127.0.0.1:7860/events",
+                            "room_id": "personal-room",
+                            "partial_llm_streaming": True,
+                        },
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "Hello, voice.\nMEDIA:/tmp/voice-reply.wav"
+    assert result.get("already_sent") is True
+    assert [call["content"] for call in adapter.sent] == []
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_text",
+        "assistant_llm_end",
+    ]
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_queued_partial_media_still_delivers_attachment(monkeypatch, tmp_path):
+    QueuedVoicePartialMediaAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedVoicePartialMediaAgent,
+        session_id="sess-voice-queued-partial-media",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {
+                            "url": "ws://127.0.0.1:7860/events",
+                            "room_id": "personal-room",
+                            "partial_llm_streaming": True,
+                        },
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "follow-up done"
+    assert "Hello, voice." not in [call["content"] for call in adapter.sent]
+    assert any(call["content"].endswith("/tmp/voice-reply.wav") for call in adapter.sent), adapter.sent
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_preamble_keeps_final_reply(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoiceToolPreambleAgent,
+        session_id="sess-voice-partial-preamble",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "The final answer is 42."
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == []
+    assert [call.get("text") for call in adapter.voice_events if call["type"] == "assistant_llm_text"] == [
+        "Let me check that first.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_preamble_history_uses_full_reply_turn_id(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePreambleHistoryAgent,
+        session_id="sess-voice-preamble-history",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    preamble_turn_id = next(
+        call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start"
+    )
+    final_turn_id = result["messages"][-1]["voice_turn_id"]
+    assert final_turn_id == result["voice_turn_id"]
+    assert final_turn_id != preamble_turn_id
+    assert final_turn_id.startswith("voice_server-")
+    assert result["voice_turn_ids"] == [preamble_turn_id, final_turn_id]
+    assert result["messages"][1]["voice_turn_id"] == preamble_turn_id
+    assert result.get("already_sent") is not True
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_preamble_keeps_turn_id_when_final_segment_fails(monkeypatch, tmp_path):
+    """A completed streamed preamble must keep its voice_turn_id even when
+    the later segment's end_assistant_stream fails.
+
+    Regression for run.py's `_apply_failed_voice_stream_result`: an earlier
+    blanket pop of `voice_turn_id` / `voice_turn_ids` after scrub-of-stale
+    wiped the completed preamble's id, so post-persistence spoken-turn
+    drain would not run for it. The helper now does per-id scrubbing only;
+    this end-to-end test asserts the actual run.py path keeps the preamble
+    turn id in the returned `voice_turn_ids` list.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoiceToolBoundaryAgent,
+        adapter_cls=VoiceStreamSecondEndFailureAdapter,
+        session_id="sess-voice-preamble-survives-final-fail",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    starts = [call for call in adapter.voice_events if call["type"] == "assistant_llm_start"]
+    assert len(starts) == 2, "expected one start per segment (preamble + final)"
+    preamble_turn_id = starts[0]["turn_id"]
+    final_turn_id = starts[1]["turn_id"]
+    assert preamble_turn_id != final_turn_id
+
+    surviving_ids = result.get("voice_turn_ids") or []
+    assert preamble_turn_id in surviving_ids, (
+        "completed preamble turn id was wiped after the final segment's "
+        "end_assistant_stream failed: surviving voice_turn_ids = "
+        f"{surviving_ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_tool_boundary_resets_partial_delivery_match(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoiceToolBoundaryAgent,
+        session_id="sess-voice-partial-tool-boundary",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "The final answer is 42."
+    assert result.get("already_sent") is True
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_end",
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_end",
+    ]
+    assert [call.get("text") for call in adapter.voice_events if call["type"] == "assistant_llm_text"] == [
+        "Let me check that first.",
+        "The final answer is 42.",
+    ]
+    starts = [call for call in adapter.voice_events if call["type"] == "assistant_llm_start"]
+    assert starts[0]["turn_id"] != starts[1]["turn_id"]
+    assert result["voice_turn_id"] == starts[1]["turn_id"]
+    assert result["voice_turn_ids"] == [starts[0]["turn_id"], starts[1]["turn_id"]]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_text_failure_sends_full_fallback(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialAgent,
+        session_id="sess-voice-partial-text-failure",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        adapter_cls=VoiceStreamTextFailureAdapter,
+    )
+
+    stream_turn_id = next(call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start")
+    assert result["final_response"] == "Hello, voice."
+    assert result.get("already_sent") is not True
+    assert result["voice_turn_id"] != stream_turn_id
+    assert result.get("response_previewed") is False
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_abort",
+    ]
+    assert adapter.cleaned_voice_streams
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_failure_clears_previewed_for_prefix(monkeypatch, tmp_path):
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePreviewedPartialFailureAgent,
+        session_id="sess-voice-partial-previewed-failure",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        adapter_cls=VoiceStreamTextFailureAdapter,
+    )
+
+    assert result["final_response"] == "Hello, voice."
+    assert result.get("response_previewed") is False
+    assert result.get("already_sent") is not True
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_end_failure_suppresses_replay(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialAgent,
+        session_id="sess-voice-partial-end-failure",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        adapter_cls=VoiceStreamEndFailureAdapter,
+    )
+
+    stream_turn_id = next(call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start")
+    assert result["final_response"] == "Hello, voice."
+    assert result.get("already_sent") is True
+    assert result["voice_turn_id"] == stream_turn_id
+    assert [call["content"] for call in adapter.sent] == []
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_text",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_end_failure_keeps_stream_turn_id(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialHistoryAgent,
+        session_id="sess-voice-partial-end-failure-history",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        adapter_cls=VoiceStreamEndFailureAdapter,
+    )
+
+    stream_turn_id = next(call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start")
+    final_turn_id = result["messages"][-1]["voice_turn_id"]
+    assert final_turn_id == stream_turn_id
+    assert result["voice_turn_id"] == final_turn_id
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_timeout_cancels_late_delta(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialAgent,
+        session_id="sess-voice-partial-timeout",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        adapter_cls=SlowVoiceStreamTextAdapter,
+    )
+
+    await asyncio.sleep(0.05)
+
+    assert result["final_response"] == "Hello, voice."
+    assert result.get("already_sent") is not True
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_abort",
+    ]
+    assert adapter.cleaned_voice_streams
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_finish_timeout_cleans_stream(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VoicePartialAgent,
+        session_id="sess-voice-partial-finish-timeout",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": True},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        adapter_cls=SlowVoiceStreamEndAdapter,
+    )
+
+    await asyncio.sleep(0.05)
+
+    stream_turn_id = next(call["turn_id"] for call in adapter.voice_events if call["type"] == "assistant_llm_start")
+    assert result["final_response"] == "Hello, voice."
+    assert result.get("already_sent") is not True
+    assert result.get("response_previewed") is False
+    assert result["voice_turn_id"] != stream_turn_id
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_text",
+        "assistant_llm_abort",
+    ]
+    assert adapter.cleaned_voice_streams
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_partial_stream_closes_when_agent_raises(monkeypatch, tmp_path):
+    RecordingVoiceStreamAdapter.instances = []
+    with pytest.raises(RuntimeError, match="voice partial failure"):
+        await _run_with_agent(
+            monkeypatch,
+            tmp_path,
+            RaisingVoicePartialAgent,
+            session_id="sess-voice-partial-raises",
+            config_data={
+                "display": {"tool_progress": "off", "interim_assistant_messages": False},
+                "gateway": {
+                    "platforms": {
+                        "voice_server": {
+                            "enabled": True,
+                            "extra": {"partial_llm_streaming": True},
+                        }
+                    }
+                },
+            },
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            chat_type="channel",
+            thread_id=None,
+            adapter_cls=RecordingVoiceStreamAdapter,
+        )
+
+    adapter = RecordingVoiceStreamAdapter.instances[-1]
+    assert [call["type"] for call in adapter.voice_events] == [
+        "assistant_llm_start",
+        "assistant_llm_text",
+        "assistant_llm_abort",
+    ]
+    assert adapter.cleaned_voice_streams
+
+
+@pytest.mark.asyncio
 async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monkeypatch, tmp_path):
     QueuedCommentaryAgent.calls = 0
     adapter, result = await _run_with_agent(
@@ -1273,6 +2339,42 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_voice_server_queued_full_reply_uses_persisted_turn_id(monkeypatch, tmp_path):
+    QueuedCommentaryAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedCommentaryAgent,
+        session_id="sess-voice-queued-full",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "gateway": {
+                "platforms": {
+                    "voice_server": {
+                        "enabled": True,
+                        "extra": {"partial_llm_streaming": False},
+                    }
+                }
+            },
+        },
+        platform=Platform.VOICE_SERVER,
+        chat_id="personal-room",
+        chat_type="channel",
+        thread_id=None,
+        user_id="caller",
+    )
+
+    first_response_send = next(call for call in adapter.sent if call["content"] == "final response 1")
+    assert first_response_send["metadata"]["turn_id"].startswith("voice_server-")
+    assert first_response_send["metadata"]["participant_id"] == "caller"
+    assert first_response_send["metadata"]["turn_id"] in result["voice_turn_ids"]
+    assert result["voice_turn_id"] in result["voice_turn_ids"]
+    assert adapter.held_spoken_turns == [first_response_send["metadata"]["turn_id"]]
+    assert result["final_response"] == "final response 2"
 
 
 @pytest.mark.asyncio

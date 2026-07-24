@@ -1006,6 +1006,42 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _coerce_grouping_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def session_grouping_for_source(
+    config: GatewayConfig,
+    source: SessionSource,
+) -> tuple[bool, bool]:
+    """Resolve session grouping flags, including platform-level overrides."""
+    group_sessions_per_user = getattr(config, "group_sessions_per_user", True)
+    thread_sessions_per_user = getattr(config, "thread_sessions_per_user", False)
+    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
+    platform_extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+    if isinstance(platform_extra, dict):
+        group_sessions_per_user = _coerce_grouping_bool(
+            platform_extra.get("group_sessions_per_user"),
+            group_sessions_per_user,
+        )
+        thread_sessions_per_user = _coerce_grouping_bool(
+            platform_extra.get("thread_sessions_per_user"),
+            thread_sessions_per_user,
+        )
+    return group_sessions_per_user, thread_sessions_per_user
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """Return the ``agent:<ns>`` namespace prefix for a session key.
 
@@ -1560,11 +1596,33 @@ class SessionStore:
         return recovered_profile == self._active_profile_name()
 
     def _generate_session_key(self, source: SessionSource) -> str:
-        """Generate a session key from a source."""
+        """Generate a session key from a source.
+
+        Platform adapters can opt into different grouping than the gateway
+        default. The same resolver is used by gateway dispatch and adapter
+        active-run guards so a platform cannot save transcripts under one key
+        while interrupt/busy handling uses another.
+        """
+        group_sessions_per_user, thread_sessions_per_user = session_grouping_for_source(
+            self.config,
+            source,
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
+            profile=self._resolve_profile_for_key(source),
+        )
+
+    def _legacy_voice_room_session_key(self, source: SessionSource) -> Optional[str]:
+        if source.platform != Platform.VOICE_SERVER or source.chat_type == "dm":
+            return None
+        if not (source.user_id or source.user_id_alt):
+            return None
+        return build_session_key(
+            source,
+            group_sessions_per_user=False,
+            thread_sessions_per_user=False,
             profile=self._resolve_profile_for_key(source),
         )
 
@@ -2302,6 +2360,21 @@ class SessionStore:
 
         with self._lock:
             self._ensure_loaded_locked()
+
+            legacy_key = self._legacy_voice_room_session_key(source)
+            if (
+                legacy_key
+                and legacy_key != session_key
+                and session_key not in self._entries
+                and legacy_key in self._entries
+                and not force_new
+            ):
+                legacy_entry = self._entries.pop(legacy_key)
+                legacy_entry.session_key = session_key
+                legacy_entry.origin = source
+                legacy_entry.platform = source.platform
+                legacy_entry.chat_type = source.chat_type
+                self._entries[session_key] = legacy_entry
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
@@ -3196,6 +3269,11 @@ def build_session_context(
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
+
+    group_sessions_per_user, thread_sessions_per_user = session_grouping_for_source(
+        config,
+        source,
+    )
     
     context = SessionContext(
         source=source,
@@ -3203,8 +3281,8 @@ def build_session_context(
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         ),
     )
     

@@ -743,6 +743,7 @@ def init_agent(
     agent.read_terminal_callback = read_terminal_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
+    agent.assistant_message_metadata_callback = None
     agent.interim_assistant_callback = interim_assistant_callback
     agent.status_callback = status_callback
     agent.notice_callback = notice_callback

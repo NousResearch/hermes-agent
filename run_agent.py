@@ -1763,6 +1763,21 @@ class AIAgent:
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
 
+    def _apply_assistant_message_metadata(self, msg: Dict) -> Dict:
+        callback = getattr(self, "assistant_message_metadata_callback", None)
+        if not callable(callback) or not isinstance(msg, dict) or msg.get("role") != "assistant":
+            return msg
+        try:
+            metadata = callback(msg)
+        except Exception as exc:
+            logger.debug("assistant message metadata callback failed: %s", exc)
+            return msg
+        if isinstance(metadata, dict):
+            for key, value in metadata.items():
+                if value is not None and value != "":
+                    msg[key] = value
+        return msg
+
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 

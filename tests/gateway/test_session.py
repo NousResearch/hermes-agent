@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig, SessionResetPolicy
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionEntry,
@@ -1201,6 +1201,98 @@ class TestWhatsAppSessionKeyConsistency:
         assert first_entry.session_key == "agent:main:discord:group:guild-123:alice"
         assert second_entry.session_key == "agent:main:discord:group:guild-123:bob"
         assert first_entry.session_id != second_entry.session_id
+
+    def test_store_uses_platform_grouping_override(self, tmp_path):
+        config = GatewayConfig(
+            platforms={
+                Platform.VOICE_SERVER: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "url": "ws://127.0.0.1:7860/events",
+                        "group_sessions_per_user": False,
+                    },
+                )
+            }
+        )
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        first = SessionSource(
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            chat_type="channel",
+            user_id="caller-a",
+        )
+        second = SessionSource(
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            chat_type="channel",
+            user_id="caller-b",
+        )
+
+        assert store._generate_session_key(first) == "agent:main:voice_server:channel:personal-room"
+        assert store._generate_session_key(second) == "agent:main:voice_server:channel:personal-room"
+
+    def test_store_migrates_room_voice_session_to_participant_key(self, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps(
+                {
+                    "agent:main:voice_server:channel:personal-room": {
+                        "session_key": "agent:main:voice_server:channel:personal-room",
+                        "session_id": "session-1",
+                        "created_at": "2026-05-16T10:00:00",
+                        "updated_at": "2026-05-16T10:00:00",
+                        "platform": "voice_server",
+                        "chat_type": "channel",
+                        "origin": {
+                            "platform": "voice_server",
+                            "chat_id": "personal-room",
+                            "chat_type": "channel",
+                        },
+                    }
+                }
+            )
+        )
+        store = SessionStore(
+            sessions_dir=sessions_dir,
+            config=GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none")),
+        )
+        source = SessionSource(
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            chat_type="channel",
+            user_id="caller",
+        )
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.session_id == "session-1"
+        assert entry.session_key == "agent:main:voice_server:channel:personal-room:caller"
+        assert entry.origin == source
+
+    def test_session_context_uses_platform_grouping_override(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.VOICE_SERVER: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "url": "ws://127.0.0.1:7860/events",
+                        "group_sessions_per_user": False,
+                    },
+                )
+            }
+        )
+        source = SessionSource(
+            platform=Platform.VOICE_SERVER,
+            chat_id="personal-room",
+            chat_type="channel",
+            user_id="caller-a",
+            user_name="Caller A",
+        )
+
+        context = build_session_context(source, config)
+
+        assert context.shared_multi_user_session is True
 
     def test_store_shares_group_sessions_when_disabled_in_config(self, store):
         store.config.group_sessions_per_user = False

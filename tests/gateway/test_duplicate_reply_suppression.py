@@ -54,6 +54,15 @@ class StubAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class TurnIdStubAdapter(StubAdapter):
+    def __init__(self):
+        super().__init__()
+        self.cleared_reply_turn_ids = []
+
+    def clear_next_reply_turn_id(self, session_key):
+        self.cleared_reply_turn_ids.append(session_key)
+
+
 def _make_event(text="hello", chat_id="c1", user_id="u1"):
     return MessageEvent(
         text=text,
@@ -122,6 +131,27 @@ class TestBaseInterruptSuppression:
         # The pending message's response SHOULD have been sent.
         pending_sends = [s for s in adapter.sent if s["content"] == pending_response]
         assert len(pending_sends) == 1, "Pending message response should be sent"
+
+    @pytest.mark.asyncio
+    async def test_suppressed_stale_response_clears_queued_reply_turn_id(self):
+        adapter = TurnIdStubAdapter()
+
+        async def fake_handler(event):
+            return "stale response"
+
+        adapter.set_message_handler(fake_handler)
+
+        event_a = _make_event(text="first question")
+        session_key = build_session_key(event_a.source)
+        interrupt_event = asyncio.Event()
+        interrupt_event.set()
+        adapter._active_sessions[session_key] = interrupt_event
+        adapter._pending_messages[session_key] = _make_event(text="second question")
+
+        await adapter._process_message_background(event_a, session_key)
+        await adapter.cancel_background_tasks()
+
+        assert session_key in adapter.cleared_reply_turn_ids
 
     @pytest.mark.asyncio
     async def test_response_not_suppressed_without_interrupt(self):

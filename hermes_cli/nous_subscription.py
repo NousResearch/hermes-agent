@@ -44,6 +44,7 @@ MANAGED_FEATURE_COVERAGE_CATEGORY: Dict[str, str] = {
     "stt": "openai-audio",
     "browser": "browser-use",
     "modal": "modal",
+    "skyvern": "skyvern",
 }
 
 
@@ -52,6 +53,50 @@ def _uses_gateway(section: object) -> bool:
     if not isinstance(section, dict):
         return False
     return is_truthy_value(section.get("use_gateway"), default=False)
+
+
+def _skyvern_mcp_config(config: Dict[str, object]) -> Dict[str, object]:
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return {}
+    for server_cfg in servers.values():
+        if (
+            isinstance(server_cfg, dict)
+            and not (server_cfg.get("url") or server_cfg.get("command"))
+            and str(server_cfg.get("managed_gateway") or "").strip().lower()
+            == "skyvern"
+        ):
+            return server_cfg
+    skyvern_cfg = servers.get("skyvern")
+    return skyvern_cfg if isinstance(skyvern_cfg, dict) else {}
+
+
+def _is_managed_skyvern_mcp_config(config: Dict[str, object]) -> bool:
+    skyvern_cfg = _skyvern_mcp_config(config)
+    return bool(
+        not (skyvern_cfg.get("url") or skyvern_cfg.get("command"))
+        and str(skyvern_cfg.get("managed_gateway") or "").strip().lower()
+        == "skyvern"
+    )
+
+
+def _has_direct_skyvern_mcp_config(config: Dict[str, object]) -> bool:
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return False
+    skyvern_cfg = servers.get("skyvern")
+    return bool(
+        isinstance(skyvern_cfg, dict)
+        and (skyvern_cfg.get("url") or skyvern_cfg.get("command"))
+    )
+
+
+def _mcp_sdk_available() -> bool:
+    try:
+        from tools.mcp_tool import _MCP_AVAILABLE
+    except ImportError:
+        return False
+    return _MCP_AVAILABLE
 
 
 @dataclass(frozen=True)
@@ -860,6 +905,7 @@ _GATEWAY_TOOL_LABELS = {
     "tts": "Text-to-speech (OpenAI TTS)",
     "stt": "Speech-to-text (OpenAI Whisper)",
     "browser": "Browser automation (Browser Use)",
+    "skyvern": "Browser automation (Skyvern)",
 }
 
 
@@ -903,9 +949,18 @@ _GATEWAY_DIRECT_LABELS = {
     "tts": "OpenAI/ElevenLabs key",
     "stt": "OpenAI/Groq/Mistral key",
     "browser": "Browser Use/Browserbase key",
+    "skyvern": "direct Skyvern MCP config",
 }
 
-_ALL_GATEWAY_KEYS = ("web", "image_gen", "video_gen", "tts", "stt", "browser")
+_ALL_GATEWAY_KEYS = (
+    "web",
+    "image_gen",
+    "video_gen",
+    "tts",
+    "stt",
+    "browser",
+    "skyvern",
+)
 
 
 def get_gateway_eligible_tools(
@@ -940,7 +995,8 @@ def get_gateway_eligible_tools(
     if not isinstance(model_cfg, dict) or str(model_cfg.get("provider") or "").strip().lower() != "nous":
         return [], [], []
 
-    direct = _get_gateway_direct_credentials()
+    direct = dict(_get_gateway_direct_credentials())
+    direct["skyvern"] = _has_direct_skyvern_mcp_config(config)
 
     # Check which tools the user has explicitly opted into the gateway for.
     # This is distinct from managed_by_nous which fires implicitly when
@@ -953,12 +1009,15 @@ def get_gateway_eligible_tools(
         "tts": _uses_gateway(config.get("tts")),
         "stt": _uses_gateway(config.get("stt")),
         "browser": _uses_gateway(config.get("browser")),
+        "skyvern": _is_managed_skyvern_mcp_config(config),
     }
 
     unconfigured: list[str] = []
     has_direct: list[str] = []
     already_managed: list[str] = []
     for key in _ALL_GATEWAY_KEYS:
+        if key == "skyvern" and direct.get(key) and not opted_in.get(key):
+            continue
         # Only offer tools the user's entitlement actually covers. For a free
         # tool pool that means image but not video; paid users are covered for
         # everything.
@@ -1045,6 +1104,18 @@ def apply_gateway_defaults(
         video_cfg["use_gateway"] = True
         changed.add("video_gen")
 
+    if "skyvern" in tool_keys:
+        servers = config.get("mcp_servers")
+        if not isinstance(servers, dict):
+            servers = {}
+            config["mcp_servers"] = servers
+
+        if not _has_direct_skyvern_mcp_config(
+            config
+        ) and not _is_managed_skyvern_mcp_config(config):
+            servers["skyvern"] = {"managed_gateway": "skyvern"}
+            changed.add("skyvern")
+
     return changed
 
 
@@ -1100,7 +1171,9 @@ def prompt_enable_tool_gateway(
         f"{_GATEWAY_TOOL_LABELS[k]} — keep using your {_GATEWAY_DIRECT_LABELS[k]}"
         for k in has_direct
     ]
-    pre_selected = list(range(len(unconfigured)))
+    pre_selected = [
+        index for index, key in enumerate(unconfigured) if key != "skyvern"
+    ]
 
     if pool_only:
         title = "Your free Nous tool pool — pick the tools to enable:"
@@ -1127,6 +1200,11 @@ def prompt_enable_tool_gateway(
         for key in sorted(changed):
             label = _GATEWAY_TOOL_LABELS.get(key, key)
             print(f"  ✓ {label}: enabled via {source_label}")
+        if "skyvern" in changed and not _mcp_sdk_available():
+            print(
+                '  ! Skyvern MCP requires the MCP SDK. Install it with '
+                '`pip install "hermes-agent[mcp]"` or `uv sync --extra mcp`.'
+            )
     return changed
 
 

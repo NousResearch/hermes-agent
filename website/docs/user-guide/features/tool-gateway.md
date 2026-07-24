@@ -143,9 +143,21 @@ tts:
 browser:
   cloud_provider: browser-use
   use_gateway: true
+
+mcp_servers:
+  skyvern:
+    managed_gateway: skyvern
 ```
 
 Precedence: `use_gateway: true` routes through Nous regardless of any direct keys in `.env`. `use_gateway: false` (or absent) uses direct keys if available and only falls back to the gateway when none exist.
+
+### Managed Skyvern MCP
+
+The `managed_gateway: skyvern` entry records managed Skyvern intent without storing a Skyvern API key. At runtime, Hermes resolves it to `https://skyvern-gateway.<TOOL_GATEWAY_DOMAIN>/mcp/` (using `nousresearch.com` by default) and sends the Nous Portal token as an `Authorization: Bearer` header. An explicit Skyvern `url` or `command` remains untouched for direct configurations.
+
+MCP servers require the optional `mcp` extra (`pip install "hermes-agent[mcp]"` or `uv sync --extra mcp`).
+
+Managed routing requires the Skyvern gateway to be available for your subscription. If it isn't, configure Skyvern's MCP endpoint directly with your own credentials.
 
 ### Disabling the gateway
 

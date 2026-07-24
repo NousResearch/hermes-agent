@@ -8,6 +8,7 @@ import concurrent.futures
 import json
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -93,6 +94,16 @@ class TestFilterMCPChildren:
 # ---------------------------------------------------------------------------
 
 class TestLoadMCPConfig:
+    @pytest.fixture(autouse=True)
+    def _allow_managed_skyvern(self, monkeypatch):
+        account = SimpleNamespace(
+            tool_gateway_entitled_for=lambda category: category == "skyvern"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            lambda: account,
+        )
+
     def test_no_config_returns_empty(self):
         """No mcp_servers key in config -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"model": "test"}):
@@ -122,6 +133,351 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_safe_mode_returns_empty_before_managed_resolution(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "skyvern": {"managed_gateway": "skyvern"},
+                }
+            },
+        ) as load_config:
+            from tools.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == {}
+
+        load_config.assert_not_called()
+
+    def test_suspicious_server_filtered_while_managed_skyvern_resolves(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.setenv("SKYVERN_GATEWAY_URL", "https://skyvern.test")
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+        servers = {
+            "suspicious": {
+                "command": "bash",
+                "args": ["-c", "curl https://evil.test"],
+            },
+            "skyvern": {"managed_gateway": "skyvern"},
+        }
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": servers},
+        ), patch(
+            "tools.managed_tool_gateway.managed_nous_tools_enabled",
+            return_value=True,
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert set(result) == {"skyvern"}
+        assert result["skyvern"]["url"] == "https://skyvern.test/mcp/"
+
+    def test_managed_skyvern_resolves_gateway_url_and_auth_header(self, monkeypatch):
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.delenv("SKYVERN_GATEWAY_URL", raising=False)
+        monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "skyvern": {"managed_gateway": "skyvern"},
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.managed_nous_tools_enabled",
+            return_value=True,
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["skyvern"] == {
+            "managed_gateway": "skyvern",
+            "url": "https://skyvern-gateway.nousresearch.com/mcp/",
+            "headers": {"Authorization": "Bearer nous-token"},
+        }
+
+    def test_unknown_managed_vendor_is_skipped_without_resolving_auth(
+        self,
+        caplog,
+    ):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "attacker": {"managed_gateway": "attacker.example/"},
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+        ) as resolve_gateway:
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result == {}
+        assert "Authorization" not in json.dumps(result)
+        resolve_gateway.assert_not_called()
+        assert "unsupported managed gateway" in caplog.text
+
+    @pytest.mark.parametrize(
+        "attempted_path",
+        ["//attacker.example/x", "https://attacker.example/x"],
+    )
+    def test_managed_gateway_path_is_ignored(self, monkeypatch, attempted_path):
+        monkeypatch.setenv("SKYVERN_GATEWAY_URL", "https://skyvern.test")
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "skyvern": {
+                        "managed_gateway": "skyvern",
+                        "managed_gateway_path": attempted_path,
+                    },
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.managed_nous_tools_enabled",
+            return_value=True,
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            skyvern = _load_mcp_config()["skyvern"]
+
+        assert skyvern["url"] == "https://skyvern.test/mcp/"
+        assert "managed_gateway_path" not in skyvern
+
+    def test_free_pool_without_skyvern_coverage_skips_managed_server(
+        self,
+        monkeypatch,
+    ):
+        from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
+
+        account = NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=True,
+            paid_service_access=False,
+            tool_access=NousToolAccessInfo(
+                enabled=True,
+                coverage={"firecrawl": True},
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            lambda: account,
+        )
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "skyvern": {"managed_gateway": "skyvern"},
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+        ) as resolve_gateway:
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result == {}
+        resolve_gateway.assert_not_called()
+
+    def test_malformed_managed_entry_does_not_drop_valid_server(self, monkeypatch):
+        monkeypatch.setenv("SKYVERN_GATEWAY_URL", "https://skyvern.test")
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+        direct = {"url": "https://valid.example/mcp/"}
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "direct": direct,
+                    "skyvern": {
+                        "managed_gateway": "skyvern",
+                        "headers": "not-a-mapping",
+                    },
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.managed_nous_tools_enabled",
+            return_value=True,
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result == {"direct": direct}
+
+    def test_disabled_managed_server_does_not_resolve_credentials(self):
+        disabled = {"managed_gateway": "skyvern", "enabled": False}
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": {"skyvern": disabled}},
+        ), patch(
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+        ) as resolve_gateway:
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result == {"skyvern": disabled}
+        resolve_gateway.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "direct_cfg",
+        [
+            {
+                "url": "https://api.skyvern.com/mcp/",
+                "headers": {"x-api-key": "skyvern-key"},
+            },
+            {"command": "uvx", "args": ["skyvern-mcp"]},
+        ],
+    )
+    def test_direct_skyvern_config_is_preserved(self, direct_cfg):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": {"skyvern": direct_cfg}},
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["skyvern"] == direct_cfg
+
+    def test_managed_skyvern_without_gateway_auth_is_skipped(
+        self,
+        monkeypatch,
+        caplog,
+    ):
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "skyvern": {"managed_gateway": "skyvern"},
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.managed_nous_tools_enabled",
+            return_value=True,
+        ), patch(
+            "tools.managed_tool_gateway.read_nous_access_token",
+            return_value=None,
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result == {}
+        assert "Skipping managed MCP server 'skyvern'" in caplog.text
+
+    def test_managed_skyvern_bearer_header_reaches_live_socket(self, monkeypatch):
+        received = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append(
+                    ("preflight", self.path, self.headers.get("Authorization"))
+                )
+                self.send_response(405)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                request = json.loads(body)
+                method = request["method"]
+                received.append(
+                    (method, self.path, self.headers.get("Authorization"))
+                )
+                if "id" not in request:
+                    self.send_response(202)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+
+                if method == "initialize":
+                    result = {
+                        "protocolVersion": request["params"]["protocolVersion"],
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "test-server", "version": "1.0"},
+                    }
+                elif method == "tools/list":
+                    result = {"tools": []}
+                else:
+                    raise AssertionError(f"Unexpected MCP method: {method}")
+
+                response = json.dumps(
+                    {"jsonrpc": "2.0", "id": request["id"], "result": result}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f"http://127.0.0.1:{server.server_port}"
+        monkeypatch.delenv("HERMES_SAFE_MODE", raising=False)
+        monkeypatch.setenv("SKYVERN_GATEWAY_URL", origin)
+        monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "socket-token")
+
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "mcp_servers": {
+                        "skyvern": {"managed_gateway": "skyvern"},
+                    }
+                },
+            ), patch(
+                "tools.managed_tool_gateway.managed_nous_tools_enabled",
+                return_value=True,
+            ):
+                from tools.mcp_tool import _load_mcp_config
+
+                skyvern = _load_mcp_config()["skyvern"]
+
+            from tools.mcp_tool import MCPServerTask
+
+            async def exercise_production_client():
+                client = MCPServerTask("skyvern")
+                try:
+                    await client.start({**skyvern, "connect_timeout": 2})
+                    assert client.initialize_result is not None
+                    assert client._tools == []
+                finally:
+                    await client.shutdown()
+
+            asyncio.run(exercise_production_client())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        assert skyvern["url"] == f"{origin}/mcp/"
+        assert {method for method, _, _ in received} >= {
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+        }
+        assert all(path == "/mcp/" for _, path, _ in received)
+        assert all(auth == "Bearer socket-token" for _, _, auth in received)
+
 
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
@@ -132,7 +488,7 @@ class TestMCPStatus:
         monkeypatch.setattr(
             mcp_tool,
             "_load_mcp_config",
-            lambda: {
+            lambda **_kwargs: {
                 "configured": {"command": "docker", "args": ["mcp", "gateway", "run"]},
                 "connecting": {"command": "slow-mcp"},
                 "failed": {"command": "bad-mcp"},
@@ -171,6 +527,29 @@ class TestMCPStatus:
         assert statuses["failed"]["error"] == "Connection closed"
         assert statuses["disabled"]["status"] == "disabled"
         assert statuses["disabled"]["disabled"] is True
+
+    def test_disabled_managed_status_does_not_resolve_credentials(self):
+        import tools.mcp_tool as mcp_tool
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "status_skyvern": {
+                        "managed_gateway": "skyvern",
+                        "enabled": False,
+                    },
+                }
+            },
+        ), patch(
+            "tools.managed_tool_gateway.read_nous_access_token",
+        ) as read_token:
+            statuses = mcp_tool.get_mcp_status()
+
+        read_token.assert_not_called()
+        status = next(entry for entry in statuses if entry["name"] == "status_skyvern")
+        assert status["transport"] == "http"
+        assert status["status"] == "disabled"
 
 
 class TestLifecycleConfig:
@@ -1537,12 +1916,18 @@ class TestToolsetInjection:
 # ---------------------------------------------------------------------------
 
 class TestGracefulFallback:
-    def test_mcp_unavailable_returns_empty(self):
-        """When _MCP_AVAILABLE is False, discover_mcp_tools is a no-op."""
-        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+    def test_mcp_unavailable_returns_empty_with_install_guidance(self, caplog):
+        """Configured MCP servers report the missing optional extra."""
+        with patch("tools.mcp_tool._MCP_AVAILABLE", False), patch(
+            "tools.mcp_tool._load_mcp_config",
+            return_value={"srv": {"url": "https://example.test/mcp/"}},
+        ):
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
             assert result == []
+
+        assert 'pip install "hermes-agent[mcp]"' in caplog.text
+        assert "uv sync --extra mcp" in caplog.text
 
     def test_no_servers_returns_empty(self):
         """No MCP servers configured -> empty list."""

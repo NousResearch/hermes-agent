@@ -3227,7 +3227,11 @@ def list_tasks(
             )
         query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
     else:
-        query += " ORDER BY priority DESC, created_at ASC"
+        # 2026-06-11: changed default to created_at DESC so the most recent
+        # tasks surface at the top of the list. Oldest-first made new
+        # tasks invisible on busy boards with many archived rows.
+        # Use --sort=created to opt into the legacy oldest-first order.
+        query += " ORDER BY priority DESC, created_at DESC, id DESC"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()

@@ -565,3 +565,50 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+def test_list_tasks_default_sort_is_newest_first(kanban_home):
+    """Default sort for ``list_tasks`` must be newest-first (DESC).
+
+    Regression test: prior default was ``created_at ASC`` which made new
+    tasks invisible on busy boards. The fix (2026-06-11) flipped the
+    default to DESC. Users can opt back to ASC via ``order_by='created'``.
+    """
+    with kb.connect() as conn:
+        c1 = kb.create_task(conn, title="oldest", assignee="alice")
+        c2 = kb.create_task(conn, title="middle", assignee="alice")
+        c3 = kb.create_task(conn, title="newest", assignee="alice")
+        # Stagger created_at to ensure distinct orderings even on fast disks.
+        for offset, tid in enumerate([c1, c2, c3]):
+            conn.execute(
+                "UPDATE tasks SET created_at = ? WHERE id = ?",
+                (1000.0 + offset, tid),
+            )
+        conn.commit()
+
+    with kb.connect() as conn:
+        rows = kb.list_tasks(conn)
+
+    # Newest must be first.
+    assert rows[0].id == c3
+    assert rows[1].id == c2
+    assert rows[2].id == c1
+
+
+def test_list_tasks_explicit_created_sort_keeps_oldest_first(kanban_home):
+    """``order_by='created'`` must opt into the legacy oldest-first order."""
+    with kb.connect() as conn:
+        c1 = kb.create_task(conn, title="oldest", assignee="alice")
+        c2 = kb.create_task(conn, title="newest", assignee="alice")
+        for offset, tid in enumerate([c1, c2]):
+            conn.execute(
+                "UPDATE tasks SET created_at = ? WHERE id = ?",
+                (1000.0 + offset, tid),
+            )
+        conn.commit()
+
+    with kb.connect() as conn:
+        rows = kb.list_tasks(conn, order_by="created")
+
+    assert rows[0].id == c1
+    assert rows[1].id == c2

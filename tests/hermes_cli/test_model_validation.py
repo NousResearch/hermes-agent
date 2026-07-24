@@ -126,6 +126,63 @@ class TestParseModelInput:
         assert provider == "custom"
         assert model == "name:"
 
+    def test_configured_provider_key_preserves_colons_in_model_name(self):
+        config = {
+            "providers": {
+                "ollama-remote": {
+                    "base_url": "http://ollama.example:11434/v1",
+                    "name": "Remote Ollama",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model = parse_model_input(
+                "ollama-remote:ornith:9b",
+                "openrouter",
+            )
+
+        assert provider == "custom:ollama-remote"
+        assert model == "ornith:9b"
+
+    def test_configured_provider_display_name_uses_provider_key(self):
+        config = {
+            "providers": {
+                "ollama-remote": {
+                    "base_url": "http://ollama.example:11434/v1",
+                    "name": "Remote Ollama",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model = parse_model_input(
+                "Remote Ollama:ornith:9b",
+                "openrouter",
+            )
+
+        assert provider == "custom:ollama-remote"
+        assert model == "ornith:9b"
+
+    def test_legacy_custom_provider_name_preserves_colons_in_model_name(self):
+        config = {
+            "custom_providers": [
+                {
+                    "name": "Ollama Remote",
+                    "base_url": "http://ollama.example:11434/v1",
+                }
+            ]
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config):
+            provider, model = parse_model_input(
+                "Ollama Remote:ornith:9b",
+                "openrouter",
+            )
+
+        assert provider == "custom:ollama-remote"
+        assert model == "ornith:9b"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

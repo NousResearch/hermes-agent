@@ -325,6 +325,33 @@ def test_server_handle_request_start_bot_dispatches(tmp_path, monkeypatch):
     assert captured["duration"] == "30m"
 
 
+def test_server_handle_request_start_bot_forwards_mode(tmp_path, monkeypatch):
+    # The node client sends mode="realtime" so a remote join can run the
+    # realtime pipeline; the server must forward it to pm.start rather than
+    # dropping it (which would pin every node join to the "transcribe" default).
+    from plugins.google_meet.node.server import NodeServer
+    from plugins.google_meet.node import protocol
+    from plugins.google_meet import process_manager as pm
+
+    captured = {}
+
+    def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "pid": 1, "meeting_id": "abc-defg-hij"}
+
+    monkeypatch.setattr(pm, "start", fake_start)
+
+    s = NodeServer(token_path=tmp_path / "t.json")
+    tok = s.ensure_token()
+    req = protocol.make_request("start_bot", tok, {
+        "url": "https://meet.google.com/abc-defg-hij",
+        "mode": "realtime",
+    })
+    resp = asyncio.run(s._handle_request(req))
+    assert resp["type"] == "response"
+    assert captured.get("mode") == "realtime"
+
+
 def test_server_handle_request_start_bot_missing_url(tmp_path):
     from plugins.google_meet.node.server import NodeServer
     from plugins.google_meet.node import protocol

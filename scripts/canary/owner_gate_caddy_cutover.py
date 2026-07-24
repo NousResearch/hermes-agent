@@ -667,6 +667,23 @@ _LEGACY_TERMINAL_FIELDS = frozenset(
         "receipt_sha256",
     }
 )
+_DIRECT_MVP_LEGACY_TERMINAL_FIELDS = frozenset(
+    (
+        _LEGACY_TERMINAL_FIELDS
+        - {
+            "isolated_canary_goal_continuation_terminal_sha256",
+            "isolated_canary_workspace_gateway_receipt_sha256",
+            "isolation_equivalence_projection_sha256",
+        }
+    )
+    | {
+        "release_validation_mode",
+        "release_validation_authority_sha256",
+        "isolated_canary_proof_present",
+        "owner_approved_direct_mvp_no_canary",
+        "live_production_prerequisite_validated",
+    }
+)
 
 
 class OwnerGateCaddyCutoverError(RuntimeError):
@@ -6902,15 +6919,74 @@ def _legacy_commit_lineage(
                 capability_entry.value["evidence"], plan=authority.plan
             )
         )
+        validation_mode, validation_authority = (
+            cutover._validate_release_validation_authority(
+                authority.freeze.value["cutover_authority"][
+                    "isolated_canary_goal_prerequisite"
+                ],
+                revision=authority.plan.value["release_revision"],
+            )
+        )
         gateway_entry = cutover._last(entries, "gateway_started")
     except BaseException as exc:
         raise OwnerGateCaddyCutoverError(
             "owner_gate_caddy_legacy_terminal_invalid"
         ) from exc
     gateway = None if gateway_entry is None else gateway_entry.value["evidence"]
-    digest_fields = _LEGACY_TERMINAL_FIELDS - {
+    terminal_schema = (
+        terminal.get("schema") if isinstance(terminal, Mapping) else None
+    )
+    expected_fields = (
+        _LEGACY_TERMINAL_FIELDS
+        if terminal_schema == cutover.TERMINAL_SCHEMA
+        else (
+            _DIRECT_MVP_LEGACY_TERMINAL_FIELDS
+            if terminal_schema == cutover.DIRECT_MVP_TERMINAL_SCHEMA
+            else frozenset()
+        )
+    )
+    validation_specific_invalid = True
+    if capability is not None:
+        if terminal_schema == cutover.TERMINAL_SCHEMA:
+            validation_specific_invalid = (
+                validation_mode != "release_bound_isolated_canary"
+                or capability.get("schema")
+                != cutover.CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA
+                or terminal.get(
+                    "isolated_canary_goal_continuation_terminal_sha256"
+                )
+                != capability["goal_continuation_terminal_sha256"]
+                or terminal.get(
+                    "isolated_canary_workspace_gateway_receipt_sha256"
+                )
+                != capability["workspace_gateway_receipt_sha256"]
+                or terminal.get("isolation_equivalence_projection_sha256")
+                != capability["isolation_equivalence_projection_sha256"]
+            )
+        elif terminal_schema == cutover.DIRECT_MVP_TERMINAL_SCHEMA:
+            validation_specific_invalid = (
+                validation_mode != cutover.OWNER_DIRECT_MVP_VALIDATION_MODE
+                or capability.get("schema")
+                != cutover.CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA
+                or terminal.get("release_validation_mode")
+                != validation_mode
+                or terminal.get("release_validation_authority_sha256")
+                != capability["release_validation_authority_sha256"]
+                or terminal.get("release_validation_authority_sha256")
+                != validation_authority["waiver_sha256"]
+                or terminal.get("isolated_canary_proof_present") is not False
+                or terminal.get("owner_approved_direct_mvp_no_canary")
+                is not True
+                or terminal.get("live_production_prerequisite_validated")
+                is not True
+            )
+    digest_fields = expected_fields - {
         "schema",
+        "release_validation_mode",
         "zero_canonical_database_mutation_observed",
+        "isolated_canary_proof_present",
+        "owner_approved_direct_mvp_no_canary",
+        "live_production_prerequisite_validated",
         "direct_discord_disabled",
         "discord_dm_allowed",
         "rollback_used",
@@ -6919,8 +6995,8 @@ def _legacy_commit_lineage(
     }
     if (
         not isinstance(terminal, Mapping)
-        or set(terminal) != _LEGACY_TERMINAL_FIELDS
-        or terminal.get("schema") != cutover.TERMINAL_SCHEMA
+        or set(terminal) != expected_fields
+        or validation_specific_invalid
         or any(
             _SHA256.fullmatch(str(terminal.get(field))) is None
             for field in digest_fields
@@ -6936,12 +7012,6 @@ def _legacy_commit_lineage(
         != capability["prerequisite_receipt_sha256"]
         or terminal.get("capability_prerequisite_file_sha256")
         != capability["prerequisite_file_sha256"]
-        or terminal.get("isolated_canary_goal_continuation_terminal_sha256")
-        != capability["goal_continuation_terminal_sha256"]
-        or terminal.get("isolated_canary_workspace_gateway_receipt_sha256")
-        != capability["workspace_gateway_receipt_sha256"]
-        or terminal.get("isolation_equivalence_projection_sha256")
-        != capability["isolation_equivalence_projection_sha256"]
         or terminal.get("zero_canonical_database_mutation_observed")
         is not True
         or terminal.get("pre_db_zero_write_observation_sha256")

@@ -102,6 +102,9 @@ SERVICE_SCHEMA = "muncho-production-service-observation.v1"
 FREEZE_RECEIPT_SCHEMA = "muncho-production-final-tail-receipt.v1"
 JOURNAL_SCHEMA = "muncho-production-legacy-cutover-journal.v1"
 TERMINAL_SCHEMA = "muncho-production-legacy-cutover-terminal.v1"
+DIRECT_MVP_TERMINAL_SCHEMA = (
+    "muncho-production-legacy-cutover-terminal.direct-mvp.v2"
+)
 ROLLBACK_TERMINAL_SCHEMA = (
     "muncho-production-legacy-cutover-rollback-terminal.v1"
 )
@@ -111,11 +114,17 @@ NEW_TRUTH_EPOCH_SCHEMA = "muncho-production-new-truth-epoch.v1"
 ISOLATED_CANARY_GOAL_PREREQUISITE_SCHEMA = (
     "muncho-production-isolated-canary-goal-prerequisite.v2"
 )
+OWNER_DIRECT_MVP_NO_CANARY_WAIVER_SCHEMA = (
+    "muncho-production-owner-direct-mvp-no-canary-waiver.v1"
+)
 ISOLATION_EQUIVALENCE_SCHEMA = (
     "muncho-production-isolation-equivalence-projection.v1"
 )
 CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA = (
     "muncho-production-capability-prerequisite-acceptance.v3"
+)
+CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA = (
+    "muncho-production-capability-prerequisite-acceptance.v4"
 )
 
 PROJECT = "adventico-ai-platform"
@@ -473,6 +482,137 @@ def build_isolated_canary_goal_prerequisite(
         {**unsigned, "evidence_sha256": _sha256_json(unsigned)},
         revision=terminal["release_sha"],
     )
+
+
+_OWNER_DIRECT_MVP_NO_CANARY_WAIVER_FIELDS = frozenset({
+    "schema",
+    "release_revision",
+    "mode",
+    "waived_gate",
+    "rationale_code",
+    "owner_subject_sha256",
+    "owner_public_key_ed25519_hex",
+    "owner_key_id",
+    "retain_live_production_prerequisite",
+    "retain_pre_db_zero_write_observation",
+    "immutable_artifacts_required",
+    "signed_unit_inputs_required",
+    "production_database_mutation_before_apply_allowed",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "waiver_sha256",
+})
+OWNER_DIRECT_MVP_VALIDATION_MODE = "owner_approved_direct_mvp_no_canary"
+
+
+def _validate_owner_direct_mvp_no_canary_waiver(
+    value: Any,
+    *,
+    revision: str,
+) -> dict[str, Any]:
+    """Validate the one deliberately narrow owner-signed MVP exception.
+
+    The waiver is embedded in the owner-signed FreezePlan.  It waives only the
+    release-bound isolated-canary proof; it cannot waive live production
+    prerequisite collection, the fenced pre-DB zero-write observation,
+    immutable packaged artifacts, or signed unit inputs.
+    """
+
+    raw = _hashed(
+        value,
+        _OWNER_DIRECT_MVP_NO_CANARY_WAIVER_FIELDS,
+        "waiver_sha256",
+        "owner direct-MVP no-canary waiver",
+    )
+    public = raw["owner_public_key_ed25519_hex"]
+    if (
+        raw["schema"] != OWNER_DIRECT_MVP_NO_CANARY_WAIVER_SCHEMA
+        or raw["release_revision"] != revision
+        or raw["mode"] != OWNER_DIRECT_MVP_VALIDATION_MODE
+        or raw["waived_gate"]
+        != "release_bound_isolated_canary_goal_prerequisite"
+        or raw["rationale_code"] != "owner_explicit_no_repeat_canary"
+        or _SHA256.fullmatch(str(raw["owner_subject_sha256"])) is None
+        or not isinstance(public, str)
+        or re.fullmatch(r"[0-9a-f]{64}", public) is None
+        or raw["owner_key_id"]
+        != hashlib.sha256(bytes.fromhex(public)).hexdigest()
+        or raw["retain_live_production_prerequisite"] is not True
+        or raw["retain_pre_db_zero_write_observation"] is not True
+        or raw["immutable_artifacts_required"] is not True
+        or raw["signed_unit_inputs_required"] is not True
+        or raw["production_database_mutation_before_apply_allowed"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        raise ValueError("owner direct-MVP no-canary waiver is invalid")
+    return raw
+
+
+def build_owner_direct_mvp_no_canary_waiver(
+    *,
+    release_revision: str,
+    owner_subject_sha256: str,
+    owner_public_key_ed25519_hex: str,
+) -> Mapping[str, Any]:
+    """Build the exact public waiver that the FreezePlan owner will sign."""
+
+    public = owner_public_key_ed25519_hex
+    if (
+        not isinstance(public, str)
+        or re.fullmatch(r"[0-9a-f]{64}", public) is None
+    ):
+        raise ValueError("owner direct-MVP no-canary waiver key is invalid")
+    unsigned = {
+        "schema": OWNER_DIRECT_MVP_NO_CANARY_WAIVER_SCHEMA,
+        "release_revision": release_revision,
+        "mode": OWNER_DIRECT_MVP_VALIDATION_MODE,
+        "waived_gate": "release_bound_isolated_canary_goal_prerequisite",
+        "rationale_code": "owner_explicit_no_repeat_canary",
+        "owner_subject_sha256": owner_subject_sha256,
+        "owner_public_key_ed25519_hex": public,
+        "owner_key_id": hashlib.sha256(bytes.fromhex(public)).hexdigest(),
+        "retain_live_production_prerequisite": True,
+        "retain_pre_db_zero_write_observation": True,
+        "immutable_artifacts_required": True,
+        "signed_unit_inputs_required": True,
+        "production_database_mutation_before_apply_allowed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return _validate_owner_direct_mvp_no_canary_waiver(
+        {**unsigned, "waiver_sha256": _sha256_json(unsigned)},
+        revision=release_revision,
+    )
+
+
+def _validate_release_validation_authority(
+    value: Any,
+    *,
+    revision: str,
+) -> tuple[str, dict[str, Any]]:
+    """Return the exact validation mode and its public authority."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("release validation authority is invalid")
+    schema = value.get("schema")
+    if schema == ISOLATED_CANARY_GOAL_PREREQUISITE_SCHEMA:
+        return (
+            "release_bound_isolated_canary",
+            _validate_isolated_canary_goal_prerequisite(
+                value,
+                revision=revision,
+            ),
+        )
+    if schema == OWNER_DIRECT_MVP_NO_CANARY_WAIVER_SCHEMA:
+        return (
+            OWNER_DIRECT_MVP_VALIDATION_MODE,
+            _validate_owner_direct_mvp_no_canary_waiver(
+                value,
+                revision=revision,
+            ),
+        )
+    raise ValueError("release validation authority schema is invalid")
 
 
 _SERVICE_FIELDS = frozenset({
@@ -1342,9 +1482,11 @@ def _validate_cutover_authority(
         raise ValueError("cutover cron continuity authority is invalid") from exc
     if continuity_plan["cutover_executable"] is not True:
         raise ValueError("cutover cron continuity authority is not executable")
-    canary_goal = _validate_isolated_canary_goal_prerequisite(
-        raw["isolated_canary_goal_prerequisite"],
-        revision=revision,
+    _validation_mode, release_validation_authority = (
+        _validate_release_validation_authority(
+            raw["isolated_canary_goal_prerequisite"],
+            revision=revision,
+        )
     )
     recovery = _validate_database_recovery_receipt(
         raw["database_recovery_receipt"],
@@ -1405,7 +1547,9 @@ def _validate_cutover_authority(
         "cron_continuity_plan": copy.deepcopy(dict(continuity_plan)),
         "mechanical_job_host_facts": copy.deepcopy(dict(host_facts)),
         "mechanical_job_package": copy.deepcopy(dict(mechanical_package)),
-        "isolated_canary_goal_prerequisite": copy.deepcopy(dict(canary_goal)),
+        "isolated_canary_goal_prerequisite": copy.deepcopy(
+            dict(release_validation_authority)
+        ),
         "database_recovery_receipt": copy.deepcopy(dict(recovery)),
         "legacy_truth_decision": copy.deepcopy(dict(decision)),
     }
@@ -1525,6 +1669,25 @@ class FreezePlan:
             writer_pre=writer,
             connector_pre=connector,
         )
+        validation_mode, validation_authority = (
+            _validate_release_validation_authority(
+                authority["isolated_canary_goal_prerequisite"],
+                revision=revision,
+            )
+        )
+        if (
+            validation_mode == OWNER_DIRECT_MVP_VALIDATION_MODE
+            and (
+                validation_authority["owner_subject_sha256"]
+                != raw["owner_subject_sha256"]
+                or validation_authority["owner_public_key_ed25519_hex"]
+                != raw["owner_public_key_ed25519_hex"]
+                or validation_authority["owner_key_id"] != raw["owner_key_id"]
+            )
+        ):
+            raise ValueError(
+                "owner direct-MVP no-canary waiver is not freeze-owner-bound"
+            )
         _legacy_truth_decision(
             authority["legacy_truth_decision"],
             snapshot=initial_snapshot,
@@ -4559,15 +4722,21 @@ class ProductionCapabilityPrerequisiteBoundary:
 
     def collect_and_validate(self, plan: CutoverPlan) -> Mapping[str, Any]:
         topology = plan.value["capability_topology"]
-        canary_evidence = _validate_isolated_canary_goal_prerequisite(
-            plan.value["freeze_plan"]["cutover_authority"][
-                "isolated_canary_goal_prerequisite"
-            ],
-            revision=plan.value["release_revision"],
+        validation_mode, validation_authority = (
+            _validate_release_validation_authority(
+                plan.value["freeze_plan"]["cutover_authority"][
+                    "isolated_canary_goal_prerequisite"
+                ],
+                revision=plan.value["release_revision"],
+            )
         )
-        equivalence = _build_production_isolation_equivalence(
-            plan=plan,
-            evidence=canary_evidence,
+        equivalence = (
+            _build_production_isolation_equivalence(
+                plan=plan,
+                evidence=validation_authority,
+            )
+            if validation_mode == "release_bound_isolated_canary"
+            else None
         )
         try:
             collect_and_install_from_production_config(
@@ -4593,8 +4762,7 @@ class ProductionCapabilityPrerequisiteBoundary:
             raise ProductionCutoverError(
                 "production_capability_prerequisite_invalid"
             ) from exc
-        unsigned = {
-            "schema": CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA,
+        common = {
             "plan_sha256": plan.sha256,
             "production_owner_approval_sha256": plan.value[
                 "freeze_approval_sha256"
@@ -4609,37 +4777,6 @@ class ProductionCapabilityPrerequisiteBoundary:
             "pre_db_zero_write_observation_sha256": pre_db_observation[
                 "observation_sha256"
             ],
-            "isolated_canary_evidence_sha256": canary_evidence[
-                "evidence_sha256"
-            ],
-            "workspace_gateway_receipt_sha256": canary_evidence[
-                "workspace_gateway_receipt_sha256"
-            ],
-            "goal_continuation_terminal_schema": canary_evidence[
-                "goal_continuation_terminal_schema"
-            ],
-            "goal_continuation_terminal_sha256": canary_evidence[
-                "goal_continuation_terminal_sha256"
-            ],
-            "canary_run_id": canary_evidence["run_id"],
-            "canary_release_revision": canary_evidence["release_revision"],
-            "canary_fixture_sha256": canary_evidence["fixture_sha256"],
-            "canary_capability_plan_sha256": canary_evidence[
-                "capability_plan_sha256"
-            ],
-            "canary_full_canary_plan_sha256": canary_evidence[
-                "full_canary_plan_sha256"
-            ],
-            "canary_owner_approval_receipt_sha256": canary_evidence[
-                "canary_owner_approval_receipt_sha256"
-            ],
-            "production_diff_sha256": canary_evidence[
-                "production_diff_sha256"
-            ],
-            "isolation_equivalence_projection": equivalence,
-            "isolation_equivalence_projection_sha256": equivalence[
-                "projection_sha256"
-            ],
             "zero_canonical_database_mutation_observed": (
                 pre_db_observation["canonical_database_mutation_observed"]
                 is False
@@ -4648,6 +4785,58 @@ class ProductionCapabilityPrerequisiteBoundary:
             "secret_material_recorded": False,
             "secret_digest_recorded": False,
         }
+        if validation_mode == "release_bound_isolated_canary":
+            canary_evidence = validation_authority
+            assert equivalence is not None
+            unsigned = {
+                "schema": CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA,
+                **common,
+                "isolated_canary_evidence_sha256": canary_evidence[
+                    "evidence_sha256"
+                ],
+                "workspace_gateway_receipt_sha256": canary_evidence[
+                    "workspace_gateway_receipt_sha256"
+                ],
+                "goal_continuation_terminal_schema": canary_evidence[
+                    "goal_continuation_terminal_schema"
+                ],
+                "goal_continuation_terminal_sha256": canary_evidence[
+                    "goal_continuation_terminal_sha256"
+                ],
+                "canary_run_id": canary_evidence["run_id"],
+                "canary_release_revision": canary_evidence[
+                    "release_revision"
+                ],
+                "canary_fixture_sha256": canary_evidence["fixture_sha256"],
+                "canary_capability_plan_sha256": canary_evidence[
+                    "capability_plan_sha256"
+                ],
+                "canary_full_canary_plan_sha256": canary_evidence[
+                    "full_canary_plan_sha256"
+                ],
+                "canary_owner_approval_receipt_sha256": canary_evidence[
+                    "canary_owner_approval_receipt_sha256"
+                ],
+                "production_diff_sha256": canary_evidence[
+                    "production_diff_sha256"
+                ],
+                "isolation_equivalence_projection": equivalence,
+                "isolation_equivalence_projection_sha256": equivalence[
+                    "projection_sha256"
+                ],
+            }
+        else:
+            unsigned = {
+                "schema": CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA,
+                **common,
+                "release_validation_mode": validation_mode,
+                "release_validation_authority_sha256": validation_authority[
+                    "waiver_sha256"
+                ],
+                "isolated_canary_proof_present": False,
+                "owner_approved_direct_mvp_no_canary": True,
+                "live_production_prerequisite_validated": True,
+            }
         return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
 
 
@@ -5595,6 +5784,89 @@ _CAPABILITY_PREREQUISITE_ACCEPTANCE_FIELDS = frozenset(
         "receipt_sha256",
     }
 )
+_CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_FIELDS = frozenset({
+    "schema",
+    "plan_sha256",
+    "production_owner_approval_sha256",
+    "prerequisite_receipt_sha256",
+    "prerequisite_file_sha256",
+    "topology_identity_sha256",
+    "boot_id_sha256",
+    "pre_db_zero_write_observation",
+    "pre_db_zero_write_observation_sha256",
+    "release_validation_mode",
+    "release_validation_authority_sha256",
+    "isolated_canary_proof_present",
+    "owner_approved_direct_mvp_no_canary",
+    "live_production_prerequisite_validated",
+    "zero_canonical_database_mutation_observed",
+    "ok",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+
+
+def _require_capability_prerequisite_waiver_acceptance(
+    value: Mapping[str, Any],
+    *,
+    plan: CutoverPlan,
+) -> dict[str, Any]:
+    raw = _hashed(
+        value,
+        _CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_FIELDS,
+        "receipt_sha256",
+        "production capability prerequisite waiver acceptance",
+    )
+    validation_mode, validation_authority = (
+        _validate_release_validation_authority(
+            plan.value["freeze_plan"]["cutover_authority"][
+                "isolated_canary_goal_prerequisite"
+            ],
+            revision=plan.value["release_revision"],
+        )
+    )
+    pre_db_observation = _require_pre_db_zero_write_observation(
+        raw["pre_db_zero_write_observation"],
+        plan=plan,
+    )
+    if (
+        raw["schema"] != CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA
+        or validation_mode != OWNER_DIRECT_MVP_VALIDATION_MODE
+        or raw["plan_sha256"] != plan.sha256
+        or raw["production_owner_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
+        or _SHA256.fullmatch(str(raw["prerequisite_receipt_sha256"])) is None
+        or _SHA256.fullmatch(str(raw["prerequisite_file_sha256"])) is None
+        or raw["topology_identity_sha256"]
+        != production_capability_topology_identity_sha256(
+            plan.value["capability_topology"]
+        )
+        or _SHA256.fullmatch(str(raw["boot_id_sha256"])) is None
+        or raw["pre_db_zero_write_observation_sha256"]
+        != pre_db_observation["observation_sha256"]
+        or raw["release_validation_mode"] != validation_mode
+        or raw["release_validation_authority_sha256"]
+        != validation_authority["waiver_sha256"]
+        or raw["isolated_canary_proof_present"] is not False
+        or raw["owner_approved_direct_mvp_no_canary"] is not True
+        or raw["live_production_prerequisite_validated"] is not True
+        or raw["zero_canonical_database_mutation_observed"]
+        is not (
+            pre_db_observation["canonical_database_mutation_observed"]
+            is False
+        )
+        or pre_db_observation[
+            "staging_and_service_lifecycle_mutations_observed"
+        ] is not True
+        or raw["ok"] is not True
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        raise ProductionCutoverError(
+            "production_capability_prerequisite_acceptance_invalid"
+        )
+    return raw
 
 
 def _require_capability_prerequisite_acceptance(
@@ -5602,6 +5874,15 @@ def _require_capability_prerequisite_acceptance(
     *,
     plan: CutoverPlan,
 ) -> dict[str, Any]:
+    if (
+        isinstance(value, Mapping)
+        and value.get("schema")
+        == CAPABILITY_PREREQUISITE_WAIVER_ACCEPTANCE_SCHEMA
+    ):
+        return _require_capability_prerequisite_waiver_acceptance(
+            value,
+            plan=plan,
+        )
     raw = _hashed(
         value,
         _CAPABILITY_PREREQUISITE_ACCEPTANCE_FIELDS,
@@ -8255,8 +8536,7 @@ def execute_cutover(
                     raise ProductionCutoverError(
                         "production_cron_cutover_activation_missing"
                     )
-            unsigned = {
-                "schema": TERMINAL_SCHEMA,
+            terminal_common = {
                 "plan_sha256": plan.sha256,
                 "freeze_plan_sha256": plan.value["freeze_plan_sha256"],
                 "freeze_approval_sha256": plan.value["freeze_approval_sha256"],
@@ -8269,21 +8549,6 @@ def execute_cutover(
                 ),
                 "capability_prerequisite_file_sha256": (
                     prerequisite_acceptance["prerequisite_file_sha256"]
-                ),
-                "isolated_canary_goal_continuation_terminal_sha256": (
-                    prerequisite_acceptance[
-                        "goal_continuation_terminal_sha256"
-                    ]
-                ),
-                "isolated_canary_workspace_gateway_receipt_sha256": (
-                    prerequisite_acceptance[
-                        "workspace_gateway_receipt_sha256"
-                    ]
-                ),
-                "isolation_equivalence_projection_sha256": (
-                    prerequisite_acceptance[
-                        "isolation_equivalence_projection_sha256"
-                    ]
                 ),
                 "zero_canonical_database_mutation_observed": (
                     prerequisite_acceptance[
@@ -8322,6 +8587,45 @@ def execute_cutover(
                 "secret_material_recorded": False,
                 "completed_at_unix": now,
             }
+            if (
+                prerequisite_acceptance["schema"]
+                == CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA
+            ):
+                unsigned = {
+                    "schema": TERMINAL_SCHEMA,
+                    **terminal_common,
+                    "isolated_canary_goal_continuation_terminal_sha256": (
+                        prerequisite_acceptance[
+                            "goal_continuation_terminal_sha256"
+                        ]
+                    ),
+                    "isolated_canary_workspace_gateway_receipt_sha256": (
+                        prerequisite_acceptance[
+                            "workspace_gateway_receipt_sha256"
+                        ]
+                    ),
+                    "isolation_equivalence_projection_sha256": (
+                        prerequisite_acceptance[
+                            "isolation_equivalence_projection_sha256"
+                        ]
+                    ),
+                }
+            else:
+                unsigned = {
+                    "schema": DIRECT_MVP_TERMINAL_SCHEMA,
+                    **terminal_common,
+                    "release_validation_mode": prerequisite_acceptance[
+                        "release_validation_mode"
+                    ],
+                    "release_validation_authority_sha256": (
+                        prerequisite_acceptance[
+                            "release_validation_authority_sha256"
+                        ]
+                    ),
+                    "isolated_canary_proof_present": False,
+                    "owner_approved_direct_mvp_no_canary": True,
+                    "live_production_prerequisite_validated": True,
+                }
             terminal = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
             dependencies.journal.append(plan.sha256, "terminal", terminal, now)
             return terminal
@@ -8582,6 +8886,7 @@ __all__ = [
     "RootCutoverJournal", "ServiceObservation",
     "abort_freeze", "approval_signature_payload", "build_cutover_plan",
     "build_freeze_plan", "build_isolated_canary_goal_prerequisite",
+    "build_owner_direct_mvp_no_canary_waiver",
     "execute_cutover", "execute_final_tail_capture", "execute_fixed_staged",
     "main",
 ]

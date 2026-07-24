@@ -30,6 +30,7 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     Services,
     Snapshots,
     _approval,
+    _cutover_plan,
     _database_recovery_receipt,
     _freeze,
     _isolated_canary_goal_prerequisite,
@@ -1383,6 +1384,148 @@ def test_sealed_cli_exposes_only_prepare_and_resume_cutover_workflow(
     for forbidden in ("execute-cutover", "author-freeze", "author-cutover"):
         with pytest.raises(SystemExit):
             owner.main([forbidden, *common])
+
+
+def test_sealed_cli_builds_exact_owner_signed_direct_mvp_waiver(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    private = Ed25519PrivateKey.generate()
+    key_path = _private_key_file(tmp_path, private)
+    output = (tmp_path / "workflow-receipt.json").resolve()
+    calls: list[dict] = []
+
+    class Identity:
+        owner_subject_sha256 = "a" * 64
+
+    monkeypatch.setattr(
+        owner,
+        "_active_owner_runtime_attestation",
+        lambda revision: _runtime_attestation(revision),
+    )
+    monkeypatch.setattr(
+        owner,
+        "build_production_cutover_owner_identity",
+        lambda revision: (Identity(), object(), object()),
+    )
+    monkeypatch.setattr(
+        owner,
+        "build_production_cutover_passkey_boundary",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        owner.canary_transport,
+        "harden_owner_secret_process",
+        lambda: None,
+    )
+
+    def execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "schema": owner.WORKFLOW_RECEIPT_SCHEMA,
+            "receipt_sha256": "f" * 64,
+            "secret_material_recorded": False,
+        }
+
+    monkeypatch.setattr(owner, "execute_production_cutover_workflow", execute)
+
+    assert owner.main([
+        "prepare-cutover",
+        "--revision",
+        REVISION,
+        "--owner-approved-direct-mvp-no-canary",
+        "--owner-private-key",
+        str(key_path),
+        "--truth-mode",
+        "start_new_truth_epoch",
+        "--output",
+        str(output),
+    ]) == 0
+
+    waiver = calls[0]["isolated_canary_goal_prerequisite"]
+    assert waiver == cutover.build_owner_direct_mvp_no_canary_waiver(
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        owner_public_key_ed25519_hex=private.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        ).hex(),
+    )
+    assert calls[0]["prepare_only"] is True
+    assert output.exists()
+    assert b"PRIVATE KEY" not in output.read_bytes()
+
+
+def test_direct_mvp_terminal_is_truthful_and_waiver_bound() -> None:
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    ).hex()
+    waiver = cutover.build_owner_direct_mvp_no_canary_waiver(
+        release_revision=REVISION,
+        owner_subject_sha256="a" * 64,
+        owner_public_key_ed25519_hex=public,
+    )
+    plan = _cutover_plan(
+        private,
+        Services(),
+        release_validation_authority=waiver,
+    )
+    unsigned = {
+        "schema": cutover.DIRECT_MVP_TERMINAL_SCHEMA,
+        "plan_sha256": plan.sha256,
+        "freeze_plan_sha256": plan.value["freeze_plan_sha256"],
+        "freeze_approval_sha256": plan.value["freeze_approval_sha256"],
+        "approval_sha256": "1" * 64,
+        "final_tail_receipt_sha256": plan.value[
+            "final_tail_receipt_sha256"
+        ],
+        "capability_prerequisite_receipt_sha256": "2" * 64,
+        "capability_prerequisite_file_sha256": "3" * 64,
+        "release_validation_mode": cutover.OWNER_DIRECT_MVP_VALIDATION_MODE,
+        "release_validation_authority_sha256": waiver["waiver_sha256"],
+        "isolated_canary_proof_present": False,
+        "owner_approved_direct_mvp_no_canary": True,
+        "live_production_prerequisite_validated": True,
+        "zero_canonical_database_mutation_observed": True,
+        "pre_db_zero_write_observation_sha256": "4" * 64,
+        "capability_topology_identity_sha256": "5" * 64,
+        "database_apply_receipt_sha256": "6" * 64,
+        "host_apply_receipt_sha256": "7" * 64,
+        "host_boot_commit_receipt_sha256": "8" * 64,
+        "activation_commit_intent_receipt_sha256": "9" * 64,
+        "database_postflight_receipt_sha256": "a" * 64,
+        "gateway_observation_sha256": "b" * 64,
+        "writer_observation_sha256": "c" * 64,
+        "connector_observation_sha256": "d" * 64,
+        "direct_discord_disabled": True,
+        "discord_dm_allowed": False,
+        "rollback_used": False,
+        "secret_material_recorded": False,
+        "completed_at_unix": NOW,
+    }
+    terminal = {
+        **unsigned,
+        "receipt_sha256": cutover._sha256_json(unsigned),
+    }
+    assert owner._validate_terminal_receipt(
+        terminal,
+        plan=plan,
+    ) == terminal
+
+    tampered = copy.deepcopy(terminal)
+    tampered["isolated_canary_proof_present"] = True
+    tampered["receipt_sha256"] = cutover._sha256_json({
+        key: item
+        for key, item in tampered.items()
+        if key != "receipt_sha256"
+    })
+    with pytest.raises(
+        owner.OwnerCutoverError,
+        match="owner_cutover_terminal_receipt_invalid",
+    ):
+        owner._validate_terminal_receipt(tampered, plan=plan)
 
 
 def test_cloud_transport_commands_are_fixed_to_target_release() -> None:

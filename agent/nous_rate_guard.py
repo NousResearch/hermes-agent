@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -60,7 +61,7 @@ def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float
         if raw is not None:
             try:
                 val = float(raw)
-                if val > 0:
+                if math.isfinite(val) and val > 0:
                     return val
             except (TypeError, ValueError):
                 pass
@@ -96,11 +97,21 @@ def record_nous_rate_limit(
     # Try error_context reset_at (from body parsing)
     if reset_at is None and isinstance(error_context, dict):
         ctx_reset = error_context.get("reset_at")
-        if isinstance(ctx_reset, (int, float)) and ctx_reset > now:
+        if (
+            isinstance(ctx_reset, (int, float))
+            and math.isfinite(float(ctx_reset))
+            and ctx_reset > now
+        ):
             reset_at = float(ctx_reset)
 
     # Default cooldown
     if reset_at is None:
+        if (
+            not isinstance(default_cooldown, (int, float))
+            or not math.isfinite(float(default_cooldown))
+            or default_cooldown <= 0
+        ):
+            default_cooldown = 300.0
         reset_at = now + default_cooldown
 
     path = _state_path()
@@ -146,7 +157,13 @@ def nous_rate_limit_remaining() -> Optional[float]:
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
-        reset_at = state.get("reset_at", 0)
+        reset_at = float(state.get("reset_at", 0) or 0)
+        if not math.isfinite(reset_at):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
         remaining = reset_at - time.time()
         if remaining > 0:
             return remaining
@@ -172,6 +189,12 @@ def clear_nous_rate_limit() -> None:
 
 def format_remaining(seconds: float) -> str:
     """Format seconds remaining into human-readable duration."""
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError, OverflowError):
+        return "0s"
+    if not math.isfinite(seconds):
+        return "0s"
     s = max(0, int(seconds))
     if s < 60:
         return f"{s}s"
@@ -262,16 +285,20 @@ def _parse_buckets_from_headers(
         if raw is None:
             return None
         try:
-            return int(float(raw))
-        except (TypeError, ValueError):
+            parsed = float(raw)
+            if not math.isfinite(parsed):
+                return None
+            return int(parsed)
+        except (TypeError, ValueError, OverflowError):
             return None
 
     def _maybe_float(raw: Optional[str]) -> Optional[float]:
         if raw is None:
             return None
         try:
-            return float(raw)
-        except (TypeError, ValueError):
+            parsed = float(raw)
+            return parsed if math.isfinite(parsed) else None
+        except (TypeError, ValueError, OverflowError):
             return None
 
     result: dict[str, tuple[Optional[int], Optional[float]]] = {}
@@ -292,7 +319,13 @@ def _has_exhausted_bucket(
             continue
         if reset is None:
             continue
-        if reset >= _MIN_RESET_FOR_BREAKER_SECONDS:
+        try:
+            reset_value = float(reset)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(reset_value):
+            continue
+        if reset_value >= _MIN_RESET_FOR_BREAKER_SECONDS:
             return True
     return False
 
@@ -320,6 +353,12 @@ def _has_exhausted_bucket_in_object(state: Any) -> bool:
             continue
         if remaining > 0:
             continue
-        if reset >= _MIN_RESET_FOR_BREAKER_SECONDS:
+        try:
+            reset_value = float(reset)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(reset_value):
+            continue
+        if reset_value >= _MIN_RESET_FOR_BREAKER_SECONDS:
             return True
     return False

@@ -727,6 +727,170 @@ class TestPersistence:
         assert restored.agent.provider == "anthropic"
         assert restored.agent.base_url == "https://anthropic.example/v1"
 
+    def test_restore_bare_custom_forwards_persisted_base_url(self, tmp_path, monkeypatch):
+        """A stored bare ``custom`` provider must forward its persisted base_url.
+
+        Named ``custom_providers`` entries normalize to the bare ``"custom"``
+        billing bucket at runtime, and that bucket is what gets persisted
+        (``billing_provider``/``billing_base_url``). On restore, the resolver
+        can only match the bare bucket back to the named pool entry when the
+        persisted URL is forwarded as ``explicit_base_url`` — otherwise
+        ``_get_named_custom_provider("custom")`` finds nothing and the resumed
+        session dies with "Could not resolve authentication method"
+        (create path works, restore path fails, same config).
+
+        Regression test for the ACP restore path; the TUI/gateway path covers
+        the same bucket-skipping via ``_stored_session_runtime_overrides``.
+        """
+        resolve_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, explicit_base_url=None, **kwargs):
+            resolve_calls.append({
+                "requested": requested,
+                "explicit_base_url": explicit_base_url,
+            })
+            return {
+                # Named custom providers normalize to the bare bucket at runtime.
+                "provider": "custom",
+                "api_mode": "anthropic_messages",
+                "base_url": explicit_base_url or "https://myendpoint.example/v1",
+                "api_key": "pooled-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "myendpoint", "default": "test-model"},
+            "custom_providers": {
+                "myendpoint": {
+                    "base_url": "https://myendpoint.example/v1",
+                    "api_key": "pooled-key",
+                }
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+            manager.save_session(state.session_id)
+
+            with manager._lock:
+                del manager._sessions[state.session_id]
+
+            restored = manager.get_session(state.session_id)
+
+        assert restored is not None
+        assert resolve_calls, "resolve_runtime_provider was never called"
+        # The restore call is the one carrying the bare bucket; it must
+        # forward the persisted URL so the pool lookup can succeed.
+        restore_call = resolve_calls[-1]
+        assert restore_call["requested"] == "custom"
+        assert restore_call["explicit_base_url"] == "https://myendpoint.example/v1"
+
+    def test_restore_bare_custom_resolves_pooled_credentials_end_to_end(self, tmp_path, monkeypatch):
+        """Round-trip through the REAL resolver — no resolver mocks.
+
+        Complements the argument-capture test above by exercising the actual
+        ``resolve_runtime_provider`` code path: the named entry normalizes to
+        the bare ``custom`` bucket at runtime and is persisted that way; on
+        restore the resolver must match the bucket back to the named pool
+        entry via the persisted base_url. Without forwarding, the restore
+        falls through to env/default fallbacks and the resumed session gets a
+        wrong or empty api_key — while the create path (same config) works.
+
+        Note: ``_make_agent`` prefers the persisted ``base_url`` over the
+        resolved one (``base_url or runtime.get("base_url")``), so the
+        credential — not the URL — is the observable that distinguishes a
+        successful pool match from a silent fallback.
+
+        The pool storage layer (``load_pool`` → auth.json) and pool-key
+        derivation are stubbed at the ``runtime_provider`` namespace — the
+        resolver logic itself (bare-bucket handling, direct-alias path,
+        credential assembly) runs for real, which is the code this fix
+        touches.
+        """
+        pooled_config = {
+            "model": {"provider": "myendpoint", "default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "myendpoint",
+                    "base_url": "https://myendpoint.example/v1",
+                }
+            ],
+        }
+        # runtime_provider binds load_config via from-import, so patch the
+        # name in its own module namespace as well as the config module.
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: pooled_config)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: pooled_config)
+        # Pool storage boundary: a pool holding "pooled-key" exists for the
+        # endpoint (in production: seeded by `hermes auth` into auth.json).
+        # Both stubs are SELECTIVE — they only honor the exact pool key and
+        # base_url of the configured entry. An indiscriminate stub would feed
+        # the pooled credential to unrelated fallback paths and mask the bug
+        # (the test passed without the fix until the stubs were tightened).
+        fake_pool = SimpleNamespace(
+            has_credentials=lambda: True,
+            select=lambda: SimpleNamespace(runtime_api_key="pooled-key", access_token=""),
+        )
+        empty_pool = SimpleNamespace(has_credentials=lambda: False, select=lambda: None)
+
+        def fake_pool_key(base_url, provider_name=None):
+            if provider_name == "myendpoint":
+                return "custom:myendpoint"
+            if (base_url or "").strip().rstrip("/") == "https://myendpoint.example/v1":
+                return "custom:myendpoint"
+            return None
+
+        def fake_load_pool(key):
+            return fake_pool if key == "custom:myendpoint" else empty_pool
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.get_custom_provider_pool_key", fake_pool_key)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_pool", fake_load_pool)
+        # Env fallbacks must not mask a missing pool match.
+        for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_key=kwargs.get("api_key"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+            manager.save_session(state.session_id)
+
+            with manager._lock:
+                del manager._sessions[state.session_id]
+
+            restored = manager.get_session(state.session_id)
+
+        assert restored is not None
+        # Bare bucket on the resumed session is expected — the credential and
+        # endpoint must come from the named pool entry, not from fallbacks.
+        assert restored.agent.provider == "custom"
+        assert restored.agent.base_url == "https://myendpoint.example/v1"
+        assert restored.agent.api_key == "pooled-key"
+
     def test_acp_agents_route_human_output_to_stderr(self, tmp_path, monkeypatch):
         """ACP agents must keep stdout clean for JSON-RPC stdio transport."""
 

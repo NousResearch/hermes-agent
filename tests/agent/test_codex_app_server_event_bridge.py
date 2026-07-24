@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -39,6 +39,7 @@ def _make_stub_agent() -> SimpleNamespace:
         _emit_interim_assistant_message=MagicMock(
             name="_emit_interim_assistant_message"
         ),
+        _touch_activity=MagicMock(name="_touch_activity"),
     )
 
 
@@ -482,6 +483,35 @@ class TestAgentMessageInterimDispatch:
 
 
 class TestBridgeRobustness:
+    def test_valid_notifications_refresh_agent_activity(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge({"method": "turn/started", "params": {}})
+        bridge(_item_started({
+            "type": "commandExecution", "id": "exec-live", "command": "ls",
+        }))
+        bridge({"method": "item/commandExecution/outputDelta",
+                "params": {"delta": "still working"}})
+
+        assert agent._touch_activity.call_args_list == [
+            call("codex app-server event: turn/started"),
+            call("codex app-server event: item/started"),
+            call(
+                "codex app-server event: item/commandExecution/outputDelta"
+            ),
+        ]
+
+    def test_invalid_notifications_do_not_refresh_agent_activity(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge(None)  # type: ignore[arg-type]
+        bridge({})
+        bridge({"method": 123, "params": {}})
+
+        agent._touch_activity.assert_not_called()
+
     def test_non_dict_notification_is_ignored(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
@@ -608,6 +638,7 @@ class TestBridgeWiredInRuntime:
             context_compressor=None,
             event_callback=None,
             _session_db=None,
+            _touch_activity=MagicMock(),
         )
 
         codex_runtime.run_codex_app_server_turn(
@@ -625,6 +656,7 @@ class TestBridgeWiredInRuntime:
         assert callable(captured["on_event"]), (
             "on_event must be the bridge callable, not None or a sentinel"
         )
+        agent._touch_activity.assert_any_call("codex app-server turn started")
 
         # And the bridge must actually drive the agent's callbacks when
         # fed a representative notification.

@@ -587,6 +587,18 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if not isinstance(note, dict):
             return
         method = note.get("method") or ""
+        if not isinstance(method, str) or not method:
+            return
+        touch = getattr(agent, "_touch_activity", None)
+        if callable(touch):
+            try:
+                touch(f"codex app-server event: {method}")
+            except Exception:
+                logger.debug(
+                    "_touch_activity raised for codex app-server event %s",
+                    method,
+                    exc_info=True,
+                )
         params = note.get("params") or {}
         if not isinstance(params, dict):
             params = {}
@@ -707,6 +719,10 @@ def run_codex_app_server_turn(
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
+
+    touch = getattr(agent, "_touch_activity", None)
+    if callable(touch):
+        touch("codex app-server turn started")
 
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)

@@ -1463,6 +1463,25 @@ class TestAgentCacheIdleResume:
         # Post-release: client reference is dropped (memory freed).
         assert agent.client is None
 
+    def test_release_clients_closes_codex_app_server_session(self):
+        """Soft eviction must retire the subprocess transport it owns."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4", api_key="test",
+            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            max_iterations=5, quiet_mode=True,
+            skip_context_files=True, skip_memory=True,
+        )
+        codex_session = MagicMock()
+        agent._codex_session = codex_session
+
+        agent.release_clients()
+        agent.release_clients()
+
+        codex_session.close.assert_called_once_with()
+        assert agent._codex_session is None
+
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 

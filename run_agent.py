@@ -3577,6 +3577,8 @@ class AIAgent:
         We DO close:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
+          - Codex app-server session (subprocess tree; the rebuilt agent
+            resumes from durable session state with a fresh client)
           - Active child subagents (per-turn artefacts; safe to drop)
 
         Safe to call multiple times.  Distinct from close() — which is the
@@ -3597,6 +3599,18 @@ class AIAgent:
                         child.close()
                     except Exception:
                         pass
+        except Exception:
+            pass
+
+        # Close the Codex app-server subprocess tree.  Soft cache eviction
+        # drops this AIAgent instance permanently, so retaining its transport
+        # cannot help a later resume; it only leaks the app-server and MCP
+        # children until gateway shutdown.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                self._codex_session = None
+                codex_session.close()
         except Exception:
             pass
 

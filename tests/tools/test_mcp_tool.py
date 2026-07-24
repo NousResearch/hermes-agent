@@ -445,7 +445,15 @@ class TestSchemaConversion:
 
         assert schema["required"] == ["a"]
 
-    def test_required_removed_when_all_names_dangle(self):
+    def test_required_kept_as_empty_list_when_all_names_dangle(self):
+        """Cross-path parity with schema_sanitizer._sanitize_node:
+        when all `required` entries reference non-existent properties,
+        the key is preserved as an empty list -- NOT popped.
+
+        Strict OpenAI-compatible backends (Azure, custom proxies, LiteLLM)
+        reject HTTP 400 `null is not of type 'array'` when `required` is
+        omitted entirely. See issue #59386 / #59459.
+        """
         from tools.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
@@ -454,7 +462,7 @@ class TestSchemaConversion:
             "required": ["ghost"],
         })
 
-        assert "required" not in schema
+        assert schema["required"] == []
 
     def test_required_pruning_applies_recursively_inside_nested_objects(self):
         """Nested object schemas also get required pruning."""
@@ -472,6 +480,27 @@ class TestSchemaConversion:
         })
 
         assert schema["properties"]["filter"]["required"] == ["field"]
+
+    def test_required_kept_as_empty_list_recursively_in_nested_objects(self):
+        """Nested object whose required names ALL dangle keeps ``required``
+        as an empty list -- mirroring the top-level guarantee so strict
+        OpenAI-compatible backends don't see a missing ``required`` key
+        at any depth. See issue #59386 / #59459.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {},
+                    "required": ["ghost", "phantom"],
+                },
+            },
+        })
+
+        assert schema["properties"]["filter"]["required"] == []
 
     def test_object_in_array_items_gets_properties_filled(self):
         """Array-item object schemas without properties get an empty dict."""

@@ -5162,7 +5162,12 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                     if valid:
                         repaired["required"] = valid
                     else:
-                        repaired.pop("required", None)
+                        # Strict OpenAI-compatible backends (Azure, custom proxies,
+                        # LiteLLM) reject HTTP 400 `null is not of type 'array'`
+                        # when `required` is omitted entirely. Preserve the key
+                        # with an empty list -- same shape as schema_sanitizer's
+                        # _sanitize_node. See issue #59386 / #59459.
+                        repaired["required"] = []
 
         return repaired
 

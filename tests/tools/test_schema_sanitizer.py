@@ -179,14 +179,18 @@ def test_required_pruned_to_existing_properties():
     assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
-def test_required_all_missing_is_dropped():
+def test_required_all_missing_is_kept_as_empty_list():
+    # When ALL entries in ``required`` reference non-existent properties, the
+    # key is preserved as an empty list — NOT popped. Strict OpenAI-compatible
+    # backends (Azure OpenAI, custom proxies) reject ``null`` / missing
+    # ``required`` with ``HTTP 400: null is not of type 'array'``.
     tools = [_tool("t", {
         "type": "object",
         "properties": {},
         "required": ["x", "y"],
     })]
     out = sanitize_tool_schemas(tools)
-    assert "required" not in out[0]["function"]["parameters"]
+    assert out[0]["function"]["parameters"]["required"] == []
 
 
 def test_well_formed_schema_unchanged():

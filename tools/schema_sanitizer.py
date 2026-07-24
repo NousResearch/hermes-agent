@@ -347,7 +347,10 @@ def _sanitize_node(node: Any, path: str) -> Any:
         props = out.get("properties") or {}
         valid = [r for r in out["required"] if isinstance(r, str) and r in props]
         if not valid:
-            out.pop("required", None)
+            # Strict OpenAI-compatible backends (Azure, custom proxies) reject
+            # HTTP 400 ``null is not of type 'array'`` when ``required`` is
+            # omitted entirely. Preserve the key with an empty list.
+            out["required"] = []
         elif len(valid) != len(out["required"]):
             out["required"] = valid
 

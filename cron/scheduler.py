@@ -2743,8 +2743,13 @@ def run_job(
     # entirely: no AIAgent, no prompt, no tool loop, no token spend.
     #
     # We check this BEFORE importing run_agent / constructing SessionDB so
-    # a pure-script tick never pays for the agent machinery it isn't going
-    # to use. Keep this block self-contained.
+    # silent and failed script ticks keep the zero-agent-machinery fast path.
+    # A successful run with visible stdout is recorded lazily, after the script
+    # completes, so it appears in ``/api/cron/jobs/{id}/runs`` without taxing
+    # the high-frequency no-op path. The tradeoff is deliberate: no_agent runs
+    # do not get an in-flight session row, and silent/failed runs remain visible
+    # through the existing cron status/output lifecycle rather than SessionDB.
+    # Keep this block self-contained.
     #
     # Semantics:
     #   - script stdout (trimmed) → delivered verbatim as the final message
@@ -2759,6 +2764,60 @@ def run_job(
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
+
+        def _record_visible_run(run_doc: str) -> None:
+            """Persist one completed, user-visible run without taxing no-op ticks."""
+            session_db = None
+            session_created = False
+            run_session_id = (
+                f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+            )
+            try:
+                from hermes_state import SessionDB
+
+                session_db = SessionDB()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': SQLite session store not available for no_agent run: %s",
+                    job_id, e,
+                )
+                return
+
+            try:
+                session_db.create_session(run_session_id, source="cron")
+                session_created = True
+                # First user message becomes the run's preview in run history.
+                session_db.append_message(
+                    run_session_id, "user", f"no_agent script: {script_path}"
+                )
+                session_db.append_message(run_session_id, "assistant", run_doc)
+                # Same titling scheme as the agent path so sidebars/history show
+                # a meaningful label; the run-time suffix keeps it unique against
+                # the sessions.title index across runs.
+                title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+                session_db.set_session_title(
+                    run_session_id,
+                    f"{title_base} · {_hermes_now().strftime('%b %d %H:%M')}",
+                )
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': failed to record no_agent run output: %s", job_id, e
+                )
+            finally:
+                if session_created:
+                    try:
+                        session_db.end_session(run_session_id, "cron_complete")
+                    except (Exception, KeyboardInterrupt) as e:
+                        logger.debug(
+                            "Job '%s': failed to end no_agent run session: %s",
+                            job_id, e,
+                        )
+                try:
+                    session_db.close()
+                except (Exception, KeyboardInterrupt) as e:
+                    logger.debug(
+                        "Job '%s': failed to close SQLite session store: %s", job_id, e
+                    )
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
@@ -2836,6 +2895,7 @@ def run_job(
             f"---\n\n"
             f"{output}\n"
         )
+        _record_visible_run(doc)
         return True, doc, output, None
 
     # ---------------------------------------------------------------

@@ -6,6 +6,7 @@ Covers:
 * ``cronjob(action='create', no_agent=True)`` tool-level validation.
 * ``cronjob(action='update')`` flipping no_agent on/off.
 * ``scheduler.run_job`` short-circuit path: success/silent/failure.
+* Visible run-history persistence without SessionDB cost on no-op paths.
 * Shell script support in ``_run_job_script`` (.sh runs via bash).
 """
 
@@ -31,6 +32,8 @@ def hermes_env(tmp_path, monkeypatch):
     import importlib
     import hermes_constants
     importlib.reload(hermes_constants)
+    import hermes_state
+    importlib.reload(hermes_state)  # DEFAULT_DB_PATH binds at import time
     import cron.jobs
     importlib.reload(cron.jobs)
     import cron.scheduler
@@ -329,3 +332,137 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# run_job: visible no_agent runs are recorded lazily (#44080)
+# ---------------------------------------------------------------------------
+
+
+def _job_runs(job_id):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        return db.list_cron_job_runs(job_id)
+    finally:
+        db.close()
+
+
+def _session_messages(session_id):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        return db.get_messages(session_id)
+    finally:
+        db.close()
+
+
+def test_run_job_no_agent_success_records_run_session(hermes_env):
+    """A visible run is persisted only after its script has completed."""
+    import hermes_state
+    from cron import scheduler
+    from cron.jobs import create_job
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
+    )
+    events = []
+    real_run_job_script = scheduler._run_job_script
+    real_session_db = hermes_state.SessionDB
+
+    def tracked_script(path):
+        events.append("script")
+        return real_run_job_script(path)
+
+    def tracked_session_db():
+        events.append("SessionDB")
+        return real_session_db()
+
+    with patch.object(
+        scheduler, "_run_job_script", side_effect=tracked_script
+    ), patch("hermes_state.SessionDB", side_effect=tracked_session_db):
+        success, _, _, _ = scheduler.run_job(job)
+
+    assert success is True
+    assert events == ["script", "SessionDB"]
+
+    runs = _job_runs(job["id"])
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["id"].startswith(f"cron_{job['id']}_")
+    assert run["source"] == "cron"
+    # The recorder runs after completion, so history must never expose a stale
+    # active row for no_agent work.
+    assert run["ended_at"] is not None
+    assert run["end_reason"] == "cron_complete"
+
+    # Script output is persisted so the GUI can show what the run produced.
+    messages = _session_messages(run["id"])
+    roles = [m["role"] for m in messages]
+    assert "user" in roles and "assistant" in roles
+    assistant_text = " ".join(
+        str(m.get("content") or "") for m in messages if m["role"] == "assistant"
+    )
+    assert "RAM 92% on host" in assistant_text
+
+
+@pytest.mark.parametrize(
+    ("script_result", "expected_success", "expect_silent"),
+    [
+        ((False, "script exited with code 3"), False, False),
+        ((True, ""), True, True),
+        ((True, '{"wakeAgent": false}'), True, True),
+    ],
+    ids=["failure", "empty-stdout", "wake-gate"],
+)
+def test_run_job_no_agent_fast_paths_do_not_open_session_db(
+    hermes_env, script_result, expected_success, expect_silent
+):
+    """Silent and failed ticks retain the zero-SessionDB fast-path contract."""
+    from cron.scheduler import SILENT_MARKER, run_job
+
+    job = {
+        "id": "fast-path",
+        "name": "fast-path",
+        "no_agent": True,
+        "script": "watchdog.sh",
+    }
+
+    with patch(
+        "cron.scheduler._run_job_script", return_value=script_result
+    ), patch("hermes_state.SessionDB") as session_db_cls:
+        success, doc, final_response, error = run_job(job)
+
+    assert success is expected_success
+    assert (final_response == SILENT_MARKER) is expect_silent
+    if expected_success:
+        assert error is None
+    else:
+        assert error == script_result[1]
+        assert script_result[1] in doc
+    session_db_cls.assert_not_called()
+    assert _job_runs(job["id"]) == []
+
+
+def test_run_job_no_agent_broken_session_store_does_not_break_run(hermes_env):
+    """A broken SessionDB must not prevent the script from running."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    script_path = hermes_env / "scripts" / "ok.sh"
+    script_path.write_text("#!/bin/bash\necho fine\n")
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="ok.sh", no_agent=True, deliver="local"
+    )
+
+    with patch("hermes_state.SessionDB", side_effect=RuntimeError("db locked")):
+        success, output, final_response, error = run_job(job)
+
+    assert success is True
+    assert "fine" in output

@@ -201,6 +201,60 @@ SKILLS_GUIDANCE = (
     "4. **DEDUP** — After reloading a pruned skill, **ignore any remaining `[SKILL_PRUNED]` markers for that same skill** — they are historical artifacts from previous compactions and do not need further action."
 )
 
+SKILL_GRAPH_GUIDANCE = (
+    "Skill discovery: This profile uses a knowledge graph for dynamic skill "
+    "discovery. Call skill_graph_search(query) to find the right skill "
+    "by describing what you need in natural language, then load it with "
+    "skill_load(name). "
+    "skills_list() can be used as a fallback for profile-local skills "
+    "(zero-latency, limited scope) when graph search returns poor results. "
+    "Before calling skill_manage(action='create') to create a new skill, "
+    "always verify with skill_graph_search(list_all=True) or a broader query "
+    "that no existing skill can be updated to meet the need. "
+    "Only create after confirming a genuine gap. "
+    "Load the skill-graph companion first for task classification "
+    "and routing. After completing the main work, run your post-response "
+    "checks."
+)
+
+# Injected into the identity tier (same weight as SOUL.md) when
+# agent._skill_graph_mode is True.  Models treat identity as core
+# operating instructions, not optional guidance.
+SKILL_GRAPH_IDENTITY = (
+    "## Operating Protocol\n"
+    "\n"
+    "Skills are discovered at runtime through the skill-graph plugin — "
+    "search, don't guess.  Follow this protocol "
+    "for EVERY user input, in order:\n"
+    "\n"
+    "**Short-circuit:** skip steps 1–5 when the user's intent maps directly "
+    "to a self-sufficient built-in tool with no domain-skill that would "
+    "meaningfully improve the result.  This includes: session_search, "
+    "hermes_mem_search, ticket_*, memory, clarify, and simple terminal "
+    "commands.  Call the tool directly, then run step 7 afterward.\n"
+    "\n"
+    "1. Load the skill-graph companion:\n"
+    "   skill_load(\"skill-graph\")\n"
+    "2. From the loaded content, read the Phase 1 classification table\n"
+    "   and classify the user's intent.\n"
+    "3. Read the Phase 4 routing table and find the matching entry.\n"
+    "4. Call skill_graph_search() with the query from step 3.\n"
+    "5. skill_load(\"returned-skill-name\") for full instructions.\n"
+    "6. Follow its instructions to complete the task.\n"
+    "7. After completing the main work, run your post-response checks.\n"
+    "\n"
+    "skills_list() vs skill_graph_search():\n"
+    "- skill_graph_search() preferred — FTS + relationship traversal, "
+    "300+ skills\n"
+    "- skills_list() as fallback — local profile skills only, "
+    "zero-latency\n"
+    "- When search returns poor results → "
+    "skills_list(category=\"<domain>\")\n"
+    "\n"
+    "Do NOT plan from scratch — always search.\n"
+    "Do NOT guess skill names without a search.\n"
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

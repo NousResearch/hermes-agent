@@ -38,6 +38,8 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    SKILL_GRAPH_GUIDANCE,
+    SKILL_GRAPH_IDENTITY,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
@@ -195,6 +197,69 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Skill-graph mode: inject protocol into the identity tier so it
+    # carries the same weight as SOUL.md (the model treats identity as
+    # its core operating instructions, not optional guidance).
+    if getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in getattr(agent, "valid_tool_names", []):
+        stable_parts.append(SKILL_GRAPH_IDENTITY)
+        # Build a minimal skill index containing only the skill-graph
+        # companion, so the agent can discover and load it without graph
+        # search. The description comes from the on-disk SKILL.md.
+        _sg_desc = ""
+        try:
+            import os as _os, yaml as _yaml
+            _paths = [
+                _os.path.join(_os.path.expanduser("~/.hermes/hermes-agent/skills/hermes/skill-graph/SKILL.md")),
+                _os.path.join(_os.path.expanduser("~/.hermes/skills/hermes/skill-graph/SKILL.md")),
+            ]
+            for _p in _paths:
+                if _os.path.isfile(_p):
+                    _fm = next(_yaml.safe_load_all(open(_p, encoding="utf-8")))
+                    _sg_desc = (_fm or {}).get("description", "")
+                    break
+        except Exception:
+            pass
+        if not _sg_desc:
+            _sg_desc = "Skill knowledge graph — discover and load skills by intent"
+        # Read gateway skill extensions from routing-extensions.md.
+        # The extensions_file path is configured under
+        #   skills.config.skill-graph.extensions_file
+        # Parse the "Pre-installed Gateways (Extensions)" markdown table.
+        _gateway_extras: list[tuple[str, str]] = []
+        try:
+            import os as _os2  # noqa: F811
+            from hermes_cli.config import load_config_readonly as _load_cfg
+            _cfg = _load_cfg()
+            _ext_file = (
+                (((_cfg.get("skills") or {}).get("config") or {})
+                 .get("skill-graph") or {}).get("extensions_file") or ""
+            )
+            if _ext_file:
+                _ext_path = _os2.path.expanduser(_ext_file)
+                if _os2.path.isfile(_ext_path):
+                    _in_gw = False
+                    for _line in open(_ext_path, encoding="utf-8").readlines():
+                        _line = _line.rstrip()
+                        if _line.startswith("## Pre-installed Gateways"):
+                            _in_gw = True
+                            continue
+                        if _in_gw:
+                            if _line.startswith("## "):
+                                break
+                            if _line.startswith("| `") and "|" in _line[3:]:
+                                _cells = _line.split("|")
+                                if len(_cells) >= 3:
+                                    _gn = _cells[1].strip().strip("`")
+                                    _gp = _cells[2].strip()
+                                    if _gn and not _gn.startswith("-"):
+                                        _gateway_extras.append((_gn, _gp))
+        except Exception:
+            pass
+        _avail = [f"  skill-graph — {_sg_desc[:100]}"]
+        for _gn, _gp in _gateway_extras:
+            _avail.append(f"  {_gn} — {_gp[:100]}")
+        stable_parts.append("Available Skills\n" + "\n".join(_avail) + "\n")
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
@@ -226,6 +291,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    # Skill-graph mode guidance: when the flat index is skipped, tell the
+    # agent to discover skills via the graph.
+    if getattr(agent, "_skill_graph_mode", False):
+        tool_guidance.append(SKILL_GRAPH_GUIDANCE)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -291,8 +360,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
+    # skill-graph mode: when the skill-graph plugin is loaded AND the
+    # agent._skill_graph_mode flag is set, skip the flat skill index.
+    # SKILL_GRAPH_GUIDANCE (in tool_guidance) tells the agent to discover
+    # skills dynamically via the graph instead.
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-    if has_skills_tools:
+
+    if getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in getattr(agent, "valid_tool_names", []):
+        skills_prompt = ""  # graph handles discovery; no flat index needed
+    elif has_skills_tools:
         avail_toolsets = {
             toolset
             for toolset in (

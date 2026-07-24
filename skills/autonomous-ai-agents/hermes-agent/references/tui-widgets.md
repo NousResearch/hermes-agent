@@ -1,4 +1,25 @@
-# TUI Widgets — Live Panels for the Ink TUI Dock
+---
+author: Hermes Agent
+description: Author live widget apps for the Hermes TUI dock.
+license: MIT
+metadata:
+  hermes:
+    category: productivity
+    scenes:
+    - coding
+    - hermes
+    tags:
+    - tui
+    - widgets
+    - hermes
+    - javascript
+    - sdk
+    - terminal-ui
+name: tui-widgets
+version: 1.0.0
+---
+
+# TUI Widgets Skill
 
 Author widget apps for the Hermes TUI (`hermes --tui`): glanceable ambient
 panels docked above the status bar, or modal overlays that own the keyboard.

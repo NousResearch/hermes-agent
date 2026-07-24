@@ -774,6 +774,17 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+
+  # Skill-graph config (bundled plugin).
+  # Enable dynamic skill discovery via knowledge graph instead of flat index.
+  # skill_graph_mode: false
+  # config:
+  #   skill-graph:
+  #     db_path: ~/.hermes/personal/skill-graph/skill-graph.db
+  #     source_dirs:
+  #       - ~/.hermes/skills/
+  #     # extensions_file: ~/.hermes/personal/skill-graph/routing-extensions.md
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

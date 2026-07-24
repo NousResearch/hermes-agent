@@ -145,3 +145,130 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+# ── skill-graph gateway injection tests ──────────────────────────────────
+
+def _make_skill_graph_agent(**overrides):
+    """Agent with skill-graph mode enabled and skill_graph_search tool."""
+    return _make_agent(
+        valid_tool_names=["skill_graph_search"],
+        _skill_graph_mode=True,
+        _task_completion_guidance=False,
+        _tool_use_enforcement=False,
+        _environment_probe=False,
+        **overrides,
+    )
+
+
+def test_gateway_extras_from_routing_extensions(tmp_path, monkeypatch):
+    """Gateway skills declared in routing-extensions.md are injected."""
+    # Write routing-extensions.md with a gateway skill
+    ext_file = tmp_path / "routing-extensions.md"
+    ext_file.write_text("""## Pre-installed Gateways (Extensions)
+
+| Gateway Skill | Purpose |
+|--------------|---------|
+| `project-directories` | Project code directory map |
+| `troupe-lookup` | Troupe roster queries |
+""")
+
+    # Mock config to return our temp file
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "skills": {
+                "config": {
+                    "skill-graph": {
+                        "extensions_file": str(ext_file),
+                    }
+                }
+            }
+        },
+    )
+
+    agent = _make_skill_graph_agent()
+
+    captured = []
+    def fake_context_files(**kw):
+        return ""
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    stable = parts.get("stable", "")
+    assert "Available Skills" in stable
+    assert "skill-graph" in stable
+    assert "project-directories" in stable
+    assert "troupe-lookup" in stable
+
+
+def test_gateway_extras_missing_file_no_crash(tmp_path, monkeypatch):
+    """Missing extensions_file should not crash — just inject skill-graph only."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "skills": {
+                "config": {
+                    "skill-graph": {
+                        "extensions_file": "/nonexistent/path/routing-extensions.md",
+                    }
+                }
+            }
+        },
+    )
+
+    agent = _make_skill_graph_agent()
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    stable = parts.get("stable", "")
+    assert "Available Skills" in stable
+    assert "skill-graph" in stable
+    # Gateway extras not injected (file missing)
+    assert "project-directories" not in stable
+
+
+def test_gateway_extras_no_extensions_file_config(tmp_path, monkeypatch):
+    """No extensions_file in config — only skill-graph in Available Skills."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"skills": {"config": {"skill-graph": {}}}},
+    )
+
+    agent = _make_skill_graph_agent()
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    stable = parts.get("stable", "")
+    assert "Available Skills" in stable
+    assert "skill-graph" in stable
+
+
+def test_gateway_extras_not_injected_without_skill_graph_mode(tmp_path, monkeypatch):
+    """Without skill-graph mode, Available Skills section should not appear."""
+    agent = _make_agent(
+        valid_tool_names=["skills_list", "skill_view"],
+    )
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        parts = build_system_prompt_parts(agent)
+
+    stable = parts.get("stable", "")
+    # "Available Skills\n  skill-graph —" is the injection pattern;
+    # plain "Available Skills" might appear in other contexts
+    assert "Available Skills\n  skill-graph" not in stable

@@ -1,14 +1,28 @@
 ---
-name: arxiv
-description: "Search arXiv papers by keyword, author, category, or ID."
-version: 1.0.0
 author: Hermes Agent
+description: Search arXiv papers by keyword, author, category, or ID.
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Research, Arxiv, Papers, Academic, Science, API]
-    related_skills: [ocr-and-documents]
+    related_skills:
+    - ocr-and-documents
+    scenes:
+    - research
+    tags:
+    - research
+    - arxiv
+    - academic
+    - papers
+    - literature-search
+    - api
+    - curl
+    - semantic-scholar
+name: arxiv
+platforms:
+- linux
+- macos
+- windows
+version: 1.0.0
 ---
 
 # arXiv Research

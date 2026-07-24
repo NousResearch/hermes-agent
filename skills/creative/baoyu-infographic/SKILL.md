@@ -1,14 +1,26 @@
 ---
-name: baoyu-infographic
-description: "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
-version: 1.56.1
 author: 宝玉 (JimLiu)
+description: 'Infographics: 21 layouts x 21 styles (信息图, 可视化).'
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [infographic, visual-summary, creative, image-generation]
     homepage: https://github.com/JimLiu/baoyu-skills#baoyu-infographic
+    scenes:
+    - media
+    - design
+    tags:
+    - infographic
+    - image-generation
+    - visualization
+    - design
+    - content-structuring
+    - prompt-engineering
+name: baoyu-infographic
+platforms:
+- linux
+- macos
+- windows
+version: 1.56.1
 ---
 
 # Infographic Generator

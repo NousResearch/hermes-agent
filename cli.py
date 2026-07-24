@@ -9555,7 +9555,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         result = resolve_plugin_command_result(
                             plugin_handler(user_args)
                         )
-                        if result:
+                        if isinstance(result, dict) and result.get("action") == "inject":
+                            msg = result.get("content", "")
+                            if msg:
+                                if hasattr(self, "_pending_input"):
+                                    self._pending_input.put(msg)
+                                else:
+                                    _cprint(msg)
+                        elif result:
                             _cprint(str(result))
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")

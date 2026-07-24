@@ -1720,6 +1720,12 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Skill-graph mode toggle.  When True, the flat skill index is omitted
+    # from the system prompt; the agent discovers skills dynamically via the
+    # skill-graph plugin's skill_graph_search() + skill_load() tools.
+    # Default: False (compatible flat-index behaviour).
+    agent._skill_graph_mode = bool(_agent_section.get("skill_graph_mode", False))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

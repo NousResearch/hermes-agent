@@ -203,6 +203,23 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     return None
 
 
+def _try_skill_graph_fallback(name: str) -> str | None:
+    """Try to resolve a skill through the skill-graph plugin.
+
+    When a skill is not found in the native skills directory, this
+    fallback delegates to the skill-graph's SQLite-backed lookup.
+    Returns a JSON result string on success, None on failure.
+    """
+    try:
+        import importlib
+        sg = importlib.import_module("hermes_plugins.skill_graph")
+        if not hasattr(sg, "_handle_skill_load"):
+            return None
+        return sg._handle_skill_load({"name": name})
+    except Exception:
+        return None
+
+
 def load_env() -> Dict[str, str]:
     """Load profile-scoped environment variables from HERMES_HOME/.env."""
     env_path = get_hermes_home() / ".env"
@@ -1207,6 +1224,11 @@ def skill_view(
             skill_dir, skill_md = candidates[0]
 
         if not skill_md or not skill_md.exists():
+            # Fallback: try skill-graph plugin for graph-discovered skills
+            if not file_path:
+                sg_result = _try_skill_graph_fallback(name)
+                if sg_result:
+                    return sg_result
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
             return json.dumps(
                 {

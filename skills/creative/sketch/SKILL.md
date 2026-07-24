@@ -1,14 +1,30 @@
 ---
-name: sketch
-description: "Throwaway HTML mockups: 2-3 design variants to compare."
-version: 1.0.0
 author: Hermes Agent (adapted from gsd-build/get-shit-done)
+description: 'Throwaway HTML mockups: 2-3 design variants to compare.'
 license: MIT
-platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [sketch, mockup, design, ui, prototype, html, variants, exploration, wireframe, comparison]
-    related_skills: [spike, claude-design, popular-web-designs, excalidraw]
+    related_skills:
+    - spike
+    - claude-design
+    - popular-web-designs
+    - excalidraw
+    scenes:
+    - design
+    - coding
+    tags:
+    - ui-design
+    - mockup
+    - html
+    - prototyping
+    - frontend
+    - exploration
+name: sketch
+platforms:
+- linux
+- macos
+- windows
+version: 1.0.0
 ---
 
 # Sketch

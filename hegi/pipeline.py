@@ -132,6 +132,7 @@ class HegiPipeline:
             provider=str(analysis.get("provider", "")),
             model=str(analysis.get("model", "")),
             max_tokens=int(analysis.get("max_output_tokens", 10000)),
+            timeout_seconds=int(analysis.get("timeout_seconds", 180)),
         )
         self.analyzer = HierarchicalMeetingAnalyzer(
             self.llm_client,
@@ -223,7 +224,7 @@ class HegiPipeline:
             "model": analysis.get("model", ""),
             "prompt_version": analysis.get("prompt_version", "v2.0.0"),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "hegi_version": "2.0.0",
+            "hegi_version": "2.0.1",
         }
         return minutes
 

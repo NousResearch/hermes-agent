@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS approval_events (
     approved_at REAL NOT NULL,
     UNIQUE(platform_message_id)
 );
+CREATE TABLE IF NOT EXISTS approval_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL,
+    platform_message_id TEXT NOT NULL UNIQUE,
+    project TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT,
+    last_error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_jobs_status
+ON approval_jobs(status, created_at);
 CREATE TABLE IF NOT EXISTS action_items (
     action_id TEXT PRIMARY KEY,
     meeting_id TEXT NOT NULL,
@@ -312,3 +325,123 @@ class StateStore:
                 (meeting_id, command, user_id, platform_message_id, raw_text, time.time()),
             )
         return cursor.rowcount == 1
+
+    def enqueue_approval_job(
+        self,
+        *,
+        meeting_id: str,
+        platform_message_id: str,
+        project: str,
+    ) -> bool:
+        now = time.time()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO approval_jobs(
+                    meeting_id, platform_message_id, project, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?)
+                """,
+                (meeting_id, platform_message_id, project, now, now),
+            )
+        return cursor.rowcount == 1
+
+    def claim_approval_job(
+        self, *, stale_after_seconds: int = 300
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=30000")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE approval_jobs SET status='pending', updated_at=?
+                WHERE status='processing' AND updated_at<?
+                """,
+                (now, now - stale_after_seconds),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM approval_jobs
+                WHERE status='pending' ORDER BY created_at, id LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            connection.execute(
+                """
+                UPDATE approval_jobs SET status='processing', updated_at=?
+                WHERE id=? AND status='pending'
+                """,
+                (now, row["id"]),
+            )
+            connection.commit()
+            return dict(row)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def complete_approval_job(
+        self,
+        job_id: int,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        if status not in {"completed", "failed"}:
+            raise ValueError(f"invalid approval job status: {status}")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE approval_jobs SET status=?, result_json=?, last_error=?,
+                    updated_at=? WHERE id=?
+                """,
+                (
+                    status,
+                    json.dumps(result, ensure_ascii=False) if result is not None else None,
+                    error,
+                    time.time(),
+                    job_id,
+                ),
+            )
+
+    def meeting_for_report_message(
+        self, platform_message_id: str
+    ) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT meeting_id FROM report_delivery
+                WHERE platform_message_id=? AND status='sent'
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (str(platform_message_id),),
+            ).fetchone()
+        return str(row["meeting_id"]) if row else None
+
+    def latest_reported_meeting(self) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT meeting_id FROM processed_episodes
+                WHERE status='reported' AND minutes_json IS NOT NULL
+                ORDER BY updated_at DESC LIMIT 1
+                """
+            ).fetchone()
+        return str(row["meeting_id"]) if row else None
+
+    def approval_job_counts(self) -> dict[str, int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM approval_jobs GROUP BY status
+                """
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}

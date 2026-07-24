@@ -79,6 +79,8 @@ memory:
   auto_commit: false
   auto_draft: false
   require_professor_approval: true
+  professor_user_ids: ["42"]
+  default_project: "media_aesthetics"
 """,
         encoding="utf-8",
     )

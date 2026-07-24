@@ -13,11 +13,11 @@ from utils import fast_safe_load
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "version": 1,
-    "enabled": False,
+    "enabled": True,
     "telegram": {
         "chat_id": "",
         "curator_env": "",
-        "enabled": False,
+        "enabled": True,
     },
     "agents": [],
     "episode": {
@@ -35,6 +35,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_input_chars": 100000,
         "chunk_chars": 30000,
         "max_output_tokens": 10000,
+        "timeout_seconds": 180,
         "prompt_version": "v2.0.0",
     },
     "archive": {
@@ -54,6 +55,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_draft": False,
         "require_professor_approval": True,
         "professor_user_ids": [],
+        "default_project": "",
     },
     "daemon": {"poll_seconds": 60},
     "reports": {"telegram": True},
@@ -102,7 +104,13 @@ def _expand_path(value: str, *, base: Path) -> Path:
 
 
 def default_config_path() -> Path:
-    return get_hermes_home() / "hegi" / "config.yaml"
+    import os
+
+    if os.environ.get("HERMES_HOME", "").strip():
+        return get_hermes_home() / "hegi" / "config.yaml"
+    from .bootstrap import resolve_runtime_home
+
+    return resolve_runtime_home() / "hegi" / "config.yaml"
 
 
 def load_config(path: str | Path | None = None) -> HegiConfig:
@@ -116,7 +124,7 @@ def load_config(path: str | Path | None = None) -> HegiConfig:
     if not isinstance(loaded, dict):
         raise ValueError("HEGI 설정 루트는 YAML mapping이어야 합니다.")
     raw = _deep_merge(DEFAULT_CONFIG, loaded)
-    home = get_hermes_home()
+    home = config_path.resolve().parent.parent
     chat_id = str(raw.get("telegram", {}).get("chat_id", "")).strip()
     agents: list[AgentSourceConfig] = []
     for entry in raw.get("agents", []):
@@ -167,11 +175,18 @@ def load_config(path: str | Path | None = None) -> HegiConfig:
 
 def validate_config(config: HegiConfig, *, require_runtime: bool = False) -> list[str]:
     errors: list[str] = []
+    if not config.enabled:
+        errors.append("enabled가 false입니다.")
     if not config.chat_id:
         errors.append("telegram.chat_id가 비어 있습니다.")
     if not config.agents:
         errors.append("agents가 비어 있습니다.")
     episode = config.section("episode")
+    try:
+        if len(config.agents) < int(episode.get("minimum_agents", 2)):
+            errors.append("agents 수가 episode.minimum_agents보다 적습니다.")
+    except (TypeError, ValueError):
+        pass
     for key in (
         "quiet_minutes",
         "max_gap_minutes",
@@ -191,10 +206,24 @@ def validate_config(config: HegiConfig, *, require_runtime: bool = False) -> lis
         errors.append("memory.auto_draft는 안전 경계상 true일 수 없습니다.")
     if not memory.get("require_professor_approval", True):
         errors.append("memory.require_professor_approval은 true여야 합니다.")
+    professor_ids = memory.get("professor_user_ids", [])
+    if not isinstance(professor_ids, list) or not [
+        str(item).strip() for item in professor_ids if str(item).strip()
+    ]:
+        errors.append("memory.professor_user_ids가 비어 있습니다.")
+    if not str(memory.get("default_project", "")).strip():
+        errors.append("memory.default_project가 비어 있습니다.")
     if require_runtime:
         for agent in config.agents:
             if not agent.db_path.is_file():
                 errors.append(f"{agent.name} DB가 없습니다: {agent.db_path}")
         if config.section("telegram").get("enabled") and not config.curator_env.is_file():
             errors.append(f"Telegram env 파일이 없습니다: {config.curator_env}")
+        elif config.section("telegram").get("enabled"):
+            from .notify import load_env_value
+
+            if not load_env_value(config.curator_env, "TELEGRAM_BOT_TOKEN"):
+                errors.append(
+                    f"TELEGRAM_BOT_TOKEN이 없습니다: {config.curator_env}"
+                )
     return errors

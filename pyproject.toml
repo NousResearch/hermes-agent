@@ -331,6 +331,8 @@ hegi = [
   "prompts/v2/*.md",
   "docs/*.md",
   "scripts/*.sh",
+  "plugin/*.yaml",
+  "plugin/*.py",
   "README.md",
   "CHANGELOG.md",
   "ROADMAP.md",

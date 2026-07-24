@@ -13,3 +13,13 @@
 경우 복제한다. `TelegramReporter`는 네 개의 보고 part를 각각 checkpoint하여 부분
 실패 뒤 이미 성공한 part를 재전송하지 않는다. 성공한 실제 보고 뒤에만 buffer를
 consumed로 전환한다.
+
+profile-local `hegi-telegram` plugin은 gateway의 `pre_gateway_dispatch`에서 교수의
+승인 응답을 일반 Memory Curator agent보다 먼저 선점한다. `StateStore`의 approval
+job은 처리 전후 상태를 영속화하고, 비정상 종료된 processing job은 다시 pending으로
+회수된다. approval worker는 Memory Forest를 다시 검색한 뒤 curator-draft MCP로
+pending STM Draft만 만든다. Commit 도구는 호출 경로에 존재하지 않는다.
+
+daemon lifecycle은 `flock` 기반 단일 실행, PID identity와 readiness marker를
+사용한다. Linux user systemd 또는 WSL Windows Startup launcher가 system restart
+이후 `start.sh --send`를 다시 호출한다.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import signal
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,11 +75,13 @@ class HermesLLMClient:
         provider: str = "",
         model: str = "",
         max_tokens: int = 10000,
+        timeout_seconds: int = 180,
         call: Callable[..., Any] | None = None,
     ):
         self.provider = provider or None
         self.model = model or None
         self.max_tokens = max_tokens
+        self.timeout_seconds = timeout_seconds
         self._call = call
 
     def complete(self, system: str, user: str) -> str:
@@ -86,17 +90,39 @@ class HermesLLMClient:
             from agent.auxiliary_client import call_llm
 
             call = call_llm
-        response = call(
-            task="hegi",
-            provider=self.provider,
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0,
-            max_tokens=self.max_tokens,
-        )
+        def invoke() -> Any:
+            return call(
+                task="hegi",
+                provider=self.provider,
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0,
+                max_tokens=self.max_tokens,
+            )
+
+        if (
+            self.timeout_seconds > 0
+            and threading.current_thread() is threading.main_thread()
+            and hasattr(signal, "SIGALRM")
+        ):
+            def timeout(_signum, _frame):
+                raise TimeoutError(
+                    f"HEGI LLM 호출이 {self.timeout_seconds}초를 초과했습니다."
+                )
+
+            previous_handler = signal.getsignal(signal.SIGALRM)
+            signal.signal(signal.SIGALRM, timeout)
+            previous_timer = signal.setitimer(signal.ITIMER_REAL, self.timeout_seconds)
+            try:
+                response = invoke()
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+                signal.signal(signal.SIGALRM, previous_handler)
+        else:
+            response = invoke()
         return _response_text(response)
 
     def structured(self, system: str, user: str) -> dict[str, Any]:

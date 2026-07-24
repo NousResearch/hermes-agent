@@ -1,10 +1,10 @@
 version: 1
-enabled: false
+enabled: true
 
 telegram:
   chat_id: ""
   curator_env: "~/.hermes/profiles/memory-curator/.env"
-  enabled: false
+  enabled: true
 
 agents:
   - name: "헤헤"
@@ -29,6 +29,7 @@ analysis:
   max_input_chars: 100000
   chunk_chars: 30000
   max_output_tokens: 10000
+  timeout_seconds: 180
   prompt_version: "v2.0.0"
 
 archive:
@@ -48,6 +49,7 @@ memory:
   auto_draft: false
   require_professor_approval: true
   professor_user_ids: []
+  default_project: ""
 
 daemon:
   poll_seconds: 60

@@ -1,5 +1,6 @@
 """Tests for hermes_cli configuration management."""
 
+import argparse
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,7 @@ import yaml
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     check_config_version,
+    config_command,
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
@@ -127,6 +129,56 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestConfigCheckLegacyRestartDrainWarning:
+    """``hermes config check`` warns only for the persisted former default."""
+
+    def _run_check(self, capsys) -> str:
+        args = argparse.Namespace(config_command="check")
+        config_command(args)
+        return capsys.readouterr().out
+
+    @pytest.mark.parametrize("value_yaml", ["180", "180.0"])
+    def test_warns_for_explicit_legacy_restart_drain_timeout(
+        self, tmp_path, capsys, value_yaml
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"agent:\n  restart_drain_timeout: {value_yaml}\n")
+        before = config_path.read_text()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            output = self._run_check(capsys)
+
+        assert "agent.restart_drain_timeout" in output
+        assert "former default" in output
+        assert "current default is 0" in output
+        assert "Long drain windows can delay or interfere with supervised gateway restarts" in output
+        assert "hermes config set agent.restart_drain_timeout 0" in output
+        assert config_path.read_text() == before
+
+    @pytest.mark.parametrize(
+        "config_yaml",
+        [
+            "",
+            "agent:\n  gateway_timeout: 1800\n",
+            "agent:\n  restart_drain_timeout: 0\n",
+            "agent:\n  restart_drain_timeout: 30\n",
+            "agent:\n  restart_drain_timeout: '180'\n",
+            "agent:\n  restart_drain_timeout: true\n",
+            "agent:\n  restart_drain_timeout: null\n",
+        ],
+    )
+    def test_no_legacy_warning_without_explicit_180(self, tmp_path, capsys, config_yaml):
+        if config_yaml:
+            (tmp_path / "config.yaml").write_text(config_yaml)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            output = self._run_check(capsys)
+
+        assert "agent.restart_drain_timeout" not in output
+        assert "former default" not in output
+        assert "supervised gateway restarts" not in output
 
 
 class TestLoadConfigParseFailure:

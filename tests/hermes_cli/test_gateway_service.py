@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -3556,6 +3557,12 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_plist_sets_gateway_file_descriptor_limits(self):
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode())
+
+        assert plist["SoftResourceLimits"]["NumberOfFiles"] == 4096
+        assert plist["HardResourceLimits"]["NumberOfFiles"] == 8192
 
     def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
         """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.

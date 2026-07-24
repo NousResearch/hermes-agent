@@ -298,19 +298,18 @@ def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     ``"device_code"`` (no prefix).  Entries may show up in the pool as
     either ``"device_code"`` (seeded) or ``"manual:device_code"`` (added
     via ``hermes auth add openai-codex``), but in both cases the re-seed
-    gate lives at the ``"device_code"`` suppression key.  We suppress
-    that canonical key here; the central dispatcher also suppresses
-    ``removed.source`` which is fine — belt-and-suspenders, idempotent.
-    """
-    from hermes_cli.auth import suppress_credential_source
+    gate lives at the ``"device_code"`` suppression key.
 
+    Suppression is centralized in ``auth_remove_command`` — it consults
+    the remaining pool via ``step.matches()`` and suppresses BOTH the
+    literal removed source (``manual:device_code``) AND the step's
+    canonical ``source_id`` (``device_code``) only when no sibling
+    entries remain. This avoids gagging other manual codex credentials
+    when the user removes just one. See upstream issue #24390.
+    """
     result = RemovalResult()
     if _clear_auth_store_provider(provider):
         result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
-    # Suppress the canonical re-seed source, not just whatever source the
-    # removed entry had.  Otherwise `manual:device_code` removals wouldn't
-    # block the `device_code` re-seed path.
-    suppress_credential_source(provider, "device_code")
     result.hints.extend([
         "Suppressed openai-codex device_code source — it will not be re-seeded.",
         "Note: Codex CLI credentials still live in ~/.codex/auth.json",

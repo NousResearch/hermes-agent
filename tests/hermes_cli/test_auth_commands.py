@@ -1468,6 +1468,145 @@ def test_auth_remove_codex_manual_source_suppresses_reseed(tmp_path, monkeypatch
     assert "openai-codex" not in updated.get("providers", {})
 
 
+def test_auth_remove_codex_keeps_source_when_siblings_remain(tmp_path, monkeypatch):
+    """Regression: removing one of N pool entries that share a source must NOT
+    suppress the source — that would silently gag the survivors at next fresh
+    pool load. See upstream issue #24390.
+
+    Reproduction: 3 manual:device_code entries (kthurman, james, afton). Remove
+    one. The other two share the same source. Before the fix, suppression fired
+    and killed both survivors via is_source_suppressed() gates in
+    _seed_from_singletons. After the fix, suppression is skipped while siblings
+    remain; the last-removal-triggers-suppression behavior (covered by
+    test_auth_remove_codex_manual_source_suppresses_reseed) still works.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+
+    auth_store = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "acc-survivor-a",
+                    "refresh_token": "ref-survivor-a",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "cx1",
+                    "label": "kthurman-ltinc",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:device_code",
+                    "access_token": "acc-survivor-a",
+                    "refresh_token": "ref-survivor-a",
+                },
+                {
+                    "id": "cx2",
+                    "label": "account-to-remove",
+                    "auth_type": "oauth",
+                    "priority": 1,
+                    "source": "manual:device_code",
+                    "access_token": "acc-doomed",
+                    "refresh_token": "ref-doomed",
+                },
+                {
+                    "id": "cx3",
+                    "label": "afton-codex",
+                    "auth_type": "oauth",
+                    "priority": 2,
+                    "source": "manual:device_code",
+                    "access_token": "acc-survivor-b",
+                    "refresh_token": "ref-survivor-b",
+                },
+            ]
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="account-to-remove"))
+
+    updated = json.loads((hermes_home / "auth.json").read_text())
+    suppressed = updated.get("suppressed_sources", {}).get("openai-codex", [])
+
+    # Critical assertion — the bug was that these got added even with siblings remaining.
+    assert "manual:device_code" not in suppressed, (
+        "manual:device_code was suppressed while 2 sibling entries still share that source"
+    )
+    assert "device_code" not in suppressed, (
+        "device_code canonical key was suppressed while 2 sibling entries still share the manual variant"
+    )
+
+    # Sanity: survivors are still in the pool.
+    remaining_labels = {e["label"] for e in updated["credential_pool"]["openai-codex"]}
+    assert remaining_labels == {"kthurman-ltinc", "afton-codex"}
+
+
+def test_auth_remove_codex_suppresses_when_last_sibling_removed(tmp_path, monkeypatch):
+    """Symmetric to the regression test: when the LAST entry with a given source
+    is removed, suppression DOES fire (this preserves the protection from
+    upstream PR #13427).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+
+    auth_store = {
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "acc-lonely",
+                    "refresh_token": "ref-lonely",
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "cx-solo",
+                    "label": "only-codex",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:device_code",
+                    "access_token": "acc-lonely",
+                    "refresh_token": "ref-lonely",
+                },
+            ]
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="only-codex"))
+
+    updated = json.loads((hermes_home / "auth.json").read_text())
+    suppressed = updated.get("suppressed_sources", {}).get("openai-codex", [])
+
+    # Last entry removed — suppression SHOULD fire to prevent re-seeding.
+    assert "device_code" in suppressed, (
+        "Last codex entry removed but device_code canonical source not suppressed; "
+        "re-seeding will resurrect it on next pool load (regresses upstream PR #13427)"
+    )
+
+
 def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     """Re-linking codex via `hermes auth add openai-codex` must clear any suppression marker."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

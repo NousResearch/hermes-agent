@@ -494,7 +494,37 @@ def auth_remove_command(args) -> None:
     for line in result.cleaned:
         print(line)
     if result.suppress:
-        suppress_credential_source(provider, removed.source)
+        # Only skip suppression when a user-managed sibling (manual:* source)
+        # remains under the same removal step. Multiple manual OAuth
+        # credentials commonly share ownership — e.g. every
+        # `hermes auth add openai-codex --type oauth` adds an entry with
+        # source="manual:device_code". Suppressing because the user removed
+        # one of them would silently gag the survivors at the next fresh
+        # pool load. See upstream issue #24390.
+        #
+        # Singleton-seeded entries (e.g. source="device_code" auto-imported
+        # from ~/.codex/auth.json) are NOT counted as siblings to preserve —
+        # those are exactly what the remove command is meant to suppress.
+        #
+        # Use the in-memory `pool` (already mutated by remove_index above),
+        # NOT a fresh load_pool() call — a fresh load triggers
+        # _seed_from_singletons which can re-import the very entry
+        # suppression is meant to block.
+        from agent.credential_pool import _is_manual_source
+        user_managed_siblings = [
+            e for e in pool.entries()
+            if step.matches(provider, e.source) and _is_manual_source(e.source)
+        ]
+        if user_managed_siblings:
+            # Skip suppression; drop the now-misleading "re-seeded" hint.
+            result.hints = [h for h in result.hints if "re-seeded" not in h]
+        else:
+            # No user-managed siblings — suppress both the literal removed
+            # source AND the step's canonical source_id (these may differ:
+            # codex pool entries have "manual:device_code" but the re-seed
+            # gate in _seed_from_singletons keys on "device_code").
+            for src in {removed.source, step.source_id}:
+                suppress_credential_source(provider, src)
     for line in result.hints:
         print(line)
 

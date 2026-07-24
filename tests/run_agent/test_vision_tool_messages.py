@@ -40,6 +40,7 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     agent._content_has_image_parts = _real_content_has_image_parts
     agent._model_supports_vision = lambda: AIAgent._model_supports_vision(agent)
     agent._provider_supports_vision_tool_messages = lambda: AIAgent._provider_supports_vision_tool_messages(agent)
+    agent._model_supports_vision_tool_messages = lambda: AIAgent._model_supports_vision_tool_messages(agent)
     agent._tool_result_content_for_active_model = (
         lambda name, result: AIAgent._tool_result_content_for_active_model(agent, name, result)
     )
@@ -87,6 +88,26 @@ class TestProviderSupportsVisionToolMessages:
         agent = _make_agent("", "")
         assert agent._provider_supports_vision_tool_messages() is True
 
+    def test_opencode_go_mimo_returns_false(self):
+        """opencode-go + mimo-v2.5: vision model, rejects list-type tool content."""
+        agent = _make_agent("opencode-go", "mimo-v2.5")
+        assert agent._model_supports_vision_tool_messages() is False
+
+    def test_opencode_go_mimo_omni_returns_false(self):
+        """opencode-go + mimo-v2-omni: vision model, rejects list-type tool content."""
+        agent = _make_agent("opencode-go", "mimo-v2-omni")
+        assert agent._model_supports_vision_tool_messages() is False
+
+    def test_opencode_go_deepseek_returns_true(self):
+        """Non-Mimo model through opencode-go: not affected."""
+        agent = _make_agent("opencode-go", "deepseek-v4-flash")
+        assert agent._model_supports_vision_tool_messages() is True
+
+    def test_unknown_provider_mimo_returns_false(self):
+        """Unknown provider + mimo vision model: model-family check still works."""
+        agent = _make_agent("some-proxy", "mimo-v2.5")
+        assert agent._model_supports_vision_tool_messages() is False
+
 
 # ---------------------------------------------------------------------------
 # _tool_result_content_for_active_model — proactive downgrade
@@ -113,6 +134,33 @@ class TestToolResultContentProactiveDowngrade:
         content = agent._tool_result_content_for_active_model("some_tool", result)
 
         assert content == "plain text result"
+
+    def test_opencode_go_mimo_downgrades_to_text(self):
+        """Integration: opencode-go (supports_vision_tool_messages=True) + mimo-v2.5 → text.
+        Unlike xiaomi which has supports_vision_tool_messages=False in its provider profile,
+        opencode-go relies on the model-family check to trigger the downgrade."""
+        agent = _make_agent("opencode-go", "mimo-v2.5")
+        result = _multimodal_result(text="screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("browser_screenshot", result)
+
+        assert isinstance(content, str)
+        assert "screenshot captured" in content
+
+    def test_openrouter_vision_prefixed_mimo_downgrades_to_text(self):
+        """Integration: OpenRouter normalizes mimo-v2.5 → xiaomi/mimo-v2.5.
+        The model-family check must catch the vendor-prefixed name and still
+        downgrade list-type tool content to text (regression for #57766 via
+        the prior review's vendor-prefix case)."""
+        agent = _make_agent("openrouter", "xiaomi/mimo-v2.5")
+        result = _multimodal_result(text="screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("browser_screenshot", result)
+
+        assert isinstance(content, str)
+        assert "screenshot captured" in content
 
     def test_openrouter_vision_keeps_list_content(self):
         """OpenRouter with vision: list content preserved."""

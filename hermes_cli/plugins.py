@@ -37,6 +37,7 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -610,6 +611,49 @@ class PluginContext:
                 kwargs["parent_agent"] = agent
 
         return registry.dispatch(tool_name, args, **kwargs)
+
+    def send_message(
+        self,
+        target: str,
+        message: str,
+        /,
+        **delivery_options: Any,
+    ) -> dict[str, Any]:
+        """Deliver a message through Hermes's host-owned platform transport.
+
+        This is the plugin-facing outbound interface for concrete integrations
+        that need richer platform delivery than a plugin tool result can
+        express. It reuses the same target resolution, authorization-adjacent
+        configuration, media handling, retries, and mirroring as ``hermes
+        send`` without registering ``send_message`` as a model-callable tool.
+
+        ``delivery_options`` is intentionally passed through to the existing
+        send engine so platform transports can add optional structured
+        capabilities without growing the plugin facade for each one. Reserved
+        routing fields remain host-owned.
+        """
+        reserved = {"action", "target", "message"}.intersection(delivery_options)
+        if reserved:
+            names = ", ".join(sorted(reserved))
+            raise ValueError(f"Plugin delivery options cannot override: {names}")
+
+        from tools.send_message_tool import send_message_tool
+
+        raw = send_message_tool({
+            "action": "send",
+            "target": target,
+            "message": message,
+            **delivery_options,
+        })
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Host send engine returned an invalid result") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Host send engine returned an invalid result")
+        return parsed
 
     # -- context engine registration -----------------------------------------
 

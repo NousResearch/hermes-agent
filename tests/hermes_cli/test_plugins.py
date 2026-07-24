@@ -2366,3 +2366,41 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestPluginContextSendMessage:
+    """Plugins can use the host send engine without exposing a model tool."""
+
+    def _ctx(self):
+        return PluginContext(
+            PluginManifest(name="test-plugin", source="user"),
+            PluginManager(),
+        )
+
+    def test_routes_structured_delivery_through_host_send_engine(self):
+        button = {"label": "Open UI", "url": "https://example.com/app"}
+        with patch(
+            "tools.send_message_tool.send_message_tool",
+            return_value='{"success": true, "message_id": "42"}',
+        ) as send:
+            result = self._ctx().send_message(
+                "telegram:12345",
+                "Interface ready.",
+                web_app_button=button,
+            )
+
+        assert result == {"success": True, "message_id": "42"}
+        send.assert_called_once_with({
+            "action": "send",
+            "target": "telegram:12345",
+            "message": "Interface ready.",
+            "web_app_button": button,
+        })
+
+    def test_rejects_delivery_options_that_override_host_routing(self):
+        with pytest.raises(ValueError, match="cannot override: target"):
+            self._ctx().send_message(
+                "telegram:12345",
+                "Interface ready.",
+                target="telegram:99999",
+            )

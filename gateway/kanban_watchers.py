@@ -58,15 +58,17 @@ def _resolve_auto_decompose_settings(
 
 
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
-    """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
+    """Take an exclusive, non-blocking advisory lock for a singleton loop.
 
     Only one gateway process machine-wide may run the embedded kanban
-    dispatcher: concurrent dispatchers double the reclaim frequency (each
-    runs its own ``release_stale_claims`` → promote → dispatch loop), double
-    claim-attempt events in the event log, and — with ``wal_autocheckpoint=0`` —
-    concurrent manual WAL checkpoints can corrupt index pages. The
-    ``dispatch_in_gateway`` config flag is the primary control; this lock is the
-    backstop that survives config drift and same-profile restart races.
+    dispatcher (``.dispatcher.lock``): concurrent dispatchers double the reclaim
+    frequency (each runs its own ``release_stale_claims`` → promote → dispatch
+    loop), double claim-attempt events in the event log, and — with
+    ``wal_autocheckpoint=0`` — concurrent manual WAL checkpoints can corrupt
+    index pages. The notifier uses the same helper with its own
+    ``.notifier.lock`` so only one gateway polls board DBs for notifications.
+    The ``dispatch_in_gateway`` config flag is the primary control; the lock is
+    the backstop that survives config drift and same-profile restart races.
 
     Delegates to :func:`gateway.status._try_acquire_file_lock` (``fcntl`` on
     POSIX, ``msvcrt`` on Windows) so the guard is cross-platform.
@@ -95,7 +97,7 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
 
 
 def _release_singleton_lock(handle) -> None:
-    """Release a dispatcher singleton lock acquired via :func:`_acquire_singleton_lock`."""
+    """Release a singleton lock acquired via :func:`_acquire_singleton_lock`."""
     if handle is None:
         return
     try:
@@ -131,10 +133,13 @@ class GatewayKanbanWatchersMixin:
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
         """
-        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
-        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
-        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
+        # Gate order mirrors `_kanban_dispatcher_watcher`: the
+        # HERMES_KANBAN_DISPATCH_IN_GATEWAY env override, then the
+        # `kanban.dispatch_in_gateway` config flag, then the machine-global
+        # singleton `.notifier.lock` below — so only ONE gateway machine-wide
+        # polls kanban DBs for notifications. Per-board work is further gated
+        # by a read-only subscription probe, so boards with zero subscriptions
+        # are never opened writable (no schema migration, no checkpoints).
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:
@@ -161,6 +166,32 @@ class GatewayKanbanWatchersMixin:
         except Exception:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
+
+        # Single-notifier backstop, mirroring the dispatcher's singleton lock:
+        # `dispatch_in_gateway` defaults to true, so without it every gateway
+        # polls every board DB each tick — the exact N-gateway -shm/-wal
+        # contention this gate exists to prevent. The lock lives at the
+        # machine-global kanban root (shared across profiles by design), so it
+        # serialises ALL gateways; a `.notifier.lock` separate from
+        # `.dispatcher.lock` lets a gateway notify without dispatching.
+        self._kanban_notifier_lock_handle = None
+        _lock_path = _kb.kanban_home() / "kanban" / ".notifier.lock"
+        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
+        if _lock_state == "contended":
+            logger.info(
+                "kanban notifier: another gateway already holds the notifier "
+                "lock (%s); this gateway will NOT poll for notifications.",
+                _lock_path,
+            )
+            return
+        if _lock_state == "held":
+            self._kanban_notifier_lock_handle = _lock_handle  # hold for process lifetime
+            logger.info("kanban notifier: holding singleton notifier lock (%s)", _lock_path)
+        else:
+            logger.warning(
+                "kanban notifier: advisory lock unavailable at %s; proceeding "
+                "on config control alone.", _lock_path,
+            )
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
@@ -230,6 +261,19 @@ class GatewayKanbanWatchersMixin:
                             )
                             continue
                         seen_db_paths.add(resolved_db_path)
+                        try:
+                            if _kb.count_notify_subs(board=slug) == 0:
+                                logger.debug(
+                                    "kanban notifier: board %s has no subscriptions; skipping open",
+                                    slug,
+                                )
+                                continue
+                        except Exception as exc:
+                            logger.debug(
+                                "kanban notifier: read-only subscription probe failed "
+                                "for board %s (%s); falling back to writable open",
+                                slug, exc,
+                            )
                         try:
                             conn = _kb.connect(board=slug)
                         except Exception as exc:
@@ -686,13 +730,21 @@ class GatewayKanbanWatchersMixin:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
+            except asyncio.CancelledError:
+                logger.debug("kanban notifier: cancelled")
+                _release_singleton_lock(self._kanban_notifier_lock_handle)
+                self._kanban_notifier_lock_handle = None
+                raise
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             # Sleep with cancellation checks.
             for _ in range(int(max(1, interval))):
                 if not self._running:
-                    return
+                    break
                 await asyncio.sleep(1)
+
+        _release_singleton_lock(self._kanban_notifier_lock_handle)
+        self._kanban_notifier_lock_handle = None
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

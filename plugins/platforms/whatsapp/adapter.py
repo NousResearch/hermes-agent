@@ -27,7 +27,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import windows_detach_popen_kwargs, windows_hide_flags
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,
@@ -639,19 +639,54 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
-            self._bridge_process = subprocess.Popen(
-                [
-                    find_node_executable("node") or "node",
-                    str(bridge_path),
-                    "--port", str(self._bridge_port),
-                    "--session", str(self._session_path),
-                    "--mode", whatsapp_mode,
-                ],
-                stdout=bridge_log_fh,
-                stderr=bridge_log_fh,
-                env=bridge_env,
-                **windows_detach_popen_kwargs(),
-            )
+            # Pass WhatsApp history API flags from config.yaml (opt-in, default off).
+            # These are feature flags, not secrets — config.yaml is the right
+            # place per AGENTS.md contribution rubric.
+            if self.config.extra.get("sync_full_history", False):
+                bridge_env["WHATSAPP_SYNC_FULL_HISTORY"] = "true"
+            if self.config.extra.get("enable_history_api", False):
+                bridge_env["WHATSAPP_ENABLE_HISTORY_API"] = "true"
+
+            # Windows: the gateway process (pythonw.exe under Electron/Tauri)
+            # may run inside a job object that disallows breakaway, causing
+            # ``windows_detach_popen_kwargs()`` (which includes
+            # CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS) to raise
+            # PermissionError: [WinError 5] Access is denied.  Fall back to
+            # ``CREATE_NO_WINDOW`` alone — no detach, no breakaway — which
+            # hides the console window without demanding job-object
+            # privileges.
+            node_cmd = [
+                find_node_executable("node") or "node",
+                str(bridge_path),
+                "--port", str(self._bridge_port),
+                "--session", str(self._session_path),
+                "--mode", whatsapp_mode,
+            ]
+            base_kwargs = {
+                "stdout": bridge_log_fh,
+                "stderr": bridge_log_fh,
+                "env": bridge_env,
+            }
+            try:
+                self._bridge_process = subprocess.Popen(
+                    node_cmd,
+                    **base_kwargs,
+                    **windows_detach_popen_kwargs(),
+                )
+            except (PermissionError, OSError):
+                logger.info(
+                    "[%s] windows_detach_popen_kwargs failed (WinError 5), "
+                    "falling back to CREATE_NO_WINDOW",
+                    self.name,
+                )
+                extra_kwargs = (
+                    {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+                )
+                self._bridge_process = subprocess.Popen(
+                    node_cmd,
+                    **base_kwargs,
+                    **extra_kwargs,
+                )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             
             # Wait for the bridge to connect to WhatsApp.

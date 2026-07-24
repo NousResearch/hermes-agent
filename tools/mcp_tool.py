@@ -110,6 +110,8 @@ from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
+from tools.threat_patterns import scan_for_threats
+
 logger = logging.getLogger(__name__)
 
 # Upper bound for the OSV malware preflight during stdio MCP startup. The
@@ -579,6 +581,39 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
             "Description: %.200s",
             server_name, tool_name, "; ".join(findings),
             description,
+        )
+    return findings
+
+
+# Per-server ceiling for ``InitializeResult.instructions`` surfaced into the
+# system prompt. Conservative on purpose: instructions share the cached prompt
+# with everything else, and a misbehaving server should not be able to flood
+# the context. Servers with longer guidance should ship it as an MCP prompt
+# or resource instead.
+_MCP_INSTRUCTIONS_MAX_CHARS = 4000
+
+_MCP_INSTRUCTIONS_TRUNCATION_MARKER = "\n… [instructions truncated by Hermes]"
+
+
+def _scan_mcp_instructions(server_name: str, instructions: str) -> List[str]:
+    """Scan a server's ``initialize`` instructions as untrusted context.
+
+    Instructions land in the system prompt, so use the shared context scanner
+    rather than the narrower warning-only scanner for MCP tool descriptions.
+    A finding causes the instructions to be withheld entirely; the server's
+    tools still register and work.
+
+    Returns a list of shared threat-pattern IDs (empty = clean).
+    """
+    if not instructions:
+        return []
+    findings = scan_for_threats(instructions, scope="context")
+    if findings:
+        logger.warning(
+            "MCP server '%s': suspicious content in initialize instructions — %s. "
+            "Instructions NOT added to the system prompt. Content: %.200s",
+            server_name, ", ".join(findings),
+            instructions,
         )
     return findings
 
@@ -5879,6 +5914,65 @@ def get_mcp_status() -> List[dict]:
             })
 
     return result
+
+
+def get_mcp_server_instructions() -> List[dict]:
+    """Return per-server ``initialize`` instructions for connected MCP servers.
+
+    Per the MCP spec, a server may return an ``instructions`` string in its
+    ``InitializeResult`` — guidance "the client can use to improve the LLM's
+    understanding of available tools, resources, etc.", explicitly suggested
+    to be treated like a system prompt hint. Hermes already captures the
+    ``InitializeResult`` on :class:`MCPServerTask` (see #18051); this accessor
+    surfaces the instructions so prompt assembly can inject them.
+
+    Each entry is a dict:
+      * ``server``       — the configured server name.
+      * ``instructions`` — stripped, truncated to
+        ``_MCP_INSTRUCTIONS_MAX_CHARS`` chars per server.
+      * ``tool_names``   — the prefixed tool names this server registered,
+        so callers can skip servers whose tools aren't exposed to the
+        current agent (per-platform toolset filtering).
+
+    Servers are skipped when: not connected, no/empty instructions, or the
+    instructions trip the prompt-injection scanner (warn-and-withhold — see
+    :func:`_scan_mcp_instructions`; the server's tools keep working).
+
+    Sorted by server name so prompt content is deterministic across processes
+    regardless of connect-completion order.
+    """
+    with _lock:
+        servers = [(name, task) for name, task in _servers.items()]
+
+    results: List[dict] = []
+    for name, task in sorted(servers):
+        if task.session is None:
+            continue
+        init_result = getattr(task, "initialize_result", None)
+        raw = getattr(init_result, "instructions", None) if init_result is not None else None
+        if not isinstance(raw, str):
+            continue
+        instructions = raw.strip()
+        if not instructions:
+            continue
+        if _scan_mcp_instructions(name, instructions):
+            continue
+        if len(instructions) > _MCP_INSTRUCTIONS_MAX_CHARS:
+            instructions = (
+                instructions[:_MCP_INSTRUCTIONS_MAX_CHARS].rstrip()
+                + _MCP_INSTRUCTIONS_TRUNCATION_MARKER
+            )
+            logger.info(
+                "MCP server '%s': initialize instructions truncated to %d chars "
+                "for the system prompt",
+                name, _MCP_INSTRUCTIONS_MAX_CHARS,
+            )
+        results.append({
+            "server": name,
+            "instructions": instructions,
+            "tool_names": list(getattr(task, "_registered_tool_names", []) or []),
+        })
+    return results
 
 
 def probe_mcp_server_tools() -> Dict[str, List[tuple]]:

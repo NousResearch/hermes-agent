@@ -527,6 +527,22 @@ That keeps the tool list clean.
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
 
+### Server instructions
+
+Per the MCP spec, a server's `initialize` response may include an `instructions` string — usage guidance the server wants surfaced to the model. Hermes injects each connected server's instructions into the system prompt as a per-server section:
+
+```text
+## Instructions from MCP server "<name>"
+```
+
+Details:
+
+- On by default; set `agent.inherit_mcp_instructions: false` in `config.yaml` to keep MCP tools but drop the server-supplied guidance.
+- Capped at 4000 characters per server (longer guidance belongs in an MCP prompt or resource).
+- Screened with Hermes's shared context threat scanner, including context-only role hijacks, promptware/C2 patterns, and invisible Unicode; instructions that trip it are withheld from the prompt (the server's tools keep working) with a warning in the logs.
+- Servers whose tools are hidden from the current session by per-platform toolset filtering don't contribute instructions either.
+- Collected once at system-prompt build time. A server that connects late (after the first turn) surfaces its instructions on the next prompt rebuild — new session or post-compression — never mid-conversation, so prompt caching stays intact.
+
 ### Dynamic Tool Discovery
 
 MCP servers can notify Hermes when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Hermes receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.

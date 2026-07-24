@@ -1744,6 +1744,13 @@ def init_agent(
         except Exception:
             pass
 
+    # MCP server instructions toggle.  Default True.  When True, the
+    # ``instructions`` string a connected MCP server returns in its
+    # ``initialize`` response is surfaced into the system prompt (per the
+    # MCP spec's intent).  Set False to keep MCP tools but drop the
+    # server-supplied free-text guidance.
+    agent._inherit_mcp_instructions = bool(_agent_section.get("inherit_mcp_instructions", True))
+
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
     # Lets an enterprise admin append to or replace Hermes' built-in
     # platform hint for a single messaging platform (e.g. WhatsApp) without

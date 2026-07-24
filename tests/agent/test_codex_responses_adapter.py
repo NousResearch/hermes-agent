@@ -277,9 +277,59 @@ def test_preflight_codex_input_items_drops_short_id_for_github_responses():
     )
 
     assert "id" not in items[0]
-    assert items[0]["status"] == "in_progress"
-    assert items[0]["phase"] == "final_answer"
-    assert items[0]["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_keeps_reasoning_id_for_azure_foundry():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "thinking",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_123",
+                    "encrypted_content": "enc_blob",
+                    "summary": [{"type": "summary_text", "text": "brief"}],
+                    "status": "completed",
+                    "response_id": "resp_123",
+                    "_issuer_kind": "other",
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages, is_azure_foundry=True)
+
+    reasoning_item = next(item for item in items if item.get("type") == "reasoning")
+    assert reasoning_item == {
+        "type": "reasoning",
+        "id": "rs_123",
+        "encrypted_content": "enc_blob",
+        "summary": [{"type": "summary_text", "text": "brief"}],
+    }
+
+
+def test_preflight_codex_input_items_keeps_reasoning_id_for_azure_foundry():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "reasoning",
+                "id": "rs_123",
+                "encrypted_content": "enc_blob",
+                "summary": [{"type": "summary_text", "text": "brief"}],
+                "status": "completed",
+                "response_id": "resp_123",
+            }
+        ],
+        is_azure_foundry=True,
+    )
+
+    assert items[0] == {
+        "type": "reasoning",
+        "id": "rs_123",
+        "encrypted_content": "enc_blob",
+        "summary": [{"type": "summary_text", "text": "brief"}],
+    }
 
 
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():

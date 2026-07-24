@@ -225,6 +225,59 @@ class TestMcpToolCallProjection:
         assert "error" in msgs[1]["content"]
 
 
+class TestWebSearchProjection:
+    def test_web_search_has_explicit_codex_provenance(self) -> None:
+        item = {
+            "type": "webSearch",
+            "id": "ws-1",
+            "query": "Hermes Agent documentation",
+            "status": "completed",
+        }
+        result = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        )
+
+        assert result.is_tool_iteration is True
+        assistant, tool = result.messages
+        call = assistant["tool_calls"][0]
+        assert call["function"]["name"] == "codex_web_search"
+        assert json.loads(call["function"]["arguments"]) == {
+            "provider": "codex",
+            "query": "Hermes Agent documentation",
+        }
+        assert json.loads(tool["content"]) == {
+            "provider": "codex",
+            "status": "completed",
+        }
+        assert tool["tool_call_id"] == call["id"]
+
+    def test_web_search_reads_nested_action_query_and_failed_status(self) -> None:
+        item = {
+            "type": "webSearch",
+            "id": "ws-2",
+            "action": {"query": "fallback query"},
+            "status": "failed",
+        }
+        assistant, tool = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages
+
+        args = json.loads(assistant["tool_calls"][0]["function"]["arguments"])
+        assert args["query"] == "fallback query"
+        assert json.loads(tool["content"])["status"] == "failed"
+
+    def test_web_search_call_id_is_stable_across_replay(self) -> None:
+        notification = {
+            "method": "item/completed",
+            "params": {"item": {
+                "type": "webSearch", "id": "ws-stable", "query": "q"
+            }},
+        }
+        first = CodexEventProjector().project(notification).messages[0]
+        second = CodexEventProjector().project(notification).messages[0]
+        assert first["tool_calls"][0]["id"] == second["tool_calls"][0]["id"]
+
+
 class TestUserAndOpaqueProjection:
     def test_user_message_text_fragments_only(self) -> None:
         item = {
@@ -290,6 +343,8 @@ class TestRoleAlternationInvariant:
             {"type": "dynamicToolCall", "id": "d1", "tool": "x",
              "arguments": {}, "status": "completed",
              "contentItems": [], "success": True},
+            {"type": "webSearch", "id": "w1", "query": "x",
+             "status": "completed"},
         ],
     )
     def test_tool_items_emit_assistant_then_tool(self, item) -> None:

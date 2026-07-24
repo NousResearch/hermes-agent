@@ -28,6 +28,36 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def _configured_mcp_elicitation_servers(
+    config: dict[str, Any] | None = None,
+) -> frozenset[str]:
+    """Return explicitly trusted MCP names, failing closed on malformed config."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly() or {}
+        except Exception:
+            logger.debug(
+                "codex app-server: MCP elicitation policy lookup failed",
+                exc_info=True,
+            )
+            return frozenset()
+    if not isinstance(config, dict):
+        return frozenset()
+    codex = config.get("codex") or {}
+    elicitation = codex.get("mcp_elicitation") if isinstance(codex, dict) else {}
+    if not isinstance(elicitation, dict):
+        return frozenset()
+    raw = elicitation.get("auto_accept_servers")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(
+        name.strip() for name in raw
+        if isinstance(name, str) and name.strip()
+    )
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -325,7 +355,7 @@ def _codex_item_to_tool_name(item: dict) -> str:
     if item_type == "dynamicToolCall":
         return item.get("tool") or "dynamic"
     if item_type == "webSearch":
-        return "web_search"
+        return "codex_web_search"
     return item_type or "unknown"
 
 
@@ -347,7 +377,12 @@ def _codex_item_to_args(item: dict) -> dict:
         args = item.get("arguments") or {}
         return args if isinstance(args, dict) else {"arguments": args}
     if item_type == "webSearch":
-        return {"query": item.get("query") or ""}
+        action = item.get("action") or {}
+        return {
+            "query": item.get("query") or (
+                action.get("query") if isinstance(action, dict) else ""
+            ) or ""
+        }
     return {}
 
 
@@ -376,7 +411,10 @@ def _codex_item_to_preview(item: dict) -> Any:
         except (TypeError, ValueError):
             return None
     if item_type == "webSearch":
-        query = item.get("query") or ""
+        action = item.get("action") or {}
+        query = item.get("query") or (
+            action.get("query") if isinstance(action, dict) else ""
+        ) or ""
         return query[:120] if query else None
     return None
 
@@ -422,6 +460,16 @@ def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
             )
         success = item.get("success", True)
         return f"success={success}", not bool(success)
+    if item_type == "webSearch":
+        status = item.get("status") or "unknown"
+        return (
+            json.dumps(
+                {"provider": "codex", "status": status},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            status in {"failed", "error", "cancelled"},
+        )
     return "", False
 
 
@@ -683,6 +731,9 @@ def run_codex_app_server_turn(
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
+                auto_accept_mcp_elicitation_servers=(
+                    _configured_mcp_elicitation_servers()
+                ),
             ),
             on_event=make_codex_app_server_event_bridge(agent),
         )

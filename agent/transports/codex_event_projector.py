@@ -106,6 +106,8 @@ class CodexEventProjector:
             return self._project_mcp_tool_call(item, item_id)
         if item_type == "dynamicToolCall":
             return self._project_dynamic_tool_call(item, item_id)
+        if item_type == "webSearch":
+            return self._project_web_search(item, item_id)
         if item_type == "userMessage":
             return self._project_user_message(item)
 
@@ -292,6 +294,48 @@ class CodexEventProjector:
             "role": "tool",
             "tool_call_id": call_id,
             "content": content,
+        }
+        return ProjectionResult(
+            messages=[assistant_msg, tool_msg], is_tool_iteration=True
+        )
+
+    def _project_web_search(self, item: dict, item_id: str) -> ProjectionResult:
+        """Persist Codex-native search without impersonating Hermes web_search."""
+        call_id = _deterministic_call_id("codex_web_search", item_id)
+        action = item.get("action") or {}
+        query = item.get("query") or (
+            action.get("query") if isinstance(action, dict) else ""
+        ) or ""
+        assistant_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "codex_web_search",
+                        "arguments": _format_tool_args(
+                            {"provider": "codex", "query": query}
+                        ),
+                    },
+                }
+            ],
+        }
+        if self._pending_reasoning:
+            assistant_msg["reasoning"] = "\n".join(self._pending_reasoning)
+            self._pending_reasoning = []
+        tool_msg = {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": json.dumps(
+                {
+                    "provider": "codex",
+                    "status": item.get("status") or "unknown",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         }
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True

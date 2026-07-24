@@ -214,6 +214,10 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # stale directive it carried (e.g. "resume exactly from Active Task") survives
 # embedded in the body and keeps hijacking replies. Keep newest-first; entries
 # are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+# NEVER mutate or reorder an existing entry — each one is the exact wire text a
+# shipped build persisted, so editing it silently un-normalizes every summary
+# written by that build generation; prepend only. tests/agent/
+# test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
     # Pre-#69619: identical to the current prefix except the stale-item
     # discard clause named all four historical headings (the three

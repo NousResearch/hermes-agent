@@ -1053,8 +1053,22 @@ def fetch_endpoint_model_metadata(
 
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
+        response = None
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=(5, 10),
+                verify=_resolve_requests_verify(),
+                stream=True,
+            )
+            if response.status_code in (401, 403):
+                logger.debug(
+                    "Model metadata probe received HTTP %s from %s; stopping candidate probing",
+                    response.status_code,
+                    url,
+                )
+                break
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -1104,6 +1118,9 @@ def fetch_endpoint_model_metadata(
             return cache
         except Exception as exc:
             last_error = exc
+        finally:
+            if response is not None:
+                response.close()
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)

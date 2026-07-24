@@ -10966,6 +10966,59 @@ def _attach_bytes_cli(monkeypatch):
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
 
 
+def test_spawn_tree_save_list_load_uses_session_profile_home(monkeypatch, tmp_path):
+    import hermes_constants
+
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profile-home"
+    launch_home.mkdir()
+    profile_home.mkdir()
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: launch_home)
+    server._sessions["spawn-sid"] = _session(profile_home=str(profile_home))
+
+    subagents = [{"id": "sub-1", "goal": "inspect", "status": "done"}]
+    try:
+        save_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "spawn_tree.save",
+                "params": {
+                    "session_id": "spawn-sid",
+                    "started_at": 1700000000.0,
+                    "finished_at": 1700000005.0,
+                    "label": "inspect",
+                    "subagents": subagents,
+                },
+            }
+        )
+
+        saved_path = Path(save_resp["result"]["path"])
+        assert saved_path.parent == profile_home / "spawn-trees" / "spawn-sid"
+        assert saved_path.exists()
+        assert not (launch_home / "spawn-trees").exists()
+
+        list_resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "spawn_tree.list",
+                "params": {"session_id": "spawn-sid"},
+            }
+        )
+        entries = list_resp["result"]["entries"]
+        assert [entry["path"] for entry in entries] == [str(saved_path)]
+
+        load_resp = server.handle_request(
+            {
+                "id": "3",
+                "method": "spawn_tree.load",
+                "params": {"session_id": "spawn-sid", "path": str(saved_path)},
+            }
+        )
+        assert load_resp["result"]["subagents"] == subagents
+    finally:
+        server._sessions.pop("spawn-sid", None)
+
+
 def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):
     """Remote client uploads base64 bytes; gateway writes them to its own disk."""
     _attach_bytes_cli(monkeypatch)

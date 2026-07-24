@@ -9733,10 +9733,13 @@ def _(rid, params: dict) -> dict:
 # Each file contains { session_id, started_at, finished_at, subagents: [...] }.
 
 
-def _spawn_trees_root():
+def _spawn_trees_root(session_id: str = ""):
     from hermes_constants import get_hermes_home
 
-    root = get_hermes_home() / "spawn-trees"
+    session = _sessions.get(session_id or "")
+    profile_home = session.get("profile_home") if session else None
+    base = Path(str(profile_home)) if profile_home else get_hermes_home()
+    root = base / "spawn-trees"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -9745,7 +9748,7 @@ def _spawn_tree_session_dir(session_id: str):
     safe = (
         "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id) or "unknown"
     )
-    d = _spawn_trees_root() / safe
+    d = _spawn_trees_root(session_id) / safe
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -9836,7 +9839,7 @@ def _(rid, params: dict) -> dict:
     cross_session = bool(params.get("cross_session"))
 
     if cross_session:
-        root = _spawn_trees_root()
+        root = _spawn_trees_root(session_id)
         roots = [p for p in root.iterdir() if p.is_dir()]
     else:
         roots = [_spawn_tree_session_dir(session_id or "default")]
@@ -9889,7 +9892,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4000, "path required")
 
     # Reject paths escaping the spawn-trees root.
-    root = _spawn_trees_root().resolve()
+    root = _spawn_trees_root(str(params.get("session_id") or "")).resolve()
     try:
         resolved = Path(raw_path).resolve()
         resolved.relative_to(root)

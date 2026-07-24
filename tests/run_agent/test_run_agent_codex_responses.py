@@ -3562,3 +3562,140 @@ def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
         and "only internal reasoning" in str(item.get("content"))
         for item in replay_input
     )
+
+
+# --- Response debug dump tests (paired with the request dump) ---
+
+
+def _codex_openai_response(*, content="Hello.", finish_reason="stop"):
+    """Minimal OpenAI-style chat.completions response object."""
+    return SimpleNamespace(
+        model="gpt-5-codex",
+        id="resp_001",
+        created=1763456789,
+        object="chat.completion",
+        finish_reason=finish_reason,
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(role="assistant", content=content),
+            finish_reason=finish_reason,
+        )],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+def test_dump_api_response_debug_redacts_auth_headers(monkeypatch, tmp_path):
+    """Response dump must match the request dumper: auth headers redacted, not leaked."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_response_debug(
+        response=_codex_openai_response(),
+        status=200,
+        headers={"Authorization": "Bearer sk-secret-1234567890", "Content-Type": "application/json"},
+        reason="preflight",
+    )
+
+    assert dump_file is not None
+    payload = json.loads(dump_file.read_text())
+    assert "response" in payload
+    # Auth header must be masked and not present in raw form.
+    raw = dump_file.read_text()
+    assert "sk-secret-1234567890" not in raw
+    resp_headers = payload["headers"]
+    assert "Authorization" in resp_headers
+    # _mask_api_key_for_logs shortens long keys: key[:8]...key[-4:]
+    assert resp_headers["Authorization"].startswith("Bearer s")
+    assert resp_headers["Authorization"].endswith("7890")
+
+
+def test_dump_api_response_debug_captures_success_body(monkeypatch, tmp_path):
+    """Success-boundary capture records finish_reason / usage / id."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_response_debug(
+        response=_codex_openai_response(content="Done."),
+        status=200,
+        headers={"Content-Type": "application/json"},
+        reason="success",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    # status lives at the top level of the payload.
+    assert payload["status"] == 200
+    resp = payload["response"]
+    assert resp["finish_reason"] == "stop"
+    assert resp["id"] == "resp_001"
+    assert "usage" in resp
+    assert resp["usage"]["total_tokens"] == 15
+
+
+def test_dump_api_response_debug_records_error_status(monkeypatch, tmp_path):
+    """Error path records the status code and surfaces error.status_code."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    err = RuntimeError("upstream 500")
+    err.status_code = 500
+    dump_file = agent._dump_api_response_debug(
+        reason="max_retries_exhausted",
+        error=err,
+        status=500,
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["status"] == 500
+    assert payload["error"]["type"] == "RuntimeError"
+    assert payload["error"]["status_code"] == 500
+
+
+def test_run_conversation_writes_response_dump_on_success_when_gated(monkeypatch, tmp_path):
+    """Reviewer point: a success-boundary response dump must be written when
+    HERMES_DUMP_REQUESTS=1. Drives a full run_conversation turn and asserts the
+    response_dump file lands in logs_dir."""
+    import glob
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
+
+    responses = [_codex_message_response("Done.")]
+
+    def _fake_api_call(api_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("ping")
+    assert result["completed"] is True
+
+    dumps = glob.glob(str(tmp_path / "response_dump_*.json"))
+    assert dumps, "expected a response_dump file after a successful turn"
+    assert len(dumps) == 1
+    import json
+    payload = json.loads(open(dumps[0]).read())
+    assert payload["status"] is None  # test double has no http status_code
+    assert payload["reason"] == "success"
+
+
+def test_run_conversation_skips_response_dump_when_gate_off(monkeypatch, tmp_path):
+    """When HERMES_DUMP_REQUESTS is unset, no response dump is written."""
+    import glob
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    monkeypatch.delenv("HERMES_DUMP_REQUESTS", raising=False)
+
+    responses = [_codex_message_response("Done.")]
+
+    def _fake_api_call(api_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("ping")
+    assert result["completed"] is True
+
+    dumps = glob.glob(str(tmp_path / "response_dump_*.json"))
+    assert not dumps, "response dump must NOT be written when gate is off"

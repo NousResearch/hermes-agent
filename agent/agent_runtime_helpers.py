@@ -16,6 +16,7 @@ Methods covered:
 * ``restore_primary_runtime`` — un-do fallback activation
 * ``extract_reasoning`` — pull reasoning fields out of API responses
 * ``dump_api_request_debug`` — write request body for post-mortem
+* ``dump_api_response_debug`` — mirror response body, status, and headers
 * ``anthropic_prompt_cache_policy`` — compute cache_control breakpoints
 * ``create_openai_client`` — build the per-agent OpenAI SDK client
 """
@@ -1749,6 +1750,141 @@ def dump_api_request_debug(
             logger.warning(f"Failed to dump API request debug payload: {dump_error}")
         return None
 
+
+def dump_api_response_debug(
+    agent,
+    *,
+    response: Optional[Any] = None,
+    status: Optional[int] = None,
+    headers: Optional[Dict[str, Any]] = None,
+    reason: str,
+    error: Optional[Exception] = None,
+) -> Optional[Path]:
+    """
+    Dump a debug-friendly HTTP *response* record for the active inference API.
+
+    Symmetric counterpart to :func:`dump_api_request_debug`. Captures the raw
+    completion body (normalized: choices/content, finish_reason, usage, id,
+    created), HTTP status, and headers when available. This closes the
+    request-only blind spot: today there is no on-disk record of *what the
+    model returned*, so quirky/buggy answers can only be inspected by
+    re-running the exact turn.
+
+    Fires on the success boundary and on the error paths (non-retryable
+    client error, terminal failure) so the most valuable debugging — the
+    cases where the provider returned something unexpected — is captured.
+
+    Same gate/folder/redaction semantics as the request dumper.
+    """
+    try:
+        # Normalize whatever the SDK handed us into a stable, serializable shape.
+        resp_norm: Dict[str, Any] = {}
+        if response is not None:
+            try:
+                resp_norm["model"] = getattr(response, "model", None)
+                resp_norm["id"] = getattr(response, "id", None)
+                resp_norm["created"] = getattr(response, "created", None)
+                resp_norm["object"] = getattr(response, "object", None)
+                resp_norm["finish_reason"] = getattr(response, "finish_reason", None)
+                # usage may be on the top object or per-choice; grab the top one.
+                _usage = getattr(response, "usage", None)
+                if _usage is not None:
+                    try:
+                        resp_norm["usage"] = {
+                            "prompt_tokens": getattr(_usage, "prompt_tokens", None),
+                            "completion_tokens": getattr(_usage, "completion_tokens", None),
+                            "total_tokens": getattr(_usage, "total_tokens", None),
+                        }
+                    except Exception:
+                        resp_norm["usage"] = str(_usage)
+                _choices = getattr(response, "choices", None)
+                if _choices is not None:
+                    _choices_out = []
+                    for _ch in _choices:
+                        _ch_out: Dict[str, Any] = {
+                            "index": getattr(_ch, "index", None),
+                            "finish_reason": getattr(_ch, "finish_reason", None),
+                            "message": getattr(_ch, "message", None),
+                            "delta": getattr(_ch, "delta", None),
+                        }
+                        _choices_out.append(_ch_out)
+                    resp_norm["choices"] = _choices_out
+                # Surface any provider-specific extras we didn't model above.
+                for _extra in ("system_fingerprint", "service_tier", "logprobs"):
+                    _v = getattr(response, _extra, None)
+                    if _v is not None:
+                        resp_norm[_extra] = _v
+            except Exception as norm_err:
+                _ra().logger.debug("Could not normalize response for debug dump: %s", norm_err)
+                resp_norm = {"_raw_repr": repr(response)}
+
+        _safe_headers = {}
+        if headers:
+            # Redact obvious auth/secret carriers before persisting.
+            for _k, _v in headers.items():
+                _kl = str(_k).lower()
+                if any(_s in _kl for _s in ("authorization", "x-api-key", "cookie", "set-cookie")):
+                    _safe_headers[_k] = agent._mask_api_key_for_logs(str(_v))
+                else:
+                    _safe_headers[_k] = _v
+
+        dump_payload: Dict[str, Any] = {
+            "timestamp": datetime.now().isoformat(),
+            "session_id": agent.session_id,
+            "reason": reason,
+            "provider": getattr(agent, "provider", None),
+            "model": getattr(agent, "model", None),
+            "base_url": getattr(agent, "base_url", None),
+            "status": status,
+            "headers": _safe_headers,
+            "response": resp_norm,
+        }
+
+        if error is not None:
+            error_info: Dict[str, Any] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+            for attr_name in ("status_code", "request_id", "code", "param", "type"):
+                attr_value = getattr(error, attr_name, None)
+                if attr_value is not None:
+                    error_info[attr_name] = attr_value
+            body_attr = getattr(error, "body", None)
+            if body_attr is not None:
+                error_info["body"] = body_attr
+            response_obj = getattr(error, "response", None)
+            if response_obj is not None:
+                try:
+                    error_info["response_status"] = getattr(response_obj, "status_code", None)
+                    error_info["response_text"] = response_obj.text
+                except Exception as e:
+                    _ra().logger.debug("Could not extract error response details: %s", e)
+            dump_payload["error"] = error_info
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # Same traversal-safe sanitization as the request dumper: session_id can
+        # originate from untrusted input (X-Hermes-Session-Id header).
+        safe_sid = _ra()._safe_session_filename_component(agent.session_id)
+        dump_file = agent.logs_dir / f"response_dump_{safe_sid}_{timestamp}.json"
+
+        # Same secret-redaction path as the request dumper: the response may echo
+        # back tool-call arguments or context that contained a secret, so scrub
+        # before persisting.
+        from agent.redact import redact_sensitive_text
+        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
+        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        atomic_json_write(dump_file, _redacted_payload, default=str)
+
+        agent._vprint(f"{agent.log_prefix}🧾 Response debug dump written to: {dump_file}")
+
+        if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
+            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
+
+        return dump_file
+    except Exception as dump_error:
+        if agent.verbose_logging:
+            logger.warning(f"Failed to dump API response debug payload: {dump_error}")
+        return None
 
 
 def anthropic_prompt_cache_policy(
@@ -3523,6 +3659,7 @@ __all__ = [
     "restore_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
+    "dump_api_response_debug",
     "anthropic_prompt_cache_policy",
     "create_openai_client",
     "switch_model",

@@ -3226,6 +3226,15 @@ DEFAULT_CONFIG = {
         # How many days of ended-session history to keep.  Matches the
         # default of ``hermes sessions prune``.
         "retention_days": 90,
+        # When true, auto-archive (soft-hide, never delete) sessions that
+        # haven't been touched in ``auto_archive_days`` days, once per
+        # (roughly) min_interval_hours.  "Touched" is last activity, not
+        # creation, so an old-but-recently-used session is spared.  Pinned
+        # sessions are always exempt.  Off by default — opt in explicitly.
+        "auto_archive": False,
+        # Idle threshold (days of no activity) before auto-archive hides a
+        # session.  Only applies when auto_archive is true.
+        "auto_archive_days": 3,
         # VACUUM after a prune that actually deleted rows.  SQLite does not
         # reclaim disk space on DELETE — freed pages are just reused on
         # subsequent INSERTs — so without VACUUM the file stays bloated

@@ -1275,6 +1275,7 @@ export function ChatSidebar({
                   // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT
                 )}
+                dateGrouped={inProject || !agentOrderManual}
                 dndSensors={dndSensors}
                 emptyState={
                   showSessionSkeletons ? (

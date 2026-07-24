@@ -1773,6 +1773,13 @@ export const en: Translations = {
       ageDay: 'd',
       ageHour: 'h',
       ageMin: 'm'
+    },
+    dateDivider: {
+      today: 'Earlier today',
+      yesterday: 'Yesterday',
+      thisWeek: 'Earlier this week',
+      lastWeek: 'Last week',
+      thisMonth: 'Earlier this month'
     }
   },
 

@@ -259,6 +259,10 @@ hermes chat --provider tencent-tokenhub --model hy3-preview
 hermes chat --provider arcee --model trinity-large-thinking
 # Requires: ARCEEAI_API_KEY in ~/.hermes/.env
 
+# Kilo Code (Auto Efficient routing)
+hermes chat --provider kilocode --model kilo-auto/efficient
+# Requires: KILOCODE_API_KEY in ~/.hermes/.env
+
 # GMI Cloud
 # Use the exact model ID returned by GMI's /v1/models endpoint.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
@@ -266,6 +270,8 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
+
+`kilo-auto/efficient` is a Kilo-managed routing tier. Kilo chooses the underlying model for each request, so the model used may change over time.
 
 Or set the provider permanently in `config.yaml`:
 ```yaml

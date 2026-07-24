@@ -11,7 +11,9 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 import asyncio
 import logging
 import os
+import platform
 import re
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,10 +35,46 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _playwright_browser_args() -> list[str]:
+    """Return extra CLI args for @playwright/mcp based on the runtime environment.
+
+    Playwright MCP defaults to system Chrome. When no system browser is found
+    on the current platform, we add --browser=chromium so Playwright falls back
+    to its own bundled Chromium rather than failing silently.
+
+    On Linux running as root (VPS, Docker, CI), Chrome refuses to launch
+    without --no-sandbox, so we add that flag when euid == 0.
+
+    Browser detection reuses hermes_cli.browser_connect.get_chrome_debug_candidates(),
+    the same platform-aware resolver used for CDP attach — it checks PATH names,
+    standard Linux install paths, macOS .app bundles, and Windows install
+    directories (including WSL's /mnt/c mirror), rather than a single hard-coded
+    path that would misclassify most real installs as "browser absent".
+    """
+    from hermes_cli.browser_connect import get_chrome_debug_candidates
+
+    extra: list[str] = []
+
+    # Root/AppArmor safety flag (Linux-only).
+    if sys.platform == "linux" and os.geteuid() == 0:
+        extra.append("--no-sandbox")
+
+    # Browser availability: if we cannot find a system browser, tell Playwright
+    # MCP to use its own bundled Chromium instead of the default (system Chrome).
+    if not get_chrome_debug_candidates(platform.system()):
+        extra.append("--browser=chromium")
+
+    return extra
+
+
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
     "codex": {
         "command": "codex",
         "args": ["mcp-server"],
+    },
+    "playwright": {
+        "command": "npx",
+        "args": ["-y", "@playwright/mcp@latest", "--headless"] + _playwright_browser_args(),
     },
 }
 

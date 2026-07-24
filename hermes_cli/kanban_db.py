@@ -3141,6 +3141,18 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                # A task parked directly in blocked (initial_status="blocked")
+                # needs an explicit "blocked" event so _has_sticky_block() treats
+                # it as sticky — otherwise recompute_ready() (run on every list/
+                # dispatch) auto-promotes it straight back to ready. See test
+                # test_create_task_initial_status_blocked_survives_recompute.
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

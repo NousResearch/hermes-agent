@@ -231,6 +231,20 @@ def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_create_task_initial_status_blocked_survives_recompute(kanban_home):
+    """initial_status='blocked' must stay blocked after recompute_ready.
+
+    Regression: a card created with --initial-status blocked only emitted a
+    "created" event, so _has_sticky_block() returned False and recompute_ready
+    (called on every `list`) auto-promoted it to ready → unwanted auto-dispatch.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stay blocked", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
 def test_create_task_unknown_parent_errors(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="unknown parent"):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])

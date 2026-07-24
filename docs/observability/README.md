@@ -236,6 +236,11 @@ Sanitization converts provider objects to JSON-compatible structures, bounds
 large payloads, redacts sensitive keys, and avoids exposing raw response
 objects in sanitized fields.
 
+Sanitized observer payloads reduce accidental secret exposure, but they are not
+a substitute for export-side access controls. Treat telemetry sinks as sensitive
+systems, and avoid persisting legacy compatibility fields unless a plugin
+explicitly needs them.
+
 Legacy compatibility fields such as `request_messages`, `conversation_history`,
 and `assistant_message` may still be present for existing plugins. New
 observability consumers should prefer the sanitized payloads.

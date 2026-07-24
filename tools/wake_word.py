@@ -380,9 +380,11 @@ class _SherpaKwsEngine(_Engine):
         #: (phrase display name, profile) of the most recent fire, for routing.
         self.last_match: Optional[tuple[str, str]] = None
 
-        # Map the shared 0..1 sensitivity onto sherpa's keywords_threshold
-        # (posterior probability; its default is 0.25).
-        threshold = 0.1 + 0.5 * _sensitivity(cfg)
+        # Map the shared 0..1 sensitivity onto sherpa's keywords_threshold.
+        # 0.5 lands exactly on sherpa's recommended default (0.25); live TTS
+        # matrix testing showed our previous stricter mapping (0.35) missed
+        # ~12% of true positives while 0.25 held zero false fires.
+        threshold = 0.05 + 0.4 * _sensitivity(cfg)
 
         def _model_file(pattern: str) -> str:
             hits = sorted(d.glob(pattern))

@@ -77,7 +77,7 @@ def _runner(monkeypatch, tmp_path):
 
 
 def test_exact_silence_tokens_are_intentional_silence():
-    for token in ("[SILENT]", " SILENT ", "NO_REPLY", "no reply"):
+    for token in ("[SILENT]", " SILENT ", "NO_REPLY", "no reply", "(silence)"):
         assert is_intentional_silence_response(token)
 
 

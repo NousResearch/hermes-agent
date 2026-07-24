@@ -1082,6 +1082,28 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
+    def _ends_with_newline(self, path: str) -> bool:
+        """Check if a file ends with a newline character.
+        
+        Uses 'tail -c 1' to read the last byte and check if it's '\n'.
+        
+        Args:
+            path: File path to check
+        
+        Returns:
+            True if file ends with newline, False otherwise
+        """
+        # Read last byte of file
+        tail_cmd = f"tail -c 1 {self._escape_shell_arg(path)}"
+        result = self._exec(tail_cmd)
+        
+        # If file is empty, tail outputs nothing
+        if not result.stdout.strip():
+            return True  # Empty files are considered to end with newline
+        
+        # Check if last byte is newline
+        return result.stdout == '\n'
+    
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
@@ -1157,6 +1179,9 @@ class ShellFileOperations(FileOperations):
             read_output, _ = _strip_bom(read_output)
         
         # Get total line count
+        # NOTE: wc -l counts NEWLINES, not lines. A file without a trailing newline
+        # will be undercounted by 1 (e.g., "line1\nline2" has 2 lines but wc -l reports 1).
+        # We compensate by checking if the file ends with a newline and adding 1 if not.
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
         wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
@@ -1164,6 +1189,11 @@ class ShellFileOperations(FileOperations):
             total_lines = int(wc_output.strip())
         except ValueError:
             total_lines = 0
+        
+        # Compensate for wc -l undercounting: if file doesn't end with newline,
+        # add 1 to the count since the last line has no terminating newline
+        if not self._ends_with_newline(path):
+            total_lines += 1
         
         # Check if truncated
         truncated = total_lines > end_line

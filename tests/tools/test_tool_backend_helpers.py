@@ -19,6 +19,7 @@ import pytest
 from hermes_cli.nous_account import NousPaidServiceAccessInfo, NousPortalAccountInfo
 from tools.tool_backend_helpers import (
     coerce_modal_mode,
+    fal_key_is_configured,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
@@ -401,3 +402,94 @@ class TestResolveOpenaiAudioApiKey:
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "  voice-key  ")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         assert resolve_openai_audio_api_key() == "voice-key"
+
+
+# ---------------------------------------------------------------------------
+# nous_tool_gateway_unavailable_message — fallback path
+# ---------------------------------------------------------------------------
+class TestNousToolGatewayUnavailableMessageFallback:
+    """Cover the exception and empty-message fallback paths."""
+
+    def test_exception_returns_generic_message(self, monkeypatch):
+        """When account info raises, the generic fallback is returned."""
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            _raise_import,
+        )
+        msg = nous_tool_gateway_unavailable_message("managed vision")
+        assert "managed vision" in msg
+        assert "hermes model" in msg
+
+    def test_empty_entitlement_message_returns_generic(self, monkeypatch):
+        """When format_nous_portal_entitlement_message returns '', fallback is used."""
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            lambda force_fresh=False: NousPortalAccountInfo(
+                logged_in=True, source="jwt", fresh=False, paid_service_access=False,
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.format_nous_portal_entitlement_message",
+            lambda *a, **kw: "",
+        )
+        msg = nous_tool_gateway_unavailable_message("managed image generation")
+        assert "managed image generation" in msg
+        assert "hermes model" in msg
+
+
+# ---------------------------------------------------------------------------
+# prefers_gateway — exception path
+# ---------------------------------------------------------------------------
+class TestPrefersGatewayExceptions:
+    """Cover the except-Exception fallback in prefers_gateway."""
+
+    def test_returns_false_on_load_config_exception(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", _raise_import)
+        assert prefers_gateway("web") is False
+
+    def test_returns_false_when_section_not_dict(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"web": "not a dict"})
+        assert prefers_gateway("web") is False
+
+    def test_returns_false_when_section_missing(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert prefers_gateway("web") is False
+
+
+# ---------------------------------------------------------------------------
+# fal_key_is_configured
+# ---------------------------------------------------------------------------
+class TestFalKeyIsConfigured:
+    """FAL_KEY detection from env and .env file fallback."""
+
+    def test_env_var_set(self, monkeypatch):
+        monkeypatch.setenv("FAL_KEY", "fal-abc123")
+        assert fal_key_is_configured() is True
+
+    def test_env_var_whitespace_only(self, monkeypatch):
+        monkeypatch.setenv("FAL_KEY", "   ")
+        assert fal_key_is_configured() is False
+
+    def test_env_var_empty_string(self, monkeypatch):
+        monkeypatch.setenv("FAL_KEY", "")
+        assert fal_key_is_configured() is False
+
+    def test_env_var_unset_no_env_file(self, monkeypatch):
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name: None)
+        assert fal_key_is_configured() is False
+
+    def test_env_var_unset_env_file_has_key(self, monkeypatch):
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name: "fal-from-file")
+        assert fal_key_is_configured() is True
+
+    def test_env_var_unset_env_file_has_whitespace(self, monkeypatch):
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name: "  ")
+        assert fal_key_is_configured() is False
+
+    def test_env_var_unset_get_env_value_raises(self, monkeypatch):
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.get_env_value", _raise_import)
+        assert fal_key_is_configured() is False

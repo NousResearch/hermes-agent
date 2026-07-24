@@ -100,6 +100,18 @@ class TestHonchoSession:
 
 
 # ---------------------------------------------------------------------------
+# HonchoSessionManager observation defaults
+# ---------------------------------------------------------------------------
+
+
+class TestObservationDefaults:
+    def test_ai_self_observation_off_without_config(self):
+        mgr = HonchoSessionManager()
+        assert mgr._ai_observe_me is False
+        assert mgr._ai_observe_others is True
+
+
+# ---------------------------------------------------------------------------
 # HonchoSessionManager._sanitize_id
 # ---------------------------------------------------------------------------
 

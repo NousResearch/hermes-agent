@@ -1291,7 +1291,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 observe_me = bool(getattr(cfg, "user_observe_me", True))
                 observe_others = bool(getattr(cfg, "user_observe_others", True))
             else:
-                observe_me = bool(getattr(cfg, "ai_observe_me", True))
+                observe_me = bool(getattr(cfg, "ai_observe_me", False))
                 observe_others = bool(getattr(cfg, "ai_observe_others", True))
             if not (observe_me or observe_others):
                 reasons.append(

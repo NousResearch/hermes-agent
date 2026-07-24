@@ -511,6 +511,8 @@ LEGACY_AUTHOR_MAP = {
     "prostoandrei9@gmail.com": "vladkvlchk",
     "116314616+ThyFriendlyFox@users.noreply.github.com": "ThyFriendlyFox",
     "liliangjya@gmail.com": "truenorth-lj",
+    "lebedyn.sergij@gmail.com": "lebedyncrs",
+    "7259302+lebedyncrs@users.noreply.github.com": "lebedyncrs",
     "16943149+nepenth@users.noreply.github.com": "nepenth",
     "ben.bartholomew@vectorize.io": "benfrank241",
     "74339271+SaguaroDev@users.noreply.github.com": "SaguaroDev",

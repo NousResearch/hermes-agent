@@ -316,7 +316,7 @@ def _normalize_observation_mode(val: str) -> str:
 _OBSERVATION_PRESETS = {
     "directional": {
         "user_observe_me": True, "user_observe_others": True,
-        "ai_observe_me": True, "ai_observe_others": True,
+        "ai_observe_me": False, "ai_observe_others": True,
     },
     "unified": {
         "user_observe_me": True, "user_observe_others": False,
@@ -448,7 +448,7 @@ class HonchoClientConfig:
     # Resolved from "observation" object in config, falling back to observation_mode preset.
     user_observe_me: bool = True
     user_observe_others: bool = True
-    ai_observe_me: bool = True
+    ai_observe_me: bool = False
     ai_observe_others: bool = True
     # Session resolution
     session_strategy: str = "per-directory"
@@ -713,7 +713,7 @@ class HonchoClientConfig:
             # observationMode keep the old "unified" default so users
             # aren't silently switched to full bidirectional observation.
             # New installations (no host block, no credentials) get
-            # "directional" (all observations on) as the new default.
+            # "directional" (user self+other, AI other-only) as the new default.
             observation_mode=_normalize_observation_mode(
                 host_block.get("observationMode")
                 or raw.get("observationMode")

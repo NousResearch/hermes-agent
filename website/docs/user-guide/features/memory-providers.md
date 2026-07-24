@@ -158,7 +158,7 @@ The mapping:
 | **Workspace** | Shared environment. All Hermes profiles under one workspace see the same user identity. |
 | **User peer** (`peerName`) | The human. Shared across profiles in the workspace. |
 | **AI peer** (`aiPeer`) | One per Hermes profile. Host key `hermes` → default; `hermes.<profile>` for others. |
-| **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on) or `unified` (single-observer pool). |
+| **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default: user both on, AI observes others only) or `unified` (single-observer pool). |
 
 ### New profile, fresh Honcho peer
 
@@ -199,7 +199,7 @@ Each host block can override the observation config independently. Example: a co
 
 Presets via `observationMode`:
 
-- **`"directional"`** (default) — all four flags on. Full mutual observation; enables cross-peer dialectic.
+- **`"directional"`** (default) — user both on; AI `observeMe: false`, `observeOthers: true`. AI models the user from user messages without self-observation (avoids user facts echoed in AI replies landing in AI self-representation).
 - **`"unified"`** — user `observeMe: true`, AI `observeOthers: true`, rest false. Single-observer pool; AI models the user but not itself, user peer only self-models.
 
 Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — synced back at session init.

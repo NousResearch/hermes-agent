@@ -608,6 +608,21 @@ class TestObservationModeMigration:
         cfg_file.write_text(json.dumps({}))
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.observation_mode == "directional"
+        assert cfg.ai_observe_me is False
+        assert cfg.ai_observe_others is True
+
+    def test_directional_preset_disables_ai_self_observation(self, tmp_path):
+        """Directional mode: AI observes user but not its own messages."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {"enabled": True, "observationMode": "directional"}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.ai_observe_me is False
+        assert cfg.ai_observe_others is True
+        assert cfg.user_observe_me is True
+        assert cfg.user_observe_others is True
 
     def test_explicit_directional_respected(self, tmp_path):
         """Existing config with explicit observationMode → uses what's set."""

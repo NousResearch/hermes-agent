@@ -26,11 +26,13 @@ The tested Termux bundle installs:
 - Honcho memory support
 - ACP support
 
-Concretely, it maps to:
+Concretely, after the Android psutil prebuild shown in the manual path below, it maps to:
 
 ```bash
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
+
+On a fresh Android environment, use the one-line installer or follow the full manual sequence below instead of running that pip command by itself.
 
 ## What is not part of the tested path yet?
 
@@ -58,6 +60,7 @@ On Termux, the installer automatically:
 
 - uses `pkg` for system packages
 - creates the venv with `python -m venv`
+- prebuilds the Android psutil compatibility shim before the Python package install
 - attempts the broad `.[termux-all]` extra first and falls back to the smaller `.[termux]` extra (then a base install) — the curl installer matches this order automatically
 - links `hermes` into `$PREFIX/bin` so it stays on your Termux PATH
 - skips the untested browser / WhatsApp bootstrap
@@ -102,7 +105,17 @@ python -m pip install --upgrade pip setuptools wheel
 
 `ANDROID_API_LEVEL` is important for Rust / maturin-based packages such as `jiter`.
 
-### 4. Install the tested Termux bundle
+### 4. Prebuild psutil for Android
+
+```bash
+python scripts/install_psutil_android.py
+```
+
+Python 3.13 on Termux reports `sys.platform == "android"`, and upstream psutil currently rejects that platform during package metadata generation. Hermes ships this temporary compatibility shim so the manual path matches what the one-line installer does automatically.
+
+If the command fails because the build toolchain is missing, re-run the package install from step 1 and retry this step before continuing.
+
+### 5. Install the tested Termux bundle
 
 ```bash
 python -m pip install -e '.[termux]' -c constraints-termux.txt
@@ -114,7 +127,7 @@ If you only want the minimal core agent, this also works:
 python -m pip install -e '.' -c constraints-termux.txt
 ```
 
-### 5. Put `hermes` on your Termux PATH
+### 6. Put `hermes` on your Termux PATH
 
 ```bash
 ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
@@ -122,14 +135,14 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 
 `$PREFIX/bin` is already on PATH in Termux, so this makes the `hermes` command persist across new shells without re-activating the venv every time.
 
-### 6. Verify the install
+### 7. Verify the install
 
 ```bash
 hermes version
 hermes doctor
 ```
 
-### 7. Start Hermes
+### 8. Start Hermes
 
 ```bash
 hermes
@@ -175,6 +188,7 @@ Treat browser / WhatsApp tooling on Android as experimental until documented oth
 Use the tested Termux bundle instead:
 
 ```bash
+python scripts/install_psutil_android.py
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
@@ -193,6 +207,7 @@ python -m venv venv
 source venv/bin/activate
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install --upgrade pip setuptools wheel
+python scripts/install_psutil_android.py
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
@@ -203,6 +218,22 @@ Set the API level explicitly before installing:
 ```bash
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install -e '.[termux]' -c constraints-termux.txt
+```
+
+### `jiter` / `maturin` reports `Unsupported Android architecture: armv8l`
+
+Some 32-bit Termux devices report `armv8l`, which maturin does not accept as a build target. Set an explicit Rust target before installing:
+
+```bash
+export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
+export CARGO_BUILD_TARGET="armv7-linux-androideabi"
+python -m pip install -e '.[termux]' -c constraints-termux.txt
+```
+
+On a 64-bit Termux runtime, use `aarch64-linux-android` instead:
+
+```bash
+export CARGO_BUILD_TARGET="aarch64-linux-android"
 ```
 
 ### `hermes doctor` says ripgrep or Node is missing
@@ -224,6 +255,7 @@ pkg install clang rust make pkg-config libffi openssl
 Then retry:
 
 ```bash
+python scripts/install_psutil_android.py
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 

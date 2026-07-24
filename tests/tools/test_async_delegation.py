@@ -269,6 +269,44 @@ def test_completion_is_persisted_and_delivery_can_be_acknowledged(tmp_path, monk
     assert ad.get_durable_delegation(dispatched["delegation_id"])["delivery_state"] == "delivered"
 
 
+def test_orphaned_pending_completion_count_reports_dead_zero_attempt_owner(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    for index, delegation_id in enumerate(("deleg_orphan", "deleg_attempted", "deleg_live")):
+        record = {
+            "delegation_id": delegation_id,
+            "session_key": "owner",
+            "origin_ui_session_id": "",
+            "parent_session_id": None,
+            "dispatched_at": float(index + 1),
+        }
+        ad._persist_dispatch(record)
+        ad._persist_completion(
+            {
+                "delegation_id": delegation_id,
+                "status": "completed",
+                "completed_at": float(index + 2),
+            },
+            {"status": "completed", "summary": delegation_id},
+        )
+
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET owner_pid=?, owner_started_at=NULL "
+            "WHERE delegation_id IN (?, ?)",
+            (99999999, "deleg_orphan", "deleg_attempted"),
+        )
+        conn.execute(
+            "UPDATE async_delegations SET delivery_attempts=1 "
+            "WHERE delegation_id=?",
+            ("deleg_attempted",),
+        )
+
+    assert ad.count_orphaned_pending_completions() == 1
+
+
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
     """Real-import E2E: a fresh interpreter restores a prior process's result."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))

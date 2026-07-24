@@ -81,6 +81,15 @@ def _probe_gateway(runtime_status: dict[str, Any]) -> dict[str, Any]:
     return _check(status, state=state, connected_platforms=connected, platforms=configured)
 
 
+def _probe_orphaned_async_delegation_completions() -> int:
+    try:
+        from tools.async_delegation import count_orphaned_pending_completions
+
+        return max(0, int(count_orphaned_pending_completions()))
+    except Exception:
+        return 0
+
+
 def collect_runtime_readiness(
     *,
     configured_model: str,
@@ -97,6 +106,7 @@ def collect_runtime_readiness(
     """
     home = get_hermes_home()
     runtime = runtime_status if isinstance(runtime_status, dict) else {}
+    orphaned_async_completions = _probe_orphaned_async_delegation_completions()
     checks = {
         "state_db": _probe_state_db(home),
         "config": _probe_config(home),
@@ -104,10 +114,11 @@ def collect_runtime_readiness(
         "disk": _probe_disk(home),
         "gateway": _probe_gateway(runtime),
         "background_queues": _check(
-            "ok",
+            "degraded" if orphaned_async_completions else "ok",
             active_api_runs=max(0, int(active_api_runs)),
             process_completions=max(0, int(process_completion_queue_depth)),
             active_delegations=max(0, int(active_delegations)),
+            orphaned_async_delegation_completions=orphaned_async_completions,
         ),
     }
     overall = "ok" if all(item.get("status") == "ok" for item in checks.values()) else "degraded"

@@ -116,6 +116,142 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
     )
 
 
+def test_single_query_main_declares_stateless_before_human_chat(monkeypatch):
+    """Human-facing ``chat -q`` must not advertise async completion delivery."""
+    from gateway.session_context import async_delivery_supported, reset_session_vars
+
+    calls = []
+    observed = []
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = SimpleNamespace(print=lambda *_a, **_kw: calls.append("query-label"))
+            self.session_id = "sq-human"
+            self.agent = SimpleNamespace(session_id="sq-human", platform="cli")
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _show_security_advisories(self):
+            calls.append("advisories")
+
+        def chat(self, query, images=None):
+            observed.append(async_delivery_supported())
+            calls.append(("chat", query, images))
+            return "done"
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append(("summary", clear_screen))
+
+    reset_session_vars()
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    try:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    finally:
+        reset_session_vars()
+
+    assert observed == [False]
+    assert ("chat", "hello", None) in calls
+
+
+def test_quiet_single_query_declares_stateless_before_agent_dispatch(monkeypatch):
+    """Fully quiet ``-Q -q`` must bind stateless delivery before run_conversation."""
+    from gateway.session_context import async_delivery_supported, reset_session_vars
+
+    calls = []
+    observed = []
+
+    class FakeAgent:
+        session_id = "sq-quiet"
+
+        def run_conversation(self, user_message, conversation_history):
+            observed.append(async_delivery_supported())
+            calls.append(("run_conversation", user_message, conversation_history))
+            return {"final_response": "done"}
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.session_id = "sq-quiet"
+            self.agent = FakeAgent()
+            self.conversation_history = []
+            self.provider = ""
+            self.model = ""
+            self._active_agent_route_signature = "base"
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _ensure_runtime_credentials(self):
+            calls.append("credentials")
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            calls.append(("route", effective_query))
+            return {
+                "signature": "base",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **_kwargs):
+            calls.append("init-agent")
+            return True
+
+    reset_session_vars()
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    try:
+        with pytest.raises(SystemExit) as exc_info:
+            cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+    finally:
+        reset_session_vars()
+
+    assert exc_info.value.code == 0
+    assert observed == [False]
+    assert ("run_conversation", "hello", []) in calls
+
+
+def test_interactive_main_keeps_async_delivery_supported(monkeypatch):
+    """Interactive CLI stays capable of draining async completions in-process."""
+    from gateway.session_context import async_delivery_supported, reset_session_vars
+
+    observed = []
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.session_id = "interactive"
+
+        def run(self):
+            observed.append(async_delivery_supported())
+
+    reset_session_vars()
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
+
+    try:
+        cli_mod.main(toolsets="terminal")
+    finally:
+        reset_session_vars()
+
+    assert observed == [True]
+
+
 # ── Verify interactive mode still clears ────────────────────────────────────
 
 def test_print_exit_summary_still_clears_in_interactive_path(monkeypatch):

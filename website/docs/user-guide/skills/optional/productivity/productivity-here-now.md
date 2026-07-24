@@ -1,14 +1,14 @@
 ---
-title: "Here.Now — Publish static sites to {slug}"
+title: "Here.Now — Publish sites to {slug}"
 sidebar_label: "Here.Now"
-description: "Publish static sites to {slug}"
+description: "Publish sites to {slug}"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Here.Now
 
-Publish static sites to &#123;slug&#125;.here.now and store private files in cloud Drives for agent-to-agent handoff.
+Publish sites to &#123;slug&#125;.here.now and store files in Drives.
 
 ## Skill metadata
 

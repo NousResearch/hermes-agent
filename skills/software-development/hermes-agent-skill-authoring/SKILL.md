@@ -1,6 +1,6 @@
 ---
 name: hermes-agent-skill-authoring
-description: "Author in-repo SKILL.md: frontmatter, validator, structure, and writing-quality principles."
+description: "Author in-repo SKILL.md files: frontmatter and structure."
 version: 1.1.0
 author: Hermes Agent
 license: MIT

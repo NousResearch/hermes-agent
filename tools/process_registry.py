@@ -2046,7 +2046,7 @@ def _format_async_delegation(evt: dict) -> str:
     deleg_id = evt.get("delegation_id", "unknown")
     goal = evt.get("goal", "") or ""
     context = evt.get("context")
-    toolsets = evt.get("toolsets")
+    raw_toolsets = evt.get("toolsets")
     role = evt.get("role") or "leaf"
     model = evt.get("model") or "?"
     status = evt.get("status") or "completed"
@@ -2057,13 +2057,20 @@ def _format_async_delegation(evt: dict) -> str:
     dispatched_at = evt.get("dispatched_at")
     completed_at = evt.get("completed_at") or _time.time()
 
+    if isinstance(raw_toolsets, str):
+        toolsets_str = raw_toolsets
+    elif isinstance(raw_toolsets, (list, tuple, set)):
+        toolsets_str = ", ".join(str(t) for t in raw_toolsets if t is not None)
+    else:
+        toolsets_str = ""
+
     # ----- Batch (fan-out) completion: consolidated multi-task block -----
     # A whole delegate_task fan-out dispatched as one background unit finishes
     # together and carries a per-task `results` list. Render every subagent's
     # summary in one block so the model gets the consolidated outcome at once.
     batch_results = evt.get("results")
     if evt.get("is_batch") or isinstance(batch_results, list):
-        results = batch_results or []
+        results = [r for r in (batch_results or []) if isinstance(r, dict)]
         goals = evt.get("goals") or []
         n = len(results) if results else len(goals)
         total_dur = evt.get("total_duration_seconds", duration)
@@ -2081,19 +2088,24 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append(f"Dispatched: {ts}{age}")
         if context:
             lines.append(f"Context you provided: {context}")
-        if toolsets:
-            lines.append(f"Toolsets: {', '.join(toolsets)}")
+        if toolsets_str:
+            lines.append(f"Toolsets: {toolsets_str}")
         lines.append(f"Role: {role}   Model: {model}   Total duration: {total_dur}s")
         if error and not results:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
             return "\n".join(lines)
-        for r in sorted(results, key=lambda x: x.get("task_index", 0)):
-            idx = r.get("task_index", 0)
+        def _get_task_idx(r: dict) -> int:
+            try:
+                return int(r.get("task_index", 0))
+            except (TypeError, ValueError):
+                return 0
+        for r in sorted(results, key=_get_task_idx):
+            idx = _get_task_idx(r)
             r_status = r.get("status", "?")
             r_summary = r.get("summary")
             r_error = r.get("error")
-            r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
+            r_goal = goals[idx] if isinstance(goals, list) and 0 <= idx < len(goals) else r.get("goal", "")
             icon = "✓" if r_status in ("completed", "success") else "✗"
             lines.append("")
             header = f"--- {icon} TASK {idx + 1}/{n}"
@@ -2143,8 +2155,8 @@ def _format_async_delegation(evt: dict) -> str:
     lines.append(f"Original goal: {goal}")
     if context:
         lines.append(f"Context you provided: {context}")
-    if toolsets:
-        lines.append(f"Toolsets: {', '.join(toolsets)}")
+    if toolsets_str:
+        lines.append(f"Toolsets: {toolsets_str}")
     lines.append(f"Role: {role}   Model: {model}")
     lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s")
     lines.append("--- RESULT ---")

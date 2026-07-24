@@ -1276,6 +1276,25 @@ def test_format_returns_none_for_empty_event():
     assert "unknown" in result
 
 
+def test_format_async_delegation_handles_malformed_fields():
+    # Test non-string/non-list toolsets and non-dict/string-indexed batch results
+    evt_toolsets = {
+        "type": "async_delegation",
+        "toolsets": [None, "web"],
+    }
+    res1 = format_process_notification(evt_toolsets)
+    assert "Toolsets: web" in res1
+
+    evt_batch = {
+        "type": "async_delegation",
+        "is_batch": True,
+        "results": [None, {"task_index": "0", "status": "completed", "summary": "done"}],
+    }
+    res2 = format_process_notification(evt_batch)
+    assert "ASYNC DELEGATION BATCH COMPLETE" in res2
+    assert "done" in res2
+
+
 def test_drain_notifications_returns_pending_events():
     from tools.process_registry import process_registry
 

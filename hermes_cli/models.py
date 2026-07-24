@@ -1085,6 +1085,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
+    ProviderEntry("alibaba-cn",     "Alibaba (China)",          "Qwen Cloud / DashScope China (Qwen + multi-provider)"),
     ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview via tokenhub.tencentmaas.com)"),
@@ -1274,6 +1275,8 @@ _PROVIDER_ALIASES = {
     "fw": "fireworks",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "alibaba-china": "alibaba-cn",
+    "alibaba_cn": "alibaba-cn",
     "minimax-portal": "minimax-oauth",
     "minimax-global": "minimax-oauth",
     "minimax_oauth": "minimax-oauth",
@@ -2519,6 +2522,8 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "alibaba",
+    "alibaba-cn",
 })
 
 

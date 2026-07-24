@@ -11,6 +11,7 @@ import {
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
+  mediaName,
   resolveMediaDisplaySrc
 } from './media'
 
@@ -42,6 +43,13 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
+})
+
+describe('mediaName', () => {
+  it('extracts the basename from Windows drive and UNC paths', () => {
+    expect(mediaName('C:\\Users\\ADMIN\\My Files\\report.pdf')).toBe('report.pdf')
+    expect(mediaName('\\\\server\\Shared Files\\report.pdf')).toBe('report.pdf')
   })
 })
 

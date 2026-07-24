@@ -45,6 +45,10 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  if (/^(?:[a-z]:[\\/]|\\\\)/i.test(path)) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
 

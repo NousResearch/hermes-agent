@@ -209,3 +209,63 @@ class TestEnvFileParsing:
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+
+class TestProfileSecretScopeInheritsGlobal:
+    """A profile's scope layers the global/default home's secrets as a baseline.
+
+    Profiles live at ``<root>/profiles/<name>``; the ``<root>`` (default) home
+    supplies a shared credential baseline that each profile overlays. Sibling
+    profiles never see each other's secrets — only the shared baseline.
+    """
+
+    def test_inherits_global_default_env(self, tmp_path):
+        profile = tmp_path / "profiles" / "product-manager"
+        profile.mkdir(parents=True)
+        (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-global\n")
+        (profile / ".env").write_text("DEEPSEEK_API_KEY=sk-profile\n")
+
+        assert ss.build_profile_secret_scope(profile) == {
+            "OPENROUTER_API_KEY": "sk-global",
+            "DEEPSEEK_API_KEY": "sk-profile",
+        }
+
+    def test_profile_overrides_global(self, tmp_path):
+        profile = tmp_path / "profiles" / "pm"
+        profile.mkdir(parents=True)
+        (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-global\n")
+        (profile / ".env").write_text("OPENROUTER_API_KEY=sk-profile\n")
+
+        assert ss.build_profile_secret_scope(profile) == {
+            "OPENROUTER_API_KEY": "sk-profile"
+        }
+
+    def test_sibling_profiles_are_isolated(self, tmp_path):
+        profile_a = tmp_path / "profiles" / "a"
+        profile_b = tmp_path / "profiles" / "b"
+        profile_a.mkdir(parents=True)
+        profile_b.mkdir()
+        (tmp_path / ".env").write_text("SHARED_KEY=sk-shared\n")
+        (profile_a / ".env").write_text("ONLY_A=sk-a\n")
+        (profile_b / ".env").write_text("ONLY_B=sk-b\n")
+
+        scope_a = ss.build_profile_secret_scope(profile_a)
+        scope_b = ss.build_profile_secret_scope(profile_b)
+
+        assert scope_a == {"SHARED_KEY": "sk-shared", "ONLY_A": "sk-a"}
+        assert scope_b == {"SHARED_KEY": "sk-shared", "ONLY_B": "sk-b"}
+
+    def test_inherits_global_external_secrets(self, tmp_path, monkeypatch):
+        from hermes_cli import env_loader
+
+        profile = tmp_path / "profiles" / "pm"
+        profile.mkdir(parents=True)
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(tmp_path.resolve()),
+            {"XIAOMI_API_KEY": "sk-global-bitwarden"},
+        )
+
+        assert ss.build_profile_secret_scope(profile) == {
+            "XIAOMI_API_KEY": "sk-global-bitwarden"
+        }

@@ -5706,6 +5706,52 @@ def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
     )
 
 
+def _decide_turn_image_mode(agent: Any) -> tuple[str, Optional[str]]:
+    """Resolve this turn's image input mode plus a user-facing downgrade reason.
+
+    Wraps ``agent.image_routing.decide_image_input_mode`` with the transport
+    override and the failure fallback, and reports *why* a native decision
+    was downgraded so the caller can surface it in the UI. Before this, a
+    user who forced ``agent.image_input_mode: native`` on a Codex app-server
+    session (or hit a decision failure) got a text description with zero
+    signal that their setting was overridden — the only evidence was a
+    stderr line in the gateway log (#66829).
+
+    Returns ``(mode, downgrade_reason)``; ``downgrade_reason`` is ``None``
+    when the decision was honored.
+    """
+    try:
+        from agent.image_routing import decide_image_input_mode
+        from hermes_cli.config import load_config as _tui_load_config
+
+        provider, model = _active_image_routing_identity(agent)
+        decided = decide_image_input_mode(
+            provider,
+            model,
+            _tui_load_config(),
+            requested_provider=getattr(agent, "requested_provider", ""),
+        )
+        mode, reason = decided, None
+        if decided == "native" and getattr(agent, "api_mode", "") == "codex_app_server":
+            mode = "text"
+            reason = (
+                "the Codex app-server transport sends text-only turn input, "
+                "so native image passthrough is unavailable for this session"
+            )
+        print(
+            f"[tui_gateway] image_routing: provider={provider} model={model} "
+            f"decided={decided} final={mode}",
+            file=sys.stderr,
+        )
+        return mode, reason
+    except Exception as exc:
+        print(
+            f"[tui_gateway] image_routing decision failed, defaulting to text: {exc}",
+            file=sys.stderr,
+        )
+        return "text", f"image routing decision failed ({type(exc).__name__}: {exc})"
+
+
 def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     """Pre-analyze attached images via vision and prepend descriptions to user text."""
     import asyncio, json as _json
@@ -10904,34 +10950,21 @@ def _run_prompt_submit(
             # See agent/image_routing.py for the full decision table.
             run_message: Any = prompt
             if images:
-                try:
-                    from agent.image_routing import (
-                        decide_image_input_mode,
-                        build_native_content_parts,
+                _mode, _downgrade = _decide_turn_image_mode(agent)
+                if _downgrade:
+                    _emit(
+                        "status.update",
+                        sid,
+                        {
+                            "kind": "process",
+                            "text": f"⚠ Image sent as a text description — {_downgrade}.",
+                        },
                     )
-                    from hermes_cli.config import load_config as _tui_load_config
-
-                    _cfg = _tui_load_config()
-                    _provider, _model = _active_image_routing_identity(agent)
-                    _mode = decide_image_input_mode(
-                        _provider,
-                        _model,
-                        _cfg,
-                        requested_provider=getattr(
-                            agent, "requested_provider", ""
-                        ),
-                    )
-                    if getattr(agent, "api_mode", "") == "codex_app_server":
-                        _mode = "text"
-                except Exception as _img_exc:
-                    print(
-                        f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
-                        file=sys.stderr,
-                    )
-                    _mode = "text"
 
                 if _mode == "native":
                     try:
+                        from agent.image_routing import build_native_content_parts
+
                         _parts, _skipped = build_native_content_parts(
                             prompt,
                             images,
@@ -10944,11 +10977,27 @@ def _run_prompt_submit(
                         if any(p.get("type") == "image_url" for p in _parts):
                             run_message = _parts
                         else:
+                            _emit(
+                                "status.update",
+                                sid,
+                                {
+                                    "kind": "process",
+                                    "text": "⚠ Image sent as a text description — no readable image data for native attachment.",
+                                },
+                            )
                             run_message = _enrich_with_attached_images(prompt, images)
                     except Exception as _img_exc:
                         print(
                             f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
                             file=sys.stderr,
+                        )
+                        _emit(
+                            "status.update",
+                            sid,
+                            {
+                                "kind": "process",
+                                "text": f"⚠ Image sent as a text description — native attachment failed ({type(_img_exc).__name__}).",
+                            },
                         )
                         run_message = _enrich_with_attached_images(prompt, images)
                 else:

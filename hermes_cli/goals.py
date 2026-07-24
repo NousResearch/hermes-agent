@@ -386,6 +386,177 @@ def parse_contract(text: str) -> Tuple[str, GoalContract]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# /goal --file <path> input resolution
+# ──────────────────────────────────────────────────────────────────────
+
+
+class GoalInputError(ValueError):
+    """A user-correctable failure resolving ``/goal`` input.
+
+    Raised for missing/invalid file paths, unreadable/non-regular files,
+    invalid UTF-8, blank content, and unsupported file access (messaging
+    surfaces). Each handler surfaces the message verbatim to the user and
+    leaves the existing goal state untouched. Distinct from a plain
+    :class:`ValueError` so handlers can separate input mistakes from
+    internal errors without parsing strings.
+    """
+
+
+def _parse_goal_file_arg(raw: str) -> str | None:
+    """Detect the exact ``--file <path>`` syntax and return the path string.
+
+    This is a *pure* syntax boundary — it never constructs a :class:`Path`
+    or touches the filesystem, so native Windows backslashes survive
+    byte-for-byte and can be asserted on POSIX CI.
+
+    Returns:
+
+    - ``None`` when ``raw`` is ordinary goal text (no leading ``--file``),
+      so the caller treats the whole string as inline goal text.
+    - The raw path string when ``raw`` is exactly ``--file <path>``. One
+      matching pair of surrounding single or double quotes is stripped from
+      the path; internal spaces and backslashes are preserved exactly.
+
+    Raises :class:`GoalInputError` when the ``--file`` token is present but
+    no path follows, or when the path's surrounding quotes are mismatched.
+
+    A slash command is not a shell: ``shlex.split()`` is deliberately
+    avoided because it discards backslashes in unquoted native Windows
+    paths (``C:\\Users\\Alice\\goal.txt``) and disagrees with
+    ``posix=False`` on quote handling. Treating everything after the
+    ``--file`` token as one remainder is shorter and host-independent.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if stripped == "--file" or stripped.startswith("--file "):
+        rest = stripped[len("--file"):].strip()
+        if not rest:
+            raise GoalInputError("Usage: /goal --file <path>")
+        # A leading quote opens a quoted path; require the matching closing
+        # quote to be the same character. This catches the full set of
+        # mismatched outer quotes — one side quoted, the other missing OR a
+        # different quote type — as a user typo rather than passing a stray
+        # quote through into the path. ``--file ""`` / ``--file ''`` is an
+        # empty quoted path, which is also a missing-path error.
+        if rest[0] in "\"'":
+            if len(rest) < 2 or rest[-1] != rest[0]:
+                raise GoalInputError("mismatched quotes around path")
+            rest = rest[1:-1]
+            if not rest:
+                raise GoalInputError("Usage: /goal --file <path>")
+            return rest
+        # Unquoted path: keep internal spaces and backslashes exactly.
+        return rest
+    return None
+
+
+def resolve_goal_input(
+    raw: str,
+    *,
+    cwd: str | Any = None,
+    allow_file: bool = True,
+) -> "tuple[str, GoalContract]":
+    """Resolve ``/goal`` input into a ``(headline, contract)`` pair.
+
+    Shared by the Classic CLI, TUI/Desktop backend, and messaging gateway
+    so file loading and inline contract parsing give one interpretation
+    everywhere. ``raw`` is the argument string after known ``/goal``
+    subcommands (``status``, ``pause``, ``draft ...``) have already been
+    classified and handled by the caller — this function never
+    re-dispatches, so a file whose content is ``status`` becomes a goal
+    named ``status``.
+
+    Parameters:
+
+    - ``raw`` — the text following ``/goal``. Either inline goal text or
+      exact ``--file <path>`` syntax.
+    - ``cwd`` — the host working directory to resolve a relative path
+      against. When ``None``, the process ``Path.cwd()`` is used (Classic
+      CLI). For SSH/Docker terminal backends whose workspace exists only
+      inside the backend, pass the session cwd; if that directory does
+      not exist on the Hermes host, a relative path is rejected rather
+      than silently falling back to the process cwd.
+    - ``allow_file`` — when ``False`` (messaging surfaces), exact
+      ``--file`` syntax is rejected *before* any path operation or file
+      I/O so a remote chat command can never read a backend file.
+
+    Returns ``(headline_or_source_text, contract)`` where the headline is
+    the goal text to persist and ``contract`` is the parsed
+    :class:`GoalContract` (possibly empty).
+
+    Raises :class:`GoalInputError` for every user-correctable failure;
+    handlers catch it, show the message, and return before mutating any
+    goal state. The function itself never touches ``GoalManager``.
+    """
+    from pathlib import Path
+
+    file_path = _parse_goal_file_arg(raw)
+    if file_path is None:
+        # Ordinary inline goal text — parse the completion contract from
+        # it directly. This matches the pre-file behavior and keeps inline
+        # parsing identical across every surface.
+        headline, contract = parse_contract(raw)
+        return headline or raw, contract
+
+    # --- file-backed input ---
+    if not allow_file:
+        raise GoalInputError(
+            "Reading a goal from a file is only available in the local "
+            "CLI, TUI, and Desktop — not from messaging platforms."
+        )
+
+    # Expand ~ as the Hermes backend process user (not the Desktop client).
+    # Path.expanduser() raises RuntimeError (not OSError) when it can't
+    # determine a home dir — e.g. ``~not-a-real-user`` against an unknown
+    # account, or no HOME on a stripped-down host. Convert it to an
+    # input error so the handlers' GoalInputError catch surfaces a clear
+    # message instead of an uncaught traceback.
+    try:
+        expanded = Path(file_path).expanduser()
+    except RuntimeError as exc:
+        raise GoalInputError(f"could not expand path {file_path!r}: {exc}")
+
+    if expanded.is_absolute():
+        goal_path = expanded
+    else:
+        if cwd is not None:
+            base = Path(cwd)
+            # A supplied cwd that doesn't exist on the Hermes host is the
+            # SSH/Docker case: the workspace lives only inside the terminal
+            # backend. Reject a relative path instead of silently falling
+            # back to the process cwd.
+            if not base.is_dir():
+                raise GoalInputError(
+                    f"relative path {file_path!r} cannot be resolved: "
+                    f"session directory {base} is not visible on the "
+                    "Hermes backend host. Use an absolute path instead."
+                )
+            goal_path = base / expanded
+        else:
+            goal_path = Path.cwd() / expanded
+
+    if not goal_path.exists():
+        raise GoalInputError(f"file not found: {goal_path}")
+    if not goal_path.is_file():
+        raise GoalInputError(f"not a regular file: {goal_path}")
+
+    try:
+        content = goal_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise GoalInputError(f"file is not valid UTF-8: {goal_path} ({exc})")
+    except OSError as exc:
+        raise GoalInputError(f"could not read {goal_path}: {exc}")
+
+    source_text = content.strip()
+    if not source_text:
+        raise GoalInputError(f"file is empty: {goal_path}")
+
+    headline, contract = parse_contract(source_text)
+    return headline or source_text, contract
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Dataclass
 # ──────────────────────────────────────────────────────────────────────
 

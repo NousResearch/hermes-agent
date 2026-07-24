@@ -86,3 +86,24 @@ async def test_help_keeps_non_telegram_slash_command_mentions_unchanged(monkeypa
     )
 
     assert "`/Linear`" in result
+
+
+def test_gateway_help_labels_goal_file_as_local_backend_only():
+    """The ``/goal --file`` help line must mark file input as local/backend
+    only. The gateway runtime rejects ``--file`` for messaging platforms
+    (see test_goal_file_command.py); the help text must tell the same story
+    rather than implying a remote chat user can read a backend file.
+
+    Reads from the same ``gateway_help_lines()`` the gateway help command
+    renders, so a drift between the hint and the runtime rejection surfaces
+    here instead of at a confused user.
+    """
+    from hermes_cli.commands import gateway_help_lines
+
+    goal_lines = [ln for ln in gateway_help_lines() if ln.startswith("`/goal")]
+    assert goal_lines, "no /goal line rendered in gateway help"
+    goal_line = goal_lines[0]
+    assert "--file" in goal_line
+    # The label must signal this surface is unavailable on messaging
+    # gateways, not advertise file reading to remote chat users.
+    assert "CLI/TUI/Desktop only" in goal_line

@@ -14372,9 +14372,21 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
-        # Otherwise — treat the remaining text as the new goal.
+        # Otherwise — treat the remaining text as the new goal. This includes
+        # the ``--file <path>`` form: the shared resolver reads the file
+        # relative to the session cwd and parses the completion contract so
+        # file and inline input get one interpretation. File content is never
+        # re-dispatched as a subcommand (subcommands were classified above
+        # from the original argument). A failed load is atomic: resolve fully
+        # before mutating state.
+        from hermes_cli.goals import GoalInputError, resolve_goal_input
+
         try:
-            state = mgr.set(arg)
+            goal_text, contract = resolve_goal_input(arg, cwd=_session_cwd(session))
+        except GoalInputError as exc:
+            return _err(rid, 4004, f"/goal: {exc}")
+        try:
+            state = mgr.set(goal_text, contract=contract if not contract.is_empty() else None)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
@@ -14383,6 +14395,8 @@ def _(rid, params: dict) -> dict:
             "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
+        if state.has_contract():
+            notice += "\nCompletion contract:\n" + state.contract.render_block()
         # Send the goal text as the kickoff prompt. The TUI client sees
         # {type: send, notice, message} → renders `notice` as a sys line,
         # then submits `message` as a user turn. The post-turn judge

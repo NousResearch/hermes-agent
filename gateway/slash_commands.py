@@ -2456,11 +2456,18 @@ class GatewaySlashCommandsMixin:
         else:
             # Inline `field: value` lines parse into a completion contract;
             # the remaining prose is the goal headline. Plain free-form goals
-            # (no such lines) behave exactly as before.
-            from hermes_cli.goals import parse_contract
+            # (no such lines) behave exactly as before. The shared resolver
+            # also rejects ``--file <path>`` here: messaging platforms must
+            # never read a file from the Hermes backend host, so
+            # ``allow_file=False`` fails BEFORE any path resolution or file
+            # I/O. Goal state and the kickoff FIFO are left untouched.
+            from hermes_cli.goals import GoalInputError, resolve_goal_input
 
-            headline, parsed = parse_contract(args)
-            args = headline or args
+            try:
+                headline, parsed = resolve_goal_input(args, allow_file=False)
+            except GoalInputError as exc:
+                return str(exc)
+            args = headline
             contract = parsed if not parsed.is_empty() else None
 
         # Otherwise — treat the remaining text as the new goal.

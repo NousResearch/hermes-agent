@@ -119,6 +119,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
+    CommandDef("ping", "Reply with 'pong' - verifies the inbound path is alive (used to detect silent Slack socket-mode drops)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),

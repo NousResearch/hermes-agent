@@ -11530,6 +11530,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
+        if canonical == "ping":
+            return await self._handle_ping_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
 
@@ -14632,6 +14635,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
 
+
+    async def _handle_ping_command(self, event: MessageEvent) -> str:
+        """Handle /ping - reply 'pong' to verify the inbound path is alive.
+
+        Designed as a 30-second liveness check for the silent Slack
+        socket-mode drop case (2026-06-07): the gateway process and
+        socket-mode WebSocket both look healthy (``is_active() == True``)
+        but inbound message events stop being dispatched to the agent.
+        If a real user types /ping and gets a 'pong' back within 30s, the
+        inbound path is alive. If no reply arrives, the socket is
+        silently dead and the user can recover with /hermes restart.
+        """
+        from datetime import datetime as _dt
+        return f"pong - gateway received your message at {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 
 

@@ -7018,6 +7018,9 @@ class TestGpt5ApiModeRouting:
         # Path-embedded azure string should still detect — we're ~substring matching
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
         assert agent._is_azure_openai_url() is True
+        # Modern (post-2024) Azure OpenAI resources use services.ai.azure.com
+        assert agent._is_azure_openai_url("https://my-resource.services.ai.azure.com/openai/v1") is True
+        assert agent._is_azure_openai_url("https://my-resource.services.ai.azure.com/") is True
 
 
 # ---------------------------------------------------------------------------

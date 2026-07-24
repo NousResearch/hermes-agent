@@ -137,6 +137,33 @@ class TestRequestHeaders:
         headers = copilot_request_headers()
         assert "Copilot-Vision-Request" not in headers
 
+    def test_openai_intent_included_when_no_model(self):
+        """Backward compat: model=None includes Openai-Intent."""
+        from hermes_cli.copilot_auth import copilot_request_headers
+        headers = copilot_request_headers()
+        assert headers["Openai-Intent"] == "conversation-edits"
+
+    def test_openai_intent_included_for_gpt5(self):
+        """GPT-5+ models need Responses API, include Openai-Intent."""
+        from hermes_cli.copilot_auth import copilot_request_headers
+        headers = copilot_request_headers(model="gpt-5.4")
+        assert headers["Openai-Intent"] == "conversation-edits"
+
+    def test_openai_intent_excluded_for_non_gpt(self):
+        """Non-GPT models (Claude, Gemini) use Chat Completions."""
+        from hermes_cli.copilot_auth import copilot_request_headers
+        for model in ("claude-sonnet-4.6", "gemini-3.1-pro-preview", "gpt-4o"):
+            headers = copilot_request_headers(model=model)
+            assert "Openai-Intent" not in headers, (
+                f"Openai-Intent should be absent for {model}"
+            )
+
+    def test_openai_intent_excluded_for_gpt5_mini(self):
+        """gpt-5-mini uses Chat Completions, not Responses API."""
+        from hermes_cli.copilot_auth import copilot_request_headers
+        headers = copilot_request_headers(model="gpt-5-mini")
+        assert "Openai-Intent" not in headers
+
 
 class TestCopilotDefaultHeaders:
     """The models.py copilot_default_headers uses copilot_auth."""

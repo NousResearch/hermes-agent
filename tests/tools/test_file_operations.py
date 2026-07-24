@@ -707,6 +707,7 @@ class TestSearchFilesFallbackHiddenPaths:
                 command,
                 shell=True,
                 text=True,
+                input=kwargs.get("stdin_data"),
                 capture_output=True,
             )
             return {
@@ -755,6 +756,114 @@ class TestSearchFilesFallbackHiddenPaths:
 
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+    def test_find_fallback_includes_empty_directories(self, tmp_path, monkeypatch):
+        """Fallback find should surface matching directories, including empty ones."""
+        root = tmp_path / "repo"
+        vault = root / "vault"
+        vault.mkdir(parents=True)
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("vault", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == [str(vault)]
+
+    def test_rg_search_supplements_matching_directories(self, monkeypatch):
+        """The rg fast path should add directory hits that rg --files omits."""
+        env = MagicMock()
+        env.cwd = "/"
+        ops = ShellFileOperations(env)
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("rg --files"):
+                return MagicMock(exit_code=0, stdout="")
+            if command.startswith("find "):
+                return MagicMock(exit_code=0, stdout="123 /repo/vault\n")
+            return MagicMock(exit_code=0, stdout="")
+
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in {"rg", "find"})
+        monkeypatch.setattr(ops, "_exec", fake_exec)
+
+        result = ops._search_files_rg("vault", "/repo", limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == ["/repo/vault"]
+
+    def test_rg_search_orders_files_and_directories_before_pagination(self, tmp_path, monkeypatch):
+        """Directory hits should participate in the global page ordering."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        older = root / "vault-old.txt"
+        newer = root / "vault-new.txt"
+        vault = root / "vault"
+        older.write_text("old", encoding="utf-8")
+        newer.write_text("new", encoding="utf-8")
+        vault.mkdir()
+        os.utime(older, (100, 100))
+        os.utime(newer, (200, 200))
+        os.utime(vault, (300, 300))
+
+        env = MagicMock()
+        env.cwd = "/"
+        ops = ShellFileOperations(env)
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("rg --files --sortr"):
+                return MagicMock(exit_code=0, stdout=f"{older}\n{newer}\n")
+            if command.startswith("find "):
+                return MagicMock(exit_code=0, stdout=f"300 {vault}\n")
+            if " -c " in command:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    text=True,
+                    input=kwargs.get("stdin_data"),
+                    capture_output=True,
+                )
+                return MagicMock(exit_code=completed.returncode, stdout=completed.stdout)
+            return MagicMock(exit_code=0, stdout="")
+
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in {"rg", "find", "python3"})
+        monkeypatch.setattr(ops, "_exec", fake_exec)
+
+        result = ops._search_files_rg("vault", str(root), limit=2, offset=0)
+
+        assert result.error is None
+        assert result.files == [str(vault), str(newer)]
+
+    def test_rg_search_uses_python_directory_fallback_without_find(self, tmp_path, monkeypatch):
+        """The rg fast path should still find directories when find is absent."""
+        root = tmp_path / "repo"
+        vault = root / "vault"
+        vault.mkdir(parents=True)
+
+        env = MagicMock()
+        env.cwd = "/"
+        ops = ShellFileOperations(env)
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("rg --files"):
+                return MagicMock(exit_code=0, stdout="")
+            if " -c " in command:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    text=True,
+                    input=kwargs.get("stdin_data"),
+                    capture_output=True,
+                )
+                return MagicMock(exit_code=completed.returncode, stdout=completed.stdout)
+            return MagicMock(exit_code=0, stdout="")
+
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in {"rg", "python3"})
+        monkeypatch.setattr(ops, "_exec", fake_exec)
+
+        result = ops._search_files_rg("vault", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == [str(vault)]
 
 
 class TestShellFileOpsWriteDenied:

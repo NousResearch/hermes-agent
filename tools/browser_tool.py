@@ -833,6 +833,22 @@ def _is_local_backend() -> bool:
     return terminal_backend in ("local", "")
 
 
+_BROWSERBASE_FEATURE_KEYS = frozenset({
+    "basic_stealth",
+    "advanced_stealth",
+    "keep_alive",
+    "custom_timeout",
+})
+
+
+def _has_browserbase_feature_advice(session_info: Dict[str, object],
+                                    features: Dict[str, object]) -> bool:
+    return (
+        session_info.get("backend") == "browserbase"
+        and bool(_BROWSERBASE_FEATURE_KEYS.intersection(features))
+    )
+
+
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
 
@@ -2022,6 +2038,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": None,
+        "backend": "local",
         "features": {"local": True},
     }
 
@@ -2036,6 +2053,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": cdp_url,
+        "backend": "cdp",
         "features": {"cdp_override": True},
     }
 
@@ -2094,10 +2112,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                 # Validate cloud provider returned a usable session
                 if not session_info or not isinstance(session_info, dict):
                     raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+                session_info = dict(session_info)
+                session_info.setdefault("backend", provider.name)
                 if session_info.get("cdp_url"):
                     # Some cloud providers (including Browser-Use v3) return an HTTP
                     # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
                 provider_name = type(provider).__name__
@@ -2974,6 +2993,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         _last_active_session_key[effective_task_id] = nav_session_key
         _copy_fallback_warning(response, result)
 
+        features = session_info.get("features", {})
+        if not isinstance(features, dict):
+            features = {}
+        show_browserbase_advice = _has_browserbase_feature_advice(session_info, features)
+
         # Detect common "blocked" page patterns from title/url
         blocked_patterns = [
             "access denied", "access to this page has been denied",
@@ -2985,18 +3009,23 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title_lower = title.lower()
 
         if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
+            warning = (
                 f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
                 "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
             )
+            if show_browserbase_advice:
+                warning += (
+                    "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
+                    "4) Some sites have very aggressive bot detection that may be unavoidable."
+                )
+            else:
+                warning += "3) Some sites have very aggressive bot detection that may be unavoidable."
+            response["bot_detection_warning"] = warning
 
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
-            features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            if show_browserbase_advice and not features.get("proxies"):
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                     "Consider upgrading Browserbase plan for proxy support."

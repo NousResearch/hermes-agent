@@ -151,6 +151,17 @@ class TestCatalog:
         assert classify_items_script_path() not in monitor.job_spec["prompt"]
         assert Path(classify_items_script_path()).name == "classify_items.py"
 
+    def test_loose_threads_entry_surfaces_unresolved_items(self):
+        from cron.suggestion_catalog import CATALOG
+
+        report = next(e for e in CATALOG if e.key == "catalog:loose-threads-report")
+        prompt = report.job_spec["prompt"]
+        assert report.job_spec["schedule"] == "15 8 * * *"
+        assert "questions asked but not answered" in prompt
+        assert "decisions raised but not made" in prompt
+        assert "revenue/deadline/blocker impact" in prompt
+        assert "[SILENT]" in prompt
+
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):

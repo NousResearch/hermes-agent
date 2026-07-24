@@ -138,6 +138,31 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   return Math.max(1, Math.round(layout));
 }
 
+/**
+ * True when the browser can create a *hardware-accelerated* WebGL context.
+ * Software renderers (llvmpipe, SwiftShader, softpipe) report WebGL support
+ * but lack the extensions regl needs — so we check the unmasked renderer
+ * string via WEBGL_debug_renderer_info.
+ */
+function _hasWebgl(): boolean {
+  try {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl2") || c.getContext("webgl");
+    if (!gl) return false;
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    if (ext) {
+      const renderer = gl
+        .getParameter(ext.UNMASKED_RENDERER_WEBGL)
+        .toLowerCase();
+      if (/llvmpipe|swiftshader|softpipe|software/.test(renderer))
+        return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function terminalFontSizeForWidth(layoutWidthPx: number): number {
   if (layoutWidthPx < 300) return 7;
   if (layoutWidthPx < 360) return 8;
@@ -769,7 +794,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
     // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
+    //
+    // Pre-check: probe for a real WebGL context before loading the addon.
+    // Software renderers (llvmpipe, SwiftShader-disabled VPS) may fail at
+    // context creation — the regl library inside @xterm/addon-webgl throws
+    // "(regl) webgl not supported" which can leave xterm in a broken state
+    // if the error escapes the synchronous try/catch.
+    const useWebgl = terminalTierWidthPx(host) >= 768 && _hasWebgl();
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();

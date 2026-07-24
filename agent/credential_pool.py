@@ -121,6 +121,22 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+EXHAUSTED_TTL_GEMINI_DAILY_QUOTA_SECONDS = 24 * 60 * 60  # 24 hours
+
+_GEMINI_POOL_PROVIDERS = frozenset({
+    "gemini",
+    "google",
+    "google-gemini",
+    "google-ai-studio",
+})
+_GEMINI_DAILY_QUOTA_MARKERS = (
+    "generate_content_free_tier_requests",
+    "free_tier_requests",
+)
+_GEMINI_DAILY_QUOTA_PHRASES = (
+    "daily quota",
+    "requests per day",
+)
 
 # Throttle window for the "no available entries" INFO line. Credential
 # selection runs on a hot path (every model call, plus auxiliary tasks like
@@ -295,6 +311,56 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
+def _flatten_error_context(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        parts: List[str] = []
+        for key, nested in value.items():
+            parts.append(str(key))
+            parts.extend(_flatten_error_context(nested))
+        return parts
+    if isinstance(value, (list, tuple, set)):
+        parts = []
+        for item in value:
+            parts.extend(_flatten_error_context(item))
+        return parts
+    return [str(value)]
+
+
+def is_gemini_daily_quota_error(
+    provider: Optional[str],
+    status_code: Optional[int],
+    *error_contexts: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True for explicit Gemini daily/free-tier quota exhaustion."""
+    if status_code != 429:
+        return False
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider not in _GEMINI_POOL_PROVIDERS:
+        return False
+
+    haystack = " ".join(
+        part
+        for context in error_contexts
+        for part in _flatten_error_context(context)
+    ).lower()
+    if not haystack:
+        return False
+
+    if any(marker in haystack for marker in _GEMINI_DAILY_QUOTA_MARKERS):
+        return True
+
+    quota_exhausted = "quota" in haystack and (
+        "exceeded" in haystack or "exhausted" in haystack
+    )
+    if quota_exhausted and "free tier" in haystack:
+        return True
+    return quota_exhausted and any(
+        phrase in haystack for phrase in _GEMINI_DAILY_QUOTA_PHRASES
+    )
+
+
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     """Best-effort parse for provider reset timestamps.
 
@@ -379,6 +445,16 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
     if reset_at is not None:
         return reset_at
+    if is_gemini_daily_quota_error(
+        getattr(entry, "provider", ""),
+        getattr(entry, "last_error_code", None),
+        {
+            "reason": getattr(entry, "last_error_reason", None),
+            "message": getattr(entry, "last_error_message", None),
+        },
+    ):
+        if entry.last_status_at:
+            return entry.last_status_at + EXHAUSTED_TTL_GEMINI_DAILY_QUOTA_SECONDS
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
     return None
@@ -668,6 +744,16 @@ class CredentialPool:
         persist: bool = True,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        marked_at = time.time()
+        if is_gemini_daily_quota_error(
+            self.provider,
+            status_code,
+            error_context,
+            normalized_error,
+        ) and "reset_at" not in normalized_error:
+            normalized_error["reset_at"] = (
+                marked_at + EXHAUSTED_TTL_GEMINI_DAILY_QUOTA_SECONDS
+            )
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
         # a revoked credential gets a 1-hour TTL cooldown and then re-enters
@@ -682,7 +768,7 @@ class CredentialPool:
         updated = replace(
             entry,
             last_status=terminal_status,
-            last_status_at=time.time(),
+            last_status_at=marked_at,
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),

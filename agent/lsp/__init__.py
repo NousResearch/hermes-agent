@@ -5,11 +5,13 @@ typescript-language-server, etc.) as subprocesses and pipes their
 ``textDocument/publishDiagnostics`` output into the post-write lint
 delta filter used by ``write_file`` and ``patch``.
 
-LSP is **gated on git workspace detection** — if the agent's cwd is
-inside a git repository, LSP runs against that workspace; otherwise the
-file_operations layer falls back to its existing in-process syntax
-checks.  This keeps users on user-home cwd's (e.g. Telegram gateway
-chats) from spawning daemons they don't need.
+LSP is disabled by default and must be enabled in config. When enabled,
+it is **gated on git workspace detection** — if either the agent's cwd or
+the edited file is inside a git repository, LSP runs against that
+workspace; otherwise the file_operations layer falls back to its existing
+in-process syntax checks. This keeps users whose cwd is their home
+directory (e.g. Telegram gateway chats) from spawning daemons they don't
+need.
 
 Public API:
 

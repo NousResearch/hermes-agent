@@ -8,7 +8,7 @@ toolchain.
 Strategies:
 
 - ``auto`` — attempt to install with the best available package
-  manager.  This is the default.
+  manager.  This requires explicit opt-in.
 - ``manual`` — never install; if a binary is missing, the server is
   silently skipped and the user is told about it via ``hermes lsp
   status``.

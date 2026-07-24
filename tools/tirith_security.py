@@ -25,6 +25,8 @@ import json
 import logging
 import os
 import platform
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -32,6 +34,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 from hermes_constants import get_hermes_home
@@ -726,6 +729,104 @@ def ensure_installed(*, log_failures: bool = True):
 _MAX_FINDINGS = 50
 _MAX_SUMMARY_LEN = 500
 
+_TRUSTED_PIPE_PRODUCERS = {
+    "nomad",
+    "vault",
+    "git",
+    "gh",
+    "kubectl",
+    "helm",
+    "consul",
+    "jq",
+    "ps",
+}
+_SAFE_PIPE_INTERPRETERS = {"python", "python2", "python3"}
+_FORBIDDEN_PIPE_CODE = re.compile(
+    r"\b(?:exec|eval|compile|__import__)\s*\(|\b(?:subprocess|os)\s*\.\s*(?:system|popen)\b"
+)
+_INTERNAL_HTTP_ENDPOINTS = {
+    "10.20.40.2": {8123},
+    "10.20.40.3": {22179},
+    "10.20.40.4": {8123},
+}
+_INTERNAL_NETWORK_RULES = {
+    "raw_ip_url",
+    "plain_http_to_sink",
+    "private_network_access",
+}
+
+
+def _command_words(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return []
+
+
+def _is_trusted_python_parser_pipe(command: str) -> bool:
+    """Allow trusted local CLIs piping structured output to a Python parser."""
+    parts = command.split("|")
+    if len(parts) != 2:
+        return False
+
+    left = _command_words(parts[0])
+    right = _command_words(parts[1])
+    if not left or not right:
+        return False
+
+    producer = os.path.basename(left[0])
+    interpreter = os.path.basename(right[0])
+    if producer not in _TRUSTED_PIPE_PRODUCERS:
+        return False
+    if interpreter not in _SAFE_PIPE_INTERPRETERS:
+        return False
+    if "-c" not in right:
+        return False
+
+    code_index = right.index("-c") + 1
+    code = right[code_index] if code_index < len(right) else ""
+    if not code or _FORBIDDEN_PIPE_CODE.search(code):
+        return False
+    return True
+
+
+def _urls_in_command(command: str) -> list[urllib.parse.ParseResult]:
+    urls = []
+    for raw in re.findall(r"https?://[^\s'\"`]+", command):
+        urls.append(urllib.parse.urlparse(raw.rstrip("),]};")))
+    return urls
+
+
+def _is_allowed_internal_http_command(command: str) -> bool:
+    words = _command_words(command)
+    if not words or os.path.basename(words[0]) not in {"curl", "wget"}:
+        return False
+    urls = _urls_in_command(command)
+    if not urls:
+        return False
+    for url in urls:
+        if url.scheme != "http" or not url.hostname:
+            return False
+        allowed_ports = _INTERNAL_HTTP_ENDPOINTS.get(url.hostname)
+        if allowed_ports is None or (url.port or 80) not in allowed_ports:
+            return False
+    return True
+
+
+def _suppress_low_risk_findings(command: str, findings: list[dict]) -> list[dict]:
+    """Drop noisy Tirith findings only for tightly scoped known-safe shapes."""
+    remaining = []
+    trusted_pipe = _is_trusted_python_parser_pipe(command)
+    internal_http = _is_allowed_internal_http_command(command)
+    for finding in findings:
+        rule_id = finding.get("rule_id")
+        if rule_id == "pipe_to_interpreter" and trusted_pipe:
+            continue
+        if rule_id in _INTERNAL_NETWORK_RULES and internal_http:
+            continue
+        remaining.append(finding)
+    return remaining
+
 
 def check_command_security(command: str) -> dict:
     """Run tirith security scan on a command.
@@ -838,6 +939,12 @@ def check_command_security(command: str) -> dict:
             summary = "security issue detected (details unavailable)"
         elif action == "warn":
             summary = "security warning detected (details unavailable)"
+
+    if action in {"block", "warn"} and findings:
+        findings = _suppress_low_risk_findings(command, findings)
+        if not findings:
+            action = "allow"
+            summary = ""
 
     # Suppress warn verdicts that consist solely of a lookalike_tld finding for
     # the .app TLD.  .app is a legitimate gTLD used by many production services

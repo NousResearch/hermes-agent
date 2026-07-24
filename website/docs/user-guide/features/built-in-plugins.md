@@ -259,6 +259,8 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 | Endpoint | Purpose |
 |---|---|
 | `GET /achievements` | Full catalog with per-badge unlock state (returns a pending placeholder while the first cold scan is running) |
+| `GET /achievements/summary` | Compact achievement profile for agent context injection: strengths, gaps, top tier, and unlocked IDs |
+| `GET /export?format=json\|markdown\|svg&state=unlocked\|discovered\|secret` | Export the current snapshot as JSON, a Markdown badge table, or an SVG badge sheet; defaults to JSON and all states |
 | `GET /scan-status` | State of the background scanner: `idle` / `running` / `failed`, last duration, run count |
 | `GET /recent-unlocks` | Twenty most recently unlocked badges, newest first |
 | `GET /sessions/{id}/badges` | Badges earned primarily in one specific session |
@@ -272,6 +274,7 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 | `state.json` | Unlock history: which badges you've earned and when. Stable across Hermes updates. |
 | `scan_snapshot.json` | Last completed scan payload (served immediately on dashboard load) |
 | `scan_checkpoint.json` | Per-session stats cache keyed by fingerprint (makes warm rescans fast) |
+| `agent_summary.json` | Compact profile written after each completed scan for agent and external-tool context without the dashboard running. |
 
 **Performance notes:**
 

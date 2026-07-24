@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $composerAttachments,
   addComposerAttachment,
   clearSessionDraft,
   type ComposerAttachment,
+  createComposerAttachmentScope,
+  mainComposerScope,
   migrateSessionDraft,
   removeComposerAttachment,
+  revokeAttachmentPreviewUrls,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
   takeSessionDraft,
@@ -16,6 +19,53 @@ import {
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }
 }
+
+function stubRevokeObjectURL() {
+  const revokeObjectURL = vi.fn()
+  vi.stubGlobal('URL', { ...URL, revokeObjectURL })
+
+  return revokeObjectURL
+}
+
+describe('blob preview URL ownership handoff', () => {
+  afterEach(() => {
+    $composerAttachments.set([])
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('direct-submit handoff keeps blob previews across clear, then revokes when the optimistic consumer is discarded', () => {
+    // Mirrors use-composer-submit: clone → clear({ retainPreviewUrls }) → dispatch clone.
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-direct-submit-1'
+    addComposerAttachment(
+      attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl })
+    )
+
+    const submittedAttachments = $composerAttachments.get().map(item => ({ ...item }))
+    mainComposerScope.clear({ retainPreviewUrls: true })
+
+    expect($composerAttachments.get()).toEqual([])
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    expect(submittedAttachments[0]?.previewUrl).toBe(blobUrl)
+
+    // Optimistic bubble discarded / replaced without restoring into the composer.
+    revokeAttachmentPreviewUrls(submittedAttachments)
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+
+  it('still revokes blob previews on a normal clear (no handoff)', () => {
+    const revokeObjectURL = stubRevokeObjectURL()
+    const blobUrl = 'blob:hermes-clear-1'
+    const scope = createComposerAttachmentScope()
+    scope.add(attachment({ id: 'image:x', kind: 'image', previewUrl: blobUrl }))
+
+    scope.clear()
+
+    expect(scope.$attachments.get()).toEqual([])
+    expect(revokeObjectURL).toHaveBeenCalledWith(blobUrl)
+  })
+})
 
 describe('updateComposerAttachment', () => {
   afterEach(() => {

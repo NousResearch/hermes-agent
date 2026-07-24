@@ -7,7 +7,8 @@ import {
   type DroppedFile,
   extractDroppedFiles,
   HERMES_PATHS_MIME,
-  partitionDroppedFiles
+  partitionDroppedFiles,
+  resolveImageAttachmentPreview
 } from './use-composer-actions'
 
 // A Finder/Explorer drop carries a native File handle; an in-app drag (project
@@ -242,5 +243,51 @@ describe('attachmentPreviewDataUrl', () => {
     $connection.set({ mode: 'remote' } as never)
 
     await expect(attachmentPreviewDataUrl('/home/gateway/shot.png')).resolves.toBe(REMOTE_PREVIEW)
+  })
+})
+
+describe('resolveImageAttachmentPreview', () => {
+  const LOCAL_PREVIEW = 'data:image/png;base64,bG9jYWw='
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    $connection.set(null)
+  })
+
+  it('uses an object URL for an in-hand File/Blob (OS Explorer drop) and skips IPC base64', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+    const createObjectURL = vi.fn(() => 'blob:hermes-preview-1')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() })
+
+    const file = new File([new Uint8Array([1, 2, 3, 4])], 'Lattice.png', { type: 'image/png' })
+    const preview = await resolveImageAttachmentPreview('C:\\Users\\Administrator\\Desktop\\Lattice.png', file)
+
+    expect(preview).toBe('blob:hermes-preview-1')
+    expect(createObjectURL).toHaveBeenCalledWith(file)
+    // The freeze path: never base64-load the dropped image over IPC.
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('falls back to IPC data-URL preview when only a path is available (paperclip)', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    await expect(resolveImageAttachmentPreview('/Users/me/Pictures/pic.png')).resolves.toBe(LOCAL_PREVIEW)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/Pictures/pic.png')
+  })
+
+  it('ignores an empty Blob and falls back to the path preview', async () => {
+    const readFileDataUrl = vi.fn(async () => LOCAL_PREVIEW)
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+
+    const empty = new Blob([])
+
+    await expect(resolveImageAttachmentPreview('/tmp/shot.png', empty)).resolves.toBe(LOCAL_PREVIEW)
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/shot.png')
   })
 })

@@ -37,6 +37,15 @@ describe('optimisticAttachmentRef', () => {
     expect(ref).toBe('@image:/tmp/shot.png')
   })
 
+  it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
+    const blobUrl = 'blob:https://desktop/preview-1'
+    const ref = optimisticAttachmentRef(
+      attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
+    )
+
+    expect(ref).toBe(`![Lattice.png](${blobUrl})`)
+  })
+
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'file', refText: '@file:src/a.ts', previewUrl: DATA_URL }))).toBe(
       '@file:src/a.ts'

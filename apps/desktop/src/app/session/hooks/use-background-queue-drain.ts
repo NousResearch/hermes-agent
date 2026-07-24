@@ -130,7 +130,8 @@ export function useBackgroundQueueDrain({
           }
 
           drainFailuresRef.current.delete(liveEntry.id)
-          removeQueuedPrompt(sessionKey, liveEntry.id)
+          // Submit owns blob: previews after a successful drain handoff.
+          removeQueuedPrompt(sessionKey, liveEntry.id, { retainPreviewUrls: true })
           resetBrowseState(runtimeSessionId)
 
           return true

@@ -1571,6 +1571,34 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+def _is_degraded_send_rejection(result: object) -> bool:
+    """True when adapter.send() refused the send because its path is degraded.
+
+    Telegram short-circuits send() with ``SendResult(success=False,
+    error="send_path_degraded", retryable=True)`` while its first getUpdates
+    is still in flight (#66589). That failure means the message never left
+    the process, so lifecycle notification markers must survive it.
+    """
+    return (
+        result is not None
+        and getattr(result, "success", True) is False
+        and getattr(result, "error", None) == "send_path_degraded"
+    )
+
+
+# Maximum time to wait for adapters with a degraded-send gate to become
+# ready before sending restart/startup lifecycle notifications. Set just
+# above the Telegram polling progress verifier's 60s budget so a
+# slow-but-recovering first getUpdates still beats this deadline.
+_STARTUP_LIFECYCLE_READY_TIMEOUT = 65.0
+
+# Bound for the background retry that delivers lifecycle notifications whose
+# startup send was rejected with send_path_degraded. Generous because the
+# adapter already survived the startup wait; still finite so a wedged
+# adapter can't keep a stale marker eligible indefinitely.
+_DEFERRED_LIFECYCLE_RETRY_TIMEOUT = 120.0
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -3397,6 +3425,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # marker-missing fallback only suppresses a /restart when we KNOW we
         # just came out of a restart cycle — never on a genuine fresh boot.
         self._booted_from_restart: bool = False
+        # Number of home-channel startup sends rejected with
+        # "send_path_degraded" by the most recent
+        # _send_home_channel_startup_notifications() call. Lets start()
+        # decide whether the planned-restart marker must survive for the
+        # deferred retry (#66589).
+        self._last_home_notify_degraded: int = 0
+        # Background task delivering lifecycle notifications retained after a
+        # degraded startup send. Tracked so it isn't garbage-collected early.
+        self._deferred_lifecycle_retry_task: Optional[asyncio.Task] = None
         self._stop_task: Optional[asyncio.Task] = None
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
@@ -8365,6 +8402,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Notify the chat that initiated /restart that the gateway is back.
         chat_restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
+
+        # Wait for adapters that use a degraded-send gate (e.g. Telegram's
+        # _send_path_degraded) to become fully ready before sending
+        # lifecycle notifications. The flag is only cleared after the first
+        # successful getUpdates, which can take well over the 1.0s settle
+        # above on networks requiring fallback IPs — Telegram's own polling
+        # verifier allows 60s. Only wait when a lifecycle notification is
+        # actually pending, so normal startup is unaffected (#66589).
+        if connected_count > 0 and (
+            _restart_notification_pending() or planned_restart_notification_pending
+        ):
+            await self._wait_for_degraded_send_paths()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
@@ -8380,12 +8429,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # in .restart_notify.json, so keep that lifecycle in the originating
         # chat/topic instead of also leaking it to the configured home channel.
         if planned_restart_notification_pending:
+            delivered: set[tuple[str, str, Optional[str]]] = set()
             try:
-                await self._send_home_channel_startup_notifications(
+                delivered = await self._send_home_channel_startup_notifications(
                     skip_targets=None,
                 )
             finally:
-                _clear_planned_restart_notification()
+                # Retain the marker when nothing was delivered and at least
+                # one send was rejected with send_path_degraded, so the
+                # deferred retry can still deliver it (#66589). Deleting the
+                # only durable record after a refused send would silently
+                # drop the promised notification.
+                if delivered or not self._last_home_notify_degraded:
+                    _clear_planned_restart_notification()
+
+        # If a lifecycle marker survived startup because the send path was
+        # still degraded, retry delivery in the background once the adapter
+        # reports readiness instead of dropping the notification.
+        self._schedule_deferred_lifecycle_retry()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -16997,12 +17058,116 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
-    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
+    async def _wait_for_degraded_send_paths(self, timeout: Optional[float] = None) -> None:
+        """Wait until adapters that gate sends behind a degraded flag are ready.
+
+        Telegram sets ``_send_path_degraded`` while its first getUpdates is in
+        flight and clears it on the first successful poll; sends attempted in
+        that window are rejected with ``send_path_degraded`` (#66589). Waiting
+        here lets restart/startup lifecycle notifications survive networks
+        where the first poll needs fallback-IP discovery and takes many
+        seconds.
+
+        Event-driven when the adapter exposes ``_polling_progress_event`` —
+        that event is recreated every polling generation, so it is re-fetched
+        each round and waited in short slices. Adapters that expose the flag
+        without the event fall back to short polling. Only invoked from
+        ``start()`` when a lifecycle notification is actually pending, so
+        normal startup pays nothing for this.
+        """
+        if timeout is None:
+            timeout = _STARTUP_LIFECYCLE_READY_TIMEOUT
+        deadline = time.monotonic() + timeout
+        for platform, adapter in self.adapters.items():
+            if not hasattr(adapter, "_send_path_degraded"):
+                continue
+            platform_name = getattr(platform, "value", platform)
+            logged_wait = False
+            while getattr(adapter, "_send_path_degraded", False):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "%s adapter send path still degraded after %.0fs; "
+                        "sending lifecycle notifications anyway",
+                        platform_name, timeout,
+                    )
+                    break
+                if not logged_wait:
+                    logged_wait = True
+                    logger.info(
+                        "Waiting for %s adapter send path to become ready "
+                        "before sending lifecycle notifications",
+                        platform_name,
+                    )
+                progress = getattr(adapter, "_polling_progress_event", None)
+                if isinstance(progress, asyncio.Event):
+                    try:
+                        # Short slices: the event is recreated each polling
+                        # generation, so re-check the flag and re-fetch it
+                        # often rather than sleeping on a stale event.
+                        await asyncio.wait_for(
+                            progress.wait(), timeout=min(2.0, remaining)
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    await asyncio.sleep(min(0.5, remaining))
+
+    def _schedule_deferred_lifecycle_retry(self) -> None:
+        """Retry lifecycle notifications whose startup send was refused.
+
+        start() keeps .restart_notify.json / .restart_pending.json when the
+        send was rejected with send_path_degraded (#66589). When no marker
+        survived there is nothing to do.
+        """
+        if not (_restart_notification_pending() or _planned_restart_notification_pending()):
+            return
+        if self._deferred_lifecycle_retry_task is not None and not self._deferred_lifecycle_retry_task.done():
+            return
+        logger.info("Scheduling deferred lifecycle notification retry")
+        self._deferred_lifecycle_retry_task = asyncio.create_task(
+            self._retry_deferred_lifecycle_notifications()
+        )
+
+    async def _retry_deferred_lifecycle_notifications(self) -> None:
+        """Deliver retained lifecycle notifications once adapters are ready.
+
+        Waits (bounded) for the degraded send paths to clear, then retries
+        delivery exactly once per marker and clears any leftovers so a stale
+        marker can't produce a spurious "gateway restarted" message after a
+        future unrelated restart.
+        """
+        try:
+            await self._wait_for_degraded_send_paths(
+                timeout=_DEFERRED_LIFECYCLE_RETRY_TIMEOUT
+            )
+            if _restart_notification_pending():
+                # Second refusal must not keep the marker: this is the last
+                # chance, and a permanent marker is worse than a logged drop.
+                await self._send_restart_notification(retain_marker_on_degraded=False)
+        except Exception:
+            logger.warning("Deferred restart-notification retry failed", exc_info=True)
+            (_hermes_home / ".restart_notify.json").unlink(missing_ok=True)
+        try:
+            if _planned_restart_notification_pending():
+                try:
+                    await self._send_home_channel_startup_notifications(skip_targets=None)
+                finally:
+                    _clear_planned_restart_notification()
+        except Exception:
+            logger.warning("Deferred home-channel notification retry failed", exc_info=True)
+            _clear_planned_restart_notification()
+
+    async def _send_restart_notification(self, *, retain_marker_on_degraded: bool = True) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
             return None
 
+        # Set when the send was refused with send_path_degraded: the message
+        # never left the process, so the marker — the only durable record of
+        # the promised notification — must survive for the deferred retry.
+        retain_marker = False
         try:
             data = json.loads(notify_path.read_text())
             platform_str = data.get("platform")
@@ -17049,6 +17214,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # we must inspect the result before claiming success — otherwise
             # the log line is misleading and hides real delivery failures.
             if result is not None and getattr(result, "success", True) is False:
+                if retain_marker_on_degraded and _is_degraded_send_rejection(result):
+                    retain_marker = True
+                    logger.warning(
+                        "Restart notification to %s:%s refused (send_path_degraded); "
+                        "marker retained for deferred retry",
+                        platform_str,
+                        chat_id,
+                    )
+                    return None
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
@@ -17067,7 +17241,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Restart notification failed: %s", e)
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if not retain_marker:
+                notify_path.unlink(missing_ok=True)
 
     async def _send_home_channel_startup_notifications(
         self,
@@ -17083,6 +17258,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+        # Read by start() to decide whether the planned-restart marker must
+        # survive for the deferred retry: a send_path_degraded rejection
+        # means the message never left the process (#66589).
+        self._last_home_notify_degraded = 0
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -17125,6 +17304,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         result = await adapter.send(str(home.chat_id), message)
                 if result is not None and getattr(result, "success", True) is False:
+                    if _is_degraded_send_rejection(result):
+                        self._last_home_notify_degraded += 1
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
                         platform.value,

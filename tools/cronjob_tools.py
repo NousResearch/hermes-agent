@@ -32,6 +32,7 @@ from cron.jobs import (
     resolve_job_ref,
     resume_job,
     update_job,
+    normalize_repeat,
 )
 
 
@@ -360,17 +361,30 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
         raw_items = [skills]
-    else:
+    elif isinstance(skills, dict):
+        raise TypeError(
+            f"skills must be a list of strings, got a mapping: {skills!r}. "
+            "Pass skill names as a list, e.g. skills=['my-skill']."
+        )
+    elif isinstance(skills, (list, tuple)):
         raw_items = list(skills)
+    else:
+        raise TypeError(
+            f"skills must be a list of strings, got {type(skills).__name__}: {skills!r}. "
+            "Pass skill names as a list, e.g. skills=['my-skill']."
+        )
 
     normalized: List[str] = []
     for item in raw_items:
-        text = str(item or "").strip()
+        if not isinstance(item, str):
+            raise TypeError(
+                f"skills items must be strings, got {type(item).__name__}: {item!r}. "
+                "Pass skill names as strings, e.g. skills=['my-skill']."
+            )
+        text = item.strip()
         if text and text not in normalized:
             normalized.append(text)
     return normalized
-
-
 
 
 def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
@@ -704,6 +718,10 @@ def cronjob(
                     )
             elif not prompt and not canonical_skills:
                 return tool_error("create requires either prompt or at least one skill", success=False)
+
+            # Validate repeat type early
+            repeat = normalize_repeat(repeat)
+
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -949,7 +967,7 @@ def cronjob(
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
-                normalized_repeat = None if repeat <= 0 else repeat
+                normalized_repeat = normalize_repeat(repeat)
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state

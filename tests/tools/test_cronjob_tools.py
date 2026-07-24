@@ -528,6 +528,51 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
 
+    def test_create_coerces_string_repeat(self):
+        """repeat='5' (string) is coerced to int 5 in the stored job."""
+        from cron.jobs import get_job
+        created = json.loads(cronjob(
+            action="create", prompt="Check", schedule="every 1h", repeat="5"))
+        assert created["success"] is True
+        assert get_job(created["job_id"])["repeat"]["times"] == 5
+
+    def test_create_rejects_non_numeric_repeat(self):
+        """repeat='abc' (non-numeric string) is rejected and no job is created."""
+        result = json.loads(cronjob(
+            action="create", prompt="Check", schedule="every 1h", repeat="abc"))
+        assert result["success"] is False
+        # no job created
+        assert json.loads(cronjob(action="list"))["count"] == 0
+
+    def test_update_coerces_string_repeat(self):
+        """update with repeat='5' (string) is coerced to int 5 in the stored job."""
+        from cron.jobs import get_job
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        updated = json.loads(cronjob(
+            action="update", job_id=created["job_id"], repeat="5"))
+        assert updated["success"] is True
+        assert get_job(created["job_id"])["repeat"]["times"] == 5
+
+    def test_update_rejects_non_numeric_repeat(self):
+        """update with repeat='abc' (non-numeric string) is rejected and the job is not updated."""
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        result = json.loads(cronjob(
+            action="update", job_id=created["job_id"], repeat="abc"))
+        assert result["success"] is False
+
+    def test_create_rejects_dict_skills(self):
+        """skills={'blogwatcher': 1} (dict) is rejected and no job is created."""
+        result = json.loads(cronjob(
+            action="create", skills={"blogwatcher": 1}, schedule="every 1h"))
+        assert result["success"] is False
+        assert json.loads(cronjob(action="list"))["count"] == 0
+
+    def test_create_rejects_non_string_skill_element(self):
+        """skills=[123] (non-string element) is rejected and no job is created."""
+        result = json.loads(cronjob(
+            action="create", skills=[123], schedule="every 1h"))
+        assert result["success"] is False
+
 
 # =========================================================================
 # Per-job model/provider override resolution

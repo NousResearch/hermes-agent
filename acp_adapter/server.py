@@ -79,6 +79,7 @@ from agent.context_compressor import (
     ContextCompressor,
 )
 from tools.approval import (
+    _get_approval_timeout,
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
 )
@@ -1536,6 +1537,7 @@ class HermesACPAgent(acp.Agent):
                     conn.request_permission,
                     loop,
                     session_id,
+                    timeout=float(_get_approval_timeout()),
                     auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
             except Exception:

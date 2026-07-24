@@ -33,7 +33,13 @@ class EditProposal:
     arguments: dict[str, Any]
 
 
-EditApprovalRequester = Callable[[EditProposal], bool]
+@dataclass(frozen=True)
+class EditApprovalDecision:
+    approved: bool
+    reason: str = "denied"
+
+
+EditApprovalRequester = Callable[[EditProposal], bool | EditApprovalDecision]
 
 _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar(
     "ACP_EDIT_APPROVAL_REQUESTER",
@@ -251,12 +257,22 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
         return None
 
     try:
-        approved = bool(requester(proposal))
+        decision = requester(proposal)
     except Exception as exc:
         logger.warning("ACP edit approval requester failed: %s", exc)
-        approved = False
+        decision = EditApprovalDecision(False, "denied")
 
-    if approved:
+    if isinstance(decision, EditApprovalDecision):
+        if decision.approved:
+            return None
+        if decision.reason == "timed_out":
+            return json.dumps(
+                {"error": "Edit approval timed out before the ACP client responded; file was not modified."},
+                ensure_ascii=False,
+            )
+        return json.dumps({"error": "Edit approval denied by ACP client; file was not modified."}, ensure_ascii=False)
+
+    if bool(decision):
         return None
     return json.dumps({"error": "Edit approval denied by ACP client; file was not modified."}, ensure_ascii=False)
 
@@ -322,17 +338,18 @@ def make_acp_edit_approval_requester(
             log_message="Edit approval request: failed to schedule on loop",
         )
         if future is None:
-            return False
+            return EditApprovalDecision(False, "denied")
         try:
             response = future.result(timeout=timeout)
         except (FutureTimeout, Exception) as exc:
             future.cancel()
             logger.warning("Edit approval request timed out or failed: %s", exc)
-            return False
+            return EditApprovalDecision(False, "timed_out" if isinstance(exc, FutureTimeout) else "denied")
         outcome = getattr(response, "outcome", None)
-        return (
+        approved = (
             getattr(outcome, "outcome", None) == "selected"
             and getattr(outcome, "option_id", None) == "allow_once"
         )
+        return EditApprovalDecision(approved, "denied")
 
     return _requester

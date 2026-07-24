@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from acp_adapter.edit_approval import (
+    EditApprovalDecision,
     EditProposal,
     build_acp_edit_tool_call,
     clear_edit_approval_requester,
+    make_acp_edit_approval_requester,
     set_edit_approval_requester,
     should_auto_approve_edit,
 )
@@ -128,6 +131,25 @@ def test_requester_exception_denies_and_does_not_mutate(tmp_path):
 
     assert "error" in result
     assert "Edit approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_timeout_decision_surfaces_timeout_error_and_does_not_mutate(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    set_edit_approval_requester(lambda _proposal: EditApprovalDecision(False, "timed_out"))
+
+    result = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-timeout",
+        )
+    )
+
+    assert "error" in result
+    assert "timed out" in result["error"]
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
@@ -267,3 +289,41 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+
+
+def test_make_requester_timeout_returns_timeout_decision():
+    class _Future:
+        def result(self, timeout=None):
+            raise TimeoutError("timed out")
+
+        def cancel(self):
+            return None
+
+    async def _request_permission(**kwargs):
+        return None
+
+    requester = make_acp_edit_approval_requester(
+        _request_permission,
+        MagicMock(),
+        "session-1",
+        timeout=12.0,
+    )
+
+    proposal = EditProposal(
+        tool_name="write_file",
+        path="demo.txt",
+        old_text="before\n",
+        new_text="after\n",
+        arguments={"path": "demo.txt", "content": "after\n"},
+    )
+
+    def _schedule(coro, loop, logger=None, log_message=None):
+        coro.close()
+        return _Future()
+
+    with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_schedule):
+        decision = requester(proposal)
+
+    assert isinstance(decision, EditApprovalDecision)
+    assert decision.approved is False
+    assert decision.reason == "timed_out"

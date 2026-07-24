@@ -229,7 +229,11 @@ class _EditCapableProvider(ImageGenProvider):
         return "editcap"
 
     def capabilities(self) -> Dict[str, Any]:
-        return {"modalities": ["text", "image"], "max_reference_images": 4}
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 4,
+            "supported_controls": ["quality"],
+        }
 
     def generate(self, prompt, aspect_ratio="landscape", *, image_url=None,
                  reference_image_urls=None, **kwargs):
@@ -238,6 +242,7 @@ class _EditCapableProvider(ImageGenProvider):
             "aspect_ratio": aspect_ratio,
             "image_url": image_url,
             "reference_image_urls": reference_image_urls,
+            "controls": kwargs,
         }
         return {
             "success": True, "image": "/tmp/out.png", "model": "editcap-1",
@@ -279,6 +284,23 @@ class TestPluginDispatchImageToImage:
         assert out["modality"] == "image"
         assert provider.received["image_url"] == "https://in/src.png"
         assert provider.received["reference_image_urls"] == ["https://in/ref.png"]
+
+    def test_dispatch_forwards_advertised_control(self, cfg_home, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as reg
+
+        provider = _EditCapableProvider()
+        reg.register_provider(provider)
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "editcap")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr(reg, "get_provider", lambda n: provider if n == "editcap" else None)
+
+        raw = image_tool._dispatch_to_plugin_provider("a dog", "landscape", quality="high")
+
+        assert raw is not None
+        assert json.loads(raw)["success"] is True
+        assert provider.received["controls"] == {"quality": "high"}
 
     def test_dispatch_text_only_when_no_image(self, cfg_home, monkeypatch):
         import tools.image_generation_tool as image_tool
@@ -333,7 +355,11 @@ class _PluginBothProvider(ImageGenProvider):
         return "both-v1"
 
     def capabilities(self) -> Dict[str, Any]:
-        return {"modalities": ["text", "image"], "max_reference_images": 5}
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 5,
+            "supported_controls": ["quality"],
+        }
 
     def generate(self, prompt, aspect_ratio="landscape", *, image_url=None,
                  reference_image_urls=None, **kwargs):
@@ -372,6 +398,34 @@ class TestDynamicSchema:
         desc = _build_dynamic_image_schema()["description"]
         assert "image-to-image / editing" in desc
         assert "up to 5 reference image(s)" in desc
+
+    def test_plugin_schema_exposes_only_advertised_controls(self, cfg_home, monkeypatch):
+        from tools.image_generation_tool import _build_dynamic_image_schema
+        from agent import image_gen_registry as reg
+
+        _write_cfg(cfg_home, {"image_gen": {"provider": "both"}})
+        reg.register_provider(_PluginBothProvider())
+        self._no_discovery(monkeypatch)
+
+        properties = _build_dynamic_image_schema()["parameters"]["properties"]
+        assert "quality" in properties
+        assert {"size", "n", "output_format", "mask_image"}.isdisjoint(properties)
+
+    def test_registry_shallow_override_preserves_core_parameters(self, cfg_home, monkeypatch):
+        from tools.registry import discover_builtin_tools, registry
+        from agent import image_gen_registry as reg
+
+        _write_cfg(cfg_home, {"image_gen": {"provider": "both"}})
+        reg.register_provider(_PluginBothProvider())
+        self._no_discovery(monkeypatch)
+        discover_builtin_tools()
+
+        definitions = registry.get_definitions({"image_generate"}, quiet=True)
+        schema = definitions[0]["function"]
+        properties = schema["parameters"]["properties"]
+        assert {"prompt", "aspect_ratio", "image_url", "reference_image_urls"} <= set(properties)
+        assert "quality" in properties
+        assert {"size", "n", "output_format", "mask_image"}.isdisjoint(properties)
 
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry

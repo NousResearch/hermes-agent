@@ -95,6 +95,29 @@ class TestAvailability:
 
 
 class TestGenerate:
+    def test_per_call_controls_forward_to_codex_payload(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, **kwargs):
+            captured.update(kwargs)
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+        result = provider.generate(
+            "draw a variant",
+            size="1024x1024",
+            quality="high",
+            output_format="webp",
+        )
+
+        assert result["success"] is True
+        assert captured["size"] == "1024x1024"
+        assert captured["quality"] == "high"
+        assert captured["output_format"] == "webp"
+        assert result["output_format"] == "webp"
+        assert "n" not in provider.capabilities()["supported_controls"]
+
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         result = provider.generate("a cat")
@@ -130,7 +153,7 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
+        def _collect(token, *, prompt, size, quality, output_format="png", input_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
@@ -162,6 +185,20 @@ class TestGenerate:
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
 
+    def test_responses_payload_includes_requested_controls_without_n(self):
+        payload = codex_plugin._build_responses_payload(
+            prompt="a cat",
+            size="1024x1024",
+            quality="high",
+            output_format="webp",
+        )
+
+        tool = payload["tools"][0]
+        assert tool["size"] == "1024x1024"
+        assert tool["quality"] == "high"
+        assert tool["output_format"] == "webp"
+        assert "n" not in tool
+
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
         assert caps["modalities"] == ["text", "image"]
@@ -174,7 +211,7 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
+        def _collect(token, *, prompt, size, quality, output_format="png", input_images=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
@@ -209,7 +246,7 @@ class TestGenerate:
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         captured = {}
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
+        def _collect(token, *, prompt, size, quality, output_format="png", input_images=None):
             captured["input_images"] = input_images
             return _b64_png()
 
@@ -223,6 +260,25 @@ class TestGenerate:
         assert result["input_image_count"] == 16
         assert len(captured["input_images"]) == 16
         assert captured["input_images"][-1]["image_url"] == "https://example.com/ref-15.png"
+
+    def test_codex_local_image_never_opens_blocked_credential(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"access_token":"secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        opened = []
+        original_read_bytes = Path.read_bytes
+
+        def _spy_read_bytes(path):
+            opened.append(path)
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", _spy_read_bytes)
+        with pytest.raises(ValueError, match="credential store"):
+            codex_plugin._local_image_to_data_url(str(auth_json))
+        assert auth_json not in opened
 
     def test_rejects_non_image_local_source(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")

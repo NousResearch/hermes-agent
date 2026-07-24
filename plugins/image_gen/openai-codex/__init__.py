@@ -100,6 +100,34 @@ _SIZES = {
     "square": "1024x1024",
     "portrait": "1024x1536",
 }
+_VALID_SIZES = {"auto", *_SIZES.values()}
+_VALID_QUALITIES = {"low", "medium", "high", "auto"}
+_VALID_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
+
+
+def _normalize_size(value: Any, aspect: str) -> str:
+    if isinstance(value, str) and value.strip():
+        candidate = value.strip().lower()
+        if candidate in _VALID_SIZES:
+            return candidate
+        raise ValueError("Unsupported image size. Use auto, 1024x1024, 1536x1024, or 1024x1536.")
+    return _SIZES.get(aspect, _SIZES["square"])
+
+
+def _normalize_quality(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip().lower() in _VALID_QUALITIES:
+        return value.strip().lower()
+    raise ValueError("Unsupported image quality. Use low, medium, high, or auto.")
+
+
+def _normalize_output_format(value: Any) -> str:
+    if value is None:
+        return "png"
+    if isinstance(value, str) and value.strip().lower() in _VALID_OUTPUT_FORMATS:
+        return value.strip().lower()
+    raise ValueError("Unsupported output format. Use png, jpeg, or webp.")
 
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
@@ -222,16 +250,9 @@ def _data_url_to_input_image_url(value: str) -> str:
 
 def _local_image_to_data_url(value: str) -> str:
     """Read a local image path and return a validated data:image URL."""
-    try:
-        from agent.file_safety import get_read_block_error
+    from agent.file_safety import raise_if_read_blocked
 
-        blocked = get_read_block_error(value)
-        if blocked:
-            raise ValueError(blocked)
-    except ValueError:
-        raise
-    except Exception as exc:
-        logger.debug("Codex image input read guard unavailable: %s", exc)
+    raise_if_read_blocked(value)
 
     path = Path(os.path.expanduser(value)).resolve()
     if not path.is_file():
@@ -283,6 +304,7 @@ def _build_responses_payload(
     prompt: str,
     size: str,
     quality: str,
+    output_format: str = "png",
     input_images: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
@@ -303,7 +325,7 @@ def _build_responses_payload(
             "model": API_MODEL,
             "size": size,
             "quality": quality,
-            "output_format": "png",
+            "output_format": output_format,
             "background": "opaque",
             "partial_images": 1,
         }],
@@ -392,6 +414,7 @@ def _collect_image_b64(
     prompt: str,
     size: str,
     quality: str,
+    output_format: str = "png",
     input_images: Optional[List[Dict[str, str]]] = None,
 ) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
@@ -408,6 +431,7 @@ def _collect_image_b64(
         prompt=prompt,
         size=size,
         quality=quality,
+        output_format=output_format,
         input_images=input_images,
     )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
@@ -494,7 +518,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         # images as `input_image` message content parts. Keep this capability
         # honest so the dynamic `image_generate` schema encourages identity-
         # preserving edits instead of unrelated text-to-image redraws.
-        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": _MAX_REFERENCE_IMAGES,
+            "supported_controls": ["size", "quality", "output_format"],
+        }
 
     def generate(
         self,
@@ -538,7 +566,19 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        try:
+            size = _normalize_size(kwargs.get("size"), aspect)
+            quality = _normalize_quality(kwargs.get("quality"), meta["quality"])
+            output_format = _normalize_output_format(kwargs.get("output_format"))
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         token = _read_codex_access_token()
         if not token:
@@ -571,7 +611,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 token,
                 prompt=prompt,
                 size=size,
-                quality=meta["quality"],
+                quality=quality,
+                output_format=output_format,
                 input_images=input_images or None,
             )
         except CodexImageGenerationUnsupportedError:
@@ -609,7 +650,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
+            saved_path = save_b64_image(
+                b64,
+                prefix=f"openai_codex_{tier_id}",
+                extension=output_format,
+            )
         except Exception as exc:
             return error_response(
                 error=f"Could not save image to cache: {exc}",
@@ -627,7 +672,12 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             aspect_ratio=aspect,
             provider="openai-codex",
             modality="image" if input_images else "text",
-            extra={"size": size, "quality": meta["quality"], "input_image_count": len(input_images)},
+            extra={
+                "size": size,
+                "quality": quality,
+                "output_format": output_format,
+                "input_image_count": len(input_images),
+            },
         )
 
 

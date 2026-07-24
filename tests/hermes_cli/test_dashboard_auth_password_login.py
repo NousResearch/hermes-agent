@@ -411,6 +411,25 @@ class TestRateLimit:
         )
         assert good.status_code == 429
 
+    def test_spoofed_x_forwarded_for_does_not_reset_rate_limit(self, gated_app):
+        # X-Forwarded-For is attacker-controlled unless it came from a trusted
+        # reverse proxy, so direct dashboard requests must not be able to pick
+        # fresh rate-limit buckets by rotating the header value.
+        for i in range(10):
+            resp = gated_app.post(
+                "/auth/password-login",
+                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+                json={"provider": "testpw", "username": "admin", "password": "WRONG"},
+            )
+            assert resp.status_code == 401
+
+        blocked = gated_app.post(
+            "/auth/password-login",
+            headers={"X-Forwarded-For": "198.51.100.250"},
+            json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+        )
+        assert blocked.status_code == 429
+
 
 # ---------------------------------------------------------------------------
 # Login page rendering

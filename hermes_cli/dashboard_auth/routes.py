@@ -106,9 +106,15 @@ def _redirect_uri(request: Request) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Return the direct peer IP for audit/rate-limit decisions.
+
+    Do not read ``X-Forwarded-For`` here. ``/auth/password-login`` uses this
+    value as its online-guessing rate-limit key, and clients can spoof
+    forwarded headers when they reach the dashboard directly. Uvicorn's
+    trusted proxy handling may already rewrite ``request.client`` for
+    deployments that explicitly enable trusted forwarded headers; otherwise
+    the safe default is the socket peer.
+    """
     return request.client.host if request.client else ""
 
 
@@ -601,10 +607,11 @@ def _validate_post_login_target(raw: str) -> str:
 # password we verify locally, so it's a credential-stuffing target. A
 # simple in-process sliding-window limiter per client IP raises the cost
 # of online guessing without any external dependency. It is intentionally
-# best-effort: process-local (resets on restart), and behind a trusting
-# proxy the IP is the proxy's unless X-Forwarded-For is set — which is why
-# this is defence-in-depth on top of the provider's own constant-time
-# verify, not the only line of defence.
+# best-effort: process-local (resets on restart). Behind a trusted proxy,
+# the server/proxy layer must normalize the client address exposed as
+# ``request.client``; otherwise all requests share the proxy's bucket. This
+# is defence-in-depth on top of the provider's own constant-time verify, not
+# the only line of defence.
 
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0

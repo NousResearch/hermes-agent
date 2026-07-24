@@ -169,6 +169,52 @@ async def test_buffered_inbound_is_acked_after_handler(server):
 
 
 @pytest.mark.asyncio
+async def test_buffered_passthrough_is_acked_after_handler(server):
+    # A buffered passthrough_forward (bufferId present) is acked AFTER the
+    # handler runs, so the connector advances its delivery-leg buffer cursor and
+    # stops re-delivering the interaction on every reconnect. A live forward
+    # (no bufferId) is not acked. Mirrors the inbound buffered-ack path (§5.3).
+    server._to_push = [
+        {
+            "type": "passthrough_forward",
+            "forward": {
+                "platform": "discord",
+                "method": "POST",
+                "path": "/interactions",
+                "bodyB64": "",
+            },
+            "bufferId": "pbuf-7",
+        },
+        {
+            "type": "passthrough_forward",
+            "forward": {
+                "platform": "discord",
+                "method": "POST",
+                "path": "/interactions",
+                "bodyB64": "",
+            },
+        },
+    ]
+    seen = []
+
+    async def handler(forward, buffer_id):
+        seen.append(buffer_id)
+
+    t = WebSocketRelayTransport(server.url, "discord", "appShared")
+    t.set_passthrough_handler(handler)
+    await t.connect()
+    try:
+        await t.handshake()
+        await asyncio.sleep(0.1)
+        # Both forwards reached the handler (buffered carries its id, live None).
+        assert "pbuf-7" in seen and None in seen
+        # Only the buffered (bufferId) forward was acked.
+        assert server.inbound_acks == ["pbuf-7"]
+    finally:
+        await t.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_redials_after_unexpected_close():
     # A server that drops the FIRST connection right after handshake; the
     # transport with reconnect=True re-dials and handshakes again.

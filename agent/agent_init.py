@@ -444,6 +444,22 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _emit_credential_banner(kind: str) -> None:
+    """Print a credential-status banner without leaking key material.
+
+    Used by both the Anthropic-token and OpenAI-API-key branches of
+    ``init_agent``. A fixed ``[configured]`` marker conveys the
+    operational signal ("a credential is set") with zero disclosure
+    surface — the previous ``key[:8]...[-4:]`` form leaked a
+    12-character key fingerprint to orchestrator logs and run
+    transcripts (#60319).
+
+    Public for tests so they can capture stdout without invoking the
+    full ``init_agent`` setup (which has many heavy dependencies).
+    """
+    print(f"🔑 Using {kind}: [configured]")
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1060,7 +1076,14 @@ def init_agent(
                 if is_token_provider(effective_key):
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                    # SECURITY: never echo partial credential material
+                    # to stdout. The previous ``effective_key[:8]...[-4:]``
+                    # form leaked a 12-character key fingerprint to
+                    # orchestrator logs and run transcripts (#60319).
+                    # A fixed ``[configured]`` marker conveys the same
+                    # operational signal ("a credential is set") with
+                    # zero disclosure surface.
+                    _emit_credential_banner("token")
     elif agent.provider == "moa":
         from agent.moa_loop import build_moa_facade
         agent.api_mode = "chat_completions"
@@ -1336,7 +1359,13 @@ def init_agent(
                 if is_token_provider(key_used):
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    # SECURITY: never echo partial credential material
+                    # to stdout (#60319). A fixed ``[configured]`` marker
+                    # conveys "a credential is set" with zero disclosure
+                    # surface; the previous ``key_used[:8]...[-4:]`` form
+                    # leaked a 12-character key fingerprint to
+                    # orchestrator logs and run transcripts.
+                    _emit_credential_banner("API key")
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:

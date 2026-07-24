@@ -877,30 +877,67 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
     return packed
 
 
+
+def _strip_fenced_block_for_weixin(block: str) -> str:
+    lines = block.splitlines()
+    if len(lines) >= 2 and _FENCE_RE.match(lines[0].strip()) and _FENCE_RE.match(lines[-1].strip()):
+        return "\n".join(lines[1:-1]).strip()
+    return block.strip()
+
+
+def _split_copyable_aware_blocks_for_weixin(content: str, max_length: int) -> List[str]:
+    """Keep copyable fenced blocks separate while compacting normal reading text."""
+
+    chunks: List[str] = []
+    reading_blocks: List[str] = []
+
+    def flush_reading() -> None:
+        if not reading_blocks:
+            return
+        reading = "\n\n".join(block for block in reading_blocks if block).strip()
+        reading_blocks.clear()
+        if not reading:
+            return
+        chunks.extend(_pack_markdown_blocks_for_weixin(reading, max_length))
+
+    for block in _split_markdown_blocks(content):
+        first_line = block.splitlines()[0].strip() if block else ""
+        is_fenced_block = bool(_FENCE_RE.match(first_line))
+        if is_fenced_block:
+            flush_reading()
+            copyable_text = _strip_fenced_block_for_weixin(block)
+            if len(copyable_text) <= max_length:
+                chunks.append(copyable_text)
+            else:
+                chunks.extend(BasePlatformAdapter.truncate_message(copyable_text, max_length))
+            continue
+        reading_blocks.append(block)
+
+    flush_reading()
+    return [chunk for chunk in chunks if chunk and chunk.strip()]
+
+
 def _split_text_for_weixin_delivery(
     content: str, max_length: int, split_per_line: bool = False,
 ) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    *compact* (default): Keep everything in a single message whenever it fits
-    within the platform limit, even when the author used explicit line breaks.
-    Only fall back to block-aware packing when the payload exceeds
-    ``max_length``.
-
-    *per_line* (``split_per_line=True``): Legacy behavior — top-level line
-    breaks become separate chat messages; oversized units still use
-    block-aware packing.
-
-    The active mode is controlled via ``config.yaml`` ->
-    ``platforms.weixin.extra.split_multiline_messages`` (``true`` / ``false``)
-    or the env var ``WEIXIN_SPLIT_MULTILINE_MESSAGES``.
+    Compact mode keeps ordinary reading text together whenever it fits within
+    the platform limit, except for short chat-like replies that read better as
+    separate bubbles.  Legacy multiline splitting still splits top-level lines,
+    but fenced prompt/draft/command blocks are sent as clean standalone bubbles.
     """
     if not content:
         return []
+    has_fenced_block = any(
+        _FENCE_RE.match(block.splitlines()[0].strip())
+        for block in _split_markdown_blocks(content)
+        if block
+    )
+    if has_fenced_block:
+        return _split_copyable_aware_blocks_for_weixin(content, max_length) or [content]
+
     if split_per_line:
-        # Legacy: one message per top-level delivery unit.
-        if len(content) <= max_length and "\n" not in content:
-            return [content]
         chunks: List[str] = []
         for unit in _split_delivery_units_for_weixin(content):
             if len(unit) <= max_length:
@@ -909,9 +946,6 @@ def _split_text_for_weixin_delivery(
             chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
         return [c for c in chunks if c] or [content]
 
-    # Compact (default): single message when under the limit — unless the
-    # content looks like a short chatty exchange, in which case split into
-    # separate bubbles for a more natural chat feel.
     if len(content) <= max_length:
         return (
             [u for u in _split_delivery_units_for_weixin(content) if u]
@@ -919,7 +953,6 @@ def _split_text_for_weixin_delivery(
             else [content]
         )
     return _pack_markdown_blocks_for_weixin(content, max_length) or [content]
-
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce a config value to bool, tolerating strings like ``"true"``."""

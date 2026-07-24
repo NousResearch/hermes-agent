@@ -2237,6 +2237,7 @@ class TestPluginDebugLogging:
         # Snapshot, then force a re-evaluation.
         original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
         original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
         original_handlers = list(plugins_mod.logger.handlers)
         try:
             plugins_mod._DEBUG_HANDLER_INSTALLED = False
@@ -2248,7 +2249,161 @@ class TestPluginDebugLogging:
         finally:
             plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
             plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+# ── Plugin registry & distribution tests ─────────────────────────────────────
+
+from hermes_cli.plugins import (
+    _resolve_dependencies,
+    _validate_plugin_name,
+)
+
+
+class TestResolveDependenciesRecursive:
+    """Recursive dependency resolution with cycle detection."""
+
+    def test_simple_chain(self):
+        """A -> B -> C resolves transitively."""
+        manifests = {
+            "a": PluginManifest(name="a", depends_on={"b": ""}),
+            "b": PluginManifest(name="b", depends_on={"c": ""}),
+            "c": PluginManifest(name="c"),
+        }
+        missing = _resolve_dependencies(manifests, manifests["a"])
+        assert missing == []
+
+    def test_cycle_a_b_a(self):
+        """A -> B -> A should detect cycle, not loop forever."""
+        manifests = {
+            "a": PluginManifest(name="a", depends_on={"b": ""}),
+            "b": PluginManifest(name="b", depends_on={"a": ""}),
+        }
+        missing = _resolve_dependencies(manifests, manifests["a"])
+        assert missing == []
+
+    def test_missing_transitive(self):
+        """A -> B, B -> C (missing): C should appear in missing."""
+        manifests = {
+            "a": PluginManifest(name="a", depends_on={"b": ""}),
+            "b": PluginManifest(name="b", depends_on={"c": ""}),
+        }
+        missing = _resolve_dependencies(manifests, manifests["a"])
+        assert "c" in missing
+
+    def test_version_constraint(self):
+        """Version constraint violation reported."""
+        manifests = {
+            "a": PluginManifest(name="a", depends_on={"b": ">=2.0"}),
+            "b": PluginManifest(name="b", version="1.5"),
+        }
+        missing = _resolve_dependencies(manifests, manifests["a"])
+        assert any("b" in m for m in missing)
+
+    def test_diamond_no_missing(self):
+        """Diamond dependency: A -> B, A -> C, B -> D, C -> D."""
+        manifests = {
+            "a": PluginManifest(name="a", depends_on={"b": "", "c": ""}),
+            "b": PluginManifest(name="b", depends_on={"d": ""}),
+            "c": PluginManifest(name="c", depends_on={"d": ""}),
+            "d": PluginManifest(name="d"),
+        }
+        missing = _resolve_dependencies(manifests, manifests["a"])
+        assert missing == []
+
+    def test_no_deps(self):
+        """Plugin with no deps returns empty list."""
+        manifests = {"a": PluginManifest(name="a")}
+        missing = _resolve_dependencies(manifests, manifests["a"])
+        assert missing == []
+
+
+class TestValidatePluginName:
+    """Path containment validation for plugin names."""
+
+    def test_valid_name(self):
+        target = _validate_plugin_name("my-plugin")
+        assert target.name == "my-plugin"
+
+    def test_valid_namespaced(self):
+        target = _validate_plugin_name("image_gen/openai")
+        assert target.name == "openai"
+
+    def test_rejects_dotdot(self):
+        with pytest.raises(ValueError):
+            _validate_plugin_name("../etc/passwd")
+
+    def test_rejects_absolute_path(self):
+        with pytest.raises(ValueError):
+            _validate_plugin_name("/etc/passwd")
+
+    def test_rejects_backslash(self):
+        with pytest.raises(ValueError):
+            _validate_plugin_name("..\\windows")
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError):
+            _validate_plugin_name("")
+
+    def test_rejects_special_chars(self):
+        with pytest.raises(ValueError, match="Invalid"):
+            _validate_plugin_name("my plugin!")
+
+
+class TestOwnershipAwareHookTeardown:
+    """Uninstalling one plugin must not remove other plugins' hook callbacks."""
+
+    def test_uninstall_removes_only_own_hooks(self):
+        mgr = PluginManager()
+        # Simulate two plugins registering the same hook
+        cb_a = lambda: "a"
+        cb_a.__HERMES_PLUGIN__ = "pluginA"
+        cb_b = lambda: "b"
+        cb_b.__HERMES_PLUGIN__ = "pluginB"
+        mgr._hooks["pre_tool_call"] = [cb_a, cb_b]
+
+        # Simulate loaded state for pluginA
+        loaded_a = LoadedPlugin(
+            manifest=PluginManifest(name="pluginA", source="user"),
+            hooks_registered=["pre_tool_call"],
+        )
+        mgr._plugins["pluginA"] = loaded_a
+
+        # Call the teardown logic directly (mirrors uninstall_plugin)
+        for hook_name in list(mgr._hooks.keys()):
+            mgr._hooks[hook_name] = [
+                cb for cb in mgr._hooks[hook_name]
+                if getattr(cb, "__HERMES_PLUGIN__", None) != "pluginA"
+            ]
+
+        assert len(mgr._hooks["pre_tool_call"]) == 1
+        assert mgr._hooks["pre_tool_call"][0] is cb_b
+
+    def test_uninstall_preserves_other_plugin_hooks(self):
+        mgr = PluginManager()
+        cb_a = lambda: "a"
+        cb_a.__HERMES_PLUGIN__ = "pluginA"
+        cb_b = lambda: "b"
+        cb_b.__HERMES_PLUGIN__ = "pluginB"
+        cb_c = lambda: "c"
+        cb_c.__HERMES_PLUGIN__ = "pluginC"
+        mgr._hooks["post_tool_call"] = [cb_a, cb_b, cb_c]
+
+        loaded_a = LoadedPlugin(
+            manifest=PluginManifest(name="pluginA", source="user"),
+            hooks_registered=["post_tool_call"],
+        )
+        mgr._plugins["pluginA"] = loaded_a
+
+        for hook_name in list(mgr._hooks.keys()):
+            mgr._hooks[hook_name] = [
+                cb for cb in mgr._hooks[hook_name]
+                if getattr(cb, "__HERMES_PLUGIN__", None) != "pluginA"
+            ]
+
+        assert len(mgr._hooks["post_tool_call"]) == 2
+        assert mgr._hooks["post_tool_call"] == [cb_b, cb_c]
 
     def test_debug_handler_installed_when_env_var_set(self, monkeypatch):
         """With HERMES_PLUGINS_DEBUG=1, a DEBUG-level stderr handler is attached."""

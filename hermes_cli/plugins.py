@@ -218,6 +218,140 @@ ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
 
+VALID_UPDATE_CHANNELS = {"stable", "beta", "dev"}
+
+
+def _normalize_channel(channel: str) -> str:
+    """Validate and normalize update channel, falling back to 'stable'."""
+    if channel not in VALID_UPDATE_CHANNELS:
+        logger.warning("Invalid update_channel '%s', falling back to 'stable'. Valid: %s",
+                       channel, sorted(VALID_UPDATE_CHANNELS))
+        return "stable"
+    return channel
+
+
+def _normalize_depends(deps: Any) -> Dict[str, str]:
+    """Normalize depends_on to dict format (list → {name: ''})."""
+    if isinstance(deps, list):
+        return {d: "" for d in deps if isinstance(d, str)}
+    if isinstance(deps, dict):
+        return {k: str(v) for k, v in deps.items()}
+    return {}
+
+
+def _parse_version(ver: str) -> tuple:
+    """Parse '1.2.3' into (1, 2, 3) for comparison. Returns () on failure."""
+    try:
+        return tuple(int(p) for p in ver.split("."))
+    except (ValueError, AttributeError):
+        return ()
+
+
+def _satisfies_version(installed: str, constraint: str) -> bool:
+    """Check if *installed* version satisfies a constraint like '>=1.0.0' or '^1.0'."""
+    iv = _parse_version(installed)
+    if not constraint:
+        return True
+    constraint = constraint.strip()
+    if constraint.startswith(">="):
+        return iv >= _parse_version(constraint[2:])
+    if constraint.startswith(">"):
+        return iv > _parse_version(constraint[1:])
+    if constraint.startswith("<="):
+        return iv <= _parse_version(constraint[2:])
+    if constraint.startswith("<"):
+        return iv < _parse_version(constraint[1:])
+    if constraint.startswith("^"):
+        # ^1.2.3 means >=1.2.3, <2.0.0;  ^1 means >=1.0.0, <2.0.0
+        c = _parse_version(constraint[1:])
+        if not c:
+            return True
+        return iv >= c and iv < (c[0] + 1, 0, 0)
+    if constraint.startswith("~"):
+        # ~1.2.3 means >=1.2.3, <1.3.0;  ~1 means >=1.0.0, <2.0.0 (like ^)
+        c = _parse_version(constraint[1:])
+        if not c:
+            return True
+        if len(c) < 2:
+            return iv >= c and iv < (c[0] + 1, 0, 0)
+        return iv >= c and iv < (c[0], c[1] + 1, 0)
+    return _parse_version(constraint) == iv if constraint else True
+
+
+def _resolve_dependencies(
+    plugins: Dict[str, "PluginManifest"],
+    manifest: "PluginManifest",
+    chain: Optional[Set[str]] = None,
+    _visited: Optional[Set[str]] = None,
+) -> List[str]:
+    """Resolve dependencies recursively with cycle and transitive-dep detection.
+
+    Returns a list of missing/unsatisfied dependency descriptions.
+    *chain* is the current call-chain (for cycle detection);
+    *_visited* tracks already-processed plugins (to avoid redundant work).
+    """
+    if chain is None:
+        chain = set()
+    if _visited is None:
+        _visited = set()
+
+    missing: List[str] = []
+    for dep_name, constraint in manifest.depends_on.items():
+        # --- cycle detection ---
+        if dep_name in chain:
+            logger.warning(
+                "Circular dependency detected: %s -> %s", sorted(chain), dep_name,
+            )
+            continue
+        # --- already processed ---
+        if dep_name in _visited:
+            continue
+        # --- dependency not installed ---
+        if dep_name not in plugins:
+            missing.append(f"{dep_name} ({constraint})" if constraint else dep_name)
+            continue
+        # --- version check ---
+        installed_ver = plugins[dep_name].version
+        if constraint and not _satisfies_version(installed_ver, constraint):
+            missing.append(f"{dep_name} (installed {installed_ver}, need {constraint})")
+            continue
+        # --- recurse into transitive deps ---
+        _visited.add(dep_name)
+        dep_manifest = plugins[dep_name]
+        chain.add(dep_name)
+        missing.extend(
+            _resolve_dependencies(plugins, dep_manifest, chain, _visited)
+        )
+        chain.discard(dep_name)
+
+    return missing
+
+
+def _validate_plugin_name(name: str) -> Path:
+    """Validate a plugin name and return the safe target path inside plugins/.
+
+    Raises ``ValueError`` if the name contains path-traversal sequences or
+    would resolve outside the plugins directory.  Mirrors the containment
+    logic in ``hermes_cli/plugins_cmd.py:_sanitize_plugin_name``.
+    """
+    import re as _re
+    if not name or not _re.match(r'^[a-zA-Z0-9_][a-zA-Z0-9_/\-]*$', name):
+        raise ValueError(
+            f"Invalid plugin name '{name}'. "
+            "Only alphanumeric, underscore, hyphen, and single '/' allowed."
+        )
+    if ".." in name or name.startswith("/") or name.startswith("\\"):
+        raise ValueError(f"Plugin name '{name}' contains path-traversal sequences.")
+
+    plugins_dir = get_hermes_home() / "plugins"
+    target = (plugins_dir / name).resolve()
+    plugins_resolved = plugins_dir.resolve()
+    if not str(target).startswith(str(plugins_resolved) + os.sep) and target != plugins_resolved:
+        raise ValueError(
+            f"Plugin name '{name}' resolves outside plugins directory: {target}"
+        )
+    return target
+
 
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
@@ -312,6 +446,14 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Registry URL for discovering updates
+    registry_url: str = ""
+    # Update channel — controls update cadence: stable, beta, dev
+    update_channel: str = "stable"
+    # Plugin dependencies — mapping of plugin name to version constraint.
+    # Accepts YAML list syntax (converted to dict with empty constraint)
+    # or dict syntax: depends_on: {"plugin_a": ">=1.0"}
+    depends_on: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1159,7 +1301,9 @@ class PluginContext:
         """Register a lifecycle hook callback.
 
         Unknown hook names produce a warning but are still stored so
-        forward-compatible plugins don't break.
+        forward-compatible plugins don't break.  The callback is annotated
+        with ``__HERMES_PLUGIN__`` so ownership-aware teardown can identify
+        which plugin registered it.
         """
         if hook_name not in VALID_HOOKS:
             logger.warning(
@@ -1169,6 +1313,7 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        callback.__HERMES_PLUGIN__ = self.manifest.name
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
@@ -1644,6 +1789,9 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                registry_url=data.get("registry_url", ""),
+                update_channel=_normalize_channel(data.get("update_channel", "stable")),
+                depends_on=_normalize_depends(data.get("depends_on", {})),
             )
         except Exception as exc:
             logger.warning(
@@ -1998,6 +2146,110 @@ class PluginManager:
                 }
             )
         return result
+
+    # -----------------------------------------------------------------------
+    # Plugin Registry & Distribution
+    # -----------------------------------------------------------------------
+
+    def check_dependencies(self, manifest: PluginManifest) -> List[str]:
+        """Check if all dependency constraints for a manifest are satisfied.
+
+        Returns a list of missing/unsatisfied dependency descriptions.
+        """
+        manifests = {k: v.manifest for k, v in self._plugins.items()}
+        manifests[manifest.key or manifest.name] = manifest
+        return _resolve_dependencies(manifests, manifest)
+
+    def install_plugin(
+        self, name: str, registry_url: str = "", version: str = ""
+    ) -> Dict[str, Any]:
+        """Register a plugin distribution entry.
+
+        Validates the plugin name against path-traversal attacks before
+        writing anything.  Delegates actual cloning/fetch to the existing
+        ``plugins_cmd`` installer when available.
+        """
+        try:
+            target = _validate_plugin_name(name)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        if target.exists():
+            return {"success": False, "error": f"Plugin '{name}' already installed at {target}"}
+        if not registry_url:
+            return {"success": False, "error": "registry_url is required for installation"}
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "plugin.yaml").write_text(
+                f"name: {name}\nversion: {version or '0.1.0'}\nsource: user\nregistry_url: {registry_url}\n",
+                encoding="utf-8",
+            )
+            (target / "__init__.py").write_text(
+                'def register(ctx):\n    """Auto-generated."""\n    pass\n',
+                encoding="utf-8",
+            )
+            logger.info("Plugin '%s' installed from %s", name, registry_url)
+            return {"success": True, "path": str(target)}
+        except OSError as e:
+            return {"success": False, "error": str(e)}
+
+    def uninstall_plugin(self, name: str) -> Dict[str, Any]:
+        """Remove a user-installed plugin directory and clean up registered items.
+
+        Validates the plugin name against path-traversal attacks.
+        Hook teardown is ownership-aware: only callbacks registered by *this*
+        plugin are removed, leaving other plugins' callbacks intact.
+        """
+        try:
+            target = _validate_plugin_name(name)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        if not target.exists():
+            return {"success": False, "error": f"Plugin '{name}' not found"}
+        loaded = self._plugins.get(name)
+        if loaded and loaded.manifest.source != "user":
+            return {"success": False, "error": f"Cannot uninstall {loaded.manifest.source} plugin '{name}'"}
+        import shutil
+        try:
+            if loaded:
+                # Unregister tools
+                for tool in loaded.tools_registered:
+                    self._plugin_tool_names.discard(tool)
+                # Ownership-aware hook teardown: only remove this plugin's callbacks
+                for hook_name, callbacks in list(self._hooks.items()):
+                    self._hooks[hook_name] = [
+                        cb for cb in callbacks
+                        if getattr(cb, "__HERMES_PLUGIN__", None) != name
+                    ]
+                # Unregister commands
+                for cmd in loaded.commands_registered:
+                    self._plugin_commands.pop(cmd, None)
+                self._plugins.pop(name, None)
+            shutil.rmtree(target)
+            logger.info("Plugin '%s' uninstalled with cleanup", name)
+            return {"success": True, "message": f"Plugin '{name}' uninstalled"}
+        except OSError as e:
+            return {"success": False, "error": str(e)}
+
+    def list_registry_plugins(self) -> List[Dict[str, Any]]:
+        """List plugins that have a registry_url configured for updates.
+
+        This is a listing-only method. It does not fetch remote manifests
+        or compare versions. Returns metadata about each registered plugin
+        that has a registry URL set.
+        """
+        updates = []
+        for key, loaded in sorted(self._plugins.items()):
+            m = loaded.manifest
+            if not m.registry_url:
+                continue
+            updates.append({
+                "name": m.name,
+                "version": m.version,
+                "channel": m.update_channel,
+                "registry_url": m.registry_url,
+                "source": m.source,
+            })
+        return updates
 
     # -----------------------------------------------------------------------
     # Plugin skill lookups

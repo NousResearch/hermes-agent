@@ -569,6 +569,27 @@ class TestCmdCleanup:
         assert not openclaw.exists()
         assert (tmp_path / ".openclaw.pre-migration").is_dir()
 
+    def test_archive_prompt_defaults_to_no_with_unbootable_warning(self, tmp_path):
+        """Salvage of #8611 by @SHL0MS — Enter must not archive .openclaw by accident."""
+        openclaw = tmp_path / ".openclaw"
+        openclaw.mkdir()
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        args = Namespace(source=None, dry_run=False, yes=False)
+        with (
+            patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
+            patch.object(claw_mod, "prompt_yes_no", return_value=False) as mock_prompt,
+            patch("sys.stdin", mock_stdin),
+        ):
+            claw_mod._cmd_cleanup(args)
+
+        mock_prompt.assert_called()
+        question, kwargs = mock_prompt.call_args[0][0], mock_prompt.call_args[1]
+        assert kwargs.get("default") is False
+        assert "unbootable" in question.lower()
+
     def test_skips_when_user_declines(self, tmp_path, capsys):
         openclaw = tmp_path / ".openclaw"
         openclaw.mkdir()

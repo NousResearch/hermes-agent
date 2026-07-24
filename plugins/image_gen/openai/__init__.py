@@ -132,11 +132,40 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     ref = ref.strip()
     lower = ref.lower()
     if lower.startswith(("http://", "https://")):
+        # Incomplete prior guards (#54553 / #56035) only pre-checked the
+        # initial URL; requests follows redirects by default, so a public
+        # host can still 302 into loopback / cloud metadata. Re-validate
+        # every hop (same posture as save_url_image / vision downloads).
+        from urllib.parse import urljoin
+
         import requests
 
-        resp = requests.get(ref, timeout=60)
+        from tools.url_safety import is_safe_url
+
+        current = ref
+        if not is_safe_url(current):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {current}")
+
+        _max_redirects = 10
+        resp = None
+        for _ in range(_max_redirects + 1):
+            resp = requests.get(current, timeout=60, allow_redirects=False)
+            if resp.is_redirect and resp.headers.get("Location"):
+                next_url = urljoin(current, resp.headers["Location"])
+                if not is_safe_url(next_url):
+                    raise ValueError(
+                        f"Blocked unsafe redirect URL (SSRF protection): {next_url}"
+                    )
+                current = next_url
+                continue
+            break
+        else:
+            raise ValueError(
+                f"Blocked: too many redirects (>{_max_redirects}) fetching image URL"
+            )
+
         resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
+        name = current.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
         return resp.content, name
     if lower.startswith("data:"):
         import base64

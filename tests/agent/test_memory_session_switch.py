@@ -212,7 +212,10 @@ def _make_hindsight_provider():
     provider._session_id = "old-sid"
     provider._parent_session_id = ""
     provider._document_id = "old-sid-20260101_000000_000000"
-    provider._session_turns = ["turn-1", "turn-2"]
+    provider._append_state_lock = threading.Lock()
+    provider._append_state = hindsight_mod._AppendRetainState()
+    provider._append_state.turns.extend(["turn-1", "turn-2"])
+    provider._session_turns = provider._append_state.turns
     provider._turn_counter = 2
     provider._turn_index = 2
     # Attrs read by _build_metadata / _build_retain_kwargs when the

@@ -926,14 +926,26 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     # ``created`` covers tasks born ready; ``promoted`` covers parent-
     # done auto-promotion; ``reclaimed`` covers TTL/crash recovery;
     # ``unblocked`` covers human-driven resumes.
+    # ``status`` with payload {"status": "ready"} covers dashboard
+    # "→ ready" button / drag-drop moves (written by
+    # ``_set_status_direct``).
     READY_TRANSITION_KINDS = {
         "created", "promoted", "reclaimed", "unblocked",
     }
     last_ready_ts = 0
     for ev in events:
-        if _event_kind(ev) in READY_TRANSITION_KINDS:
+        ek = _event_kind(ev)
+        if ek in READY_TRANSITION_KINDS:
             t = _event_ts(ev)
             last_ready_ts = max(last_ready_ts, t)
+        elif ek == "status":
+            # Direct status write (e.g. dashboard "→ ready" button,
+            # drag-drop).  Check payload to confirm it was a move TO
+            # ready, not away from it.
+            p = _parse_payload(ev)
+            if isinstance(p, dict) and p.get("status") == "ready":
+                t = _event_ts(ev)
+                last_ready_ts = max(last_ready_ts, t)
 
     # Fallback: if no qualifying event exists (very old task or events
     # truncated), fall back to ``created_at`` on the task row. Better

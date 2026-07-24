@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -19,6 +20,12 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ControlMaster (SSH connection multiplexing) does not work on Windows
+# OpenSSH — Windows has no Unix domain socket support for this purpose.
+# Every connection attempt with ControlMaster=auto fails with
+# "Failed to connect to new control master". Disable it entirely on Windows.
+_USE_CONTROL_MASTER = not sys.platform.startswith("win")
 
 
 def _ensure_ssh_available() -> None:
@@ -39,7 +46,7 @@ class SSHEnvironment(BaseEnvironment):
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
     Session snapshot preserves env vars across calls.
     CWD persists via in-band stdout markers.
-    Uses SSH ControlMaster for connection reuse.
+    Uses SSH ControlMaster for connection reuse (disabled on Windows).
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
@@ -82,9 +89,10 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        if _USE_CONTROL_MASTER:
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", "ControlMaster=auto"])
+            cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
@@ -169,7 +177,9 @@ class SSHEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
         )
 
-        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        scp_cmd = ["scp"]
+        if _USE_CONTROL_MASTER:
+            scp_cmd.extend(["-o", f"ControlPath={self.control_socket}"])
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:
@@ -357,7 +367,7 @@ class SSHEnvironment(BaseEnvironment):
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
 
-        if self.control_socket.exists():
+        if _USE_CONTROL_MASTER and self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
                        "-O", "exit", f"{self.user}@{self.host}"]

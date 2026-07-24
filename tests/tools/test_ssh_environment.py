@@ -45,10 +45,11 @@ class TestBuildSSHCommand:
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
-    def test_base_flags(self):
+    def test_base_flags(self, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_USE_CONTROL_MASTER", True)
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
-        for flag in ("ControlMaster=auto", "ControlPersist=300",
+        for flag in ("ControlPath=", "ControlMaster=auto", "ControlPersist=300",
                       "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
             assert flag in cmd
 
@@ -65,6 +66,32 @@ class TestBuildSSHCommand:
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
+
+    def test_windows_skips_controlmaster_flags(self, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_USE_CONTROL_MASTER", False)
+        env = SSHEnvironment(host="h", user="u")
+        cmd = " ".join(env._build_ssh_command())
+
+        for flag in ("ControlPath=", "ControlMaster=", "ControlPersist="):
+            assert flag not in cmd
+        assert "BatchMode=yes" in cmd
+        assert "StrictHostKeyChecking=accept-new" in cmd
+
+    def test_scp_omits_controlpath_on_windows(self, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_USE_CONTROL_MASTER", False)
+        env = SSHEnvironment(host="h", user="u")
+        calls = []
+
+        def _capture(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess([], 0)
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _capture)
+        env._scp_upload("/local/file", "/remote/file")
+
+        scp_calls = [cmd for cmd in calls if cmd and cmd[0] == "scp"]
+        assert scp_calls, "scp should have been invoked"
+        assert "ControlPath=" not in " ".join(scp_calls[0])
 
 
 class TestControlSocketPath:

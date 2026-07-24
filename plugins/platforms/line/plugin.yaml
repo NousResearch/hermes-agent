@@ -63,3 +63,11 @@ optional_env:
     description: "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
     prompt: "Slow response threshold (seconds)"
     password: false
+  - name: LINE_LANGUAGE
+    description: "Locale for LINE quick-reply labels (defaults to display.language; e.g. en, zh, zh-hant, ja)"
+    prompt: "LINE quick-reply language"
+    password: false
+  - name: LINE_LOCALE
+    description: "Alias for LINE_LANGUAGE for deployments that use locale terminology"
+    prompt: "LINE quick-reply locale"
+    password: false

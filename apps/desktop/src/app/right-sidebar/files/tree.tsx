@@ -10,7 +10,7 @@ import { $repoChangeByPath, type RepoChangeKind } from '@/store/coding-status'
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
-import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
+import { FileEntryContextMenu, InlineRenameInput, insertFileTargetIntoChat, isInsertIntoChatShortcut, isRenameShortcut } from '../file-actions'
 
 import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
@@ -155,11 +155,21 @@ export function ProjectTree({
     [onPreviewFile]
   )
 
-  // F2 / Enter on the selected row begins an inline rename. Capture-phase so it
-  // beats arborist's own Enter-to-activate; skipped while an edit is in progress
-  // (the editor input owns Enter/Esc then) and for placeholder rows.
-  const handleRenameShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!isRenameShortcut(event) || $renamingPath.get()) {
+  // Row keyboard actions, capture-phase so they beat arborist's own Enter-to-
+  // activate: Enter inserts the selected file/folder into the chat composer
+  // (the keyboard twin of the context menu's "Insert into Chat" — no drag
+  // needed, #69741); F2 begins an inline rename. Both are skipped while an
+  // edit is in progress (the editor input owns Enter/Esc then) and for
+  // placeholder rows.
+  const handleRowShortcuts = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if ($renamingPath.get()) {
+      return
+    }
+
+    const rename = isRenameShortcut(event)
+    const insert = !rename && isInsertIntoChatShortcut(event)
+
+    if (!rename && !insert) {
       return
     }
 
@@ -171,11 +181,18 @@ export function ProjectTree({
 
     event.preventDefault()
     event.stopPropagation()
-    beginInlineRename(node.data.id)
+
+    if (rename) {
+      beginInlineRename(node.data.id)
+    } else {
+      // Focus stays in the tree so arrow keys + Enter can attach several
+      // files in a row.
+      insertFileTargetIntoChat({ isDirectory: node.data.isDirectory, path: node.data.id })
+    }
   }, [])
 
   return (
-    <div className="min-h-0 flex-1 overflow-hidden" onKeyDownCapture={handleRenameShortcut} ref={containerRef}>
+    <div className="min-h-0 flex-1 overflow-hidden" onKeyDownCapture={handleRowShortcuts} ref={containerRef}>
       {size.height > 0 && size.width > 0 ? (
         <Tree<TreeNode>
           childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}

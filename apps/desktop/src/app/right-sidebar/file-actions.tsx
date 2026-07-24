@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useRef, useState } from 'react'
 
+import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
+import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   ContextMenu,
@@ -27,12 +29,50 @@ import {
   toRelativePath
 } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
+import { $currentCwd } from '@/store/session'
 
 const IS_WIN = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')
 
-// F2 starts a rename anywhere; Enter starts one when a row is focused (VS Code).
+// F2 starts a rename (Explorer/VS Code-Windows style). Enter is reserved for
+// "Insert into chat" — the panel's primary action (see isInsertIntoChatShortcut).
 export function isRenameShortcut(event: KeyboardEvent | ReactKeyboardEvent): boolean {
-  return event.key === 'F2' || event.key === 'Enter'
+  return event.key === 'F2'
+}
+
+// Bare Enter on a focused row inserts it into the chat input — the keyboard
+// twin of the context menu's "Insert into Chat" (drag-free attach, #69741).
+// Modified Enter is left alone so future combos don't silently collide.
+export function isInsertIntoChatShortcut(event: KeyboardEvent | ReactKeyboardEvent): boolean {
+  return event.key === 'Enter' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+}
+
+/**
+ * Insert a file/folder into the chat composer as an inline `@file:`/`@folder:`
+ * chip — the same workspace-relative ref an in-app drag onto the chat produces,
+ * minus the drag. Routed to the composer that last held focus (`'active'`).
+ *
+ * `focusComposer` moves focus to the composer after inserting: wanted from the
+ * context menu (mouse flow — type the prompt next), skipped for the Enter
+ * shortcut so keyboard users keep their place in the tree and can attach
+ * several files in a row.
+ */
+export function insertFileTargetIntoChat(
+  target: Pick<FileActionTarget, 'isDirectory' | 'path'>,
+  { focusComposer = false }: { focusComposer?: boolean } = {}
+): boolean {
+  const ref = droppedFileInlineRef({ isDirectory: target.isDirectory, path: target.path }, $currentCwd.get())
+
+  if (!ref) {
+    return false
+  }
+
+  requestComposerInsert(ref, { mode: 'inline' })
+
+  if (focusComposer) {
+    requestComposerFocus()
+  }
+
+  return true
 }
 
 /** The platform-appropriate "reveal in file manager" label (Finder / Explorer
@@ -68,6 +108,10 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
       {/* Don't restore focus to the row on close: "Rename" mounts an autofocused
           inline input, and the default focus-return would blur it immediately. */}
       <ContextMenuContent onCloseAutoFocus={event => event.preventDefault()}>
+        <ContextMenuItem onSelect={() => insertFileTargetIntoChat(target, { focusComposer: true })}>
+          {m.insertIntoChat}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
         {localFs && (
           <>
             <ContextMenuItem onSelect={() => void revealFile(path)}>{revealLabel}</ContextMenuItem>

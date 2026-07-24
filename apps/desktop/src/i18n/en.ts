@@ -46,6 +46,7 @@ export const en: Translations = {
   },
 
   fileMenu: {
+    insertIntoChat: 'Insert into Chat',
     revealFinder: 'Reveal in Finder',
     revealExplorer: 'Reveal in File Explorer',
     revealFileManager: 'Open Containing Folder',

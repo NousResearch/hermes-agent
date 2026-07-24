@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import struct
+import subprocess
 import tempfile
 import textwrap
 import time
@@ -94,6 +95,8 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
+STALE_SESSION_RET = RATE_LIMIT_ERRCODE  # -2: stale session disguised as rate limit
+DEAD_SESSION_RET = -3  # -3: session fully dead
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
@@ -152,6 +155,10 @@ _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+class SessionExpiredError(Exception):
+    """Raised when iLink session has expired (ret=-2 or ret=-3)."""
 
 
 def check_weixin_requirements() -> bool:
@@ -463,6 +470,9 @@ async def _send_message(
     }
     if context_token:
         message["context_token"] = context_token
+    # NOTE: _send_message returns the raw API response dict.
+    # Stale-session detection and rate-limit handling are in
+    # _send_text_chunk_locked(), not here.
     return await _api_post(
         session,
         base_url=base_url,
@@ -1001,6 +1011,21 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(path, {"get_updates_buf": sync_buf})
 
 
+def _fire_alert(event_type: str, detail: str, script_path: str = "") -> None:
+    """Fire an external alert script if configured."""
+    if not script_path:
+        return
+    try:
+        import subprocess
+        subprocess.Popen(
+            [script_path, event_type, detail],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        logger.warning("Failed to fire alert (%s): %s", event_type, exc)
+
+
 async def qr_login(
     hermes_home: str,
     *,
@@ -1209,6 +1234,10 @@ class WeixinAdapter(BasePlatformAdapter):
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
             default=False,
         )
+        self._alert_script = str(
+            extra.get("alert_script")
+            or os.getenv("HERMES_ALERT_SCRIPT", "")
+        ).strip()
 
         # Text debounce batching (mirrors Telegram adapter pattern).
         # iLink delivers messages individually, so rapid multi-message
@@ -1359,7 +1388,11 @@ class WeixinAdapter(BasePlatformAdapter):
                 if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
+                        logger.error("[%s] Session expired (ret=%s errcode=%s); clearing sync buffer and pausing for 10 minutes", self.name, ret, errcode)
+                        sync_buf = ""
+                        _save_sync_buf(self._hermes_home, self._account_id, sync_buf)
+                        if self._alert_script:
+                            _fire_alert("stale_session", f"ret={ret} errcode={errcode}", self._alert_script)
                         await asyncio.sleep(600)
                         consecutive_failures = 0
                         continue
@@ -1819,6 +1852,16 @@ class WeixinAdapter(BasePlatformAdapter):
                         )
                 self._reset_rate_limit_circuit()
                 return
+            except SessionExpiredError:
+                logger.critical(
+                    "[%s] iLink session expired sending to=%s; "
+                    "not retrying (same session will fail again)",
+                    self.name,
+                    _safe_id(chat_id),
+                )
+                if self._alert_script:
+                    _fire_alert("session_expired", f"to={_safe_id(chat_id)}", self._alert_script)
+                raise
             except Exception as exc:
                 last_error = exc
                 if attempt >= self._send_chunk_retries:
@@ -2199,6 +2242,20 @@ class WeixinAdapter(BasePlatformAdapter):
             token=self._token,
             timeout_ms=API_TIMEOUT_MS,
         )
+        ret = result.get("ret")
+        if ret is not None and ret != 0:
+            errcode = result.get("errcode")
+            errmsg = result.get("errmsg", "unknown error")
+            if (ret == SESSION_EXPIRED_ERRCODE
+                    or errcode == SESSION_EXPIRED_ERRCODE
+                    or _is_stale_session_ret(ret, errcode, errmsg)
+                    or ret == DEAD_SESSION_RET):
+                raise SessionExpiredError(
+                    f"iLink session expired: ret={ret} errcode={errcode} errmsg={errmsg}"
+                )
+            raise RuntimeError(
+                f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
+            )
         return last_message_id
 
     def _outbound_media_builder(self, path: str, force_file_attachment: bool = False):

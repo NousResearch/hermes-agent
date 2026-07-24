@@ -2335,13 +2335,20 @@ class MCPServerTask:
                 return_when=asyncio.FIRST_COMPLETED,
                 timeout=timeout,
             )
+        except GeneratorExit:
+            # Allow GeneratorExit to propagate cleanly during shutdown.
+            # Don't suppress it in the finally block.
+            raise
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
+                    try:
+                        t.cancel()
+                    except RuntimeError:
+                        pass  # event loop already closed during shutdown
                     try:
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, GeneratorExit):
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -3237,9 +3244,12 @@ class MCPServerTask:
                         self._was_parked = True
                         self._deregister_tools()
                         self._reconnect_event.clear()
-                        parked = await self._wait_for_reconnect_or_shutdown(
-                            timeout=_PARKED_RETRY_INTERVAL
-                        )
+                        try:
+                            parked = await self._wait_for_reconnect_or_shutdown(
+                                timeout=_PARKED_RETRY_INTERVAL
+                            )
+                        except GeneratorExit:
+                            return
                         if parked == "shutdown":
                             return
                         logger.debug(
@@ -3366,9 +3376,12 @@ class MCPServerTask:
                     self._was_parked = True
                     self._deregister_tools()
                     self._reconnect_event.clear()
-                    parked = await self._wait_for_reconnect_or_shutdown(
-                        timeout=_PARKED_RETRY_INTERVAL
-                    )
+                    try:
+                        parked = await self._wait_for_reconnect_or_shutdown(
+                            timeout=_PARKED_RETRY_INTERVAL
+                        )
+                    except GeneratorExit:
+                        return
                     if parked == "shutdown":
                         return
                     logger.debug(

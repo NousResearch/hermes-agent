@@ -231,11 +231,13 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
+        """Discord defaults to 'all'; Telegram defaults final-answer-first."""
         from gateway.display_config import resolve_display_setting
 
         # Telegram: tier_high transport, but quiet mobile default.
         assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
@@ -309,16 +311,11 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "telegram", "streaming") is None
 
     def test_telegram_mobile_chatter_defaults(self):
-        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
-        but skips the verbose busy-ack iteration counter by default."""
+        """Telegram avoids persistent interim chatter by default."""
         from gateway.display_config import resolve_display_setting
 
-        # Real model voice — keep on. Without this, Telegram users see
-        # "typing..." for the entire turn duration with no feedback.
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
-        # Periodic "Working — N min" heartbeat — keep on. Otherwise long
-        # turns appear completely silent.
-        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
         # Verbose iteration counter in busy-ack and heartbeat — off by
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
@@ -337,23 +334,22 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
     def test_telegram_mobile_chatter_can_opt_in(self):
-        """Per-platform config can re-enable Telegram busy-ack detail
-        and re-disable the kept-on defaults."""
+        """Explicit per-platform config can opt Telegram into chatter."""
         from gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
                 "platforms": {
                     "telegram": {
-                        "interim_assistant_messages": False,
-                        "long_running_notifications": False,
+                        "interim_assistant_messages": True,
+                        "long_running_notifications": True,
                         "busy_ack_detail": "on",
                     }
                 }
             }
         }
-        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
-        assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is True
+        assert resolve_display_setting(config, "telegram", "long_running_notifications") is True
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
 

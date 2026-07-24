@@ -1028,12 +1028,16 @@ async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp_path):
+async def test_run_agent_surfaces_interim_commentary_by_default_on_discord(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         CommentaryAgent,
         session_id="sess-commentary-default-on",
+        platform=Platform.DISCORD,
+        chat_id="discord-channel-1",
+        chat_type="channel",
+        thread_id="",
     )
 
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)

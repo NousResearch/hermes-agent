@@ -1,11 +1,10 @@
 """Per-platform streaming defaults + dashboard exposure.
 
-Streaming is smooth on Telegram (native sendMessageDraft) but flickers on
-edit-only platforms like Discord and Slack (repeated editMessage). The shipped
-defaults encode that: display.platforms.telegram.streaming=true,
-.discord.streaming=false, .slack.streaming=false. These are gap-fillers (user
+Telegram is a durable mobile inbox, so shipped defaults keep persistent
+streaming/progress/interim chatter off unless explicitly enabled. Discord and
+Slack edit-based streaming also defaults off. These are gap-fillers (user
 values win via deep-merge) and, because the dashboard schema is generated from
-DEFAULT_CONFIG, they automatically appear as editable toggles in the web UI.
+DEFAULT_CONFIG, they automatically appear as editable controls in the web UI.
 """
 
 from __future__ import annotations
@@ -14,14 +13,19 @@ from __future__ import annotations
 def test_default_per_platform_streaming_flags():
     from hermes_cli.config import DEFAULT_CONFIG
     plats = DEFAULT_CONFIG["display"]["platforms"]
-    assert plats["telegram"]["streaming"] is True
+    assert plats["telegram"] == {
+        "streaming": False,
+        "tool_progress": "off",
+        "interim_assistant_messages": False,
+        "long_running_notifications": False,
+        "cleanup_progress": True,
+    }
     assert plats["discord"]["streaming"] is False
     assert plats["slack"]["streaming"] is False
 
 
-def test_resolver_telegram_on_discord_and_slack_off_when_global_enabled():
-    """With global streaming on, the per-platform defaults make Telegram stream
-    and Discord/Slack not — matching the platforms' actual streaming quality."""
+def test_resolver_telegram_discord_and_slack_off_when_global_enabled():
+    """Per-platform safety defaults beat the enabled global streaming switch."""
     from hermes_cli.config import DEFAULT_CONFIG
     from gateway.display_config import resolve_display_setting
 
@@ -33,7 +37,7 @@ def test_resolver_telegram_on_discord_and_slack_off_when_global_enabled():
         # global enabled; None override = follow global (True)
         return True if ov is None else bool(ov)
 
-    assert streams("telegram") is True
+    assert streams("telegram") is False
     assert streams("discord") is False
     assert streams("slack") is False
     # A platform with no default entry still follows the global switch.
@@ -41,19 +45,24 @@ def test_resolver_telegram_on_discord_and_slack_off_when_global_enabled():
 
 
 def test_user_override_wins_over_default():
-    """A user who explicitly enables Discord or Slack streaming keeps their value
-    — the default false must not clobber it (config deep-merge: user wins)."""
+    """Explicit per-platform values win without clobbering sibling defaults."""
     from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
 
     user = {"display": {"platforms": {
+        "telegram": {
+            "streaming": True,
+            "tool_progress": "all",
+            "interim_assistant_messages": True,
+            "long_running_notifications": True,
+            "cleanup_progress": False,
+        },
         "discord": {"streaming": True},
         "slack": {"streaming": True},
     }}}
     merged = _deep_merge(dict(DEFAULT_CONFIG), user)
+    assert merged["display"]["platforms"]["telegram"] == user["display"]["platforms"]["telegram"]
     assert merged["display"]["platforms"]["discord"]["streaming"] is True
     assert merged["display"]["platforms"]["slack"]["streaming"] is True
-    # Partial override must not wipe the sibling telegram default.
-    assert merged["display"]["platforms"]["telegram"]["streaming"] is True
 
 
 def test_dashboard_schema_exposes_per_platform_streaming():

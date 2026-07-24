@@ -2010,10 +2010,14 @@ DEFAULT_CONFIG = {
         # display settings that override the global value for that platform
         # only. A setting left unset here falls through to the global default.
         #
-        # Shipped defaults encode the streaming experience that works best
-        # per platform:
-        #   - Telegram has native animated draft streaming (sendMessageDraft),
-        #     which is smooth, so streaming is on by default there.
+        # Shipped defaults encode the streaming/progress experience that works
+        # best per platform:
+        #   - Telegram is a durable mobile inbox and may be mirrored through
+        #     userbot/Business tooling. Keep persistent progress/interim chatter
+        #     off by default; otherwise internal fragments or tool bubbles
+        #     remain in chat history and can look misattributed.
+        #   - Telegram draft streaming can be enabled explicitly where desired;
+        #     final answers still send normally when streaming/progress are off.
         #   - Discord and Slack only have edit-based streaming (repeated
         #     editMessage), which flickers and is noticeably jankier, so
         #     streaming is off by default for both.
@@ -2023,7 +2027,13 @@ DEFAULT_CONFIG = {
         # streaming.enabled master switch still gates everything — these
         # per-platform flags only take effect once streaming is enabled.
         "platforms": {
-            "telegram": {"streaming": True},
+            "telegram": {
+                "streaming": False,
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+                "long_running_notifications": False,
+                "cleanup_progress": True,
+            },
             "discord": {"streaming": False},
             "slack": {"streaming": False},
         },

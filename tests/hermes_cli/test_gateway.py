@@ -1028,8 +1028,76 @@ def test_gateway_install_noninteractive_skips_legacy_unit_prompt(monkeypatch, tm
     assert all(c[0] != "prompt" for c in calls)
 
 
+def test_get_service_pids_scopes_systemd_units_to_current_profile(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway-coder")
+
+    def fake_run(cmd, **kwargs):
+        if "list-units" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "hermes-gateway.service loaded active running Hermes Gateway\n"
+                    "hermes-gateway-coder.service loaded active running Hermes Gateway\n"
+                ),
+                stderr="",
+            )
+        if "show" in cmd:
+            service = cmd[cmd.index("show") + 1]
+            pid = 222 if service == "hermes-gateway-coder.service" else 111
+            return SimpleNamespace(returncode=0, stdout=f"{pid}\n", stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._get_service_pids() == {222}
+
+
+def test_get_service_pids_can_include_all_systemd_profiles(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_service_name", lambda: "hermes-gateway-coder")
+
+    def fake_run(cmd, **kwargs):
+        if "list-units" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "hermes-gateway.service loaded active running Hermes Gateway\n"
+                    "hermes-gateway-coder.service loaded active running Hermes Gateway\n"
+                ),
+                stderr="",
+            )
+        if "show" in cmd:
+            service = cmd[cmd.index("show") + 1]
+            pid = 222 if service == "hermes-gateway-coder.service" else 111
+            return SimpleNamespace(returncode=0, stdout=f"{pid}\n", stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._get_service_pids(all_profiles=True) == {111, 222}
+
+
+def test_find_gateway_pids_passes_profile_scope_to_service_discovery(monkeypatch):
+    service_calls = []
+    monkeypatch.setattr(
+        gateway,
+        "_get_service_pids",
+        lambda all_profiles=False: service_calls.append(all_profiles) or set(),
+    )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda *args, **kwargs: [])
+
+    assert gateway.find_gateway_pids() == []
+    assert gateway.find_gateway_pids(all_profiles=True) == []
+    assert service_calls == [False, True]
+
+
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
     monkeypatch.setattr(gateway, "is_windows", lambda: False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
@@ -1059,7 +1127,7 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
 def test_find_gateway_pids_includes_restart_managers_without_systemd(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: set())
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
 

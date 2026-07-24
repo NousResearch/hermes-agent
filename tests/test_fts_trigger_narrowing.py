@@ -30,13 +30,16 @@ def _create_db(db_path: Path) -> sqlite3.Connection:
         "CREATE TABLE messages ("
         "id INTEGER PRIMARY KEY, content TEXT, tool_name TEXT, "
         "tool_calls TEXT, active INTEGER, compacted INTEGER, "
-        "observed INTEGER, api_content TEXT)"
+        "observed INTEGER, api_content TEXT, role TEXT DEFAULT 'user'"
+        ")"
+    )
+    conn.execute(
+        "CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)"
     )
     conn.executescript(FTS_SQL)
     conn.executescript(FTS_TRIGRAM_SQL)
     conn.commit()
     return conn
-
 
 def _create_db_with_broad_triggers(db_path: Path) -> sqlite3.Connection:
     """Create a state.db with old-style broad UPDATE triggers (pre-migration)."""

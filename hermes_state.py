@@ -1270,7 +1270,7 @@ BEGIN
     VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF content, tool_name, tool_calls ON messages
 WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls)
@@ -1337,7 +1337,7 @@ BEGIN
     VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
 END;
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages
+CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE OF content, tool_name, tool_calls ON messages
 WHEN (old.content IS NOT new.content
     OR old.tool_name IS NOT new.tool_name
     OR old.tool_calls IS NOT new.tool_calls
@@ -3320,6 +3320,50 @@ class SessionDB:
                             cursor, include_trigram=trigram_enabled
                         )
             else:
+                # #68891: migrate broad UPDATE triggers → narrowed column-list
+                # triggers. Upstream narrowed the DDL via WHEN clauses, but
+                # databases upgraded from pre-narrowed versions still have
+                # the old broad `AFTER UPDATE ON messages` triggers that fire
+                # on every status-only UPDATE, causing FTS I/O saturation.
+                # Inspect sqlite_master (not unconditionally) and atomically
+                # replace broad triggers under BEGIN IMMEDIATE.
+                _narrowed_markers = (
+                    "AFTER UPDATE OF content, tool_name, tool_calls",
+                )
+                try:
+                    cursor.execute(
+                        "SELECT name, sql FROM sqlite_master "
+                        "WHERE type='trigger' AND name IN "
+                        "('messages_fts_update', 'messages_fts_trigram_update')"
+                    )
+                    broad_trigs = [
+                        row[0]
+                        for row in cursor.fetchall()
+                        if row[1]
+                        and not any(m in row[1] for m in _narrowed_markers)
+                    ]
+                except sqlite3.OperationalError:
+                    broad_trigs = []
+
+                if broad_trigs:
+                    try:
+                        cursor.execute("BEGIN IMMEDIATE")
+                        for trig in broad_trigs:
+                            cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                        # Recreate with narrowed column-list syntax.
+                        # The FTS_SQL DDL (run next via _ensure_fts_schema)
+                        # will CREATE TRIGGER IF NOT EXISTS with the correct
+                        # narrowed definitions.
+                        cursor.execute("COMMIT")
+                    except sqlite3.OperationalError:
+                        # Another connection holds the write lock — skip
+                        # migration this open; _ensure_fts_schema runs with
+                        # IF NOT EXISTS so the old triggers stay until next open.
+                        try:
+                            cursor.execute("ROLLBACK")
+                        except sqlite3.OperationalError:
+                            pass
+
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
                 )

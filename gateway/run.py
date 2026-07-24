@@ -2832,6 +2832,84 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+def _nested_channel_config(config: dict, key: str, platform: str, chat_id: str) -> dict:
+    """Return config[key][platform][chat_id] with gateway.<key> fallback."""
+    if not isinstance(config, dict):
+        return {}
+    platform = str(platform or "").lower()
+    chat_id = str(chat_id or "")
+    candidates = [config.get(key)]
+    gateway_cfg = config.get("gateway")
+    if isinstance(gateway_cfg, dict):
+        candidates.append(gateway_cfg.get(key))
+    for root in candidates:
+        if not isinstance(root, dict):
+            continue
+        platform_map = root.get(platform) or root.get(str(platform))
+        if not isinstance(platform_map, dict):
+            continue
+        value = platform_map.get(chat_id)
+        if isinstance(value, dict):
+            return dict(value)
+        if value is not None:
+            return {"mode": value}
+    return {}
+
+
+def _channel_worker_options(config: dict, platform: str, chat_id: str) -> dict:
+    """Resolve per-channel gateway worker/session options.
+
+    Preferred shape:
+      channel_routes:
+        discord:
+          "123":
+            mode: fresh_per_message
+            enabled_toolsets: [web, file]
+            skip_memory: true
+            skip_context_files: true
+
+    Legacy compatibility:
+      channel_session_modes:
+        discord:
+          "123": fresh_per_message
+      channel_agent_options:
+        discord:
+          "123": {enabled_toolsets: [...], skip_memory: true, ...}
+    """
+    route = _nested_channel_config(config, "channel_routes", platform, chat_id)
+    legacy_agent = _nested_channel_config(config, "channel_agent_options", platform, chat_id)
+    legacy_session = _nested_channel_config(config, "channel_session_modes", platform, chat_id)
+
+    merged: dict = {}
+    if legacy_session:
+        merged.update(legacy_session)
+    if legacy_agent:
+        merged.update(legacy_agent)
+    if route:
+        merged.update(route)
+    if not merged:
+        return {}
+
+    mode = str(merged.get("mode") or merged.get("session_mode") or "").strip().lower()
+    if not mode and str(merged.get("fresh_per_message", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        mode = "fresh_per_message"
+    merged["fresh_per_message"] = mode == "fresh_per_message"
+
+    toolsets = merged.get("enabled_toolsets")
+    if isinstance(toolsets, str):
+        toolsets = [t.strip() for t in toolsets.split(",") if t.strip()]
+    elif isinstance(toolsets, (list, tuple, set)):
+        toolsets = [str(t).strip() for t in toolsets if str(t).strip()]
+    else:
+        toolsets = None
+    if toolsets is not None:
+        merged["enabled_toolsets"] = sorted(toolsets)
+
+    merged["skip_context_files"] = bool(merged.get("skip_context_files", False))
+    merged["skip_memory"] = bool(merged.get("skip_memory", False))
+    return merged
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -12641,6 +12719,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _resolve_channel_routed_session_entry(self, event, source, platform_name: str):
+        """Create the session entry for a message, applying channel routes.
+
+        Kept as a focused async helper so the gateway runtime path can be tested
+        without driving a full LLM turn. All SessionStore access stays behind
+        ``async_session_store``; calling the synchronous store from this inbound
+        path can block Discord heartbeats when SQLite is slow.
+        """
+        _force_new_session = False
+        try:
+            _channel_cfg = _load_gateway_config()
+            _worker_options = _channel_worker_options(
+                _channel_cfg,
+                platform_name,
+                str(source.chat_id or ""),
+            )
+            _force_new_session = bool(_worker_options.get("fresh_per_message"))
+        except Exception:
+            logger.debug("Failed to resolve channel worker options", exc_info=True)
+            _force_new_session = False
+
+        if _force_new_session:
+            logger.info(
+                "Starting fresh per-message session for %s",
+                self._session_key_for_source(source),
+            )
+
+        session_entry = await self.async_session_store.get_or_create_session(
+            source,
+            force_new=_force_new_session,
+        )
+        session_key = session_entry.session_key
+        pinned_session_id = str(
+            (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
+        ).strip()
+        if pinned_session_id:
+            resolved_entry = await self._resolve_async_delegation_session(
+                session_entry,
+                pinned_session_id,
+            )
+            if resolved_entry is None:
+                return None, session_key, _force_new_session
+            session_entry = resolved_entry
+        if _force_new_session:
+            # The session key is intentionally stable for the channel/user, but
+            # the session_id is new. Evict any cached AIAgent tied to the old
+            # session so the system prompt/tools rebuild with the lightweight
+            # channel options below.
+            self._evict_cached_agent(session_key)
+        return session_entry, session_key, _force_new_session
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -12670,19 +12799,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = await self.async_session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
-        pinned_session_id = str(
-            (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
-        ).strip()
-        if pinned_session_id:
-            resolved_entry = await self._resolve_async_delegation_session(
-                session_entry,
-                pinned_session_id,
-            )
-            if resolved_entry is None:
-                return
-            session_entry = resolved_entry
+        session_entry, session_key, _force_new_session = await self._resolve_channel_routed_session_entry(
+            event,
+            source,
+            _platform_name,
+        )
+        if session_entry is None:
+            return
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
@@ -19949,6 +20072,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
+        # Per-channel worker options let narrow gateway channels run as compact
+        # agents. This intentionally happens after platform toolset lookup so
+        # the channel can override a broad platform default with a small set such
+        # as web/browser/file/code_execution.
+        channel_skip_context_files = False
+        channel_skip_memory = False
+        channel_worker_options = {}
+        try:
+            channel_worker_options = _channel_worker_options(
+                user_config,
+                platform_key,
+                str(source.chat_id or ""),
+            )
+            _configured_toolsets = channel_worker_options.get("enabled_toolsets")
+            if isinstance(_configured_toolsets, list):
+                enabled_toolsets = _configured_toolsets
+            channel_skip_context_files = bool(channel_worker_options.get("skip_context_files", False))
+            channel_skip_memory = bool(channel_worker_options.get("skip_memory", False))
+            if channel_worker_options:
+                logger.info(
+                    "Applying channel worker options: platform=%s chat=%s fresh_per_message=%s skip_context_files=%s skip_memory=%s enabled_toolsets=%s",
+                    platform_key,
+                    source.chat_id or "",
+                    bool(channel_worker_options.get("fresh_per_message")),
+                    channel_skip_context_files,
+                    channel_skip_memory,
+                    enabled_toolsets,
+                )
+        except Exception:
+            logger.debug("Failed to resolve channel worker options", exc_info=True)
+
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
             display_config = {}
@@ -21161,7 +21315,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys={
+                    **self._extract_cache_busting_config(user_config),
+                    "channel.skip_context_files": channel_skip_context_files,
+                    "channel.skip_memory": channel_skip_memory,
+                },
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
@@ -21375,6 +21533,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    skip_context_files=channel_skip_context_files,
+                    skip_memory=channel_skip_memory,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,

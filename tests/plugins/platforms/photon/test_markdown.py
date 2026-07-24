@@ -58,6 +58,11 @@ def test_supports_code_blocks_mirrors_env(monkeypatch: pytest.MonkeyPatch) -> No
     assert _make_adapter(monkeypatch).supports_code_blocks is False
 
 
+def test_supports_message_editing_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gateway must not stream on Photon — iMessage cannot edit sent bubbles."""
+    assert _make_adapter(monkeypatch).SUPPORTS_MESSAGE_EDITING is False
+
+
 @pytest.mark.asyncio
 async def test_sidecar_send_includes_markdown_format(
     monkeypatch: pytest.MonkeyPatch,

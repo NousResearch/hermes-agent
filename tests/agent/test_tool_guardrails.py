@@ -44,6 +44,8 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
+    assert cfg.cycle_warn_after == 3
+    assert cfg.cycle_block_after == 5
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -55,11 +57,13 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "exact_failure": 3,
                 "same_tool_failure": 4,
                 "idempotent_no_progress": 5,
+                "cycle": 6,
             },
             "hard_stop_after": {
                 "exact_failure": 6,
                 "same_tool_failure": 7,
                 "idempotent_no_progress": 8,
+                "cycle": 9,
             },
         }
     )
@@ -72,6 +76,8 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+    assert cfg.cycle_warn_after == 6
+    assert cfg.cycle_block_after == 9
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -229,8 +235,15 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
+    # cycle thresholds raised: alternating two identical calls IS a legitimate
+    # length-2 cycle; this test isolates the no_progress behavior only.
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
+        ToolCallGuardrailConfig(
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+            cycle_warn_after=99,
+            cycle_block_after=99,
+        )
     )
 
     for _ in range(3):
@@ -277,3 +290,114 @@ def test_after_call_survives_lone_surrogates_in_result_and_args():
     controller.after_call("web_search", {"query": dirty}, '{"error":"\ud835 boom"}', failed=True)
     controller.after_call("web_search", {"query": dirty}, '{"error":"\ud835 boom"}', failed=True)
     assert controller.before_call("web_search", {"query": dirty}).action == "block"
+
+
+# ── Cyclic tool-call loop detection (ported from google-gemini/gemini-cli#28429) ──
+
+
+def _cycle(controller, calls):
+    """Feed (tool_name, args) pairs through after_call; return the decisions.
+
+    Results are unique per call so the idempotent no-progress guard stays
+    quiet and only cycle behavior is exercised.
+    """
+    return [
+        controller.after_call(name, args, f"ok-{i}", failed=False)
+        for i, (name, args) in enumerate(calls)
+    ]
+
+
+def test_alternating_two_call_cycle_warns_by_default():
+    controller = ToolCallGuardrailController()
+    a = ("read_file", {"path": "/tmp/loop_a.txt"})
+    b = ("browser_click", {"ref": "@e5"})
+
+    decisions = _cycle(controller, [a, b] * 3)
+
+    assert [d.action for d in decisions[:-1]] == ["allow"] * 5
+    last = decisions[-1]
+    assert last.action == "warn"
+    assert last.code == "tool_call_cycle_warning"
+    assert last.count == 3
+    assert "read_file -> browser_click" in last.message
+    assert controller.halt_decision is None
+
+
+def test_three_call_cycle_warns_by_default():
+    controller = ToolCallGuardrailController()
+    seq = [
+        ("read_file", {"path": "/tmp/a"}),
+        ("read_file", {"path": "/tmp/b"}),
+        ("terminal", {"command": "ls /tmp"}),
+    ]
+
+    decisions = _cycle(controller, seq * 3)
+
+    assert decisions[-1].action == "warn"
+    assert decisions[-1].code == "tool_call_cycle_warning"
+    assert decisions[-1].count == 3
+
+
+def test_cycle_halts_with_hard_stop_enabled():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, cycle_warn_after=2, cycle_block_after=3)
+    )
+    a = ("web_search", {"query": "alpha"})
+    b = ("web_search", {"query": "beta"})
+
+    decisions = _cycle(controller, [a, b] * 3)
+
+    assert decisions[-1].action == "halt"
+    assert decisions[-1].code == "tool_call_cycle_halt"
+    assert decisions[-1].count == 3
+    assert controller.halt_decision is decisions[-1]
+
+
+def test_broken_pattern_does_not_trip_cycle_detector():
+    controller = ToolCallGuardrailController()
+    a = ("read_file", {"path": "/tmp/loop_a.txt"})
+    b = ("read_file", {"path": "/tmp/loop_b.txt"})
+    c = ("read_file", {"path": "/tmp/loop_c.txt"})
+
+    # A B A B, then break the pattern with C, then A B A B again
+    decisions = _cycle(controller, [a, b, a, b, c, a, b, a, b])
+
+    assert all(d.action == "allow" for d in decisions)
+
+
+def test_uniform_self_repeats_do_not_trip_cycle_detector():
+    # Back-to-back repeats of one call (e.g. polling a background process) are
+    # deliberately out of scope for the cycle detector.
+    controller = ToolCallGuardrailController()
+    args = {"action": "poll", "session_id": "watch_1"}
+
+    decisions = _cycle(controller, [("process", args)] * 12)
+
+    assert all(d.action == "allow" for d in decisions)
+
+
+def test_more_specific_failure_warning_wins_over_cycle_warning():
+    controller = ToolCallGuardrailController()
+    a = ("web_search", {"query": "same"})
+    b = ("read_file", {"path": "/tmp/x"})
+
+    for _ in range(3):
+        controller.after_call(a[0], a[1], '{"error":"boom"}', failed=True)
+        controller.after_call(b[0], b[1], "ok", failed=False)
+    decision = controller.after_call(a[0], a[1], '{"error":"boom"}', failed=True)
+
+    # cycle reps hit 3 here, but the exact-failure warning is more specific
+    assert decision.action == "warn"
+    assert decision.code == "repeated_exact_failure_warning"
+
+
+def test_reset_for_turn_clears_cycle_state():
+    controller = ToolCallGuardrailController()
+    a = ("read_file", {"path": "/tmp/loop_a.txt"})
+    b = ("browser_click", {"ref": "@e5"})
+
+    _cycle(controller, [a, b, a, b])
+    controller.reset_for_turn()
+    decisions = _cycle(controller, [a, b])
+
+    assert all(d.action == "allow" for d in decisions)

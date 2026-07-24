@@ -38,6 +38,14 @@ IDEMPOTENT_TOOL_NAMES = frozenset(
     }
 )
 
+# Cyclic tool-call loop detection bounds. Cycles of length 1 (the same call
+# repeated back-to-back) are intentionally excluded: pure self-repeats are
+# already covered by the exact-failure and idempotent-no-progress guards, and
+# successful self-repeats of mutating tools (e.g. polling a background process)
+# are legitimate. Ported/adapted from google-gemini/gemini-cli#28429.
+CYCLE_MIN_LENGTH = 2
+CYCLE_MAX_LENGTH = 5
+
 MUTATING_TOOL_NAMES = frozenset(
     {
         "terminal",
@@ -77,6 +85,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    cycle_warn_after: int = 3
+    cycle_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -120,6 +130,14 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            cycle_warn_after=_positive_int(
+                warn_after.get("cycle", data.get("cycle_warn_after")),
+                defaults.cycle_warn_after,
+            ),
+            cycle_block_after=_positive_int(
+                hard_stop_after.get("cycle", data.get("cycle_block_after")),
+                defaults.cycle_block_after,
             ),
         )
 
@@ -232,6 +250,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._call_sequence: list[tuple[str, str]] = []
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -295,6 +314,94 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
+        cycle_decision = self._record_and_check_cycle(tool_name, signature)
+        if cycle_decision is not None and cycle_decision.should_halt:
+            self._halt_decision = cycle_decision
+            return cycle_decision
+
+        decision = self._check_repetition(tool_name, signature, result, failed)
+        if decision.action == "allow" and cycle_decision is not None:
+            return cycle_decision
+        return decision
+
+    def _record_and_check_cycle(
+        self, tool_name: str, signature: ToolCallSignature
+    ) -> ToolGuardrailDecision | None:
+        """Detect repeating tool-call cycles of length 2..CYCLE_MAX_LENGTH.
+
+        Tracks the per-turn sequence of exact call signatures (success or
+        failure alike) and looks for the trailing k-call window repeating
+        consecutively — the A→B→A→B and A→B→C→A→B→C patterns that the
+        per-signature counters structurally cannot see because every
+        individual signature differs from its predecessor.
+        Adapted from gemini-cli's LoopDetectionService (google-gemini/gemini-cli#28429).
+        """
+        key = f"{signature.tool_name}\x00{signature.args_hash}"
+        self._call_sequence.append((key, signature.tool_name))
+        max_needed = CYCLE_MAX_LENGTH * max(
+            self.config.cycle_warn_after, self.config.cycle_block_after
+        )
+        if len(self._call_sequence) > max_needed:
+            del self._call_sequence[: len(self._call_sequence) - max_needed]
+
+        keys = [entry[0] for entry in self._call_sequence]
+        n = len(keys)
+        min_reps = min(self.config.cycle_warn_after, self.config.cycle_block_after)
+        best: tuple[int, int] | None = None  # (repetitions, cycle_length)
+        for k in range(CYCLE_MIN_LENGTH, CYCLE_MAX_LENGTH + 1):
+            if n < k * 2:
+                break
+            cycle = keys[-k:]
+            if len(set(cycle)) < 2:
+                continue  # uniform run: covered by the exact-repeat guards
+            reps = 1
+            i = n - k
+            while i - k >= 0 and keys[i - k : i] == cycle:
+                reps += 1
+                i -= k
+            if reps >= min_reps and (best is None or reps > best[0]):
+                best = (reps, k)
+
+        if best is None:
+            return None
+        reps, k = best
+        cycle_desc = " -> ".join(name for _, name in self._call_sequence[-k:])
+        if self.config.hard_stop_enabled and reps >= self.config.cycle_block_after:
+            return ToolGuardrailDecision(
+                action="halt",
+                code="tool_call_cycle_halt",
+                message=(
+                    f"Stopped {tool_name}: the tool-call cycle [{cycle_desc}] has "
+                    f"repeated {reps} times in a row with identical arguments. "
+                    "This is a loop; change strategy instead of repeating the cycle."
+                ),
+                tool_name=tool_name,
+                count=reps,
+                signature=signature,
+            )
+        if self.config.warnings_enabled and reps >= self.config.cycle_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="tool_call_cycle_warning",
+                message=(
+                    f"The tool-call cycle [{cycle_desc}] has repeated {reps} times "
+                    "in a row with identical arguments. If you are intentionally "
+                    "polling, proceed deliberately; otherwise this looks like a "
+                    "loop — change strategy instead of repeating the cycle."
+                ),
+                tool_name=tool_name,
+                count=reps,
+                signature=signature,
+            )
+        return None
+
+    def _check_repetition(
+        self,
+        tool_name: str,
+        signature: ToolCallSignature,
+        result: str | None,
+        failed: bool,
+    ) -> ToolGuardrailDecision:
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count

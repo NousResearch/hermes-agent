@@ -1595,7 +1595,7 @@ class TestRunJobSessionPersistence:
         LLM-supplied cronjob() call re-enable tools the operator had globally
         disabled. The fix: ALWAYS include agent.disabled_toolsets in the
         disabled_toolsets passed to AIAgent, on top of the cron baseline
-        (cronjob/messaging/clarify). AIAgent's disabled_toolsets takes
+        (cronjob/messaging/clarify/delegation). AIAgent's disabled_toolsets takes
         precedence over enabled_toolsets, so this stops the bypass.
         """
         (tmp_path / "config.yaml").write_text(
@@ -1618,6 +1618,29 @@ class TestRunJobSessionPersistence:
         assert set(kwargs["disabled_toolsets"]) >= {
             "cronjob", "messaging", "clarify", "terminal", "file",
         }
+
+    def test_cron_baseline_disabled_toolsets_includes_delegation(self, tmp_path):
+        """``delegation`` must be in the cron baseline disabled toolsets — issue #70294.
+
+        delegate_task results are silently dropped in cron sessions because
+        cron sessions have no routing metadata (no gateway session, no origin
+        thread). Adding ``delegation`` to the baseline ensures the tool can
+        never be called in a cron context, preventing false-positive ``ok``
+        runs where the model delegates work and only returns narration.
+        """
+        job = {
+            "id": "delegation-check",
+            "name": "test",
+            "prompt": "hello",
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        disabled = kwargs.get("disabled_toolsets") or []
+        assert "delegation" in disabled, (
+            f"Expected 'delegation' in cron disabled_toolsets, got {disabled}"
+        )
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now

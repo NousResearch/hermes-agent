@@ -2153,6 +2153,31 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
+        # Intercept long foreground `sleep N` commands. A multi-minute foreground 
+        # sleep holds the executor worker thread hostage for the full duration. 
+        # While it is interruptible on current main (the poll loop checks the 
+        # interrupt flag), it wastes concurrent executor capacity and risks 
+        # hitting upstream API network or inactivity timeouts before returning 
+        # to the LLM. Reject sleeps > 30s so the agent uses the non-blocking 
+        # background + process(poll) pattern instead.
+        _sleep_match = re.match(r"^\s*sleep\s+(\d+)\s*$", command)
+        if _sleep_match and int(_sleep_match.group(1)) > 30 and not background:
+            _sleep_secs = int(_sleep_match.group(1))
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": (
+                    f"Rejected: 'sleep {_sleep_secs}' would hold the executor "
+                    f"worker thread hostage for {_sleep_secs}s. "
+                    "While interruptible, this wastes executor capacity and "
+                    "risks upstream network timeouts. Instead: run your "
+                    "long process with background=true, then use "
+                    "process(action='poll', session_id=...) to check progress. "
+                    "For short waits, use sleep values <= 30."
+                ),
+                "status": "error",
+            }, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]

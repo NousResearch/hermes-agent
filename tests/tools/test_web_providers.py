@@ -290,6 +290,9 @@ class TestUnconfiguredErrorEnvelopeParity:
             "TOOL_GATEWAY_DOMAIN",
         ):
             monkeypatch.delenv(k, raising=False)
+        # Local, credential-free providers must also be made unavailable for
+        # this test's explicit "no provider configured" invariant.
+        monkeypatch.setattr("shutil.which", lambda _command: None)
 
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
         """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``

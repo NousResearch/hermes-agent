@@ -2,7 +2,7 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+- All nine bundled plugins (brave-free, ddgs, searxng, sxng, exa, parallel,
   tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
@@ -68,9 +68,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -82,6 +82,7 @@ class TestBundledPluginsRegister:
             "firecrawl",
             "parallel",
             "searxng",
+            "sxng",
             "tavily",
             "xai",
         ]
@@ -92,6 +93,7 @@ class TestBundledPluginsRegister:
             ("brave-free", True, False),
             ("ddgs", True, False),
             ("searxng", True, False),
+            ("sxng", True, False),
             ("exa", True, True),
             ("parallel", True, True),
             ("tavily", True, True),
@@ -116,7 +118,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "sxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +131,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "sxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -310,23 +312,44 @@ class TestRegistryResolution:
         assert result.supports_extract() is True
         assert result.is_available() is True
 
-    def test_no_config_no_credentials_returns_none(
+    def test_no_config_uses_only_an_available_provider(
         self,
     ) -> None:
-        """No backend configured AND no available providers → typically None.
+        """No backend config may still resolve a credential-free provider.
 
-        ``ddgs`` is the no-credential fallback; if its ``ddgs`` Python
-        package is installed in the test env, ddgs will be picked.
-        Otherwise the resolver returns None. Either outcome is correct.
+        DDGS can be available through its Python package and sxng through a
+        local executable. Otherwise the resolver returns None.
         """
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         result = _resolve(None, capability="search")
         if result is not None:
-            # The only no-credential provider is ddgs; anything else
-            # means an env var leaked in.
             assert result.is_available() is True
+
+    def test_installed_sxng_is_auto_selected_when_sole_available_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import _resolve, get_provider
+
+        sxng = get_provider("sxng")
+        ddgs = get_provider("ddgs")
+        assert sxng is not None
+        assert ddgs is not None
+
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda command: "/usr/bin/sxng-search" if command == "sxng-search" else None,
+        )
+        monkeypatch.setattr(ddgs, "is_available", lambda: False)
+
+        result = _resolve(None, capability="search")
+
+        assert result is not None
+        assert result is sxng
+        assert result.is_available() is True
 
 
 # ---------------------------------------------------------------------------

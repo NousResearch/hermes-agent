@@ -4016,6 +4016,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
+
+        # Direct model aliases (config.yaml `model_aliases:` / `model.aliases:`)
+        # must work in the normal `hermes chat -q -m <alias>` path, not only in
+        # the top-level `hermes -z` one-shot helper.  Without this, a default
+        # provider like openai-codex receives the alias string verbatim and
+        # rejects it as an unsupported model.  Translate the model ID always;
+        # only fill provider/base_url when the caller did not explicitly set
+        # them.
+        if model:
+            try:
+                from hermes_cli import model_switch as _ms
+                _ms._ensure_direct_aliases()
+                _direct = _ms.DIRECT_ALIASES.get(str(model).strip().lower())
+            except Exception:
+                _direct = None
+            if _direct is not None:
+                model = _direct.model
+                if not provider:
+                    provider = _direct.provider
+                if _direct.base_url and not base_url:
+                    base_url = _direct.base_url
+
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
         # A ``moa:<preset>`` model string selects the MoA virtual provider in
         # one shot (parity with interactive ``/moa`` and the model picker). Do

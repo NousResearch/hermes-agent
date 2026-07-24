@@ -379,9 +379,18 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
     If provider is omitted, pins the current main provider from config so the
     job doesn't drift when the user later changes their default via hermes model.
 
+    Accepts both the declared object shape ``{"model": "...", "provider": "..."}``
+    and a bare model string (e.g. ``"gpt-4"``) for backward compat with the
+    ``action=update`` path where the LLM may send a flat string.
+
     Returns (provider_str_or_none, model_str_or_none).
     """
-    if not model_obj or not isinstance(model_obj, dict):
+    if not model_obj:
+        return (None, None)
+    if isinstance(model_obj, str):
+        # LLM sent a bare model string instead of {model: "..."}
+        return (None, model_obj.strip() or None)
+    if not isinstance(model_obj, dict):
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None

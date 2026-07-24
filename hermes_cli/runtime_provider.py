@@ -970,8 +970,15 @@ def _resolve_named_custom_runtime(
             return pool_result
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+        _model_cfg = _get_model_config()
+        _da_key_env = str(_model_cfg.get("key_env", "") or "").strip()
         api_key_candidates = [
             (explicit_api_key or "").strip(),
+            # Resolve key_env from model config — mirrors the named-provider
+            # branch (line 735) so bare `provider: custom` + `key_env` in the
+            # model: block is honored, not silently ignored.  (#43586)
+            os.getenv(_da_key_env, "").strip() if _da_key_env else "",
+            str(_model_cfg.get("api_key", "") or "").strip(),
             # Gate env key fallbacks on authoritative hosts (#28660)
             (_getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
             (_getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),

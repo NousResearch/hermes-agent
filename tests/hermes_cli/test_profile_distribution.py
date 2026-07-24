@@ -675,3 +675,96 @@ class TestErrorSurfaces:
         staged = _make_staging_dir(profile_env, "bad", manifest=mf)
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
+
+
+# ===========================================================================
+# User-added entries inside dist-owned dirs survive force install / update
+# ===========================================================================
+
+
+def _plant_user_skill(profile_dir: Path, rel: str) -> Path:
+    """Simulate `hermes skills install` adding a skill to an installed profile."""
+    skill = profile_dir / "skills" / rel
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {Path(rel).name}\ndescription: user-added\n---\n# User skill\n"
+    )
+    return skill
+
+
+class TestUserAdditionsSurviveReinstall:
+    """``install --force`` and ``update`` both advertise "user data preserved".
+
+    Entries the user added under skills/ and cron/ — e.g. via
+    ``hermes skills install`` or ``hermes cron add`` — must survive, while
+    distribution-shipped content is still replaced from the new source.
+    """
+
+    def test_force_install_preserves_user_added_skill(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="keepskills")
+        _plant_user_skill(plan.target_dir, "user-extra")
+
+        install_distribution(str(staged), name="keepskills", force=True)
+
+        assert (plan.target_dir / "skills" / "user-extra" / "SKILL.md").exists(), \
+            "user-added skill was deleted by install --force"
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").exists()
+
+    def test_update_preserves_user_added_skill(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="keepskills2")
+        _plant_user_skill(plan.target_dir, "user-extra")
+
+        # Distribution ships a new version of its own skill
+        (staged / "skills" / "demo" / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: v2\n---\n# Demo skill v2\n"
+        )
+        update_distribution("keepskills2")
+
+        assert (plan.target_dir / "skills" / "user-extra" / "SKILL.md").exists(), \
+            "user-added skill was deleted by profile update"
+        assert "v2" in (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text()
+
+    def test_update_preserves_user_skill_in_shared_category_dir(self, profile_env):
+        """``hermes skills install --category coding`` nests skills under a
+        category folder the distribution may also ship."""
+        staged = _make_staging_dir(profile_env, "src")
+        (staged / "skills" / "coding" / "dist-skill").mkdir(parents=True)
+        (staged / "skills" / "coding" / "dist-skill" / "SKILL.md").write_text(
+            "---\nname: dist-skill\ndescription: shipped\n---\n# Shipped\n"
+        )
+        plan = install_distribution(str(staged), name="catkeep")
+        _plant_user_skill(plan.target_dir, "coding/mine")
+
+        update_distribution("catkeep")
+
+        assert (plan.target_dir / "skills" / "coding" / "mine" / "SKILL.md").exists(), \
+            "user skill inside a shared category folder was deleted"
+        assert (plan.target_dir / "skills" / "coding" / "dist-skill" / "SKILL.md").exists()
+
+    def test_update_preserves_user_added_cron_job(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="cronkeep")
+        (plan.target_dir / "cron" / "mine.json").write_text('{"schedule": "0 0 * * *"}')
+
+        update_distribution("cronkeep")
+
+        assert (plan.target_dir / "cron" / "mine.json").exists(), \
+            "user-added cron job was deleted by profile update"
+        assert (plan.target_dir / "cron" / "daily.json").exists()
+
+    def test_update_still_mirrors_dist_shipped_skill_dir(self, profile_env):
+        """Files the distribution drops from one of ITS OWN skills must not
+        linger after update — a dist-shipped skill dir is replaced wholesale."""
+        staged = _make_staging_dir(profile_env, "src")
+        (staged / "skills" / "demo" / "old_helper.py").write_text("# stale\n")
+        plan = install_distribution(str(staged), name="mirrorsk")
+        assert (plan.target_dir / "skills" / "demo" / "old_helper.py").exists()
+
+        (staged / "skills" / "demo" / "old_helper.py").unlink()
+        update_distribution("mirrorsk")
+
+        assert not (plan.target_dir / "skills" / "demo" / "old_helper.py").exists(), \
+            "stale file inside a dist-shipped skill survived update"
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").exists()

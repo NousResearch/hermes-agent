@@ -180,8 +180,10 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         description=(
             "Fetch the distribution from its recorded source and overwrite "
             "distribution-owned files (SOUL.md, skills/, cron/, mcp.json). "
-            "User data (memories, sessions, auth, .env) is never touched. "
-            "config.yaml is preserved unless --force-config is passed."
+            "User data (memories, sessions, auth, .env) is never touched, "
+            "and skills or cron jobs you added inside skills/ and cron/ are "
+            "preserved. config.yaml is preserved unless --force-config is "
+            "passed."
         ),
     )
     profile_update.add_argument("profile_name", help="Profile to update")

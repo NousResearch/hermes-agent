@@ -51,7 +51,11 @@ Manifest format (``distribution.yaml`` at the profile root)::
 Update semantics:
 
 * Distribution-owned paths (SOUL.md, mcp.json, skills/, cron/,
-  distribution.yaml) are replaced from the new source.
+  distribution.yaml) are replaced from the new source.  Directories are
+  merged, not mirrored: content shipped by the distribution is replaced
+  (skill directories wholesale), while entries the user added inside them —
+  skills installed via ``hermes skills install``, user cron jobs — are
+  preserved.
 * ``config.yaml`` is distribution-owned but preserved on update unless
   ``--force-config`` is passed (user overrides typically live here).
 * User-owned paths (memories/, sessions/, state.db, auth.json, .env,
@@ -542,6 +546,41 @@ def plan_install(
     )
 
 
+def _replace_dir_merging_user_entries(src: Path, dest: Path) -> None:
+    """Copy directory *src* into *dest* without destroying user additions.
+
+    A plain rmtree+copytree of each distribution directory would delete
+    anything the user added inside it — skills installed into the profile via
+    ``hermes skills install``, cron jobs created after install.  Both
+    ``install --force`` and ``update`` promise "user data preserved", so:
+
+    * a shipped directory that is a skill root (contains SKILL.md) replaces
+      its counterpart wholesale, so files the new version dropped or renamed
+      don't linger inside distribution-owned skills;
+    * any other shipped directory is merged recursively (covers category
+      folders like ``skills/coding/`` shared by distribution and user);
+    * shipped files overwrite their counterparts;
+    * entries under *dest* that the distribution does not ship are left
+      untouched.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        node = dest / child.name
+        if child.is_dir():
+            if node.is_symlink() or node.is_file():
+                node.unlink()
+            elif node.is_dir() and (child / "SKILL.md").is_file():
+                shutil.rmtree(node)
+            if node.is_dir():
+                _replace_dir_merging_user_entries(child, node)
+            else:
+                shutil.copytree(child, node)
+        else:
+            if node.is_dir():
+                shutil.rmtree(node)
+            shutil.copy2(child, node)
+
+
 def _copy_dist_payload(
     staged: Path,
     target: Path,
@@ -553,7 +592,9 @@ def _copy_dist_payload(
     User-owned paths are never touched.  ``config.yaml`` is replaced only when
     ``preserve_config`` is False (fresh install or ``--force-config`` update).
     ``.env.template`` is renamed to ``.env.EXAMPLE`` in the target to avoid
-    shadowing a real ``.env``.
+    shadowing a real ``.env``.  Directories are merged so user-added entries
+    inside them (e.g. extra skills) survive — see
+    :func:`_replace_dir_merging_user_entries`.
     """
     target.mkdir(parents=True, exist_ok=True)
 
@@ -571,18 +612,7 @@ def _copy_dist_payload(
 
         dest = target / name
         if entry.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            staged_resolved = staged.resolve()
-            shutil.copytree(
-                entry,
-                dest,
-                ignore=lambda d, names: (
-                    [n for n in names if n in USER_OWNED_EXCLUDE]
-                    if Path(d).resolve() == staged_resolved
-                    else []
-                ),
-            )
+            _replace_dir_merging_user_entries(entry, dest)
         else:
             shutil.copy2(entry, dest)
 

@@ -774,8 +774,8 @@ def test_sanitize_preserves_populated_tool_calls():
 
 def test_sanitize_drops_null_assistant_turns():
     """sanitize_api_messages drops assistant turns with no payload at all
-    (empty content, no tool_calls, no reasoning). These accumulate in a
-    runaway loop and collapse tool-calling on open-weight models (#66429)."""
+    (empty content, no tool_calls, no reasoning). Strict providers reject the
+    empty assistant message with HTTP 400 (#66429)."""
     from agent.agent_runtime_helpers import sanitize_api_messages
 
     messages = [
@@ -830,3 +830,59 @@ def test_sanitize_keeps_empty_content_with_codex_reasoning():
     ]
     out = sanitize_api_messages(list(messages))
     assert any(m.get("codex_reasoning_items") for m in out)
+
+
+# ── sequence repair after dropping a null assistant turn (#66509 review) ─────
+# Dropping an assistant turn that sat between two user turns leaves them
+# adjacent, which violates strict role alternation. The filter must run the
+# merge pass afterward, exactly as the thinking-only filter does.
+
+
+def test_null_assistant_drop_merges_newly_adjacent_users():
+    """user → assistant(null) → user  must collapse to a single user turn,
+    not leave two consecutive user messages on the wire."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": ""},          # null turn, dropped
+        {"role": "user", "content": "second question"},
+    ]
+    out = sanitize_api_messages(list(messages))
+
+    assert [m["role"] for m in out] == ["system", "user"]
+    roles = [m["role"] for m in out]
+    assert all(a != b for a, b in zip(roles, roles[1:]))
+    merged_user = [m for m in out if m["role"] == "user"][0]["content"]
+    assert "first question" in merged_user
+    assert "second question" in merged_user
+
+
+def test_null_assistant_drop_after_tool_tail_leaves_no_orphan_gap():
+    """tool → assistant(null) → user  becomes  tool → user: dropping the null
+    turn must not strand the tool result or create an invalid pairing."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "call_A", "type": "function",
+                         "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_A", "content": "output"},
+        {"role": "assistant", "content": ""},          # null tail, dropped
+        {"role": "user", "content": "next"},
+    ]
+    out = sanitize_api_messages(list(messages))
+
+    assert any(m.get("role") == "tool" and m.get("tool_call_id") == "call_A"
+               for m in out)
+    assert not any(
+        m.get("role") == "assistant"
+        and not (m.get("content") or "").strip()
+        and not m.get("tool_calls")
+        for m in out
+    )
+    roles = [m["role"] for m in out]
+    assert roles == ["system", "user", "assistant", "tool", "user"]

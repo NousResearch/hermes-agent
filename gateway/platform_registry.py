@@ -101,6 +101,14 @@ class PlatformEntry:
     # Emoji for CLI/gateway display (e.g. "💬")
     emoji: str = "🔌"
 
+    # One-line description shown on the platform's messaging settings card.
+    # Falls back to ``install_hint`` when empty (legacy behavior).
+    description: str = ""
+
+    # Setup-guide URL for the "Open setup guide" button on the messaging
+    # settings card (e.g. the platform's bot/app-password documentation).
+    docs_url: str = ""
+
     # Whether this platform should appear in _UPDATE_ALLOWED_PLATFORMS
     # (allows /update command from this platform).
     allow_update_command: bool = True

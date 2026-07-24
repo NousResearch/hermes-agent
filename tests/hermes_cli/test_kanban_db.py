@@ -1246,6 +1246,48 @@ def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
         assert task.consecutive_failures == 0
 
 
+def test_gave_up_emits_blocked_event(kanban_home):
+    """When the gave_up circuit breaker trips, a ``blocked`` event must be
+    emitted alongside the ``gave_up`` event so diagnostics can see it.
+
+    Without the ``blocked`` event, blocked-from-gave_up cards have no
+    ``blocked`` audit trail — invisible to diagnostics rules like
+    ``_rule_stuck_in_blocked``.
+    """
+    import json
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="breaker-test", assignee="a")
+        kb.claim_task(conn, t)
+        # Trip the breaker immediately (failure_limit=1).
+        kb._record_task_failure(
+            conn, t, error="crash bang",
+            outcome="crashed", release_claim=True, end_run=True,
+            failure_limit=1,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? ORDER BY id",
+            (t,),
+        ).fetchall()
+        kinds = [e["kind"] for e in events]
+        # Both events must be present.
+        assert "gave_up" in kinds, f"expected gave_up event; got {kinds}"
+        assert "blocked" in kinds, f"expected blocked event; got {kinds}"
+
+        # Verify the blocked event payload.
+        blocked_events = [e for e in events if e["kind"] == "blocked"]
+        assert len(blocked_events) == 1
+        payload = json.loads(blocked_events[0]["payload"])
+        assert payload["kind"] == "capability"
+        assert payload["auto"] is True
+        assert "gave_up after 1 consecutive failure" in payload["reason"]
+
+
 def test_recompute_ready_recovers_below_limit(kanban_home):
     """recompute_ready auto-recovers blocked tasks that haven't hit the
     failure limit yet — the counter is preserved across recovery."""

@@ -65,6 +65,7 @@ class TestFailoverReason:
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
+            "upstream_provider_error",
             "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -1968,110 +1969,142 @@ class TestMultimodalToolContentUnsupported:
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
 
 
-class TestOpenRouterUpstreamRateLimit:
-    """Distinguish upstream-provider 429 from account-level 429 on OpenRouter.
+class TestUpstreamProviderError403:
+    """Distinguish upstream-provider 403 from account-level 403 on aggregators.
 
-    When an upstream model (DeepSeek, Anthropic, etc.) rate-limits OpenRouter's
-    aggregate traffic, OpenRouter returns 429 with the outer message "Provider
-    returned error".  The user's key is healthy — we must fall back to a
-    different model, NOT mark the credential exhausted.
+    When an upstream model (Sakana, Poolside, etc.) returns a 403 through an
+    aggregator (OpenRouter, Groq, Together, Fireworks), the aggregator wraps it
+    with "Provider returned error". The user's aggregator key is healthy — we
+    must fall back to a different model, NOT mark the credential exhausted.
     """
 
-    def test_openrouter_upstream_429_classified_as_upstream_rate_limit(self):
-        """OpenRouter 429 with 'Provider returned error' → upstream_rate_limit."""
+    def test_openrouter_upstream_403_classified_as_upstream_provider_error(self):
+        """OpenRouter 403 with 'Provider returned error' -> upstream_provider_error."""
         e = MockAPIError(
             "Provider returned error",
-            status_code=429,
+            status_code=403,
             body={
                 "error": {
                     "message": "Provider returned error",
-                    "code": 429,
+                    "code": 403,
                     "metadata": {
-                        "provider_name": "DeepSeek",
-                        "raw": '{"error":{"message":"Rate limit exceeded"}}',
+                        "provider_name": "Sakana AI",
+                        "raw": '{"error":{"message":"Access denied"}}',
                     },
                 }
             },
         )
-        result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
-        assert result.reason == FailoverReason.upstream_rate_limit
+        result = classify_api_error(e, provider="openrouter", model="sakana/fugu-ultra")
+        assert result.reason == FailoverReason.upstream_provider_error
         assert result.should_rotate_credential is False
         assert result.should_fallback is True
-        assert result.error_context.get("upstream_provider") == "DeepSeek"
+        assert result.error_context.get("upstream_provider") == "Sakana AI"
 
-    def test_upstream_429_metadata_shape_without_explicit_provider(self):
-        """metadata.raw shape alone (provider != openrouter literal) still detected."""
+    def test_groq_upstream_403_classified_as_upstream_provider_error(self):
+        """Groq 403 with upstream wrapper -> upstream_provider_error."""
         e = MockAPIError(
             "Provider returned error",
-            status_code=429,
+            status_code=403,
             body={
                 "error": {
                     "message": "Provider returned error",
-                    "metadata": {"raw": '{"error":{"code":429}}'},
+                    "metadata": {"provider_name": "Poolside", "raw": '{"error":{}}'},
                 }
             },
         )
-        # provider passed as the slug-form some callers use
-        result = classify_api_error(e, provider="openrouter", model="x")
-        assert result.reason == FailoverReason.upstream_rate_limit
+        result = classify_api_error(e, provider="groq", model="poolside/malibu")
+        assert result.reason == FailoverReason.upstream_provider_error
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.error_context.get("upstream_provider") == "Poolside"
 
-    def test_account_level_429_still_rotates_credential(self):
-        """A real account-level 429 (no upstream wrapper) → rate_limit, rotates."""
+    def test_together_upstream_403_classified_as_upstream_provider_error(self):
+        """Together 403 with upstream wrapper -> upstream_provider_error."""
         e = MockAPIError(
-            "Rate limit exceeded: 200 requests per minute",
-            status_code=429,
+            "Provider returned error",
+            status_code=403,
             body={
                 "error": {
-                    "message": "Rate limit exceeded: 200 requests per minute",
-                    "code": 429,
+                    "message": "Provider returned error",
+                    "metadata": {"provider_name": "Together", "raw": '{"error":{}}'},
                 }
             },
         )
-        result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
-        assert result.reason == FailoverReason.rate_limit
+        result = classify_api_error(e, provider="together", model="together/model")
+        assert result.reason == FailoverReason.upstream_provider_error
+        assert result.should_rotate_credential is False
+
+    def test_fireworks_upstream_403_classified_as_upstream_provider_error(self):
+        """Fireworks 403 with upstream wrapper -> upstream_provider_error."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=403,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {"provider_name": "Fireworks", "raw": '{"error":{}}'},
+                }
+            },
+        )
+        result = classify_api_error(e, provider="fireworks", model="fireworks/model")
+        assert result.reason == FailoverReason.upstream_provider_error
+        assert result.should_rotate_credential is False
+
+    def test_account_level_403_still_classified_as_auth_or_billing(self):
+        """A real account-level 403 (no upstream wrapper) -> auth or billing."""
+        # Plain 403 -> auth
+        e = MockAPIError("Forbidden", status_code=403)
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.auth
+
+        # 403 with billing language -> billing
+        e = MockAPIError("spending limit reached", status_code=403)
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.billing
         assert result.should_rotate_credential is True
 
-    def test_upstream_wrapper_without_metadata_on_non_openrouter_not_matched(self):
-        """'Provider returned error' alone on a non-openrouter provider → plain rate_limit."""
+    def test_upstream_403_without_metadata_on_non_aggregator_not_matched(self):
+        """'Provider returned error' alone on a non-aggregator provider -> plain auth."""
         e = MockAPIError(
             "Provider returned error",
-            status_code=429,
-            body={"error": {"message": "Provider returned error", "code": 429}},
+            status_code=403,
+            body={"error": {"message": "Provider returned error", "code": 403}},
         )
         result = classify_api_error(e, provider="anthropic", model="claude-sonnet-4")
-        assert result.reason == FailoverReason.rate_limit
+        # Not an aggregator, so no upstream detection
+        assert result.reason == FailoverReason.auth
 
     def test_upstream_provider_name_missing_yields_empty_context(self):
-        """No provider_name in metadata → upstream_rate_limit with empty context."""
+        """No provider_name in metadata -> upstream_provider_error with empty context."""
         e = MockAPIError(
             "Provider returned error",
-            status_code=429,
+            status_code=403,
             body={
                 "error": {
                     "message": "Provider returned error",
-                    "metadata": {"raw": '{"error":{"code":429}}'},
+                    "metadata": {"raw": '{"error":{"code":403}}'},
                 }
             },
         )
         result = classify_api_error(e, provider="openrouter", model="x")
-        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.reason == FailoverReason.upstream_provider_error
         assert result.error_context.get("upstream_provider") is None
 
-    def test_overload_429_takes_precedence_over_upstream(self):
-        """A 429 carrying overload language stays overloaded (retry same key)."""
+    def test_overload_403_takes_precedence_over_upstream(self):
+        """A 403 carrying overload language stays overloaded (retry same key)."""
         e = MockAPIError(
             "Provider returned error",
-            status_code=429,
+            status_code=403,
             body={
                 "error": {
                     "message": "service is temporarily overloaded",
-                    "metadata": {"provider_name": "DeepSeek"},
+                    "metadata": {"provider_name": "Sakana AI"},
                 }
             },
         )
         result = classify_api_error(e, provider="openrouter", model="x")
         # Overload disambiguation runs first; the outer message is the overload
-        # phrase, so this is an overload, not an upstream rate-limit.
+        # phrase, so this is an overload, not an upstream provider error.
         assert result.reason == FailoverReason.overloaded
 
 

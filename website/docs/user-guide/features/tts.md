@@ -130,7 +130,7 @@ The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model
 
 ### Input length limits
 
-Each provider has a documented per-request input-character cap. Hermes truncates text before calling the provider so requests never fail with a length error:
+Each provider has a documented per-request input-character cap. Hermes splits longer replies into ordered, sentence-aware chunks before calling the provider, so the full normalized text is preserved instead of silently truncated:
 
 | Provider | Default cap (chars) |
 |----------|---------------------|
@@ -155,7 +155,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | `eleven_v3`, `eleven_ttv_v3` | 5000 |
 | Unknown model | Falls back to provider default (10000) |
 
-**Override per provider** with `max_text_length:` under the provider section of your TTS config:
+**Override the per-request chunk size** with `max_text_length:` under the provider section of your TTS config:
 
 ```yaml
 tts:
@@ -163,7 +163,7 @@ tts:
     max_text_length: 8192   # raise or lower the provider cap
 ```
 
-Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
+Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally bypass the provider request limit.
 
 ### Telegram Voice Bubbles & ffmpeg
 
@@ -190,6 +190,8 @@ sudo dnf install ffmpeg
 ```
 
 Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+
+For long replies, Hermes applies platform upload limits to the final encoded audio. It combines provider chunks when possible; Telegram-compatible OGG/Opus chunks are decoded and re-encoded with ffmpeg rather than stream-copied. If combination is unavailable or fails, Hermes preserves the ordered chunks as separate valid attachments. An artifact that still exceeds the platform hard limit after final encoding returns an explicit error instead of attempting a doomed upload.
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -313,7 +315,7 @@ Use `{{` and `}}` for literal braces.
 | `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
-| `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
+| `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 
 #### Behavior notes

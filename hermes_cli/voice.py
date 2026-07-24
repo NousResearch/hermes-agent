@@ -741,10 +741,10 @@ def speak_text(text: str) -> None:
     """Synthesize ``text`` with the configured TTS provider and play it.
 
     Mirrors cli.py:_voice_speak_response exactly — same markdown strip
-    pipeline, same 4000-char cap, same explicit mp3 output path, same
-    MP3-over-OGG playback choice (afplay misbehaves on OGG), same cleanup
-    of both extensions. Keeping these in sync means a voice-mode TTS
-    session in the TUI sounds identical to one in the classic CLI.
+    pipeline, same explicit MP3 preference (afplay misbehaves on OGG), and
+    the same result-driven multi-file playback and cleanup. Keeping these in
+    sync means a voice-mode TTS session in the TUI sounds identical to one in
+    the classic CLI.
 
     While playback is in flight the module-level _tts_playing Event is
     cleared so the continuous-recording loop knows to wait before
@@ -781,7 +781,8 @@ def speak_text(text: str) -> None:
     try:
         from tools.tts_tool import text_to_speech_tool
 
-        tts_text = text[:4000] if len(text) > 4000 else text
+        # The TTS tool owns provider request limits and long-form chunking.
+        tts_text = text
         tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
         tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
         tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
@@ -796,9 +797,8 @@ def speak_text(text: str) -> None:
         if not tts_text:
             return
 
-        # MP3 output path, pre-chosen so we can play the MP3 directly even
-        # when text_to_speech_tool auto-converts to OGG for messaging
-        # platforms.  afplay's OGG support is flaky, MP3 always works.
+        # Prefer MP3 for local playback; the tool result remains authoritative
+        # if a provider rewrites the path or returns multiple delivery files.
         os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)
         mp3_path = os.path.join(
             tempfile.gettempdir(),
@@ -807,19 +807,30 @@ def speak_text(text: str) -> None:
         )
 
         _debug(f"speak_text: synthesizing {len(tts_text)} chars -> {mp3_path}")
-        text_to_speech_tool(text=tts_text, output_path=mp3_path)
-
-        if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
-            _debug(f"speak_text: playing {mp3_path} ({os.path.getsize(mp3_path)} bytes)")
-            play_audio_file(mp3_path)
+        import json as _json
+        result = _json.loads(
+            text_to_speech_tool(text=tts_text, output_path=mp3_path)
+        )
+        play_paths = result.get("file_paths") or [
+            result.get("file_path") or mp3_path
+        ]
+        played_any = False
+        for play_path in play_paths if result.get("success") else []:
+            if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
+                _debug(
+                    f"speak_text: playing {play_path} "
+                    f"({os.path.getsize(play_path)} bytes)"
+                )
+                play_audio_file(play_path)
+                played_any = True
+        for cleanup_path in set(play_paths + [
+            mp3_path, mp3_path.rsplit(".", 1)[0] + ".ogg",
+        ]):
             try:
-                os.unlink(mp3_path)
-                ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-                if os.path.isfile(ogg_path):
-                    os.unlink(ogg_path)
+                os.unlink(cleanup_path)
             except OSError:
                 pass
-        else:
+        if not played_any:
             _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
     except Exception as e:
         logger.warning("Voice TTS playback failed: %s", e)

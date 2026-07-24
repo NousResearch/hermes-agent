@@ -7,6 +7,8 @@ process-wide singleton lifecycle.
 """
 
 import multiprocessing
+import os
+import sys
 import threading
 import time
 import types
@@ -27,7 +29,7 @@ def test_config_defaults_and_clamping():
     assert ww._sensitivity({"sensitivity": -1}) == 0.0
     assert ww._sensitivity({"sensitivity": "nope"}) == 0.5
     assert ww.wake_phrase({"phrase": "hey hermes"}) == "hey hermes"
-    assert ww.wake_phrase({}) == "hey jarvis"
+    assert ww.wake_phrase({}) == "hey hermes"
 
 
 def test_wake_surface_enabled_gate():
@@ -108,6 +110,88 @@ def test_requirements_unavailable_without_audio(monkeypatch):
     r = ww.check_wake_word_requirements({"provider": "openwakeword"})
     assert r["available"] is False
     assert r["audio_available"] is False
+
+
+# ── openWakeWord engine (bundled model + base-model fetch) ───────────────
+
+
+def _install_fake_openwakeword(monkeypatch):
+    """Swap in a fake ``openwakeword`` so the engine builds with no network.
+
+    Returns a ``calls`` dict recording every ``download_models`` invocation.
+    """
+    calls = {"download": []}
+
+    class _FakeModel:
+        def __init__(self, wakeword_models, inference_framework="onnx"):
+            self.wakeword_models = list(wakeword_models)
+            self.models = {"hey_hermes": object()}
+
+        def predict(self, frame):
+            return {"hey_hermes": 0.0}
+
+        def reset(self):
+            pass
+
+    oww = types.ModuleType("openwakeword")
+    oww.utils = types.SimpleNamespace(
+        download_models=lambda names=[]: calls["download"].append(list(names))
+    )
+    model_mod = types.ModuleType("openwakeword.model")
+    model_mod.Model = _FakeModel
+
+    monkeypatch.setitem(sys.modules, "openwakeword", oww)
+    monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    return calls
+
+
+def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
+    # Regression: a custom ``.onnx`` path used to skip download_models entirely,
+    # so a fresh install crashed at load time on a missing melspectrogram.onnx.
+    # The base feature models must be ensured for a custom path too.
+    calls = _install_fake_openwakeword(monkeypatch)
+    eng = ww._OpenWakeWordEngine(
+        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}
+    )
+    assert calls["download"] == [["/models/hey_hermes.onnx"]]
+    assert eng._labels == ["hey_hermes"]
+
+
+def test_openwakeword_fetches_builtin_by_name(monkeypatch):
+    calls = _install_fake_openwakeword(monkeypatch)
+    ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": {"model": "hey_jarvis"}})
+    assert calls["download"] == [["hey_jarvis"]]
+
+
+def test_bundled_hey_hermes_model_ships_on_disk():
+    # The "hey hermes" wake word works out of the box only if the model is
+    # actually bundled. Both framework artifacts must exist and be non-trivial.
+    for framework in ("onnx", "tflite"):
+        path = ww._bundled_wakeword_path(framework)
+        assert os.path.exists(path), path
+        assert os.path.getsize(path) > 1024, path
+
+
+@pytest.mark.parametrize("model_value", [None, "", "hey_hermes", "hey hermes", "HEY_HERMES"])
+def test_openwakeword_default_resolves_to_bundled_model(monkeypatch, model_value):
+    # The default (and any "hey_hermes" alias) must load the bundled file, not be
+    # passed through as a bogus built-in name that openWakeWord can't resolve.
+    calls = _install_fake_openwakeword(monkeypatch)
+    sub = {} if model_value is None else {"model": model_value}
+    ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": sub})
+    (downloaded,) = calls["download"]
+    assert downloaded == [ww._bundled_wakeword_path("onnx")]
+
+
+def test_openwakeword_bundled_model_matches_framework(monkeypatch):
+    calls = _install_fake_openwakeword(monkeypatch)
+    ww._OpenWakeWordEngine(
+        {"provider": "openwakeword", "openwakeword": {"inference_framework": "tflite"}}
+    )
+    (downloaded,) = calls["download"]
+    assert downloaded == [ww._bundled_wakeword_path("tflite")]
+    assert downloaded[0].endswith(".tflite")
 
 
 # ── Detector loop ────────────────────────────────────────────────────────

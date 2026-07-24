@@ -468,6 +468,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.session import build_session_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -2481,27 +2482,6 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
-    # Session<->workspace binding: cd back into a resumed session's recorded cwd
-    # so it resumes in the repo it belonged to. Opt out with --no-restore-cwd;
-    # skipped under --worktree (that path owns its own dir). Best-effort — a
-    # missing dir warns and stays put rather than failing the resume.
-    if (
-        getattr(args, "resume", None)
-        and not getattr(args, "no_restore_cwd", False)
-        and not getattr(args, "worktree", False)
-    ):
-        try:
-            from hermes_state import SessionDB
-
-            _saved_cwd = ((SessionDB().get_session(args.resume) or {}).get("cwd") or "").strip()
-            if _saved_cwd and not os.path.isdir(_saved_cwd):
-                print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
-            elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
-                os.chdir(_saved_cwd)
-                print(f"↪ restored workspace dir: {_saved_cwd}")
-        except Exception:
-            pass  # never let cwd-restore break a resume
-
     # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
         from hermes_cli.xai_retirement import (
@@ -4145,7 +4125,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             str(effort).strip().lower() for effort in efforts if str(effort).strip()
         )
     )
-    canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+    canonical_order = ("minimal", "low", "medium", "high", "xhigh")
     ordered = [effort for effort in canonical_order if effort in deduped]
     ordered.extend(effort for effort in deduped if effort not in canonical_order)
     if not ordered:
@@ -4593,6 +4573,22 @@ def cmd_import(args):
     from hermes_cli.backup import run_import
 
     run_import(args)
+
+
+def cmd_session(args):
+    """Dispatch `hermes session <subcmd>`."""
+    from hermes_cli.subcommands.session import cmd_export, cmd_import as cmd_session_import
+
+    sub = getattr(args, "session_command", None)
+    if sub == "export":
+        code = cmd_export(args)
+        sys.exit(int(code or 0))
+    elif sub == "import":
+        code = cmd_session_import(args)
+        sys.exit(int(code or 0))
+    else:
+        print(f"unknown session subcommand: {sub!r}", file=sys.stderr)
+        sys.exit(2)
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
@@ -14728,6 +14724,12 @@ def main():
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
 
     # =========================================================================
+    # session command — checkpoint export/import (parser built in
+    #                  hermes_cli/subcommands/session.py)
+    # =========================================================================
+    build_session_parser(subparsers, cmd_session_export=cmd_session, cmd_session_import=cmd_session)
+
+    # =========================================================================
     # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
@@ -15111,12 +15113,6 @@ def main():
     sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
     )
-    sessions_list.add_argument(
-        "--workspace",
-        metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).",
-    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -15470,58 +15466,13 @@ def main():
         _exclude = None if _source else ["tool"]
 
         if action == "list":
-            from hermes_state import workspace_key as _ws_key
-
             sessions = db.list_sessions_rich(
                 source=args.source, exclude_sources=_exclude, limit=args.limit
             )
-
-            # Workspace filter: match a session by its workspace key (git repo
-            # root, else cwd) — path substring or exact basename.
-            _ws_filter = (getattr(args, "workspace", None) or "").strip()
-            if _ws_filter:
-                _needle = _ws_filter.lower()
-
-                def _in_workspace(s):
-                    key = (_ws_key(s) or "").lower()
-                    return bool(key) and (
-                        _needle in key or _needle == os.path.basename(key.rstrip("/\\"))
-                    )
-
-                sessions = [s for s in sessions if _in_workspace(s)]
-
             if not sessions:
                 print("No sessions found.")
                 return
-
-            # Short workspace label: the repo/dir basename, "—" when unbound. The
-            # Workspace column only appears once at least one session carries one
-            # (or when filtering), so all-unbound listings read as before.
-            def _ws_label(s):
-                key = _ws_key(s)
-                return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
-
-            has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
             has_titles = any(s.get("title") for s in sessions)
-
-            if has_ws:
-                if has_titles:
-                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
-                    print("─" * 110)
-                else:
-                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
-                    print("─" * 100)
-                for s in sessions:
-                    last_active = _relative_time(s.get("last_active"))
-                    ws = _ws_label(s)[:16]
-                    if has_titles:
-                        title = (s.get("title") or "—")[:26]
-                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
-                    else:
-                        preview = s.get("preview", "")[:36]
-                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
-                return
-
             if has_titles:
                 print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
                 print("─" * 110)

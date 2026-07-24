@@ -376,6 +376,105 @@ def test_registered_in_browser_toolset():
     assert browser_cdp_tool.CDP_DOCS_URL in entry.schema["description"]
 
 
+def test_mac_cdp_inventory_config_writes_readonly_config(tmp_path):
+    raw = browser_cdp_tool.browser_mac_cdp_inventory_config(
+        url="https://example.com/form",
+        allowed_domains=["example.com"],
+        session_id="inv-001",
+        output_prefix="flow",
+        shared_root=str(tmp_path),
+        write_local_config=True,
+    )
+    result = json.loads(raw)
+    assert result["success"] is True
+    assert result["mode"] == "inventory"
+    assert result["readOnly"] is True
+    assert result["allowSubmit"] is False
+    assert result["url"] == "https://example.com/form?sessionId=inv-001"
+    assert result["sideEffectPolicy"]["approvalRequiredBeforeRun"] is False
+    assert '"readOnly": true' in result["config_json"]
+    cfg = json.loads((tmp_path / "cdp-readonly-inventory-config.json").read_text())
+    assert cfg["readOnly"] is True
+    assert cfg["allowSubmit"] is False
+    assert cfg["outputPath"] == str(tmp_path / "flow-readonly-inventory-result.json")
+
+
+def test_mac_cdp_fill_config_requires_session_and_blocks_secrets(tmp_path):
+    missing_session = json.loads(
+        browser_cdp_tool.browser_mac_cdp_fill_config(
+            url="https://example.com/form",
+            allowed_domains=["example.com"],
+            fields=[{"selector": "#title", "value": "ok"}],
+            session_id="",
+            shared_root=str(tmp_path),
+        )
+    )
+    assert "error" in missing_session
+    assert "sessionId" in missing_session["error"]
+
+    secret = json.loads(
+        browser_cdp_tool.browser_mac_cdp_fill_config(
+            url="https://example.com/form",
+            allowed_domains=["example.com"],
+            fields=[{"selector": "#title", "value": "token=abc"}],
+            session_id="fill-001",
+            shared_root=str(tmp_path),
+        )
+    )
+    assert "error" in secret
+    assert "secret" in secret["error"].lower()
+
+    validation_js = json.loads(
+        browser_cdp_tool.browser_mac_cdp_fill_config(
+            url="https://example.com/form",
+            allowed_domains=["example.com"],
+            fields=[{"selector": "#title", "value": "ok"}],
+            session_id="fill-001",
+            validation_expression="document.querySelector('form').submit()",
+            shared_root=str(tmp_path),
+        )
+    )
+    assert "error" in validation_js
+    assert "validationExpression" in validation_js["error"]
+
+
+def test_mac_cdp_fill_config_writes_non_submitting_config(tmp_path):
+    raw = browser_cdp_tool.browser_mac_cdp_fill_config(
+        url="https://example.com/form?x=1",
+        allowed_domains=["example.com"],
+        fields=[{"selector": "#title", "kind": "value", "value": "hello"}],
+        session_id="fill-001",
+        output_prefix="flow",
+        shared_root=str(tmp_path),
+        write_local_config=True,
+    )
+    result = json.loads(raw)
+    assert result["success"] is True
+    assert result["mode"] == "fill"
+    assert result["allowSubmit"] is False
+    assert result["fields_count"] == 1
+    assert result["url"] == "https://example.com/form?x=1&sessionId=fill-001"
+    assert result["sideEffectPolicy"]["approvalRequiredBeforeRun"] is True
+    assert "explicit approval" in result["next_step"]
+    assert '"allowSubmit": false' in result["config_json"]
+    cfg = json.loads((tmp_path / "cdp-form-fill-config.json").read_text())
+    assert cfg["allowSubmit"] is False
+    assert "readOnly" not in cfg
+    assert cfg["fields"][0]["value"] == "hello"
+
+
+def test_mac_cdp_config_tools_registered():
+    from tools.registry import registry
+
+    inventory = registry.get_entry("browser_mac_cdp_inventory_config")
+    fill = registry.get_entry("browser_mac_cdp_fill_config")
+    assert inventory is not None
+    assert fill is not None
+    assert inventory.toolset == "browser-cdp"
+    assert fill.toolset == "browser-cdp"
+    assert fill.schema["parameters"]["required"] == ["url", "allowed_domains", "fields", "session_id"]
+
+
 def test_dispatch_through_registry(cdp_server):
     from tools.registry import registry
 

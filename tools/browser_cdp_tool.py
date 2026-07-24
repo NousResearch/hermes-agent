@@ -20,8 +20,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+from tools.mac_cdp_config_builder import DEFAULT_SHARED_ROOT, build_config, write_config
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -532,6 +534,144 @@ def browser_cdp(
 
 
 # ---------------------------------------------------------------------------
+# Guarded Mac local-worker sidecar config entry points
+# ---------------------------------------------------------------------------
+
+
+MAC_CDP_INVENTORY_RUNNER = str(DEFAULT_SHARED_ROOT / "mac-cdp-readonly-dom-inventory.py")
+MAC_CDP_FILL_RUNNER = str(DEFAULT_SHARED_ROOT / "mac-cdp-form-fill-sidecar.py")
+
+
+def _mac_config_path_under_shared_root(path: str, shared_root: str) -> str:
+    """Return a normalized config path, rejecting paths outside shared_root."""
+    resolved = Path(path).expanduser().resolve()
+    root = Path(shared_root).expanduser().resolve()
+    if not (resolved == root or root in resolved.parents):
+        raise ValueError(f"config_path outside shared root: {resolved}")
+    return str(resolved)
+
+
+def _mac_sidecar_config_payload(
+    spec: Dict[str, Any],
+    *,
+    shared_root: str = str(DEFAULT_SHARED_ROOT),
+    config_path: Optional[str] = None,
+    runner_path: str,
+    write_local_config: bool = False,
+) -> str:
+    """Build a guarded Mac CDP sidecar config.
+
+    Browser tools run on the current Hermes host, not on the Mac.  Therefore
+    the safe default is to return config JSON plus the intended Mac path; the
+    caller installs it with mac_write_file before running mac_run_shared_python.
+    Tests and local harnesses can opt into writing with write_local_config=True.
+    """
+    try:
+        cfg = build_config(spec, shared_root=shared_root)
+        mode = "inventory" if cfg.get("readOnly") is True else "fill"
+        if config_path:
+            intended_path = _mac_config_path_under_shared_root(config_path, shared_root)
+        else:
+            name = "cdp-readonly-inventory-config.json" if mode == "inventory" else "cdp-form-fill-config.json"
+            intended_path = str(DEFAULT_SHARED_ROOT / name) if shared_root == str(DEFAULT_SHARED_ROOT) else str(Path(shared_root) / name)
+        if write_local_config:
+            path = write_config(spec, shared_root=shared_root, out_path=intended_path)
+            intended_path = str(path)
+    except Exception as exc:
+        return tool_error(f"Mac CDP sidecar config rejected: {exc}")
+
+    payload: Dict[str, Any] = {
+        "success": True,
+        "mode": mode,
+        "config_path": intended_path,
+        "config_json": json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
+        "runner_path": runner_path,
+        "result_path": cfg.get("outputPath"),
+        "screenshot_path": cfg.get("screenshotPath"),
+        "allowSubmit": cfg.get("allowSubmit"),
+        "sideEffectPolicy": cfg.get("sideEffectPolicy"),
+        "url": cfg.get("url"),
+        "next_step": (
+            "Before running, state sideEffectPolicy to the user and obtain "
+            "explicit approval for this URL and field set; then install "
+            "config_json to config_path via mac_write_file and run runner_path "
+            "via mac_run_shared_python."
+            if mode == "fill"
+            else "Install config_json to config_path via mac_write_file, then "
+            "run runner_path via mac_run_shared_python for the read-only pass."
+        ),
+    }
+    if cfg.get("readOnly") is True:
+        payload["readOnly"] = True
+    else:
+        payload["fields_count"] = len(cfg.get("fields", []))
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def browser_mac_cdp_inventory_config(
+    url: str,
+    allowed_domains: list[str],
+    session_id: Optional[str] = None,
+    output_prefix: Optional[str] = None,
+    shared_root: str = str(DEFAULT_SHARED_ROOT),
+    config_path: Optional[str] = None,
+    write_local_config: bool = False,
+) -> str:
+    """Create a read-only DOM inventory config for the Mac CDP sidecar."""
+    spec: Dict[str, Any] = {
+        "mode": "inventory",
+        "url": url,
+        "allowedDomains": allowed_domains,
+    }
+    if session_id:
+        spec["sessionId"] = session_id
+    if output_prefix:
+        spec["outputPrefix"] = output_prefix
+    return _mac_sidecar_config_payload(
+        spec,
+        shared_root=shared_root,
+        config_path=config_path,
+        runner_path=MAC_CDP_INVENTORY_RUNNER,
+        write_local_config=write_local_config,
+    )
+
+
+def browser_mac_cdp_fill_config(
+    url: str,
+    allowed_domains: list[str],
+    fields: list[dict[str, Any]],
+    session_id: str,
+    output_prefix: Optional[str] = None,
+    validation_expression: Optional[str] = None,
+    approval_token: Optional[str] = None,
+    shared_root: str = str(DEFAULT_SHARED_ROOT),
+    config_path: Optional[str] = None,
+    write_local_config: bool = False,
+) -> str:
+    """Create a guarded, non-submitting form-fill config for the Mac sidecar."""
+    spec: Dict[str, Any] = {
+        "mode": "fill",
+        "url": url,
+        "allowedDomains": allowed_domains,
+        "fields": fields,
+        "sessionId": session_id,
+    }
+    if output_prefix:
+        spec["outputPrefix"] = output_prefix
+    if validation_expression:
+        spec["validationExpression"] = validation_expression
+    if approval_token:
+        spec["approvalToken"] = approval_token
+    return _mac_sidecar_config_payload(
+        spec,
+        shared_root=shared_root,
+        config_path=config_path,
+        runner_path=MAC_CDP_FILL_RUNNER,
+        write_local_config=write_local_config,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -678,4 +818,112 @@ registry.register(
     ),
     check_fn=_browser_cdp_check,
     emoji="🧪",
+)
+
+
+MAC_CDP_INVENTORY_SCHEMA: Dict[str, Any] = {
+    "name": "browser_mac_cdp_inventory_config",
+    "description": (
+        "Build a guarded read-only DOM inventory config for Kagura's Mac "
+        "local-worker CDP sidecar. This returns config JSON plus the intended "
+        "Mac config path; it does not steal foreground focus and does not "
+        "execute browser actions. Install config_json with mac_write_file, then "
+        "run runner_path via mac_run_shared_python to perform the read-only pass."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "Absolute http/https URL to inspect."},
+            "allowed_domains": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact hostnames allowed for this operation; subdomains are not implied.",
+            },
+            "session_id": {"type": "string", "description": "Optional correlation ID appended as sessionId query parameter."},
+            "output_prefix": {"type": "string", "description": "Optional safe filename prefix for result/screenshot artifacts."},
+            "shared_root": {"type": "string", "description": "Mac shared-worker root. Defaults to Kagura local-worker shared root."},
+            "config_path": {"type": "string", "description": "Optional intended output config JSON path under shared_root."},
+            "write_local_config": {"type": "boolean", "description": "Advanced/testing only: also write config_path on the current Hermes host."},
+        },
+        "required": ["url", "allowed_domains"],
+    },
+}
+
+
+MAC_CDP_FILL_SCHEMA: Dict[str, Any] = {
+    "name": "browser_mac_cdp_fill_config",
+    "description": (
+        "Build a guarded non-submitting form-fill config for Kagura's Mac "
+        "local-worker CDP sidecar. Requires a session_id from the prior "
+        "inventory pass, rejects likely secrets, exact-domain mismatches, and "
+        "always enforces allowSubmit=false. Returns config JSON plus the intended "
+        "Mac config path; install config_json with mac_write_file and execute "
+        "the returned runner_path via mac_run_shared_python after review."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "Absolute http/https URL to fill."},
+            "allowed_domains": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Exact hostnames allowed for this operation; subdomains are not implied.",
+            },
+            "fields": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": True},
+                "description": "Field specs: selector, optional kind=value/textContent/innerText, and value.",
+            },
+            "session_id": {"type": "string", "description": "Required correlation ID from a prior read-only inventory pass."},
+            "output_prefix": {"type": "string", "description": "Optional safe filename prefix for result/screenshot artifacts."},
+            "validation_expression": {
+                "type": "string",
+                "description": "Deprecated/blocked for guarded fill: arbitrary JS validation is rejected because it can cause side effects.",
+            },
+            "approval_token": {
+                "type": "string",
+                "description": "Optional explicit approval marker required by the runner for actual fill execution. Must equal APPROVED:<session_id> after user approval for this URL and field set.",
+            },
+            "shared_root": {"type": "string", "description": "Mac shared-worker root. Defaults to Kagura local-worker shared root."},
+            "config_path": {"type": "string", "description": "Optional intended output config JSON path under shared_root."},
+            "write_local_config": {"type": "boolean", "description": "Advanced/testing only: also write config_path on the current Hermes host."},
+        },
+        "required": ["url", "allowed_domains", "fields", "session_id"],
+    },
+}
+
+
+registry.register(
+    name="browser_mac_cdp_inventory_config",
+    toolset="browser-cdp",
+    schema=MAC_CDP_INVENTORY_SCHEMA,
+    handler=lambda args, **kw: browser_mac_cdp_inventory_config(
+        url=args.get("url", ""),
+        allowed_domains=args.get("allowed_domains") or [],
+        session_id=args.get("session_id"),
+        output_prefix=args.get("output_prefix"),
+        shared_root=args.get("shared_root", str(DEFAULT_SHARED_ROOT)),
+        config_path=args.get("config_path"),
+        write_local_config=bool(args.get("write_local_config", False)),
+    ),
+    emoji="🛡️",
+)
+
+registry.register(
+    name="browser_mac_cdp_fill_config",
+    toolset="browser-cdp",
+    schema=MAC_CDP_FILL_SCHEMA,
+    handler=lambda args, **kw: browser_mac_cdp_fill_config(
+        url=args.get("url", ""),
+        allowed_domains=args.get("allowed_domains") or [],
+        fields=args.get("fields") or [],
+        session_id=args.get("session_id", ""),
+        output_prefix=args.get("output_prefix"),
+        validation_expression=args.get("validation_expression"),
+        approval_token=args.get("approval_token"),
+        shared_root=args.get("shared_root", str(DEFAULT_SHARED_ROOT)),
+        config_path=args.get("config_path"),
+        write_local_config=bool(args.get("write_local_config", False)),
+    ),
+    emoji="🛡️",
 )

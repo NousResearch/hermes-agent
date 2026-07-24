@@ -12334,16 +12334,9 @@ async def cron_fire_webhook(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    cfg = load_config()
-    claims = get_fire_verifier()(
-        token=token,
-        expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
-        jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
-        issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
-    )
-    if claims is None:
-        return JSONResponse({"error": "invalid fire token"}, status_code=401)
-
+    # Parse job_id first so we can resolve the owning profile before
+    # validating the fire token.  See #69715 — the token must be verified
+    # against the *job's* profile, not the process-wide default.
     try:
         body = await request.json()
     except Exception:
@@ -12360,6 +12353,25 @@ async def cron_fire_webhook(request: Request):
         # Job is gone (cancelled / completed) — nothing to fire. 200 so NAS
         # does not retry a fire that is intentionally absent.
         return JSONResponse({"status": "gone", "job_id": job_id}, status_code=200)
+
+    # Load the *job's* profile config so the fire token is validated against
+    # the correct Chronos audience / JWKS / issuer — not the default profile.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    _, profile_home = _cron_profile_home(profile)
+    override_token = set_hermes_home_override(str(profile_home))
+    try:
+        cfg = load_config()
+    finally:
+        reset_hermes_home_override(override_token)
+
+    claims = get_fire_verifier()(
+        token=token,
+        expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
+        jwks_or_key=cfg_get(cfg, "cron", "chronos", "nas_jwks_url", default="") or None,
+        issuer=cfg_get(cfg, "cron", "chronos", "portal_url", default="") or None,
+    )
+    if claims is None:
+        return JSONResponse({"error": "invalid fire token"}, status_code=401)
 
     # Run in the background; the store CAS claim inside fire_due de-dupes a
     # NAS/scheduler retry that arrives while this is in flight.

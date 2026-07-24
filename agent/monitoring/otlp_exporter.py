@@ -149,6 +149,8 @@ def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
         "gateway_diagnostic": ("name", "subsystem", "error_class", "error_code",
                                "platform", "old_state", "new_state",
                                "version", "severity"),
+        "cron_execution": ("status", "job_key", "source", "duration_ms",
+                           "delivery_outcome", "error_class"),
     }
     for col in keep_by_kind.get(kind, ()):  # type: ignore[arg-type]
         v = ev.get(col)

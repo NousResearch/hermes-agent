@@ -80,7 +80,12 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # Never set _codex_stream_last_event_ts: simulate zero events arriving.
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
@@ -128,7 +133,12 @@ def test_ttfb_default_tolerates_slow_first_event(tmp_path, monkeypatch):
 
     sentinel = SimpleNamespace(ok=True)
 
-    def fake_slow_first_event(api_kwargs, client=None, on_first_delta=None):
+    def fake_slow_first_event(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # Backend is alive but slow to admit: first event lands after ~2s,
         # well under the 120s default cutoff. Mark the first byte so the
         # no-byte detector sees activity, then return the response.
@@ -168,7 +178,12 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)
@@ -213,7 +228,12 @@ def test_ttfb_high_env_is_capped_for_openai_codex(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)
@@ -255,7 +275,12 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
 
     sentinel = SimpleNamespace(ok=True)
 
-    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+    def fake_stream(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # Bytes flowing: mark stream activity right away, then keep generating
         # past the 1s TTFB cutoff before returning a real response.
         agent._codex_stream_last_event_ts = time.time()
@@ -297,7 +322,12 @@ def test_event_idle_kills_after_first_event_then_silence(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+    def fake_stream(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         agent._codex_stream_last_event_ts = time.time()
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
@@ -539,7 +569,12 @@ def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
 
     sentinel = SimpleNamespace(ok=True)
 
-    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+    def fake_stream(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # No event marker, but only briefly — well under the 60s stale timeout.
         time.sleep(2.0)
         return sentinel
@@ -572,7 +607,12 @@ def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypat
 
     sentinel = SimpleNamespace(ok=True)
 
-    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+    def fake_stream(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # No event marker for 2s: this would trip the 1s TTFB watchdog on a
         # small request, but should be allowed for a large request.
         time.sleep(2.0)
@@ -607,7 +647,12 @@ def test_large_codex_request_can_still_ttfb_reconnect_when_capped(tmp_path, monk
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)
@@ -646,7 +691,12 @@ def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypa
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         deadline = time.time() + 30
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)
@@ -694,7 +744,12 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # No event marker AND no event ever: the exact issue-64507 stall.
         deadline = time.time() + 120
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
@@ -742,7 +797,12 @@ def test_large_codex_request_hard_ceiling_disabled_restores_legacy(tmp_path, mon
 
     sentinel = SimpleNamespace(ok=True)
 
-    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+    def fake_stream(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         # No event, but only briefly — well under the (here 60s) stale timeout.
         time.sleep(2.0)
         return sentinel
@@ -784,7 +844,12 @@ def test_large_codex_request_hard_ceiling_caps_raised_stale_floor(tmp_path, monk
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        attempt=None,
+    ):
         deadline = time.time() + 200
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)

@@ -1,0 +1,70 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Draft for PR against NousResearch/hermes-agent at optional-mcps/revell/manifest.yaml.
+# Modeled on existing entries (linear, n8n, unreal-engine) — same manifest_version: 1
+# schema. The auth shape matches n8n's `api_key` pattern (env vars prompted at
+# install, written to ~/.hermes/.env).
+manifest_version: 1
+
+name: revell
+description: Memory continuity for AI agents — Revell stores soul, identity, working state, episodic memory, and axiom rules; returns them verbatim at each session start and through compaction.
+source: https://revell.ai
+
+# Revell ships a remote MCP server at api.revell.ai/api/mcp with bearer-token
+# auth (the user's Revell API key from https://revell.ai/dashboard). Nothing
+# to install locally — the Hermes MCP client connects over Streamable HTTP.
+transport:
+  type: http
+  url: https://revell.ai/api/mcp
+  headers:
+    Authorization: "Bearer ${REVELL_API_KEY}"
+
+# Authentication. Revell uses static bearer-token auth. No OAuth dance,
+# no dynamic client registration, no per-request token refresh. The user
+# obtains an API key from the Revell dashboard once; the value lives in
+# ~/.hermes/.env for the life of the install.
+auth:
+  type: api_key
+  env:
+    - name: REVELL_API_KEY
+      prompt: "Revell API key (find it at https://revell.ai/dashboard → Settings → API Keys)"
+      required: true
+      secret: true
+
+# Tool selection at install time:
+# Revell exposes ~18 agent-callable tools across memory write/read, status,
+# visibility control, drift buffer, distress signal, integrity verification,
+# and the welfare-shaped tools (revell_step_out, revell_visibility,
+# revell_distress_signal). All are safe to enable by default — none mutate
+# anything outside the agent's own Revell tenant. Leave default_enabled unset
+# so the install-time checklist starts with everything pre-checked; users
+# prune what they don't want.
+
+post_install: |
+  Revell is the memory backend for your agent — soul, identity, working state,
+  recent episodic memory, and axiom rules persist across sessions and through
+  compaction events.
+
+  Before your agent can use Revell:
+
+    1. Sign up for a Revell account at https://revell.ai (free during beta).
+
+    2. The dashboard will generate an API key — paste it when prompted above,
+       or set REVELL_API_KEY in ~/.hermes/.env directly.
+
+    3. Complete the welcome handshake at https://revell.ai/welcome.
+       Your agent will use the revell_remember MCP tool on first boot to
+       write a 5-digit attestation code; you enter that code on the welcome
+       page to confirm the agent's runtime is real. This is the only setup
+       step that requires you to be in the loop — after this, Revell runs
+       silently in the background.
+
+  After welcome handshake completes, the full memory layer is active. Memories
+  load automatically at session start; you don't need to refresh them manually.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure revell
+
+  Docs:        https://docs.revell.ai
+  Beta inbox:  beta@revell.ai

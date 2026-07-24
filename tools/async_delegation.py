@@ -58,11 +58,35 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """
 
     def _adjust_thread_count(self) -> None:
+        # Mirrors CPython's implementation with two changes: daemon=True and
+        # no _threads_queues registration. CPython 3.14 refactored the worker
+        # protocol to pass a WorkerContext instead of (initializer, initargs),
+        # so we branch on the available API rather than mirroring the 3.8–3.13
+        # shape literally.
         if self._idle_semaphore.acquire(timeout=0):
             return
 
         def weakref_cb(_, q=self._work_queue):
             q.put(None)
+
+        # 3.14+: ``_create_worker_context`` returns a WorkerContext that
+        # ``_worker`` consumes directly. 3.13 and earlier: ``_worker`` takes
+        # ``(executor_ref, work_queue, initializer, initargs)`` and the names
+        # are stored on the executor instance.
+        create_ctx = getattr(self, "_create_worker_context", None)
+        if create_ctx is not None:
+            worker_args = (
+                weakref.ref(self, weakref_cb),
+                create_ctx(),
+                self._work_queue,
+            )
+        else:
+            worker_args = (
+                weakref.ref(self, weakref_cb),
+                self._work_queue,
+                self._initializer,
+                self._initargs,
+            )
 
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
@@ -70,12 +94,7 @@ class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
             t = threading.Thread(
                 name=thread_name,
                 target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
+                args=worker_args,
                 daemon=True,
             )
             t.start()

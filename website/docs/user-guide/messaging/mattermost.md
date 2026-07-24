@@ -225,6 +225,20 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+### Bot messages
+
+Mattermost bot accounts can post into free-response channels and accidentally
+trigger bot-to-bot loops. Configure how Hermes handles those senders:
+
+```yaml
+mattermost:
+  allow_bots: none  # none | mentions | all
+```
+
+- `none` ignores every other Mattermost bot account.
+- `mentions` accepts a bot message only when it explicitly mentions Hermes.
+- `all` is the default and preserves the historical Mattermost behavior.
+
 ## Channel allowlist (`allowed_channels`)
 
 Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.

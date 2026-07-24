@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, shouldSuppressClipboardFallbackForDashboard } from '../app/useComposerState.js'
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {
@@ -55,5 +55,15 @@ describe('looksLikeDroppedPath', () => {
     expect(looksLikeDroppedPath('/usr/bin/test')).toBe(true)
     expect(looksLikeDroppedPath('/tmp/file.txt')).toBe(true)
     expect(looksLikeDroppedPath('/etc/hosts')).toBe(true) // has second /
+  })
+})
+
+describe('shouldSuppressClipboardFallbackForDashboard', () => {
+  it('suppresses server clipboard fallback inside the embedded dashboard TUI', () => {
+    expect(shouldSuppressClipboardFallbackForDashboard(true)).toBe(true)
+  })
+
+  it('keeps native TUI clipboard fallback enabled outside the dashboard', () => {
+    expect(shouldSuppressClipboardFallbackForDashboard(false)).toBe(false)
   })
 })

@@ -8,6 +8,7 @@ import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/set
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
+  DelegationAsyncListResponse,
   DelegationStatusResponse,
   GatewayEvent,
   GatewaySkin,
@@ -25,7 +26,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
-import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { applyAsyncList, applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
@@ -535,6 +536,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     lastDelegationFetchAt = now
     rpc<DelegationStatusResponse>('delegation.status', {})
       .then(r => applyDelegationStatus(r))
+      .catch(() => {})
+    rpc<DelegationAsyncListResponse>('delegation.async_list', {})
+      .then(r => applyAsyncList(r))
       .catch(() => {})
   }
 

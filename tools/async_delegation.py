@@ -541,6 +541,7 @@ def dispatch_async_delegation(
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    steer_fn: Optional[Callable[[str], bool]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
@@ -594,6 +595,7 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "steer_fn": steer_fn,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -669,6 +671,7 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
+        record["steer_fn"] = None
         event_record = dict(record)
 
     _push_completion_event(event_record, result, status)
@@ -751,6 +754,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
+    steer_fn: Optional[Callable[[str], bool]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -797,6 +801,7 @@ def dispatch_async_delegation_batch(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "steer_fn": steer_fn,
         "is_batch": True,
     }
     with _records_lock:
@@ -873,6 +878,7 @@ def _finalize_batch(
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None
+        record["steer_fn"] = None
         event_record = dict(record)
 
     try:
@@ -934,13 +940,31 @@ def _finalize_batch(
 def list_async_delegations() -> List[Dict[str, Any]]:
     """Snapshot of async delegations (running + recently completed).
 
-    Safe to call from any thread. Excludes the non-serialisable interrupt_fn.
+    Safe to call from any thread. Excludes non-serialisable control closures.
     """
     with _records_lock:
         return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
+            {k: v for k, v in r.items() if k not in {"interrupt_fn", "steer_fn"}}
             for r in _records.values()
         ]
+
+
+def steer_async_delegation(delegation_id: str, text: str) -> bool:
+    """Queue steering text on every running child in one async unit."""
+    if not text or not text.strip():
+        return False
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if not record or record.get("status") != "running":
+            return False
+        steer_fn = record.get("steer_fn")
+    if not callable(steer_fn):
+        return False
+    try:
+        return bool(steer_fn(text.strip()))
+    except Exception as exc:
+        logger.debug("steer_async_delegation(%s) failed: %s", delegation_id, exc)
+        return False
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

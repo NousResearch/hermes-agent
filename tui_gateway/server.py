@@ -9913,6 +9913,55 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
+@method("delegation.async_list")
+def _(rid, params: dict) -> dict:
+    """Read projection of the async-delegation registry for the docked panel.
+
+    Pure snapshot — no state change. ``list_async_delegations`` already strips
+    the non-serialisable ``interrupt_fn`` and returns running + recently
+    completed records; ``active_count`` is the header's "N running" figure.
+    """
+    from tools.async_delegation import active_count, list_async_delegations
+
+    return _ok(
+        rid,
+        {"delegations": list_async_delegations(), "running": active_count()},
+    )
+
+
+@method("subagent.send")
+def _(rid, params: dict) -> dict:
+    """Steer a running subagent by id: deliver ``text`` as a fresh user turn.
+
+    Reuses the child's existing ``AIAgent.steer`` drain (the same
+    iteration-boundary channel /steer uses for the main turn), so the text
+    lands on the child's next tool result without violating role alternation
+    or splicing into an in-flight tool. Returns ``delivered=false`` for a
+    dead/unknown id.
+    """
+    from tools.delegate_tool import send_to_subagent
+
+    subagent_id = str(params.get("subagent_id") or "").strip()
+    text = str(params.get("text") or "")
+    if not subagent_id or not text.strip():
+        return _err(rid, 4000, "subagent_id and text required")
+    delivered = send_to_subagent(subagent_id, text)
+    return _ok(rid, {"delivered": delivered, "subagent_id": subagent_id})
+
+
+@method("delegation.send")
+def _(rid, params: dict) -> dict:
+    """Steer every running child owned by an async delegation."""
+    from tools.async_delegation import steer_async_delegation
+
+    delegation_id = str(params.get("delegation_id") or "").strip()
+    text = str(params.get("text") or "")
+    if not delegation_id or not text.strip():
+        return _err(rid, 4000, "delegation_id and text required")
+    delivered = steer_async_delegation(delegation_id, text)
+    return _ok(rid, {"delivered": delivered, "delegation_id": delegation_id})
+
+
 # ── Spawn-tree snapshots: TUI-written, disk-persisted ────────────────
 # The TUI is the source of truth for subagent state (it assembles payloads
 # from the event stream).  On turn-complete it posts the final tree here;

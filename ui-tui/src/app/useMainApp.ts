@@ -23,6 +23,7 @@ import type {
   ClarifyRespondResponse,
   ClipboardPasteResponse,
   ConfigSetResponse,
+  DelegationAsyncListResponse,
   GatewayEvent,
   SessionActiveListResponse,
   SessionCloseResponse,
@@ -43,6 +44,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { applyAsyncList } from './delegationStore.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
@@ -594,6 +596,13 @@ export function useMainApp(gw: GatewayClient) {
             if (prev.liveSessionCount !== liveSessionCount || prev.sessionTitle !== sessionTitle) {
               patchUiState({ liveSessionCount, sessionTitle })
             }
+          }
+        })
+        .catch(() => {})
+      gw.request<DelegationAsyncListResponse>('delegation.async_list', {})
+        .then(raw => {
+          if (!stopped) {
+            applyAsyncList(asRpcResult<DelegationAsyncListResponse>(raw))
           }
         })
         .catch(() => {})

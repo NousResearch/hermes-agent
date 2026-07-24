@@ -334,3 +334,57 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── ContextLength from fallback entry (#70245) ──────────────────────────────
+
+
+class TestFallbackContextLength:
+    """When a fallback_providers entry specifies context_length, it must be
+    honored on activation instead of being silently discarded."""
+
+    def test_context_length_from_fallback_entry(self):
+        """Fallback entry with context_length → _config_context_length is set."""
+        fb = {"provider": "openai", "model": "gpt-4o", "context_length": 1000000}
+        agent = _make_agent(fallback_model=fb)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            ok = agent._try_activate_fallback()
+        assert ok is True
+        assert agent._config_context_length == 1000000, (
+            f"expected 1000000, got {agent._config_context_length}"
+        )
+
+    def test_context_length_none_when_not_specified(self):
+        """Fallback entry without context_length → _config_context_length is None
+        (existing behavior preserved — falls through to model's real window)."""
+        fb = {"provider": "openai", "model": "gpt-4o"}
+        agent = _make_agent(fallback_model=fb)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            ok = agent._try_activate_fallback()
+        assert ok is True
+        assert agent._config_context_length is None, (
+            f"expected None, got {agent._config_context_length}"
+        )
+
+    def test_context_length_in_chain_second_entry(self):
+        """Second entry in chain with context_length — verifies it's set from
+        the correct fallback entry, not the first one (which lacks it)."""
+        fbs = [
+            {"provider": "openai", "model": "gpt-4o"},
+            {"provider": "zai", "model": "glm-4.7", "context_length": 64000},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "resolved"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent._config_context_length is None  # first entry: no context_length
+            assert agent._try_activate_fallback() is True
+            assert agent._config_context_length == 64000  # second entry: has context_length

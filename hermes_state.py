@@ -518,6 +518,28 @@ def sqlite_source_id() -> str:
     return str(row[0])
 
 
+def resolve_journal_mode() -> str:
+    """Return the configured journal mode (``wal`` or ``delete``).
+
+    Honors ``HERMES_JOURNAL_MODE`` env var and ``database.journal_mode``
+    in config.yaml. Default is ``wal``. Set to ``delete`` on filesystems
+    where WAL is not crash-safe (virtiofs, NFS, SMB, containerized-on-
+    macOS) — the process can't detect the backing filesystem from inside
+    a container, so this is the escape hatch (#68545).
+    """
+    raw = os.environ.get("HERMES_JOURNAL_MODE", "").strip().lower()
+    if not raw:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            raw = str(cfg.get("database", {}).get("journal_mode", "")).strip().lower()
+        except Exception:
+            pass
+    if raw in ("delete", "truncate", "persist", "memory", "off"):
+        return raw
+    return "wal"
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -564,6 +586,16 @@ def apply_wal_with_fallback(
             return "wal"
     except sqlite3.OperationalError:
         pass
+
+    # #68545: honor user-configured journal_mode (env/config.yaml).
+    # If the user forced DELETE (e.g. for virtiofs/NFS/SMB), don't try WAL.
+    _configured = resolve_journal_mode()
+    if _configured != "wal":
+        try:
+            conn.execute(f"PRAGMA journal_mode={_configured.upper()}")
+        except sqlite3.OperationalError:
+            pass  # mode may not be supported; leave whatever is set
+        return _configured
 
     try:
         conn.execute("PRAGMA journal_mode=WAL")

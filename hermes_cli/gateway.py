@@ -421,7 +421,7 @@ def _scan_gateway_pids(
                             "/FORMAT:LIST",
                         ],
                         capture_output=True,
-                        text=True, encoding='utf-8', errors='replace',
+                        text=True,
                         encoding="utf-8",
                         errors="ignore",
                         timeout=10,
@@ -447,7 +447,7 @@ def _scan_gateway_pids(
                     result = subprocess.run(
                         [powershell, "-NoProfile", "-Command", ps_cmd],
                         capture_output=True,
-                        text=True, encoding='utf-8', errors='replace',
+                        text=True,
                         encoding="utf-8",
                         errors="ignore",
                         timeout=15,

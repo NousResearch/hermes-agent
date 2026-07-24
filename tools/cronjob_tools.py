@@ -568,7 +568,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
-    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    name = str((job.get("name") or prompt or (skills[0] if skills else "") or job_id or "cron job")[:50])
     result = {
         "job_id": job_id,
         "name": name,

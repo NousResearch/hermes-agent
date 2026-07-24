@@ -1232,7 +1232,7 @@ def create_job(
 
     job = {
         "id": job_id,
-        "name": name or label_source[:50].strip(),
+        "name": (name or label_source)[:50].strip(),
         "prompt": prompt_text,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,

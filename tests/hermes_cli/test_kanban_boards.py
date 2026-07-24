@@ -271,6 +271,48 @@ class TestBoardCRUD:
         kb.remove_board("pinned")
         assert kb.get_current_board() == "default"
 
+    def test_connect_existing_does_not_recreate_archived_board(self, fresh_home):
+        """A stale watcher snapshot must not resurrect an archived slug."""
+        kb.create_board("stale-snapshot")
+        active_dir = kb.board_dir("stale-snapshot")
+        archived = kb.remove_board("stale-snapshot")
+
+        with pytest.raises(FileNotFoundError):
+            kb.connect(board="stale-snapshot", create_if_missing=False)
+
+        assert not active_dir.exists()
+        assert Path(archived["new_path"]).exists()
+
+    def test_list_boards_ignores_db_only_residue_of_archived_slug(self, fresh_home):
+        """Pre-fix ghost DBs are not treated as live boards after an update."""
+        kb.create_board("archived-residue")
+        kb.remove_board("archived-residue")
+
+        # Reproduce the old watcher behaviour that recreated a schema-only
+        # active directory after it had already enumerated the board.
+        conn = kb.connect(board="archived-residue")
+        conn.close()
+
+        residue = kb.board_dir("archived-residue")
+        assert (residue / "kanban.db").exists()
+        assert not (residue / "board.json").exists()
+        assert "archived-residue" not in {
+            board["slug"] for board in kb.list_boards(include_archived=False)
+        }
+
+    def test_archived_longer_slug_does_not_hide_legacy_db_only_board(self, fresh_home):
+        kb.create_board("legacy-longer")
+        kb.remove_board("legacy-longer")
+
+        # DB-only named boards predate board.json and remain supported. An
+        # archive whose longer slug merely shares this prefix is unrelated.
+        conn = kb.connect(board="legacy")
+        conn.close()
+
+        assert "legacy" in {
+            board["slug"] for board in kb.list_boards(include_archived=False)
+        }
+
     @pytest.mark.parametrize("archive", [True, False])
     def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
         # Regression for #23833: poll loops that call connect(board=slug) right

@@ -231,7 +231,10 @@ class GatewayKanbanWatchersMixin:
                             continue
                         seen_db_paths.add(resolved_db_path)
                         try:
-                            conn = _kb.connect(board=slug)
+                            conn = _kb.connect(
+                                board=slug,
+                                create_if_missing=(slug == _kb.DEFAULT_BOARD),
+                            )
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
@@ -703,7 +706,10 @@ class GatewayKanbanWatchersMixin:
         subscription. Unsub cursors in one board can't touch another's.
         """
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
+        conn = _kb.connect(
+            board=board,
+            create_if_missing=(not board or board == _kb.DEFAULT_BOARD),
+        )
         try:
             _kb.advance_notify_cursor(
                 conn,
@@ -718,7 +724,10 @@ class GatewayKanbanWatchersMixin:
 
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
+        conn = _kb.connect(
+            board=board,
+            create_if_missing=(not board or board == _kb.DEFAULT_BOARD),
+        )
         try:
             _kb.remove_notify_sub(
                 conn,
@@ -739,7 +748,10 @@ class GatewayKanbanWatchersMixin:
     ) -> None:
         """Sync helper: undo a claimed notification cursor after send failure."""
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
+        conn = _kb.connect(
+            board=board,
+            create_if_missing=(not board or board == _kb.DEFAULT_BOARD),
+        )
         try:
             _kb.rewind_notify_cursor(
                 conn,
@@ -1127,7 +1139,10 @@ class GatewayKanbanWatchersMixin:
                     )
                 disabled_corrupt_boards.pop(slug, None)
             try:
-                conn = _kb.connect(board=slug)
+                conn = _kb.connect(
+                    board=slug,
+                    create_if_missing=(slug == _kb.DEFAULT_BOARD),
+                )
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
@@ -1218,7 +1233,10 @@ class GatewayKanbanWatchersMixin:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
                 try:
-                    conn = _kb.connect(board=slug)
+                    conn = _kb.connect(
+                        board=slug,
+                        create_if_missing=(slug == _kb.DEFAULT_BOARD),
+                    )
                     if _kb.has_spawnable_ready(conn):
                         return True
                     if _kb.has_spawnable_review(conn):
@@ -1274,15 +1292,20 @@ class GatewayKanbanWatchersMixin:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 if attempted >= auto_decompose_per_tick:
                     break
-                # Pin this board for the duration of the call — same
-                # pattern as the dashboard specify endpoint. The
-                # decomposer module connects with no board kwarg and
-                # relies on the env var.
+                # Pin this board for the duration of the call — same pattern
+                # as the dashboard specify endpoint. Pass the slug explicitly
+                # to every decomposer DB open too: after an archive,
+                # get_current_board() intentionally ignores a missing env slug
+                # and falls back to default, which is not safe for a stale
+                # watcher snapshot.
                 prev_env = os.environ.get("HERMES_KANBAN_BOARD")
                 try:
                     os.environ["HERMES_KANBAN_BOARD"] = slug
                     try:
-                        triage_ids = _decomp.list_triage_ids()
+                        triage_ids = _decomp.list_triage_ids(
+                            board=slug,
+                            create_if_missing=False,
+                        )
                     except Exception as exc:
                         logger.debug(
                             "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
@@ -1295,7 +1318,10 @@ class GatewayKanbanWatchersMixin:
                         attempted += 1
                         try:
                             outcome = _decomp.decompose_task(
-                                tid, author="auto-decomposer",
+                                tid,
+                                author="auto-decomposer",
+                                board=slug,
+                                create_if_missing=False,
                             )
                         except Exception:
                             logger.exception(

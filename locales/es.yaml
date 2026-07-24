@@ -411,3 +411,7 @@ gateway:
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"
     session_not_found:           "Sesión no encontrada en la base de datos."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Respuesta del trabajo cron: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nPara detener o administrar este trabajo, envíame un mensaje nuevo (p. ej., «detener recordatorio {task_name}»)."

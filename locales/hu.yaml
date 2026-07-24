@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found:           "A munkamenet nem található az adatbázisban."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cron-feladat válasza: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nA feladat leállításához vagy kezeléséhez küldj nekem új üzenetet (például: „{task_name} emlékeztető leállítása”)."

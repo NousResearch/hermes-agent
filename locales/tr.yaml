@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Oturum veritabanı kullanılamıyor"
     session_not_found:           "Oturum veritabanında bulunamadı."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cron görevi yanıtı: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nBu görevi durdurmak veya yönetmek için bana yeni bir mesaj gönderin (örn. “{task_name} hatırlatıcısını durdur”)."

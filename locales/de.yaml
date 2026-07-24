@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
     session_not_found:           "Session nicht in der Datenbank gefunden."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cronjob-Antwort: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nUm diesen Job zu stoppen oder zu verwalten, sende mir eine neue Nachricht (z. B. „Erinnerung {task_name} stoppen“)."

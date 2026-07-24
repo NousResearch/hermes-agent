@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cron 작업 응답: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\n이 작업을 중지하거나 관리하려면 새 메시지를 보내세요(예: “{task_name} 알림 중지”)."

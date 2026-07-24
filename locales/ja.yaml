@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found:           "データベースにセッションが見つかりません。"
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cronジョブの応答：{task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nこのジョブを停止または管理するには、新しいメッセージを送信してください（例：「リマインダー {task_name} を停止」）。"

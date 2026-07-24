@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Database delle sessioni non disponibile"
     session_not_found:           "Sessione non trovata nel database."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Risposta del job cron: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nPer interrompere o gestire questo job, inviami un nuovo messaggio (ad es. «interrompi promemoria {task_name}»)."

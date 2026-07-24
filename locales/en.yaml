@@ -426,3 +426,7 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cronjob Response: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nTo stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."

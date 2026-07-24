@@ -414,3 +414,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Sessie-databasis is nie beskikbaar"
     session_not_found:           "Sessie nie in databasis gevind nie."
     warn_passthrough:            "⚠️ {error}"
+
+cron:
+  delivery:
+    wrapper: "Cron-taakantwoord: {task_name}\n(job_id: {job_id})\n-------------\n\n{content}\n\nStuur vir my 'n nuwe boodskap om hierdie taak te stop of te bestuur (bv. “stop herinnering {task_name}”)."

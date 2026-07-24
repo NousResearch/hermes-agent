@@ -39,6 +39,7 @@ from typing import Any, List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from agent.i18n import t
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
@@ -1509,12 +1510,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+        language = os.environ.get("HERMES_LANGUAGE")
+        if not language and isinstance(user_cfg, dict):
+            display_cfg = user_cfg.get("display") or {}
+            if isinstance(display_cfg, dict):
+                language = display_cfg.get("language")
+        delivery_content = t(
+            "cron.delivery.wrapper",
+            lang=language,
+            task_name=task_name,
+            job_id=job_id,
+            content=content,
         )
     else:
         delivery_content = content

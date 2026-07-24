@@ -525,6 +525,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
+        assert web is not None
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
         self._reload_dynamic_routes()
 
@@ -609,10 +610,25 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Rate limit exceeded"}, status=429
             )
 
-        # Parse payload
+        # Parse payload. JSON content must fail closed when malformed; do not
+        # silently reinterpret a broken JSON body as form data. That fallback is
+        # only for callers that are actually sending form-encoded payloads.
         try:
             payload = json.loads(raw_body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            content_type = str(
+                getattr(request, "content_type", "")
+                or request.headers.get("Content-Type", "")
+            ).split(";", 1)[0].strip().lower()
+            is_json_content = (
+                content_type == "application/json"
+                or content_type.endswith("+json")
+                or raw_body.lstrip().startswith((b"{", b"["))
+            )
+            if is_json_content:
+                return web.json_response(
+                    {"error": "Cannot parse body"}, status=400
+                )
             # Try form-encoded as fallback
             try:
                 import urllib.parse

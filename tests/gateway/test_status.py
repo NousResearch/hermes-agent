@@ -670,6 +670,50 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_starting_runtime_status_clears_stale_platform_entries(self, tmp_path, monkeypatch):
+        """A fresh gateway boot must not preserve adapters from an old topology."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "gateway_state": "stopped",
+            "platforms": {
+                "signal": {"state": "connected"},
+                "webhook": {"state": "disconnected"},
+            },
+        }))
+
+        status.write_runtime_status(gateway_state="starting", exit_reason=None)
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["gateway_state"] == "starting"
+        assert payload["platforms"] == {}
+
+    def test_runtime_status_preserves_current_platforms_after_starting_transition(self, tmp_path, monkeypatch):
+        """Current-run adapter updates repopulate and survive non-starting writes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="starting", exit_reason=None)
+        status.write_runtime_status(
+            platform="webhook",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+        status.write_runtime_status(gateway_state="running", exit_reason=None)
+
+        payload = status.read_runtime_status()
+        assert payload is not None
+        assert payload["gateway_state"] == "running"
+        assert payload["platforms"] == {
+            "webhook": {
+                "state": "connected",
+                "error_code": None,
+                "error_message": None,
+                "updated_at": payload["platforms"]["webhook"]["updated_at"],
+            }
+        }
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

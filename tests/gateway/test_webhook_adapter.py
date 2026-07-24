@@ -982,6 +982,122 @@ class TestHTTPHandling:
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_malformed_json_rejected_without_agent_dispatch(self):
+        """Malformed JSON bodies return 400 instead of being treated as form data."""
+        routes = {
+            "test": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["honcho_sandbox_dryrun"],
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/test",
+                data=b"{not-json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"] == "Cannot parse body"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("body", "headers"),
+        [
+            (b"{not-json", {"Content-Type": "application/json; charset=utf-8"}),
+            (b"{not-json", {"Content-Type": "application/vnd.api+json"}),
+            (b"{not-json", {}),
+            (b"[not-json", {"Content-Type": "text/plain"}),
+            (b"", {"Content-Type": "application/json"}),
+        ],
+    )
+    async def test_json_like_malformed_payloads_rejected_without_dispatch(self, body, headers):
+        """JSON media types or JSON-looking bodies fail closed on parse errors."""
+        routes = {
+            "test": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["honcho_sandbox_dryrun"],
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/test",
+                data=body,
+                headers=headers,
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"] == "Cannot parse body"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_malformed_form_payload_rejected_without_agent_dispatch(self):
+        """Bad form bytes return 400 rather than escaping as a server error."""
+        routes = {
+            "form": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["honcho_sandbox_dryrun"],
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/form",
+                data=b"\xff",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"] == "Cannot parse body"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_form_encoded_payload_fallback_still_supported(self):
+        """Non-JSON form payloads still use the existing parse_qsl fallback."""
+        routes = {
+            "form": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["honcho_sandbox_dryrun"],
+                "prompt": "Marker: {marker}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/form",
+                data=b"event_type=honcho_sandbox_dryrun&marker=form-ok",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-GitHub-Delivery": "form-001",
+                },
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_health_endpoint(self):
         """GET /health returns 200 with status=ok."""
         adapter = _make_adapter()

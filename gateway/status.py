@@ -997,6 +997,12 @@ def write_runtime_status(
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
+        if gateway_state == "starting":
+            # A new gateway boot defines a fresh adapter topology. Do not
+            # preserve stale platform entries from a previous run whose config
+            # may have enabled different adapters; current-run connect/disconnect
+            # events repopulate the authoritative platform subset.
+            payload["platforms"] = {}
     if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
     if restart_requested is not _UNSET:

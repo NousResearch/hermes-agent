@@ -189,6 +189,16 @@ def test_required_all_missing_is_dropped():
     assert "required" not in out[0]["function"]["parameters"]
 
 
+def test_empty_required_list_is_preserved_for_zero_arg_tools():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["required"] == []
+
+
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",

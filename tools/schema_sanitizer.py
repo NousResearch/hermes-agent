@@ -345,11 +345,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # built-in tools or plugin tools may not have been through that path).
     if out.get("type") == "object" and isinstance(out.get("required"), list):
         props = out.get("properties") or {}
-        valid = [r for r in out["required"] if isinstance(r, str) and r in props]
-        if not valid:
-            out.pop("required", None)
-        elif len(valid) != len(out["required"]):
-            out["required"] = valid
+        if out["required"] == []:
+            pass
+        else:
+            valid = [r for r in out["required"] if isinstance(r, str) and r in props]
+            if not valid:
+                out.pop("required", None)
+            elif len(valid) != len(out["required"]):
+                out["required"] = valid
 
     return out
 

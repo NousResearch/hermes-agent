@@ -228,7 +228,7 @@ class TestDefaultConfig:
 
         assert "openrouter" in DEFAULT_CONFIG
         or_cfg = DEFAULT_CONFIG["openrouter"]
-        assert or_cfg["response_cache"] is True
+        assert or_cfg["response_cache"] is False
         assert or_cfg["response_cache_ttl"] == 300
 
 

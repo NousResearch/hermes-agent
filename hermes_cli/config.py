@@ -1563,8 +1563,12 @@ DEFAULT_CONFIG = {
 
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
-    #   When enabled, identical requests return cached responses for free (zero billing).
-    #   This is separate from Anthropic prompt caching and works alongside it.
+    #   When enabled, identical requests can return a cached full response
+    #   verbatim (including prior tool calls) instead of a fresh generation.
+    #   This is a beta edge-cache feature, distinct from Anthropic/provider
+    #   prompt (KV) caching, and defaults to off: it can replay stale tool
+    #   calls or stochastic output, and accounts with Zero Data Retention
+    #   disable it anyway. Opt in deliberately, not as a blanket default.
     #   See: https://openrouter.ai/docs/guides/features/response-caching
     # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
     #   Default 300 (5 minutes). Only used when response_cache is enabled.
@@ -1577,7 +1581,7 @@ DEFAULT_CONFIG = {
     #   when the plugins block is omitted).
     #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
     "openrouter": {
-        "response_cache": True,
+        "response_cache": False,
         "response_cache_ttl": 300,
         "min_coding_score": 0.65,
     },

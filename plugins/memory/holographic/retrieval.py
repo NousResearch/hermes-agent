@@ -82,7 +82,7 @@ class FactRetriever:
 
             # HRR similarity
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
-                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
+                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"], dim=self.hrr_dim)
                 query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
@@ -144,7 +144,7 @@ class FactRetriever:
                 (bank_name,),
             ).fetchone()
             if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
+                bank_vec = hrr.bytes_to_phases(bank_row["vector"], dim=self.hrr_dim)
                 extracted = hrr.unbind(bank_vec, probe_key)
                 # Use extracted signal to score individual facts
                 return self._score_facts_by_vector(
@@ -176,7 +176,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
             # Unbind probe key from fact to see if entity is structurally present
             residual = hrr.unbind(fact_vec, probe_key)
             # Compare residual against content signal
@@ -237,7 +237,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
 
             # Check structural similarity: unbind entity from fact
             residual = hrr.unbind(fact_vec, entity_vec)
@@ -320,7 +320,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
 
             entity_scores = []
             for probe_key in entity_residuals:
@@ -417,8 +417,8 @@ class FactRetriever:
                     continue  # Not enough entity overlap to be contradictory
 
                 # Content similarity via HRR vectors
-                v1 = hrr.bytes_to_phases(f1["hrr_vector"])
-                v2 = hrr.bytes_to_phases(f2["hrr_vector"])
+                v1 = hrr.bytes_to_phases(f1["hrr_vector"], dim=self.hrr_dim)
+                v2 = hrr.bytes_to_phases(f2["hrr_vector"], dim=self.hrr_dim)
                 content_sim = hrr.similarity(v1, v2)
 
                 # High entity overlap + low content similarity = potential contradiction
@@ -470,7 +470,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
             sim = hrr.similarity(target_vec, fact_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)

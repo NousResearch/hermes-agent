@@ -107,3 +107,4 @@ See the [Messaging Gateway overview](/user-guide/messaging) for the platform com
 ## Training & Evaluation
 
 - **[Batch Processing](/user-guide/features/batch-processing)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.
+- **[Agent Learning Loop](/developer-guide/agent-learning-loop)** — Curate Hermes trajectories into reviewed memory/skill proposals and SFT/DPO exports without automatic writes to live Hermes state.

@@ -21,7 +21,7 @@ Roleplay the most difficult, tech-resistant user for your product. Browse the ap
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `qa`, `ux`, `testing`, `adversarial`, `dogfood`, `personas`, `user-testing` |
-| Related skills | [`dogfood`](/docs/user-guide/skills/bundled/dogfood/dogfood-dogfood) |
+| Related skills | [`dogfood`](/docs/user-guide/skills/bundled/software-development/software-development-dogfood) |
 
 ## Reference: full SKILL.md
 

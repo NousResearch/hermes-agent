@@ -193,15 +193,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'dogfood',
-                  key: 'skills-bundled-dogfood',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/dogfood/dogfood-dogfood',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'email',
                   key: 'skills-bundled-email',
                   collapsed: true,
@@ -325,6 +316,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/bundled/software-development/software-development-dogfood',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
                     'user-guide/skills/bundled/software-development/software-development-plan',

@@ -23,7 +23,7 @@ const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes)
 const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
 
 const ERROR_TITLE_RE =
-  /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
+  /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|not found|page not found|request blocked|too many requests)\b/i
 
 export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()
@@ -253,8 +253,9 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
 
 export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: PrettyLinkProps) {
   const target = useMemo(() => normalizeExternalUrl(href), [href])
-  const fetched = useLinkTitle(label ? null : target)
-  const display = fetched || label?.trim() || fallbackLabel?.trim() || urlSlugTitleLabel(target)
+  const explicitLabel = label?.trim() || fallbackLabel?.trim()
+  const fetched = useLinkTitle(explicitLabel ? null : target)
+  const display = explicitLabel || fetched || urlSlugTitleLabel(target)
 
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>

@@ -170,8 +170,9 @@ interface ResolvedLinkProps {
 }
 
 function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+  const explicitLabel = fallbackLabel?.trim()
+  const fetched = useLinkTitle(explicitLabel ? null : url)
+  const display = explicitLabel || fetched || defaultLinkLabel(url)
 
   return (
     <Link url={url}>

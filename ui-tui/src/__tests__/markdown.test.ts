@@ -2,9 +2,10 @@ import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
 import React from 'react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { __resetLinkTitleCache } from '../lib/externalLink.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -13,6 +14,12 @@ const BEL = String.fromCharCode(7)
 const ESC = String.fromCharCode(27)
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+
+afterEach(() => {
+  __resetLinkTitleCache()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
 
 const renderPlain = (node: React.ReactNode) => {
   const stdout = new PassThrough()
@@ -196,6 +203,29 @@ describe('protocol sentinels', () => {
 })
 
 describe('Md wrapping', () => {
+  it('keeps explicit link labels without fetching page titles', () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('<html><head><title>Page not found - Forgejo</title></head></html>', {
+        headers: { 'content-type': 'text/html' },
+        status: 200
+      })
+    )
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const lines = renderPlain(
+      React.createElement(Box, { width: 40 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: '[FJ #101](https://forgejo.example.com/issues/101)'
+        })
+      )
+    )
+
+    expect(lines.join('\n')).toContain('FJ #101')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('trims spaces from word-wrap continuation lines', () => {
     const lines = renderPlain(
       React.createElement(Box, { width: 5 }, React.createElement(Md, { t: DEFAULT_THEME, text: 'Let me' }))

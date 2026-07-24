@@ -1,3 +1,4 @@
+import type { SpawnOptions } from 'node:child_process'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -505,11 +506,20 @@ function resolveHermesHome() {
 
 const HERMES_HOME = resolveHermesHome()
 
-function hermesManagedNodePathEntries() {
+function hermesHomeCandidates(hermesHome = HERMES_HOME) {
+  const candidates = [hermesHome]
+  const parent = path.dirname(hermesHome)
+  if (path.basename(parent).toLowerCase() === 'profiles') {
+    candidates.push(path.dirname(parent))
+  }
+  return [...new Set(candidates)]
+}
+
+function hermesManagedNodePathEntries(hermesHome = HERMES_HOME) {
   // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
   // hermes_constants.py — this Node main process cannot import the Python
   // module, so the platform-ordering rule is mirrored here.
-  const root = path.join(HERMES_HOME, 'node')
+  const root = path.join(hermesHome, 'node')
   const bin = path.join(root, 'bin')
   const entries = IS_WINDOWS ? [root, bin] : [bin, root]
 
@@ -518,6 +528,10 @@ function hermesManagedNodePathEntries() {
 
 function pathWithHermesManagedNode(...entries) {
   return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
+}
+
+function pathWithHermesManagedNodeForHome(hermesHome, ...entries) {
+  return [...hermesManagedNodePathEntries(hermesHome), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -1543,13 +1557,20 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // Emits a boot-progress phase so the renderer shows "Update in progress…"
 // rather than a frozen splash. Returns true if it parked at all.
 async function waitForUpdateToFinish() {
-  let marker = readLiveUpdateMarker(HERMES_HOME)
-
-  if (!marker) {
-    return false
+  const readMarker = () => {
+    for (const hermesHome of hermesHomeCandidates()) {
+      const marker = readLiveUpdateMarker(hermesHome)
+      if (marker) return { ...marker, hermesHome }
+    }
+    return null
   }
 
-  rememberLog(`[updates] update in progress (pid=${marker.pid}); deferring backend start until it finishes`)
+  let marker = readMarker()
+  if (!marker) return false
+
+  rememberLog(
+    `[updates] update in progress (pid=${marker.pid}, home=${marker.hermesHome}); deferring backend start until it finishes`
+  )
   const deadline = Date.now() + UPDATE_WAIT_TIMEOUT_MS
 
   while (marker && Date.now() < deadline) {
@@ -1559,7 +1580,7 @@ async function waitForUpdateToFinish() {
       12
     )
     await new Promise(r => setTimeout(r, UPDATE_WAIT_POLL_MS))
-    marker = readLiveUpdateMarker(HERMES_HOME)
+    marker = readMarker()
   }
 
   if (marker) {
@@ -2360,11 +2381,63 @@ let isQuittingForHandoff = false
 // the desktop never touches its own bits while running. Returns null when the
 // updater isn't staged (e.g. a dev/source run that never went through the
 // installer); callers degrade gracefully.
-function resolveUpdaterBinary() {
-  const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
-  const candidate = path.join(HERMES_HOME, name)
+function resolveUpdaterBinary(
+  candidates = hermesHomeCandidates(),
+  { isWindows = IS_WINDOWS, exists = fileExists } = {}
+) {
+  const name = isWindows ? 'hermes-setup.exe' : 'hermes-setup'
+  for (const hermesHome of candidates) {
+    const candidate = path.join(hermesHome, name)
+    if (exists(candidate)) {
+      if (hermesHome !== HERMES_HOME) {
+        rememberLog(`[updates] resolved staged updater from base Hermes home: ${candidate}`)
+      }
+      return candidate
+    }
+  }
+  return null
+}
 
-  return fileExists(candidate) ? candidate : null
+function updaterHermesHome(updater) {
+  return updater ? path.dirname(updater) : HERMES_HOME
+}
+
+function resolveUpdateRootForHermesHome(hermesHome) {
+  return hermesHome === HERMES_HOME ? resolveUpdateRoot() : path.join(hermesHome, 'hermes-agent')
+}
+
+function updateMarkerHomes(primaryHermesHome, candidates = hermesHomeCandidates()) {
+  return [...new Set([primaryHermesHome, ...candidates].filter(Boolean))]
+}
+
+function writeUpdateMarkers(primaryHermesHome, pid) {
+  const homes = updateMarkerHomes(primaryHermesHome)
+  for (const hermesHome of homes) {
+    writeUpdateMarker(hermesHome, pid)
+  }
+}
+
+function updaterHandoffContext(updater) {
+  const handoffHome = updaterHermesHome(updater)
+  const updateRoot = resolveUpdateRootForHermesHome(handoffHome)
+  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+
+  return {
+    handoffHome,
+    updateRoot,
+    venvBin,
+    spawnOptions: {
+      cwd: handoffHome,
+      env: {
+        ...process.env,
+        HERMES_HOME: handoffHome,
+        PATH: pathWithHermesManagedNodeForHome(handoffHome, venvBin)
+      },
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    }
+  }
 }
 
 function repairMacUpdaterHelper(updater) {
@@ -2643,7 +2716,8 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
+    const handoff = updaterHandoffContext(updater)
+    const { handoffHome, updateRoot, venvBin } = handoff
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     const updaterArgs = ['--update', '--branch', branch]
@@ -2652,8 +2726,6 @@ async function applyUpdates(opts = {}) {
     if (targetApp) {
       updaterArgs.push('--target-app', targetApp)
     }
-
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
 
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked
@@ -2679,16 +2751,7 @@ async function applyUpdates(opts = {}) {
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawnUpdaterProcess(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: pathWithHermesManagedNode(venvBin)
-      },
-      detached: true,
-      stdio: 'ignore'
-    })
+    const child = spawnUpdaterProcess(updater, updaterArgs, handoff.spawnOptions as SpawnOptions)
 
     // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
     // quit dwell. The Tauri updater won't write its own marker for several
@@ -2698,7 +2761,7 @@ async function applyUpdates(opts = {}) {
     // waitForUpdateToFinish() gate sees a live update and parks instead.
     // The updater overwrites this with its own PID later; same format.
     if (Number.isInteger(child.pid)) {
-      writeUpdateMarker(HERMES_HOME, child.pid)
+      writeUpdateMarkers(handoffHome, child.pid)
     }
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
@@ -2730,14 +2793,14 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
-  const updateRoot = resolveUpdateRoot()
+  const handoff = updaterHandoffContext(updater)
+  const { handoffHome, updateRoot, venvBin } = handoff
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 
   const branch = directoryExists(path.join(updateRoot, '.git'))
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
   const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
 
@@ -2754,22 +2817,13 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   await releaseBackendLockForUpdate(updateRoot)
 
-  const child = spawnUpdaterProcess(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
-    },
-    detached: true,
-    stdio: 'ignore'
-  })
+  const child = spawnUpdaterProcess(updater, updaterArgs, handoff.spawnOptions as SpawnOptions)
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend
   // before the updater writes its own marker.
   if (Number.isInteger(child.pid)) {
-    writeUpdateMarker(HERMES_HOME, child.pid)
+    writeUpdateMarkers(handoffHome, child.pid)
   }
 
   rememberLog(

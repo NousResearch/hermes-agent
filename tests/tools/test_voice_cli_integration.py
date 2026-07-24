@@ -29,6 +29,10 @@ def _make_voice_cli(**overrides):
     cli._voice_continuous = False
     cli._voice_tts_done = threading.Event()
     cli._voice_tts_done.set()
+    cli._voice_tts_queue = queue.Queue()
+    cli._voice_tts_worker_lock = threading.Lock()
+    cli._voice_tts_worker = None
+    cli._voice_tts_generation = 0
     cli._voice_tts_stop = None
     cli._voice_barge_capture = threading.Event()
     cli._pending_input = queue.Queue()
@@ -988,6 +992,141 @@ class TestVoiceSpeakResponseReal:
 
         assert starts == [False]
         assert not cli._voice_tts_done.is_set()
+
+    def test_async_responses_are_spoken_sequentially(self):
+        cli = _make_voice_cli(_voice_tts=True)
+        first_started = threading.Event()
+        second_started = threading.Event()
+        release_first = threading.Event()
+        spoken = []
+        active_calls = 0
+        maximum_active_calls = 0
+        state_lock = threading.Lock()
+
+        def speak(text, *args, **kwargs):
+            nonlocal active_calls, maximum_active_calls
+            with state_lock:
+                active_calls += 1
+                maximum_active_calls = max(maximum_active_calls, active_calls)
+            spoken.append(text)
+            if text == "first":
+                first_started.set()
+                assert release_first.wait(timeout=2)
+            else:
+                second_started.set()
+            with state_lock:
+                active_calls -= 1
+
+        cli._voice_speak_response = speak
+        cli._voice_speak_response_async("first")
+        assert first_started.wait(timeout=2)
+        cli._voice_speak_response_async("second")
+        assert not second_started.wait(timeout=0.1)
+        worker = cli._voice_tts_worker
+        assert worker is not None
+        release_first.set()
+        assert second_started.wait(timeout=2)
+        worker.join(timeout=2)
+
+        assert spoken == ["first", "second"]
+        assert maximum_active_calls == 1
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
+    def test_disable_during_synthesis_prevents_playback(self, _cp):
+        cli = _make_voice_cli(_voice_mode=True, _voice_tts=True)
+        synthesis_started = threading.Event()
+        release_synthesis = threading.Event()
+
+        def synthesize(**kwargs):
+            synthesis_started.set()
+            assert release_synthesis.wait(timeout=2)
+            return '{"success": true}'
+
+        with (
+            patch("tools.tts_tool.text_to_speech_tool", side_effect=synthesize),
+            patch("tools.voice_mode.play_audio_file") as play_audio,
+            patch("tools.voice_mode.stop_playback"),
+            patch("cli.os.makedirs"),
+            patch("cli.os.path.isfile", return_value=True),
+            patch("cli.os.path.getsize", return_value=1000),
+            patch("cli.os.unlink"),
+        ):
+            cli._voice_speak_response_async("first")
+            assert synthesis_started.wait(timeout=2)
+            worker = cli._voice_tts_worker
+            assert worker is not None
+            cli._disable_voice_mode()
+            release_synthesis.set()
+            worker.join(timeout=2)
+
+        play_audio.assert_not_called()
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_disable_discards_responses_queued_before_reenable(self, _stop, _cp):
+        cli = _make_voice_cli(_voice_mode=True, _voice_tts=True)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        spoken = []
+
+        def speak(text, *args, **kwargs):
+            spoken.append(text)
+            if text == "first":
+                first_started.set()
+                assert release_first.wait(timeout=2)
+
+        cli._voice_speak_response = speak
+        cli._voice_speak_response_async("first")
+        assert first_started.wait(timeout=2)
+        cli._voice_speak_response_async("stale second")
+        worker = cli._voice_tts_worker
+        assert worker is not None
+
+        cli._disable_voice_mode()
+        cli._voice_mode = True
+        cli._voice_tts = True
+        release_first.set()
+        worker.join(timeout=2)
+
+        assert spoken == ["first"]
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
+    @patch("tools.voice_mode.stop_playback")
+    def test_toggle_off_cancels_active_playback(self, stop_playback, _cp):
+        cli = _make_voice_cli(_voice_mode=True, _voice_tts=True)
+        cli._voice_tts_done.clear()
+
+        with patch("cli.threading.Thread"):
+            cli._voice_speak_response_async("queued item")
+
+        cli._toggle_voice_tts()
+
+        assert cli._voice_tts is False
+        assert cli._voice_tts_done.is_set()
+        stop_playback.assert_called_once_with()
+        assert cli._voice_tts_queue.empty()
+
+    def test_worker_start_failure_does_not_strand_queue(self):
+        cli = _make_voice_cli(_voice_tts=True)
+
+        class FailingThread:
+            def __init__(self, target=None, args=(), daemon=None):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                raise RuntimeError("thread start failed")
+
+        with patch("cli.threading.Thread", FailingThread):
+            with pytest.raises(RuntimeError, match="thread start failed"):
+                cli._voice_speak_response_async("Hello")
+
+        assert cli._voice_tts_worker is None
+        assert cli._voice_tts_queue.empty()
+        assert cli._voice_tts_done.is_set()
 
     @patch("cli._cprint")
     def test_early_return_when_tts_off(self, _cp):

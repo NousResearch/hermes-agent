@@ -4333,6 +4333,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
+        self._voice_tts_queue: queue.Queue[str] = queue.Queue()
+        self._voice_tts_worker_lock = threading.Lock()
+        self._voice_tts_worker = None
+        self._voice_tts_generation = 0
         self._voice_tts_stop = None  # active streaming pipeline's stop event
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
 
@@ -11408,21 +11412,79 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._voice_restart_recording_async()
 
     def _voice_speak_response_async(self, text: str) -> None:
-        """Schedule TTS and mark it pending before continuous recording can restart."""
+        """Queue TTS so rapid responses play sequentially without overlap."""
         if not self._voice_tts or not text:
             return
-        self._voice_tts_done.clear()
-        threading.Thread(
-            target=self._voice_speak_response,
-            args=(text,),
-            daemon=True,
-        ).start()
+        with self._voice_tts_worker_lock:
+            self._voice_tts_done.clear()
+            self._voice_tts_queue.put(text)
+            if self._voice_tts_worker is None:
+                my_generation = self._voice_tts_generation
+                self._voice_tts_worker = threading.Thread(
+                    target=self._voice_tts_worker_loop,
+                    args=(my_generation,),
+                    daemon=True,
+                )
+                try:
+                    self._voice_tts_worker.start()
+                except RuntimeError:
+                    self._voice_tts_worker = None
+                    self._drain_voice_tts_queue()
+                    self._voice_tts_done.set()
+                    raise
 
-    def _voice_speak_response(self, text: str):
+    def _cancel_voice_tts_queue(self) -> None:
+        """Bump generation and drain the queue so stale items never play."""
+        with self._voice_tts_worker_lock:
+            self._voice_tts_generation += 1
+            self._drain_voice_tts_queue()
+            self._voice_tts_done.set()
+
+    def _drain_voice_tts_queue(self) -> None:
+        """Discard all pending items without playing them."""
+        while not self._voice_tts_queue.empty():
+            try:
+                self._voice_tts_queue.get_nowait()
+                self._voice_tts_queue.task_done()
+            except queue.Empty:
+                break
+
+    def _voice_tts_worker_loop(self, generation: int) -> None:
+        """Drain queued responses in order on a single playback worker."""
+        while True:
+            try:
+                text = self._voice_tts_queue.get_nowait()
+            except queue.Empty:
+                with self._voice_tts_worker_lock:
+                    if self._voice_tts_queue.empty():
+                        self._voice_tts_worker = None
+                        self._voice_tts_done.set()
+                        return
+                continue
+
+            with self._voice_tts_worker_lock:
+                if self._voice_tts_generation != generation or not self._voice_tts:
+                    self._voice_tts_queue.task_done()
+                    continue
+
+            try:
+                self._voice_speak_response(text, update_done_event=False)
+            except Exception:
+                logger.exception("Queued voice TTS playback failed")
+            finally:
+                self._voice_tts_queue.task_done()
+
+    def _voice_speak_response(
+        self,
+        text: str,
+        *,
+        update_done_event: bool = True,
+    ) -> None:
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         if not self._voice_tts:
             return
-        self._voice_tts_done.clear()
+        if update_done_event:
+            self._voice_tts_done.clear()
         try:
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
@@ -11453,8 +11515,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             text_to_speech_tool(text=tts_text, output_path=mp3_path)
 
-            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
-            if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+            # Re-check after synthesis — disable/toggle may have fired while
+            # we were waiting on the network, so skip playback entirely.
+            if (
+                os.path.isfile(mp3_path)
+                and os.path.getsize(mp3_path) > 0
+                and self._voice_tts
+            ):
                 play_audio_file(mp3_path)
                 # Clean up
                 try:
@@ -11468,7 +11535,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
         finally:
-            self._voice_tts_done.set()
+            if update_done_event:
+                self._voice_tts_done.set()
 
 
     def _voice_barge_in_monitor(self, stop_event: threading.Event) -> None:
@@ -11629,6 +11697,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._voice_recorder = None
 
         # Stop any active TTS playback (file player + streaming pipeline)
+        self._cancel_voice_tts_queue()
         try:
             if self._voice_tts_stop is not None:
                 self._voice_tts_stop.set()
@@ -11650,7 +11719,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._voice_tts = not self._voice_tts
         status = "enabled" if self._voice_tts else "disabled"
 
-        if self._voice_tts:
+        if not self._voice_tts:
+            self._cancel_voice_tts_queue()
+            try:
+                if self._voice_tts_stop is not None:
+                    self._voice_tts_stop.set()
+                from tools.voice_mode import stop_playback
+                stop_playback()
+            except Exception:
+                pass
+        elif self._voice_tts:
             from tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
@@ -13630,6 +13708,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_continuous = False  # Whether to auto-restart after agent responds
         self._voice_tts_done = threading.Event()  # Signals TTS playback finished
         self._voice_tts_done.set()  # Initially "done" (no TTS pending)
+        self._voice_tts_queue: queue.Queue[str] = queue.Queue()
+        self._voice_tts_worker_lock = threading.Lock()
+        self._voice_tts_worker = None
+        self._voice_tts_generation = 0
         self._voice_tts_stop = None  # active streaming pipeline's stop event
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
 
@@ -14426,6 +14508,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     try:
                         from tools.tts_streaming import mark_speech_interrupted
                         mark_speech_interrupted()
+                        cli_ref._cancel_voice_tts_queue()
                         if cli_ref._voice_tts_stop is not None:
                             cli_ref._voice_tts_stop.set()
                         from tools.voice_mode import stop_playback

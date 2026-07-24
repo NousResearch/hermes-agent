@@ -152,11 +152,17 @@ def _print_version() -> None:
     print(hermes_version)
 
 
-def _run_check() -> None:
-    import acp  # noqa: F401
-    from acp_adapter.server import HermesACPAgent  # noqa: F401
+def _run_check() -> int:
+    try:
+        import acp  # noqa: F401
+        from acp_adapter.server import HermesACPAgent  # noqa: F401
+    except ImportError:
+        print("ACP dependencies not installed.", file=sys.stderr)
+        print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+        return 1
 
     print("Hermes ACP check OK")
+    return 0
 
 
 def _run_setup() -> None:
@@ -221,7 +227,9 @@ def main(argv: list[str] | None = None) -> None:
         _print_version()
         return
     if args.check:
-        _run_check()
+        rc = _run_check()
+        if rc != 0:
+            sys.exit(rc)
         return
     if args.setup:
         _run_setup()

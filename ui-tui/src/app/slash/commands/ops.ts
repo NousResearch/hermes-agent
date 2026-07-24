@@ -22,8 +22,11 @@ import type { SlashCommand } from '../types.js'
 interface SkillInfo {
   category?: string
   description?: string
+  identifier?: string
   name?: string
   path?: string
+  skill_md_preview?: string
+  source?: string
 }
 
 interface SkillsListResponse {
@@ -39,8 +42,12 @@ interface SkillsSearchResponse {
 }
 
 interface SkillsInstallResponse {
+  info?: SkillInfo
   installed?: boolean
+  message?: string
   name?: string
+  review_required?: boolean
+  status?: string
 }
 
 interface SkillsBrowseItem {
@@ -604,13 +611,39 @@ export const opsCommands: SlashCommand[] = [
           return sys('usage: /skills install <name or url>')
         }
 
-        sys(`installing ${query}…`)
+        sys(`checking install requirements for ${query}…`)
 
         rpc<SkillsInstallResponse>('skills.manage', { action: 'install', query })
           .then(
-            ctx.guarded<SkillsInstallResponse>(r =>
+            ctx.guarded<SkillsInstallResponse>(r => {
+              if (r.review_required) {
+                const info = r.info ?? {}
+                const name = info.name ?? r.name ?? query
+
+                const rows: [string, string][] = [
+                  ['Name', String(name)],
+                  ['Source', String(info.source ?? '')],
+                  ['Identifier', String(info.identifier ?? info.path ?? query)]
+                ]
+
+                const sections: PanelSection[] = [{ rows }]
+
+                if (info.description) {
+                  sections.push({ text: String(info.description) })
+                }
+
+                if (info.skill_md_preview) {
+                  sections.push({ text: String(info.skill_md_preview), title: 'SKILL.md preview' })
+                }
+
+                panel('Skill Review Required', sections)
+                sys(`review required for ${name}: ${r.message ?? 'inspect the skill before installing from the CLI'}`)
+
+                return
+              }
+
               sys(r.installed ? `installed ${r.name ?? query}` : 'install failed')
-            )
+            })
           )
           .catch(ctx.guardedErr)
 

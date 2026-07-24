@@ -68,3 +68,43 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
     convert.assert_called_once_with(str(out))
+
+
+def test_edge_telegram_explicit_ogg_path_converts(tmp_path, monkeypatch):
+    """Edge TTS with an explicit .ogg output_path must still convert to Opus.
+
+    Regression test for #57048: Edge TTS always writes MP3 bytes regardless
+    of the target filename.  When the caller supplies a .ogg path the old
+    code skipped the ``_convert_to_opus`` call because the file already
+    ended in .ogg — leaving MP3 data under an .ogg extension.
+    """
+    out = tmp_path / "speech.ogg"
+    mp3_sibling = tmp_path / "speech.mp3"
+    opus = tmp_path / "speech.ogg"  # same name after conversion
+
+    async def fake_edge(text, output_path, tts_config):
+        # Edge TTS always writes MP3 bytes, even to a .ogg path
+        Path(output_path).write_bytes(b"mp3-data")
+        return output_path
+
+    def fake_convert(path: str) -> str:
+        # After rename the input should be the .mp3 sibling
+        assert path == str(mp3_sibling), f"expected .mp3 input, got {path}"
+        Path(opus).write_bytes(b"real-opus-data")
+        return str(opus)
+
+    convert = Mock(side_effect=fake_convert)
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_edge_tts", fake_edge)
+    monkeypatch.setattr(tts_tool, "_convert_to_opus", convert)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(out)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(opus)
+    assert result["voice_compatible"] is True
+    assert "[audio_as_voice]" in result["media_tag"]
+    convert.assert_called_once()

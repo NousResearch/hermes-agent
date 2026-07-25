@@ -2893,6 +2893,7 @@ def create_anthropic_message(
     *,
     log_prefix: str = "",
     prefer_stream: bool = True,
+    on_stream_event=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available.
 
@@ -2902,6 +2903,13 @@ def create_anthropic_message(
     crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
     match the main turn path, falling back to ``create()`` only for providers
     that explicitly do not support streaming, such as restricted Bedrock roles.
+
+    ``on_stream_event``: optional callable invoked once per streamed event
+    (best-effort, exceptions swallowed). Lets callers report forward progress
+    to liveness watchdogs — e.g. the auxiliary compression path ticking its
+    progress hook so a slow-but-generating summary model isn't treated as
+    hung. Only fires on the streaming path; the ``create()`` fallback has no
+    events to report.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
@@ -2912,6 +2920,18 @@ def create_anthropic_message(
         stream_kwargs.pop("stream", None)
         try:
             with stream_fn(**stream_kwargs) as stream:
+                if callable(on_stream_event):
+                    # Consume the event stream manually so each event can
+                    # tick the caller's progress callback; get_final_message
+                    # then returns the accumulated snapshot.
+                    for _event in stream:
+                        try:
+                            on_stream_event(_event)
+                        except Exception:
+                            logger.debug(
+                                "%son_stream_event callback failed",
+                                log_prefix, exc_info=True,
+                            )
                 return stream.get_final_message()
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):

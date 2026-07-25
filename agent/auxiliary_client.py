@@ -247,6 +247,50 @@ def aux_interrupt_protection(active: bool = True):
         _aux_interrupt_protection.active = prev
 
 
+# ── Forward-progress hook for streamed auxiliary calls ───────────────────
+# Long auxiliary calls (context compression is the prime case) are watched by
+# wall-clock deadlines in their hosts (gateway session hygiene). A fixed
+# deadline punishes SLOW summary models exactly as hard as HUNG ones: a
+# reasoning model happily streaming a large summary is killed mid-generation.
+# This thread-local hook lets the host observe liveness instead: the wire
+# consumers below tick it on every streamed token/SSE event, and the host
+# extends its deadline while tokens are moving (see gateway/run.py session
+# hygiene + CompressionCommitFence.touch_progress). Thread-local matches the
+# call topology — the aux call and its stream consumption run synchronously
+# on the thread that installed the hook.
+_aux_progress = threading.local()
+
+
+def _notify_aux_progress() -> None:
+    """Tick the installed forward-progress hook, if any. Never raises."""
+    hook = getattr(_aux_progress, "hook", None)
+    if hook is None:
+        return
+    try:
+        hook()
+    except Exception:
+        logger.debug("aux progress hook failed", exc_info=True)
+
+
+def _aux_progress_active() -> bool:
+    return getattr(_aux_progress, "hook", None) is not None
+
+
+@contextlib.contextmanager
+def aux_progress_hook(hook):
+    """Install *hook* as the current thread's aux forward-progress callback.
+
+    ``hook=None`` is a no-op passthrough so callers can wire it
+    unconditionally. Re-entrant-safe: restores the previous hook on exit.
+    """
+    prev = getattr(_aux_progress, "hook", None)
+    _aux_progress.hook = hook if callable(hook) else prev
+    try:
+        yield
+    finally:
+        _aux_progress.hook = prev
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -1162,6 +1206,10 @@ class _CodexCompletionsAdapter:
             def _on_each_event(_event: Any) -> None:
                 # Re-check timeout/cancellation per event, matching the
                 # cadence the old in-line ``_check_cancelled()`` used.
+                # Each SSE event is also forward progress for hosts watching
+                # a progress hook (gateway session hygiene): a reasoning
+                # model streaming a long summary must not look hung.
+                _notify_aux_progress()
                 _check_cancelled()
 
             event_stream = self._client.responses.create(**stream_kwargs)
@@ -1403,7 +1451,18 @@ class _AnthropicCompletionsAdapter:
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
 
-        response = create_anthropic_message(self._client, anthropic_kwargs)
+        response = create_anthropic_message(
+            self._client,
+            anthropic_kwargs,
+            # Tick the aux forward-progress hook per streamed event so hosts
+            # watching liveness (gateway session hygiene) don't kill a
+            # slow-but-generating summary model. No-op when no hook is
+            # installed (None keeps the fast get_final_message path).
+            on_stream_event=(
+                (lambda _event: _notify_aux_progress())
+                if _aux_progress_active() else None
+            ),
+        )
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
@@ -7117,6 +7176,228 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
     return value
 
 
+# ── Streamed aggregation for progress-hooked auxiliary calls ─────────────
+# When a forward-progress hook is installed (aux_progress_hook — today only
+# by context compression), the primary chat.completions attempt is upgraded
+# to a streamed request that is aggregated back into a complete response.
+# Two effects, both deliberate:
+#   1. The configured ``timeout`` becomes an INTER-CHUNK idle timeout instead
+#      of a total budget (httpx applies the read timeout per stream read), so
+#      a slow-but-generating summary model is never killed mid-generation
+#      while tokens are moving — only a genuinely silent connection dies.
+#   2. Every arriving chunk ticks the progress hook, letting outer watchdogs
+#      (gateway session hygiene) extend their deadlines on liveness instead
+#      of guessing with a fixed wall clock.
+# A total ceiling still bounds the pathological 1-token-per-idle-window
+# stream; see _aux_stream_total_ceiling().
+
+_AUX_STREAM_CEILING_FLOOR_SECONDS = 600.0
+_AUX_STREAM_CEILING_MULTIPLIER = 4.0
+
+
+def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
+    """Absolute wall-clock bound for a progress-hooked streamed aux call.
+
+    Generous by design — the idle timeout is the real guard; this only stops
+    a degenerate stream that trickles one token per idle window forever.
+    """
+    try:
+        timeout = float(effective_timeout) if effective_timeout is not None else 0.0
+    except (TypeError, ValueError):
+        timeout = 0.0
+    return max(_AUX_STREAM_CEILING_FLOOR_SECONDS,
+               _AUX_STREAM_CEILING_MULTIPLIER * timeout)
+
+
+def _client_streams_internally(client: Any) -> bool:
+    """Wire adapters that consume a stream inside .create() already tick the
+    progress hook themselves (Codex per SSE event, Anthropic per stream
+    event); Bedrock's Converse shim cannot stream at all. None of them
+    accept chat-completions ``stream=True`` semantics from us."""
+    return isinstance(client, (
+        CodexAuxiliaryClient,
+        AnthropicAuxiliaryClient,
+        BedrockAuxiliaryClient,
+    ))
+
+
+def _is_streaming_rejected_error(exc: Exception) -> bool:
+    """Provider explicitly refused a streamed chat.completions request."""
+    err = str(exc).lower()
+    if "stream_options" in err:
+        return True
+    return "stream" in err and (
+        "not supported" in err
+        or "unsupported" in err
+        or "not allowed" in err
+        or "disabled" in err
+    )
+
+
+def _create_with_progress(client: Any, kwargs: Dict[str, Any], task: Optional[str] = None) -> Any:
+    """chat.completions.create() that streams when a progress hook is active.
+
+    Behavior is byte-for-byte identical to a plain ``create(**kwargs)`` when
+    no hook is installed (every existing caller/task) or when the client's
+    wire adapter streams internally. With a hook + a chunk-capable client,
+    the request is sent with ``stream=True`` and aggregated, ticking the hook
+    per chunk — so the configured ``timeout`` acts per stream read (idle)
+    rather than as a total budget, and outer liveness watchdogs see tokens
+    moving. Providers that reject the streamed request fall back to the
+    plain non-streaming call.
+    """
+    _notify_aux_progress()  # request dispatched counts as progress
+    if not _aux_progress_active() or _client_streams_internally(client):
+        return client.chat.completions.create(**kwargs)
+
+    total_ceiling = _aux_stream_total_ceiling(kwargs.get("timeout"))
+    stream_kwargs = dict(kwargs)
+    stream_kwargs["stream"] = True
+    stream_kwargs["stream_options"] = {"include_usage": True}
+    try:
+        chunks = client.chat.completions.create(**stream_kwargs)
+    except Exception as exc:
+        # Genuine provider failures (auth, credit, rate limit, network) are
+        # not streaming's fault — surface them unchanged so the existing
+        # recovery chains (credential refresh, pool rotation, provider
+        # fallback) see the same error they would on a plain call.
+        if (
+            _is_transient_transport_error(exc)
+            or _is_auth_error(exc)
+            or _is_payment_error(exc)
+            or _is_rate_limit_error(exc)
+        ):
+            raise
+        # Anything else may be a streaming-specific rejection (explicit
+        # "stream not supported", stream_options 400, or an idiosyncratic
+        # 4xx). Retry non-streaming once; if the request itself is bad the
+        # plain call reproduces the real error for the normal except-chains.
+        logger.debug(
+            "Auxiliary %s: streamed request failed (%s); retrying "
+            "non-streaming", task or "call", exc,
+        )
+        return client.chat.completions.create(**kwargs)
+
+    # Some shims (MoA virtual provider under quiet mode, defensive adapters)
+    # return a complete response even when stream=True was requested.
+    if hasattr(chunks, "choices"):
+        _notify_aux_progress()
+        return chunks
+    return _aggregate_chat_stream(
+        chunks, model=str(kwargs.get("model") or ""), total_ceiling=total_ceiling,
+    )
+
+
+def _aggregate_chat_stream(
+    chunks: Any,
+    *,
+    model: str = "",
+    total_ceiling: Optional[float] = None,
+) -> Any:
+    """Consume a chat.completions chunk stream into a complete response.
+
+    Ticks the thread-local aux progress hook on every chunk. Raises
+    TimeoutError when *total_ceiling* seconds elapse before the stream
+    finishes — phrased with "timed out" so existing timeout classification
+    (``_is_timeout_error``) treats it exactly like a request timeout.
+    """
+    started = time.monotonic()
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    tool_calls_acc: Dict[int, Dict[str, Any]] = {}
+    finish_reason = None
+    usage = None
+    resp_id = ""
+    resp_model = model or ""
+    try:
+        for chunk in chunks:
+            _notify_aux_progress()
+            if total_ceiling is not None and (time.monotonic() - started) >= total_ceiling:
+                raise TimeoutError(
+                    f"Auxiliary streamed call timed out after {total_ceiling:.0f}s "
+                    "total ceiling (stream still open but over budget)"
+                )
+            resp_id = getattr(chunk, "id", None) or resp_id
+            resp_model = getattr(chunk, "model", None) or resp_model
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage:
+                usage = chunk_usage
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            piece = getattr(delta, "content", None)
+            if piece:
+                content_parts.append(piece)
+            # Thinking models stream reasoning deltas before any content —
+            # they count as forward progress (the tick above) and are kept
+            # out of .content, mirroring non-streaming responses where
+            # reasoning arrives in a separate field.
+            reasoning_piece = (
+                getattr(delta, "reasoning", None)
+                or getattr(delta, "reasoning_content", None)
+            )
+            if reasoning_piece and isinstance(reasoning_piece, str):
+                reasoning_parts.append(reasoning_piece)
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                idx = getattr(tc, "index", 0) or 0
+                acc = tool_calls_acc.setdefault(
+                    idx, {"id": "", "name": "", "arguments": []}
+                )
+                if getattr(tc, "id", None):
+                    acc["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        acc["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        acc["arguments"].append(fn.arguments)
+    finally:
+        close_fn = getattr(chunks, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+
+    tool_calls = None
+    if tool_calls_acc:
+        tool_calls = [
+            SimpleNamespace(
+                id=acc["id"],
+                type="function",
+                function=SimpleNamespace(
+                    name=acc["name"],
+                    arguments="".join(acc["arguments"]),
+                ),
+            )
+            for _idx, acc in sorted(tool_calls_acc.items())
+        ]
+
+    message = SimpleNamespace(
+        role="assistant",
+        content="".join(content_parts),
+        tool_calls=tool_calls,
+        reasoning="".join(reasoning_parts) or None,
+    )
+    choice = SimpleNamespace(
+        index=0,
+        message=message,
+        finish_reason=finish_reason or "stop",
+    )
+    return SimpleNamespace(
+        id=resp_id,
+        model=resp_model,
+        object="chat.completion",
+        choices=[choice],
+        usage=usage,
+    )
+
+
 def call_llm(
     task: str = None,
     *,
@@ -7317,7 +7598,7 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task,
+                _create_with_progress(client, kwargs, task), task,
                 provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
@@ -7350,7 +7631,7 @@ def call_llm(
                 time.sleep(_backoff)
                 try:
                     return _validate_llm_response(
-                        client.chat.completions.create(**kwargs), task)
+                        _create_with_progress(client, kwargs, task), task)
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise

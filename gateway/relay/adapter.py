@@ -369,12 +369,13 @@ class RelayAdapter(BasePlatformAdapter):
 
         NEVER raises: a malformed forward must not kill the read loop.
 
-        NOTE (open semantic sub-design, flagged for review): the interaction ->
-        MessageEvent mapping below is the v1 default. The exact agent UX for a
-        slash-command / button interaction (vs. a plain message) — command name
-        surfacing, option rendering, deferred-vs-immediate response — is the open
-        piece tracked in the spec; the TRANSPORT + receive mechanism (this whole
-        path) is settled.
+        Interaction -> MessageEvent command mapping (formerly flagged here as an
+        open sub-design, now implemented): an APPLICATION_COMMAND interaction is
+        normalized to a leading-slash COMMAND event ("/name arg…", mirroring the
+        connector's Slack slash-command lane, normalizeSlackCommand), so the
+        dispatcher routes it as a command instead of plain chat. Component
+        interactions (custom_id) still surface as best-effort TEXT; the
+        deferred-vs-immediate response UX remains connector-side.
         """
         try:
             platform = getattr(forward, "platform", "") or ""
@@ -417,8 +418,21 @@ class RelayAdapter(BasePlatformAdapter):
         # 3 = MESSAGE_COMPONENT; 5 = MODAL_SUBMIT. Surface a best-effort text.
         itype = payload.get("type")
         data = payload.get("data") or {}
+        message_type = MessageType.TEXT
         if itype == 2:
-            text = str(data.get("name") or "")
+            # Normalize a real slash-command interaction to a leading-slash
+            # command string — the shape the dispatcher (MessageEvent.is_command:
+            # text.startswith("/")) and the native Discord adapter's
+            # _run_simple_slash lane (f"/model {name}".strip()) both expect.
+            # Options render space-separated: scalar options contribute their
+            # value; SUB_COMMAND/SUB_COMMAND_GROUP (types 1/2) contribute their
+            # name then their nested options. Mirrors the connector's Slack
+            # slash lane (normalizeSlackCommand: `${command} ${args}`.trim()).
+            text = ("/" + str(data.get("name") or "")).rstrip("/") or ""
+            if text:
+                parts = [text] + self._render_interaction_options(data.get("options"))
+                text = " ".join(parts).strip()
+                message_type = MessageType.COMMAND
         elif itype == 3:
             text = str(data.get("custom_id") or "")
         else:
@@ -436,7 +450,36 @@ class RelayAdapter(BasePlatformAdapter):
             scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
         )
-        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
+        return MessageEvent(text=text, message_type=message_type, source=source)
+
+    @staticmethod
+    def _render_interaction_options(options) -> list:
+        """Render Discord interaction options to space-separated text parts.
+
+        Discord's `data.options` is a list of {name, value, type}. Scalar
+        options (STRING/INTEGER/BOOLEAN/…) contribute just their value —
+        matching the native adapter's `f"/model {name}".strip()` shape, where
+        only the value follows the command. SUB_COMMAND (1) and
+        SUB_COMMAND_GROUP (2) contribute their *name* then recurse into their
+        nested `options` list (one level of nesting per Discord's schema:
+        group -> subcommand -> scalars).
+        """
+        parts: list = []
+        if not isinstance(options, list):
+            return parts
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            if opt.get("type") in (1, 2):  # SUB_COMMAND / SUB_COMMAND_GROUP
+                sub_name = str(opt.get("name") or "").strip()
+                if sub_name:
+                    parts.append(sub_name)
+                parts.extend(RelayAdapter._render_interaction_options(opt.get("options")))
+            else:
+                value = opt.get("value")
+                if value is not None and str(value).strip():
+                    parts.append(str(value).strip())
+        return parts
 
     async def disconnect(self) -> None:
         # Phase 7 Unit 7d-B: stop the revocation monitor first so it can't fire a

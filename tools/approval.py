@@ -690,8 +690,40 @@ DANGEROUS_PATTERNS = [
     # containers without approval.  These are agent-initiated lifecycle operations
     # that should always require user consent, just like `hermes gateway restart`
     # already does for the gateway process.
-    (r'\bdocker\s+compose\s+(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
-    (r'\bdocker\s+(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    # Docker/Podman daemon redirect — global flags or env prefixes that point
+    # the CLI at a DIFFERENT daemon, often a remote host over ssh/tcp.  A
+    # command that looks local (`docker -H ssh://prod stop app`) silently
+    # operates on remote infrastructure, so any docker/podman invocation
+    # carrying a redirect requires approval regardless of subcommand.  The
+    # redirect flag must appear in the global-flag position (before the
+    # subcommand) and -H/--host/--context must carry a value, which keeps
+    # `docker -h` (help) and subcommand flags like `docker run -h <hostname>`
+    # out of the deny.  Listed BEFORE the lifecycle rules so a redirected
+    # lifecycle command surfaces the more specific "remote daemon" reason.
+    # Inspired by Claude Code 2.1.214, which added permission prompts for
+    # docker/podman commands carrying daemon-redirect flags (--url,
+    # --connection, --identity, remote mode).
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-h|--host)[=\s]+\S+',
+     "docker with remote daemon redirect (-H/--host)"),
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-c|--context)[=\s]+\S+',
+     "docker with daemon redirect (--context: alternate daemon)"),
+    (r'\bdocker\s+context\s+use\b',
+     "docker context use (switches default daemon for future commands)"),
+    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:--url|--connection|--identity)[=\s]+\S+',
+     "podman with remote daemon redirect (--url/--connection/--identity)"),
+    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-r\b|--remote\b)',
+     "podman remote mode (-r/--remote: remote daemon)"),
+    (r'\b(?:docker_host|docker_context|container_host|container_connection)=\S+',
+     "docker/podman daemon redirect via environment (DOCKER_HOST/CONTAINER_HOST)"),
+    # Allow global flags between `docker`/`compose` and the verb (e.g.
+    # `docker compose -f prod.yml down`, `docker --log-level debug stop app`)
+    # and the legacy hyphenated `docker-compose` binary, so a flag can't slip
+    # a lifecycle command past the guard — same treatment as the `hermes ...
+    # gateway` pattern above.
+    (r'\bdocker(?:-compose|\s+compose)\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill|down)\b',
+     "docker compose restart/stop/kill/down (container lifecycle)"),
+    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill)\b',
+     "docker restart/stop/kill (container lifecycle)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),

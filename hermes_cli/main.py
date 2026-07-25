@@ -16014,6 +16014,50 @@ def main():
         help="Skip the timestamped backup copy (not recommended)",
     )
 
+    sessions_recover = sessions_subparsers.add_parser(
+        "recover",
+        help="Rebuild canonical session data into a separate clean database",
+        description=(
+            "Offline, non-destructive recovery for a damaged state.db. The "
+            "source database and its WAL/SHM/rollback-journal sidecars are "
+            "copied before SQLite opens anything. Canonical rows are rebuilt "
+            "into a new output database; derived search indexes are recreated "
+            "and the active database is never replaced automatically."
+        ),
+    )
+    sessions_recover.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="Source state.db or preserved backup to inspect/recover",
+    )
+    sessions_recover.add_argument(
+        "--output",
+        type=Path,
+        help="New recovery database path (required unless --inspect-only)",
+    )
+    sessions_recover.add_argument(
+        "--inspect-only",
+        action="store_true",
+        help="Only report canonical table readability; do not create an output database",
+    )
+    sessions_recover.add_argument(
+        "--work-dir",
+        type=Path,
+        help="Existing directory for the disposable source copy (defaults beside the output)",
+    )
+    sessions_recover.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1000,
+        help="Rows committed per recovery batch (default: 1000)",
+    )
+    sessions_recover.add_argument(
+        "--report",
+        type=Path,
+        help="JSON report path (defaults to <output>.recovery.json)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -16045,9 +16089,10 @@ def main():
 
         action = args.sessions_action
 
-        # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
-        # exactly the case where SessionDB() can't open, so it operates on the
-        # raw file path instead.
+        # 'repair' and 'recover' must run BEFORE opening SessionDB(): a
+        # malformed schema is exactly the case where SessionDB() can't open.
+        # Recovery additionally promises never to open the supplied source
+        # directly, so it operates through its own disposable source copy.
         if action == "repair":
             from hermes_state import (
                 DEFAULT_DB_PATH,
@@ -16089,6 +16134,92 @@ def main():
                     print(f"  A backup is preserved at: {report['backup_path']}")
                 print("  Keep state.db and the backup; do not delete them.")
             return
+
+        if action == "recover":
+            import sqlite3 as _sqlite3
+
+            from hermes_cli.session_recovery import (
+                SessionRecoveryError,
+                inspect_session_database,
+                recover_session_database,
+                write_recovery_report,
+            )
+
+            source = args.source
+            output = getattr(args, "output", None)
+            inspect_only = bool(getattr(args, "inspect_only", False))
+            report_path = getattr(args, "report", None)
+            if inspect_only and output is not None:
+                print("Error: --output cannot be used with --inspect-only.")
+                return 2
+            if not inspect_only and output is None:
+                print("Error: --output is required unless --inspect-only is used.")
+                return 2
+            if not inspect_only and report_path is None:
+                report_path = output.with_name(output.name + ".recovery.json")
+            if (
+                report_path is not None
+                and os.path.lexists(report_path.expanduser())
+            ):
+                print(f"Error: refusing to overwrite existing report: {report_path}")
+                return 2
+
+            try:
+                if inspect_only:
+                    report = inspect_session_database(
+                        source,
+                        work_dir=getattr(args, "work_dir", None),
+                    )
+                else:
+                    last_progress = {"table": None}
+
+                    def _recovery_progress(info):
+                        table = info.get("table")
+                        copied = int(info.get("copied_rows") or 0)
+                        total = info.get("source_rows")
+                        if table != last_progress["table"]:
+                            if last_progress["table"] is not None:
+                                print()
+                            print(f"  {table}: ", end="", flush=True)
+                            last_progress["table"] = table
+                        suffix = f"/{int(total):,}" if total is not None else ""
+                        print(f"\r  {table}: {copied:,}{suffix}", end="", flush=True)
+
+                    print("Recovering canonical session data into a new database…")
+                    report = recover_session_database(
+                        source,
+                        output,
+                        work_dir=getattr(args, "work_dir", None),
+                        chunk_size=getattr(args, "chunk_size", 1000),
+                        progress_cb=_recovery_progress,
+                    )
+                    if last_progress["table"] is not None:
+                        print()
+            except (SessionRecoveryError, OSError, _sqlite3.DatabaseError) as exc:
+                print(f"Error: session recovery failed: {exc}")
+                print("The supplied source database was not replaced or deleted.")
+                return 1
+
+            if report_path is not None:
+                try:
+                    written_report = write_recovery_report(report_path, report)
+                except (FileExistsError, OSError) as exc:
+                    print(f"Error: could not write recovery report: {exc}")
+                    return 1
+                print(f"Recovery report: {written_report}")
+            else:
+                print(_json.dumps(report, indent=2, sort_keys=True))
+
+            if inspect_only:
+                return 0 if report.get("recoverable") else 1
+            if report.get("complete"):
+                print(f"✓ Recovered database verified at: {output}")
+                print("  The active session database was not changed.")
+                print("  Review the JSON report before installing this database.")
+                return 0
+            print("✗ Recovery output did not pass every verification check.")
+            print("  Do not install it. Review the JSON report for partial data or errors.")
+            return 1
 
         try:
             from hermes_state import SessionDB

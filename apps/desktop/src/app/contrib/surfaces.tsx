@@ -141,6 +141,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   )
 
   const chatActions = useMemo(() => latestChatActions(actions), [actions])
+
   const chatView = (
     <ChatView
       gateway={gateway}

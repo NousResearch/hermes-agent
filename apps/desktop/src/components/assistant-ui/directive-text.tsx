@@ -7,7 +7,11 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
+import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
+import { useSessionLinkTitle } from '@/lib/session-link-title'
+import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
+import { cn } from '@/lib/utils'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -40,11 +44,7 @@ const ICON_PATHS: Record<HermesRefType, string[]> = {
   tool: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
   line: ['M5 9l14 0', 'M5 15l14 0', 'M11 4l-4 16', 'M17 4l-4 16'],
   terminal: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
-  session: [
-    'M8 9h8',
-    'M8 13h6',
-    'M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3z'
-  ]
+  session: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227']
 }
 
 const ICON_FALLBACK = ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0', 'M16 12v1.5a2.5 2.5 0 0 0 5 0v-1.5a9 9 0 1 0 -5.5 8.28']
@@ -123,9 +123,12 @@ export function slashIconElement(kind: SlashChipKind) {
   return iconElementFromPaths(SLASH_ICON_PATHS[kind])
 }
 
-const DirectiveIcon: FC<{ type: string }> = ({ type }) => (
+const DirectiveIcon: FC<{ type: string; className?: string }> = ({
+  type,
+  className = 'size-3 shrink-0 opacity-80'
+}) => (
   <svg
-    className="size-3 shrink-0 opacity-80"
+    className={className}
     fill="none"
     stroke="currentColor"
     strokeLinecap="round"
@@ -314,12 +317,8 @@ function shortLabel(type: HermesRefType, id: string): string {
     }
   }
 
-  // `@session:<profile>/<id>` — show a short id; the composer chip carries the
-  // friendly title, but once sent the wire form only has the id.
   if (type === 'session') {
-    const sid = id.split('/').filter(Boolean).pop() || id
-
-    return sid.length > 10 ? `${sid.slice(0, 8)}…` : sid
+    return sessionRefFallbackLabel(id)
   }
 
   const tail = id.split(/[\\/]/).filter(Boolean).pop()
@@ -368,7 +367,9 @@ export function DirectiveContent({ text }: { text: string }) {
       {segments.map((segment, index) =>
         segment.kind === 'text' ? (
           <Fragment key={`t-${index}`}>{segment.text}</Fragment>
-        ) : segment.type === 'image' ? null : (
+        ) : segment.type === 'image' ? null : segment.type === 'session' ? (
+          <SessionRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
+        ) : (
           <DirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} type={segment.type} />
         )
       )}
@@ -451,19 +452,87 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   )
 }
 
+/** Opens the referenced session as a tab — same as middle-clicking its sidebar
+ *  row. The tile store loads on click, not at import: the composer's rich
+ *  editor pulls this module in, and a static import would boot the profile
+ *  store (and its REST routing) along with it. */
+function openSessionRef(value: string) {
+  const { sessionId } = parseSessionRefValue(value)
+
+  if (!sessionId) {
+    return
+  }
+
+  triggerHaptic('selection')
+  void import('@/store/session-states').then(({ openSessionTile }) => openSessionTile(sessionId, 'center'))
+}
+
+/** A `@session:<profile>/<id>` reference in the user transcript (directive
+ *  segments), rendered as a chip like the other composer refs. Clicking it
+ *  opens the session as a tab. */
+export const SessionRefChip: FC<{
+  label?: string
+  value: string
+}> = ({ label, value }) => {
+  const resolved = useSessionLinkTitle(value, label)
+
+  return <DirectiveChip id={value} label={resolved} onClick={() => openSessionRef(value)} type="session" />
+}
+
+/** A `@session:` reference in assistant markdown (`#session/` links rewritten
+ *  in `preprocessMarkdown`). Reads as an ordinary inline link — the agent wrote
+ *  it mid-sentence — with the funnel icon leading the resolved title. */
+export const SessionRefLink: FC<{
+  label?: string
+  value: string
+}> = ({ label, value }) => {
+  const resolved = useSessionLinkTitle(value, label)
+
+  return (
+    <a
+      className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+      href="#"
+      onClick={event => {
+        event.preventDefault()
+        event.stopPropagation()
+        openSessionRef(value)
+      }}
+      title={value}
+    >
+      <DirectiveIcon className="mr-1 inline size-[0.82em] align-[-0.08em] opacity-70" type="session" />
+      {resolved}
+    </a>
+  )
+}
+
+/** Inert by default; `onClick` promotes the chip to a real button (session
+ *  refs, which open the session they name). */
 const DirectiveChip: FC<{
   type: string
   label: string
   id: string
-}> = ({ type, label, id }) => (
-  <span
-    className={DIRECTIVE_CHIP_CLASS}
-    data-directive-id={id}
-    data-directive-type={type}
-    data-slot="aui_directive-chip"
-    title={id}
-  >
-    <DirectiveIcon type={type} />
-    <span className="truncate">{label}</span>
-  </span>
-)
+  onClick?: () => void
+}> = ({ type, label, id, onClick }) => {
+  const body = (
+    <>
+      <DirectiveIcon type={type} />
+      <span className="truncate">{label}</span>
+    </>
+  )
+
+  const props = {
+    className: cn(DIRECTIVE_CHIP_CLASS, onClick && 'cursor-pointer transition-colors hover:text-foreground'),
+    'data-directive-id': id,
+    'data-directive-type': type,
+    'data-slot': 'aui_directive-chip',
+    title: id
+  }
+
+  return onClick ? (
+    <button {...props} onClick={onClick} type="button">
+      {body}
+    </button>
+  ) : (
+    <span {...props}>{body}</span>
+  )
+}

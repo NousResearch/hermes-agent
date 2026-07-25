@@ -291,6 +291,28 @@ def _resolve_profile_db(profile: str):
     return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
 
 
+def _session_link(session_id: str, profile: str = None) -> str:
+    """The reference the agent writes to point the user at a session.
+
+    Same value the desktop composer emits when a session is dragged into a
+    message, so the desktop renders it as a link carrying the session's title.
+    The profile segment is omitted when we can't name it confidently — a bare
+    id still resolves, it just can't disambiguate across profiles.
+    """
+    name = (profile or "").strip()
+    if not name:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            resolved = get_active_profile_name()
+            name = "" if resolved == "custom" else resolved
+        except Exception:
+            logging.debug("get_active_profile_name failed for session link", exc_info=True)
+            name = ""
+
+    return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
+
+
 def _locate_session_db(session_id: str):
     """Scan every profile's ``state.db`` (read-only) for a session id.
 
@@ -335,7 +357,7 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
+def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -366,6 +388,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         "success": True,
         "mode": "read",
         "session_id": session_id,
+        "link": _session_link(session_id, link_profile),
         "session_meta": {
             "when": _format_timestamp(meta.get("started_at")),
             "source": meta.get("source"),
@@ -384,7 +407,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -405,6 +428,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 continue
             results.append({
                 "session_id": sid,
+                "link": _session_link(sid, link_profile),
                 "title": s.get("title") or None,
                 "source": s.get("source", ""),
                 "started_at": s.get("started_at", ""),
@@ -630,6 +654,7 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    link_profile: str = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -764,6 +789,9 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
+    for entry in results:
+        entry["link"] = _session_link(entry["session_id"], link_profile)
+
     _final_payload = {
         "success": True,
         "mode": "discover",
@@ -848,7 +876,7 @@ def session_search(
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid)
+        result = _read_session(db, sid, link_profile=profile)
         if json.loads(result).get("success"):
             return result
 
@@ -858,7 +886,7 @@ def session_search(
         located, owner = _locate_session_db(sid)
         if located is not None:
             try:
-                found = json.loads(_read_session(located, sid))
+                found = json.loads(_read_session(located, sid, link_profile=owner))
             finally:
                 located.close()
             if found.get("success"):
@@ -876,7 +904,7 @@ def session_search(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -897,6 +925,7 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        link_profile=profile,
     )
 
 
@@ -962,6 +991,16 @@ SESSION_SEARCH_SCHEMA = {
         "     session_search()\n"
         "     Returns recent sessions chronologically: titles, previews, timestamps. "
         "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
+        "LINKING THE USER TO A SESSION\n\n"
+        "  When you refer the user to a session, write its `link` value inline in "
+        "your reply — every result carries one, e.g. "
+        "`@session:default/20260722_204335_d62c16`. Copy it verbatim; do not "
+        "reformat it as a markdown link or wrap it in backticks. Hermes renders "
+        "it as a link showing the session's title, so the link IS the title: "
+        "use it as a noun mid-sentence (\"that's @session:default/... — want me "
+        "to pick it up?\"), never alone on its own line, and never alongside the "
+        "title, id, or date spelled out — that shows the user the same session "
+        "twice.\n\n"
         "FTS5 SYNTAX\n\n"
         "  AND is the default — multi-word queries require all terms. Use OR explicitly "
         "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "

@@ -1986,6 +1986,76 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Recover-DivergedUpdate {
+    param([Parameter(Mandatory = $true)][string]$RemoteRef)
+
+    # RemoteRef..HEAD is unsafe after a force-push because it includes old
+    # upstream commits that the remote discarded. The tracking ref's reflog
+    # identifies the old upstream tip; without that evidence, fail closed.
+    $forkOutput = @(git -c windows.appendAtomically=false merge-base --fork-point $RemoteRef HEAD 2>$null)
+    $forkExit = $LASTEXITCODE
+    $forkPoint = ($forkOutput -join "").Trim()
+    if (($forkExit -ne 0) -or (-not $forkPoint)) {
+        throw "Could not determine the previous upstream fork point; refusing to rewrite HEAD"
+    }
+
+    $localCommitOutput = @(git -c windows.appendAtomically=false rev-list --count "$forkPoint..HEAD" 2>$null)
+    $countExit = $LASTEXITCODE
+    if ($countExit -ne 0) {
+        throw "Could not determine whether HEAD contains locally carried commits (exit $countExit)"
+    }
+    # Native PowerShell output records have their process newline removed and
+    # cannot distinguish a final terminator from EOF. Across all installers the
+    # final newline is therefore optional. Do not trim or join records: padding
+    # and additional captured lines are malformed output.
+    $localCommitText = if ($localCommitOutput.Count -eq 1) { [string]$localCommitOutput[0] } else { "" }
+    $localCommitCount = 0
+    # Shared lexical contract: the raw record is 1..9 ASCII digits. Enforce its
+    # spelling bound before TryParse; nine digits inherently represent a value
+    # no greater than 999999999.
+    if (($localCommitOutput.Count -ne 1) -or
+        ($localCommitText -notmatch '^[0-9]+$') -or
+        ($localCommitText.Length -gt 9) -or
+        (-not [int]::TryParse($localCommitText, [ref]$localCommitCount))) {
+        throw "Could not parse local commit count; refusing to rewrite HEAD"
+    }
+
+    if ($localCommitCount -eq 0) {
+        git -c windows.appendAtomically=false reset --hard "$RemoteRef"
+        if ($LASTEXITCODE -ne 0) { throw "git reset --hard $RemoteRef failed (exit $LASTEXITCODE)" }
+        return
+    }
+
+    # Git recreates merges during --rebase-merges. Content present in neither
+    # parent can disappear silently, so reject that range without changing HEAD.
+    $mergeCommits = @(git -c windows.appendAtomically=false rev-list --merges "$forkPoint..HEAD" 2>$null)
+    $mergeListExit = $LASTEXITCODE
+    if ($mergeListExit -ne 0) {
+        throw "Could not inspect carried merge commits; refusing to rewrite HEAD"
+    }
+    foreach ($mergeCommit in $mergeCommits) {
+        $mergePayload = @(git -c windows.appendAtomically=false diff-tree --cc --no-commit-id --name-only -r $mergeCommit 2>$null)
+        $mergePayloadExit = $LASTEXITCODE
+        if ($mergePayloadExit -ne 0) {
+            throw "Could not inspect carried merge content; refusing to rewrite HEAD"
+        }
+        if (($mergePayload -join "").Trim()) {
+            throw "Carried history contains merge-only content; refusing an automatic rebase that could lose it"
+        }
+    }
+
+    Write-Info "Preserving $localCommitCount locally carried commit(s) and merge topology onto $RemoteRef..."
+    git -c windows.appendAtomically=false rebase --rebase-merges --onto $RemoteRef $forkPoint
+    if ($LASTEXITCODE -eq 0) { return }
+
+    Write-Err "Rebase conflicted; aborting so the original checkout is restored."
+    git -c windows.appendAtomically=false rebase --abort 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Rebase failed and git rebase --abort also failed; recover the checkout manually"
+    }
+    throw "Rebase conflicted; original checkout restored"
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -2123,15 +2193,13 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    # Managed installs should follow origin/$Branch exactly. If
-                    # the checkout has diverged (or has local-only commits),
-                    # ff-only pull cannot succeed -- mirror ``hermes update`` and
-                    # reset to the fetched remote so bootstrap/install can recover.
+                    # Preserve unique local commits by rebasing them onto the
+                    # fetched remote. Reset only when the count proves there
+                    # are no commits unique to HEAD.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
-                        Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
-                        git -c windows.appendAtomically=false reset --hard "origin/$Branch"
-                        if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
+                        Write-Warn "Fast-forward not possible; checking for locally carried commits..."
+                        Recover-DivergedUpdate "origin/$Branch"
                     }
                 }
 

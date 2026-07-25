@@ -1639,6 +1639,47 @@ class TestPrompt:
             text and "[plugin appended this]" in text for text in all_texts
         ), f"expected transformed final to be delivered, got: {all_texts!r}"
 
+    @pytest.mark.asyncio
+    async def test_prompt_pins_the_session_cwd_for_the_turn(self, agent, tmp_path):
+        """The turn must resolve the ACP client's cwd, not the Hermes workspace.
+
+        ``resolve_agent_cwd()`` is what the system prompt reports as "Current
+        working directory". When it is left unpinned it falls back to
+        TERMINAL_CWD / the launch dir, so the prompt advertises one root while
+        the tools are rooted at the editor's project. The model then emits
+        absolute paths under the advertised root and the edit silently lands
+        outside the workspace the client asked for.
+        """
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+
+        new_resp = await agent.new_session(cwd=str(workspace))
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        observed = {}
+
+        def capture_cwd(*args, **kwargs):
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            observed["cwd"] = str(resolve_agent_cwd())
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = capture_cwd
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hello")],
+            session_id=new_resp.session_id,
+        )
+
+        assert observed.get("cwd") == str(workspace), (
+            "the turn resolved "
+            f"{observed.get('cwd')!r} instead of the ACP client's cwd "
+            f"{str(workspace)!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):

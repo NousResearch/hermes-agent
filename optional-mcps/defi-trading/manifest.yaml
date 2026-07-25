@@ -12,7 +12,7 @@ transport:
   command: npx
   args:
     - "-y"
-    - "defi-trading-mcp@latest"
+    - "defi-trading-mcp@2.1.3"
 
 auth:
   type: api_key
@@ -35,9 +35,6 @@ auth:
       secret: true
       default: ""
 
-# Paper-mode allowlist: read + quote tools only. execute_swap and
-# submit_gasless_swap are intentionally omitted — enable them in live mode
-# after P1 mandate signing via `hermes mcp configure defi-trading`.
 tools:
   default_enabled:
     - get_portfolio_tokens
@@ -66,15 +63,13 @@ post_install: |
   1. Install the skill:
        hermes skills install official/trading/hermes-agentic-trader
 
-  2. Copy config:
-       mkdir -p ~/.hermes/trader
-       cp config/hermes_trader.example.yaml ~/.hermes/trader/hermes_trader.yaml
+  2. Configure trader settings under `trader:` in ~/.hermes/config.yaml.
 
   3. Start a new Hermes session — use read/quote MCP tools on Base.
 
   Live swaps (execute_swap, submit_gasless_swap) require:
-    - mode: live in ~/.hermes/trader/hermes_trader.yaml
-    - Signed ~/.hermes/trader/mandate.json (see hermes_trader/risk/mandate.py)
+    - trader.mode: live in ~/.hermes/config.yaml
+    - Signed ~/.hermes/trader/mandate.json
     - Enable write tools: hermes mcp configure defi-trading
 
   Never commit private keys. Keys live only in ~/.hermes/.env.

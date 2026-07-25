@@ -9,6 +9,7 @@ from agent.insights import (
     InsightsEngine,
     _estimate_cost,
     _bar_chart,
+    _safe_float,
 )
 from agent.usage_pricing import (
     format_duration_compact as _format_duration,
@@ -774,3 +775,112 @@ class TestEdgeCases:
         assert "Unknown" in text
 
 
+class TestSafeFloat:
+    """Regression tests for _safe_float guarding corrupted DB values."""
+
+    def test_normal_float(self):
+        assert _safe_float(3.14) == 3.14
+        assert _safe_float(0) == 0.0
+
+    def test_none_returns_zero(self):
+        assert _safe_float(None) == 0.0
+
+    def test_corrupted_string_returns_zero(self):
+        assert _safe_float("corrupted") == 0.0
+        assert _safe_float("not a number") == 0.0
+
+    def test_numeric_string_coerces(self):
+        assert _safe_float("3.14") == 3.14
+        assert _safe_float("42") == 42.0
+
+    def test_boolean_coerces(self):
+        assert _safe_float(True) == 1.0
+        assert _safe_float(False) == 0.0
+
+
+class TestInsightsCorruptedCost:
+    """Regression: non-numeric cost columns must not crash /insights."""
+
+    def test_corrupted_estimated_cost_usd_does_not_crash(self, db):
+        """_safe_float neutralizes a string in estimated_cost_usd."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
+        # Inject corrupted cost value directly into session_model_usage
+        try:
+            db._conn.execute("""
+                INSERT INTO session_model_usage
+                (session_id, model, billing_provider, billing_base_url,
+                 api_call_count, input_tokens, output_tokens,
+                 cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                 estimated_cost_usd, actual_cost_usd, cost_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, ("s1", "gpt-4o", "openai", "",
+                  1, 1000, 500, 0, 0, 0,
+                  "corrupted", 0.0, "included"))
+        except Exception:
+            # Table might not exist in older DB schemas
+            pytest.skip("session_model_usage table not available")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        # Must not crash — estimated_cost should be 0 for the corrupted row
+        assert report["overview"]["estimated_cost"] >= 0
+
+    def test_corrupted_actual_cost_usd_does_not_crash(self, db):
+        """_safe_float neutralizes a string in actual_cost_usd."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
+        try:
+            db._conn.execute("""
+                INSERT INTO session_model_usage
+                (session_id, model, billing_provider, billing_base_url,
+                 api_call_count, input_tokens, output_tokens,
+                 cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                 estimated_cost_usd, actual_cost_usd, cost_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, ("s1", "gpt-4o", "openai", "",
+                  1, 1000, 500, 0, 0, 0,
+                  0.0001, "corrupted", "included"))
+        except Exception:
+            pytest.skip("session_model_usage table not available")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["estimated_cost"] >= 0
+
+    def test_corrupted_api_call_count_does_not_crash(self, db):
+        """_safe_int neutralizes a non-numeric api_call_count."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
+        try:
+            db._conn.execute("""
+                INSERT INTO session_model_usage
+                (session_id, model, billing_provider, billing_base_url,
+                 api_call_count, input_tokens, output_tokens,
+                 cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                 estimated_cost_usd, actual_cost_usd, cost_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, ("s1", "gpt-4o", "openai", "",
+                  "corrupted", 1000, 500, 0, 0, 0,
+                  0.0001, 0.0, "included"))
+        except Exception:
+            pytest.skip("session_model_usage table not available")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["total_input_tokens"] >= 0

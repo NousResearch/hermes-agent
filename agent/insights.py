@@ -94,6 +94,14 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
+def _safe_float(val):
+    """Coerce to float, returning 0.0 for non-numeric values (defensive)."""
+    try:
+        return float(val) if val is not None else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
 class InsightsEngine:
     """
     Analyzes session history and produces usage insights.
@@ -508,7 +516,7 @@ class InsightsEngine:
             model = s.get("model") or ""
             estimated, status = _estimate_cost(s)
             total_cost += estimated
-            actual_cost += s.get("actual_cost_usd") or 0.0
+            actual_cost += _safe_float(s.get("actual_cost_usd"))
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
             if status == "included":
                 included_cost_sessions += 1
@@ -658,10 +666,10 @@ class InsightsEngine:
                     provider=provider or None, base_url=base_url,
                 )
             else:
-                estimate = float(stored_cost or 0.0)
+                estimate = _safe_float(stored_cost)
                 status = cost_status or "unknown"
             d["cost"] += estimate
-            d["actual_cost"] += float(actual_cost or 0.0)
+            d["actual_cost"] += _safe_float(actual_cost)
             d["cost_status"] = status
             if has_known_pricing(model, provider or None, base_url):
                 d["has_pricing"] = True
@@ -676,15 +684,23 @@ class InsightsEngine:
             "api_call_count": 0, "estimated_cost_usd": 0.0,
             "actual_cost_usd": 0.0,
         })
+
+        def _safe_int(val):
+            """Coerce to int, returning 0 for non-numeric values (defensive)."""
+            try:
+                return int(val) if val is not None else 0
+            except (ValueError, TypeError):
+                return 0
+
         for r in usage_rows:
             totals: Dict[str, Any] = usage_totals[r["session_id"]]
             for key in (
                 "input_tokens", "output_tokens", "cache_read_tokens",
                 "cache_write_tokens", "reasoning_tokens", "api_call_count",
             ):
-                totals[key] += r[key] or 0
-            totals["estimated_cost_usd"] += r["estimated_cost_usd"] or 0.0
-            totals["actual_cost_usd"] += r["actual_cost_usd"] or 0.0
+                totals[key] += _safe_int(r[key])
+            totals["estimated_cost_usd"] += _safe_float(r["estimated_cost_usd"])
+            totals["actual_cost_usd"] += _safe_float(r["actual_cost_usd"])
             d = _accumulate(
                 r["model"], r["billing_provider"], r.get("billing_base_url"),
                 r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
@@ -698,18 +714,11 @@ class InsightsEngine:
                 actual_cost=r["actual_cost_usd"],
                 cost_status=r.get("cost_status"),
             )
-            model_data[d]["api_calls"] += r["api_call_count"] or 0
+            model_data[d]["api_calls"] += _safe_int(r["api_call_count"])
 
         # Reconcile against the aggregate row. This covers legacy sessions,
         # interrupted migrations, and absolute cumulative updates without
         # double-counting already-attributed route deltas.
-
-        def _safe_int(val):
-            """Coerce to int, returning 0 for non-numeric values (defensive)."""
-            try:
-                return int(val) if val is not None else 0
-            except (ValueError, TypeError):
-                return 0
 
         for s in sessions:
             totals = usage_totals[s["id"]]
@@ -722,11 +731,11 @@ class InsightsEngine:
                 0, _safe_int(s.get("cache_write_tokens")) - totals["cache_write_tokens"]
             )
             residual_cost = max(
-                0.0, float(s.get("estimated_cost_usd") or 0.0)
+                0.0, _safe_float(s.get("estimated_cost_usd"))
                 - totals["estimated_cost_usd"],
             )
             residual_actual = max(
-                0.0, float(s.get("actual_cost_usd") or 0.0)
+                0.0, _safe_float(s.get("actual_cost_usd"))
                 - totals["actual_cost_usd"],
             )
             residual_calls = max(

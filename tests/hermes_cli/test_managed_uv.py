@@ -890,6 +890,66 @@ class TestPatchRetryOnVulnerableCandidate:
         )
         assert result is None
 
+    def test_does_not_retry_patches_at_or_below_the_installed_version(
+        self, tmp_path, monkeypatch
+    ):
+        """Only NEWER patches can carry the SQLite fix.
+
+        On a uv whose download catalog is stale, the newest indexed patch can
+        be the same one already installed -- issue #71250 reproduces exactly
+        this: newest indexed 3.11 was 3.11.14, which is what's installed.
+        Retrying the patches below it is guaranteed to fail (each is the
+        known-vulnerable current version or an older build that cannot contain
+        a later fix, and the downgrade guard rejects them anyway), and every
+        attempt is a real download+install+probe+delete cycle. The loop must
+        skip them rather than burn _MAX_PATCH_RETRIES on certain rejections.
+        """
+        import hermes_cli.managed_uv as managed_uv
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        install_requests: list[str] = []
+        fake_run, fake_probe = self._versioned_probe_run({"3.11"})
+
+        def recording_run(cmd, **kwargs):
+            if "install" in cmd:
+                install_requests.append(cmd[3])
+            return fake_run(cmd, **kwargs)
+
+        current = SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
+            python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4", sqlite_source_id="old",
+        )
+        # Stale catalog: newest indexed patch == the installed patch.
+        stale_index = [(3, 11, v) for v in range(14, 8, -1)]
+        monkeypatch.setattr(managed_uv.subprocess, "run", recording_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches", lambda *a, **kw: stale_index
+        )
+
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=current
+        )
+
+        assert result is None
+        # Exactly one attempt: the bare minor line. No downgrade retries.
+        assert install_requests == ["3.11"]
+
+    def test_still_retries_when_a_newer_patch_exists_in_the_index(
+        self, tmp_path, monkeypatch
+    ):
+        """The downgrade skip must not suppress legitimate newer-patch retries."""
+        result = self._run(
+            tmp_path, monkeypatch,
+            vulnerable_versions={"3.11"},
+            # Mixed index: a newer fixed patch alongside older useless ones.
+            patch_list=[(3, 11, 15), (3, 11, 14), (3, 11, 13)],
+        )
+        assert result is not None
+        assert result[2].python_version == (3, 11, 15)
+        assert not result[2].wal_reset_vulnerable
+
     def test_retry_is_bounded_by_max_retries_constant(self, tmp_path, monkeypatch):
         """A very long patch list must not result in unbounded retries --
         capped at _MAX_PATCH_RETRIES attempts."""

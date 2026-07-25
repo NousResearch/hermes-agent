@@ -571,6 +571,17 @@ def _install_safe_python_generation(
             break
         if version_tuple in tried_versions:
             continue
+        # Only NEWER patches can carry the SQLite fix. A patch at or below the
+        # installed one is either the version we already know is vulnerable or
+        # an older build that cannot contain a later fix, and the downgrade
+        # guard in _attempt_install_generation rejects it anyway -- so trying
+        # it spends a full download+install+probe+delete cycle to reach a
+        # certain rejection. This matters on a uv whose download catalog is
+        # stale: in #71250 the newest indexed 3.11 was 3.11.14, exactly the
+        # installed version, so without this skip the loop burned all five
+        # retries walking backwards (3.11.13 -> 3.11.9) before failing.
+        if version_tuple <= current.python_version[:3]:
+            continue
         tried_versions.add(version_tuple)
         explicit_request = ".".join(str(p) for p in version_tuple)
         print(f"  → Retrying with explicit patch {explicit_request}...")

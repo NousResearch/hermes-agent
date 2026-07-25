@@ -1136,29 +1136,59 @@ class TestVisionCpuBurstCap:
 class TestVideoAnalyzeFileURI:
     @pytest.mark.asyncio
     async def test_video_analyze_uses_shared_file_uri_parser(self, tmp_path):
-        """video_analyze_tool must invoke _file_uri_to_path on file:// URIs."""
-        from tools.image_source import _file_uri_to_path
+        """video_analyze_tool must resolve file:// URIs via _file_uri_to_path and read real file bytes."""
         from tools.vision_tools import video_analyze_tool
 
+        raw_bytes = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
         video_file = tmp_path / "sample.mp4"
-        video_file.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
-        uri = f"file://{video_file.as_posix()}"
+        video_file.write_bytes(raw_bytes)
+        uri = video_file.as_uri()
 
         mock_resp = MagicMock()
         mock_choice = MagicMock()
         mock_choice.message.content = "Video analysis result"
         mock_resp.choices = [mock_choice]
 
-        with (
-            patch("tools.vision_tools._file_uri_to_path", wraps=_file_uri_to_path) as mock_parser,
-            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_resp),
-        ):
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_resp) as mock_llm:
             res_str = await video_analyze_tool(uri, "Describe video")
             res = json.loads(res_str)
 
         assert res["success"] is True
         assert res["analysis"] == "Video analysis result"
-        mock_parser.assert_called_once_with(uri)
+
+        # Verify call to async_call_llm received real base64-encoded bytes matching raw_bytes
+        mock_llm.assert_awaited_once()
+        call_kwargs = mock_llm.await_args.kwargs
+        messages = call_kwargs["messages"]
+        video_block = messages[0]["content"][1]
+        assert video_block["type"] == "video_url"
+        data_url = video_block["video_url"]["url"]
+        assert data_url.startswith("data:video/mp4;base64,")
+        b64_part = data_url.partition(",")[2]
+        decoded = base64.b64decode(b64_part)
+        assert decoded == raw_bytes
+
+    @pytest.mark.asyncio
+    async def test_video_analyze_plain_local_path(self, tmp_path):
+        """video_analyze_tool must continue to support plain local OS paths."""
+        from tools.vision_tools import video_analyze_tool
+
+        raw_bytes = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 16
+        video_file = tmp_path / "plain_video.mp4"
+        video_file.write_bytes(raw_bytes)
+
+        mock_resp = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Plain path result"
+        mock_resp.choices = [mock_choice]
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_resp) as mock_llm:
+            res_str = await video_analyze_tool(str(video_file), "Describe plain video")
+            res = json.loads(res_str)
+
+        assert res["success"] is True
+        assert res["analysis"] == "Plain path result"
+        mock_llm.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_video_analyze_windows_drive_letter_not_naive_truncated(self):
@@ -1184,4 +1214,3 @@ class TestVideoAnalyzeFileURI:
 
         assert res["success"] is False
         assert "Resolving non-local authority" in res["error"]
-

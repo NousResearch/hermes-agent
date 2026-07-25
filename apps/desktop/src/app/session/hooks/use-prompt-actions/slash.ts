@@ -266,7 +266,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // would otherwise park the kickoff on whichever chat is now in
             // front. Fall back through the live selection for a session whose
             // cache entry hasn't landed yet.
-            const storedId = storedSessionId || $sessionStates.get()[sessionId]?.storedSessionId || $selectedStoredSessionId.get()
+            const storedId =
+              storedSessionId || $sessionStates.get()[sessionId]?.storedSessionId || $selectedStoredSessionId.get()
             const queueKey = resolveComposerSessionKey(storedId, $sessions.get()) || storedId || sessionId
 
             if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message })) {

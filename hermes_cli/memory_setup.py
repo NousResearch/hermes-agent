@@ -108,14 +108,21 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
+    # Check which packages are missing. Probing a module executes its module
+    # body — ``hindsight_api.config`` (pulled in by ``hindsight``) rewrites
+    # ``os.environ`` from a cwd-relative ``.env`` at import time — so restore
+    # the environment if a probe changed it.
     missing = []
+    probe_snapshot = dict(os.environ)
     for dep in pip_deps:
         import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
         try:
             __import__(import_name)
         except ImportError:
             missing.append(dep)
+    if dict(os.environ) != probe_snapshot:
+        os.environ.clear()
+        os.environ.update(probe_snapshot)
 
     if not missing:
         return

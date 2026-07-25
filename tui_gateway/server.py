@@ -5749,8 +5749,10 @@ def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str
     persisted as-is (it silently breaks image rendering after a full
     restart, and reorders image/text on live session-switch reconciliation).
     """
+    from agent.context_references import format_reference_value
+
     text = user_text or ""
-    refs = "\n".join(f"@image:{p}" for p in image_paths if Path(p).exists())
+    refs = "\n".join(f"@image:{format_reference_value(p)}" for p in image_paths if Path(p).exists())
     if not refs:
         return text
     return f"{refs}\n{text}" if text else refs
@@ -11015,9 +11017,7 @@ def _run_prompt_submit(
                 "conversation_history": list(history),
                 "stream_callback": _stream,
                 "persist_user_message": (
-                    _build_persist_message_with_image_refs(prompt, images)
-                    if images
-                    else prompt
+                    _build_persist_message_with_image_refs(prompt, images) if images else prompt
                 ),
             }
             try:

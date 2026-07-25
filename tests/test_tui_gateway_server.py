@@ -13245,6 +13245,21 @@ def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeyp
     assert server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{img}"
 
 
+def test_build_persist_message_quotes_paths_containing_spaces(tmp_path):
+    """The unquoted alternative in the directive pattern is ``\\S+``, so a path
+    with a space parses as a truncated ref with the tail left as loose text.
+    Desktop composer images live in the app's userData dir, which on macOS is
+    ``~/Library/Application Support/...`` — a space every time."""
+    img_dir = tmp_path / "Application Support" / "Hermes" / "composer-images"
+    img_dir.mkdir(parents=True)
+    img = img_dir / "cat.png"
+    img.write_bytes(b"png")
+
+    result = server._build_persist_message_with_image_refs("what is this?", [str(img)])
+
+    assert result == f"@image:`{img}`\nwhat is this?"
+
+
 def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
     """#70720: _run_prompt_submit must forward the (image-ref-aware) persisted
     user message to run_conversation via persist_user_message, so the gateway

@@ -2242,7 +2242,10 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        # Route through the same seam as normal Codex turns: a direct _run_codex_stream
+        # bypasses the stale/TTFB watchdogs, interrupt handling and client cleanup, so an
+        # unattended cron summary could wedge forever (#70943).
+        return _summary_text(agent, agent._interruptible_api_call(codex_kwargs))
     return _attempt
 
 

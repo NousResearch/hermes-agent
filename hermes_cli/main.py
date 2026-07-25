@@ -16133,6 +16133,19 @@ def main():
                 if report.get("backup_path"):
                     print(f"  A backup is preserved at: {report['backup_path']}")
                 print("  Keep state.db and the backup; do not delete them.")
+                # Without this pointer the user is at a dead end: in-place
+                # repair has failed and nothing tells them the non-destructive
+                # offline recovery path exists. Lead with --inspect-only so
+                # they confirm the data is readable before writing anything.
+                print("")
+                print("  Next step — offline recovery (never modifies the source):")
+                source_hint = report.get("backup_path") or db_path
+                print(f"    hermes sessions recover --source {source_hint} \\")
+                print("        --inspect-only")
+                print("  If that reports the data is recoverable, rebuild it into")
+                print("  a NEW database (the active one is left untouched):")
+                print(f"    hermes sessions recover --source {source_hint} \\")
+                print("        --output recovered-state.db")
             return
 
         if action == "recover":

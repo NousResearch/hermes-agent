@@ -445,3 +445,25 @@ async def test_canonical_guard_fails_closed_when_lookup_raises(tmp_path: Path, m
         "credential deny-list" in warning or "sensitive credential" in warning
         for warning in result.warnings
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/tmp/plain.png",
+        "/Users/me/Library/Application Support/Hermes/composer-images/a.png",
+        r"C:\Users\John Doe\Pictures\cat.png",
+        "/tmp/report (final).pdf",
+        "/tmp/it's here.png",
+        '/tmp/say "hi".png',
+    ],
+)
+def test_format_reference_value_round_trips_through_the_parser(value):
+    """Whatever the path contains, the formatted ref must parse back whole —
+    an unquoted value stops at the first space and strands the tail as text."""
+    from agent.context_references import REFERENCE_PATTERN, format_reference_value
+
+    match = REFERENCE_PATTERN.search(f"@file:{format_reference_value(value)}")
+
+    assert match is not None
+    assert match.group("value").strip("`\"'") == value

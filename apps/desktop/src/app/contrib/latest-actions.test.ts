@@ -78,4 +78,48 @@ describe('latestActions adapters', () => {
     expect(staleNavigate).not.toHaveBeenCalled()
     expect(latestNavigate).toHaveBeenCalledWith(item)
   })
+
+  // An absent optional handler must stay absent through the adapter. Children
+  // gate on PRESENCE, not just invocation: onDismissError renders the dismiss
+  // button only when defined, onRestoreToMessage gates the restore-confirm
+  // flow, and onTranscribeAudio gates voice recording. Wrapping an undefined
+  // field in an arrow function makes it unconditionally truthy, which would
+  // paint a dead dismiss button and let voice recording run with no
+  // transcription backend.
+  it('leaves absent optional handlers undefined instead of always-truthy wrappers', () => {
+    const chat = makeChatActions()
+    chat.onDismissError = undefined
+    chat.onRestoreToMessage = undefined
+    chat.onTranscribeAudio = undefined
+
+    const adaptedChat = latestChatActions(chat)
+
+    expect(adaptedChat.onDismissError).toBeUndefined()
+    expect(adaptedChat.onRestoreToMessage).toBeUndefined()
+    expect(adaptedChat.onTranscribeAudio).toBeUndefined()
+
+    const sidebar = makeSidebarActions()
+    sidebar.onLoadMoreMessaging = undefined
+    sidebar.onLoadMoreProfileSessions = undefined
+
+    const adaptedSidebar = latestSidebarActions(sidebar)
+
+    expect(adaptedSidebar.onLoadMoreMessaging).toBeUndefined()
+    expect(adaptedSidebar.onLoadMoreProfileSessions).toBeUndefined()
+  })
+
+  it('still late-binds a PRESENT optional handler to the latest closure', async () => {
+    const staleTranscribe = vi.fn(async () => 'stale')
+    const latestTranscribe = vi.fn(async () => 'latest')
+    const actions = makeChatActions()
+    actions.onTranscribeAudio = staleTranscribe
+
+    const adapted = latestChatActions(actions)
+
+    actions.onTranscribeAudio = latestTranscribe
+
+    expect(adapted.onTranscribeAudio).toBeTypeOf('function')
+    await expect(adapted.onTranscribeAudio!(new Blob())).resolves.toBe('latest')
+    expect(staleTranscribe).not.toHaveBeenCalled()
+  })
 })

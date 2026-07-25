@@ -1583,6 +1583,84 @@ class TestPartialToolCallWarning:
             f"Unexpected warning on text-only partial stream: {content!r}"
         )
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_empty_partial_stream_never_yields_empty_content(
+        self, mock_close, mock_create,
+    ):
+        """Stream dies with 0 recovered chars and no tool call → stub content
+        must be a non-empty placeholder, never None/''.
+
+        Root-cause regression for the empty-assistant-stub bug: a stream
+        delivered some deltas, then died before any text landed in
+        ``_current_streamed_assistant_text`` (and no tool call was captured).
+        The stub was built with ``content=None`` → an empty assistant message
+        got persisted mid-transcript.  The Anthropic message schema (and the
+        litellm/Bedrock proxies in front of it) then reject EVERY subsequent
+        request:
+            "all messages must have non-empty content except for the optional
+             final assistant message"  (400 INVALID_REQUEST_BODY)
+        which the loop misreads as a context-overflow "Cannot compress
+        further" spiral.  The stub must carry a minimal placeholder so the
+        message is always API-valid.
+        """
+        from run_agent import AIAgent
+
+        class _StallError(RuntimeError):
+            pass
+
+        def _stalling_stream():
+            # A real content delta fires (deltas_were_sent=True → the
+            # post-delivery stub path runs), but the recovered-text
+            # accumulator is empty by the time the stub is built (cleared on
+            # reset in prod), and no tool call was captured — the exact
+            # "0 chars recovered, no tool call" production condition.
+            yield _make_stream_chunk(content="partial token")
+            raise _StallError("simulated upstream stall after a delta")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _stalling_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._fire_stream_delta = lambda text: None
+        # Empty recovered text — this is what produced the empty stub in prod
+        # even though a delta was delivered to the platform above.
+        agent._current_streamed_assistant_text = ""
+
+        import os as _os
+        _prev = _os.environ.get("HERMES_STREAM_RETRIES")
+        _os.environ["HERMES_STREAM_RETRIES"] = "0"
+        try:
+            response = agent._interruptible_streaming_api_call({})
+        finally:
+            if _prev is None:
+                _os.environ.pop("HERMES_STREAM_RETRIES", None)
+            else:
+                _os.environ["HERMES_STREAM_RETRIES"] = _prev
+
+        content = response.choices[0].message.content
+        assert content, (
+            f"Empty-partial-stream stub must NOT have empty/None content "
+            f"(it poisons the transcript and 400s every later request). "
+            f"Got content={content!r}"
+        )
+        assert content.strip() != "", (
+            f"Stub content is whitespace-only, still API-invalid: {content!r}"
+        )
+        assert response.choices[0].message.tool_calls is None
+
 
 class TestSilentRetryMidToolCall:
     """Regression: when the stream dies mid tool-call JSON after text was

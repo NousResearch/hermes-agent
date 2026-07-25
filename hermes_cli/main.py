@@ -6571,11 +6571,11 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
-def _find_stale_dashboard_pids(
+def _scan_dashboard_processes(
     *,
     exclude_pids: set[int] | None = None,
-) -> list[int]:
-    """Return PIDs of ``hermes dashboard`` processes other than ourselves.
+) -> list[tuple[int, str]]:
+    """Return matching ``dashboard``/``serve`` processes with their cmdlines.
 
     ``hermes dashboard`` is a long-lived server process commonly started and
     forgotten.  When ``hermes update`` replaces files on disk, the running
@@ -6611,7 +6611,7 @@ def _find_stale_dashboard_pids(
         "hermes_cli/main.py serve",
     ]
     self_pid = os.getpid()
-    dashboard_pids: list[int] = []
+    dashboard_processes: list[tuple[int, str]] = []
 
     try:
         if sys.platform == "win32":
@@ -6650,7 +6650,7 @@ def _find_stale_dashboard_pids(
                         and int(pid_str) != self_pid
                     ):
                         try:
-                            dashboard_pids.append(int(pid_str))
+                            dashboard_processes.append((int(pid_str), current_cmd))
                         except ValueError:
                             pass
         else:
@@ -6680,13 +6680,72 @@ def _find_stale_dashboard_pids(
                         continue
                     command = parts[1]
                     if any(p in command for p in patterns) and pid != self_pid:
-                        dashboard_pids.append(pid)
+                        dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
 
     if exclude_pids:
-        dashboard_pids = [p for p in dashboard_pids if p not in exclude_pids]
-    return dashboard_pids
+        dashboard_processes = [
+            proc for proc in dashboard_processes if proc[0] not in exclude_pids
+        ]
+    return dashboard_processes
+
+
+def _find_stale_dashboard_pids(
+    *,
+    exclude_pids: set[int] | None = None,
+) -> list[int]:
+    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
+    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+
+
+def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
+    """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
+    mode = None
+    if any(
+        pattern in command
+        for pattern in (
+            "hermes dashboard",
+            "hermes_cli.main dashboard",
+            "hermes_cli/main.py dashboard",
+        )
+    ):
+        mode = "dashboard"
+    elif any(
+        pattern in command
+        for pattern in (
+            "hermes serve",
+            "hermes_cli.main serve",
+            "hermes_cli/main.py serve",
+        )
+    ):
+        mode = "serve"
+    if mode is None:
+        return None
+
+    port = 9119
+    host = "127.0.0.1"
+
+    port_match = re.search(r"(?:^|\s)--port(?:=|\s+)(\d+)", command)
+    if port_match:
+        try:
+            port = int(port_match.group(1))
+        except ValueError:
+            return None
+
+    host_match = re.search(r"(?:^|\s)--host(?:=|\s+)(\"[^\"]+\"|'[^']+'|\S+)", command)
+    if host_match:
+        host = host_match.group(1).strip("\"'") or "127.0.0.1"
+
+    return mode, host, port
+
+
+def _dashboard_probe_host(host: str | None) -> str:
+    """Map wildcard binds to a loopback address suitable for local probing."""
+    normalized = (host or "127.0.0.1").strip().strip("[]")
+    if normalized in {"", "0.0.0.0", "::"}:
+        return "127.0.0.1"
+    return normalized
 
 
 def _print_curator_first_run_notice() -> None:
@@ -7238,7 +7297,7 @@ def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
     *,
     restart_managed: bool = False,
-) -> None:
+) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes.
 
     Called at the end of ``hermes update`` (default ``reason``) and also
@@ -7263,7 +7322,7 @@ def _kill_stale_dashboard_processes(
     stop and ``Restart=on-failure`` would never fire (#68934).
     """
     if restart_managed and _restart_managed_dashboard_service(reason):
-        return
+        return {"matched": [], "killed": [], "failed": []}
 
     # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
@@ -7287,7 +7346,7 @@ def _kill_stale_dashboard_processes(
 
     pids = _find_stale_dashboard_pids(exclude_pids=exclude)
     if not pids:
-        return
+        return {"matched": [], "killed": [], "failed": []}
 
     print()
     print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
@@ -7400,6 +7459,7 @@ def _kill_stale_dashboard_processes(
                     restarted_services.append(svc_name)
                 else:
                     failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
+                    unrecovered.append(pid)
             elif pid in pid_cmdline:
                 respawn_cmds.append(pid_cmdline[pid])
             else:
@@ -7419,8 +7479,37 @@ def _kill_stale_dashboard_processes(
             print("  Restart anything not auto-restarted when you're ready:")
             print("    hermes dashboard --port <port>")
     elif killed:
+        unrecovered = list(killed)
         print("  Restart the dashboard when you're ready:")
         print("    hermes dashboard --port <port>")
+
+    return {
+        "matched": list(pids),
+        "killed": list(killed),
+        "failed": list(failed),
+        "unrecovered": list(unrecovered),
+    }
+
+
+def _finish_dashboard_update_cleanup(node_failures: list[str]) -> None:
+    """Refresh managed dashboards or stop stale manual ones after an update."""
+    if node_failures:
+        print()
+        print("  ℹ Leaving running dashboard process(es) untouched because the")
+        print("    Node.js dependency refresh did not complete.")
+        return
+
+    stop_result = _kill_stale_dashboard_processes(restart_managed=True)
+    if not stop_result.get("unrecovered"):
+        return
+
+    print()
+    print(
+        "⚠ A web dashboard/serve process was stopped during update and could "
+        "not be auto-restarted."
+    )
+    print("  Re-launch it when you want the web UI back:")
+    print("    hermes dashboard --port <port>")
 
 
 # Back-compat alias: some tests and any external callers may import the old
@@ -7736,12 +7825,7 @@ def _update_via_zip(args):
         logger.debug("Curator recent-run notice failed: %s", e)
     # Don't stop a working dashboard when the Node refresh failed — see the
     # git-update path for rationale (#30271).
-    if node_failures:
-        print()
-        print("  ℹ Leaving running dashboard process(es) untouched because the")
-        print("    Node.js dependency refresh did not complete.")
-    else:
-        _kill_stale_dashboard_processes(restart_managed=True)
+    _finish_dashboard_update_cleanup(node_failures)
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -13279,16 +13363,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Legacy unit check during update failed: %s", e)
 
         # Restart a managed dashboard through systemd, or stop stale manual
-        # dashboard processes.  Raw-killing a systemd-owned dashboard PID makes
+        # dashboard processes. Raw-killing a systemd-owned dashboard PID makes
         # systemd treat it as a clean stop, leaving the Cloudflare origin dead.
         # Preserve the safety rule above: a failed Node refresh leaves the
         # currently running dashboard untouched.
-        if node_failures:
-            print()
-            print("  ℹ Leaving running dashboard process(es) untouched because the")
-            print("    Node.js dependency refresh did not complete.")
-        else:
-            _kill_stale_dashboard_processes(restart_managed=True)
+        _finish_dashboard_update_cleanup(node_failures)
 
         print()
         print("Tip: You can now select a provider and model:")
@@ -14045,40 +14124,31 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print ``hermes dashboard`` PIDs and return the count.
+    """Print live listening dashboard processes and return the count."""
+    from gateway.status import _pid_exists
 
-    Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
-    current process is excluded, but since ``hermes dashboard --status``
-    runs in a short-lived CLI process that never matches the pattern,
-    the exclusion is irrelevant here).
-    """
-    pids = _find_stale_dashboard_pids()
-    if not pids:
+    live: list[tuple[int, str]] = []
+    for pid, command in _scan_dashboard_processes():
+        runtime = _parse_dashboard_runtime(command)
+        if runtime is None:
+            continue
+        mode, host, port = runtime
+        if mode != "dashboard":
+            continue
+        if port <= 0 or not _pid_exists(pid):
+            continue
+        if not _dashboard_listening(host, port):
+            continue
+        live.append((pid, command))
+
+    if not live:
         print("No hermes dashboard processes running.")
         return 0
 
-    print(f"{len(pids)} hermes dashboard process(es) running:")
-    for pid in pids:
-        # Best-effort: show the full cmdline so users can tell profiles apart.
-        cmdline = ""
-        try:
-            if sys.platform != "win32":
-                cmdline_path = f"/proc/{pid}/cmdline"
-                if os.path.exists(cmdline_path):
-                    with open(cmdline_path, "rb") as f:
-                        cmdline = (
-                            f.read()
-                            .replace(b"\x00", b" ")
-                            .decode("utf-8", errors="replace")
-                            .strip()
-                        )
-        except (OSError, ValueError):
-            pass
-        if cmdline:
-            print(f"    PID {pid}: {cmdline}")
-        else:
-            print(f"    PID {pid}")
-    return len(pids)
+    print(f"{len(live)} hermes dashboard process(es) running:")
+    for pid, command in live:
+        print(f"    PID {pid}: {command}")
+    return len(live)
 
 
 def _dashboard_listening(host: str, port: int) -> bool:
@@ -14090,7 +14160,7 @@ def _dashboard_listening(host: str, port: int) -> bool:
     import socket
 
     try:
-        with socket.create_connection((host or "127.0.0.1", port), timeout=1.5):
+        with socket.create_connection((_dashboard_probe_host(host), port), timeout=1.5):
             return True
     except OSError:
         return False

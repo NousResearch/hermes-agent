@@ -616,7 +616,7 @@ browser_cdp(method="Runtime.evaluate",
 browser_cdp(method="Network.getAllCookies")
 ```
 
-Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets`. Each stateless call is independent — sessions do not persist between calls.
+Browser-level methods (`Target.*`, `Browser.*`, `Storage.*`) omit `target_id`. Page-level methods (`Page.*`, `Runtime.*`, `DOM.*`, `Emulation.*`) require a `target_id` from `Target.getTargets` or the `page_target_id` field of `browser_snapshot` output. When the requested target is already attached to the live CDP supervisor (the top-level page, an OOPIF frame, or an auto-attached child target), the call reuses the supervisor's persistent WebSocket session — required on Browserless-style backends, which spawn a private browser per CDP connection, so a fresh connection can never see targets from a previous call. Otherwise the call falls back to a fresh stateless connection; such stateless calls are independent — sessions do not persist between them.
 
 **Cross-origin iframes:** pass `frame_id` (from `browser_snapshot.frame_tree.children[]` where `is_oopif=true`) to route the CDP call through the supervisor's live session for that iframe. This is how `Runtime.evaluate` inside a cross-origin iframe works on Browserbase, where stateless CDP connections would hit signed-URL expiry. Example:
 

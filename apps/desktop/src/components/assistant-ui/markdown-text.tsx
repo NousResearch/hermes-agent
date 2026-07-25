@@ -33,7 +33,7 @@ import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-import { SessionRefChip } from './directive-text'
+import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -238,7 +238,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const sessionRef = sessionRefFromMarkdownHref(href)
 
   if (sessionRef) {
-    return <SessionRefChip value={sessionRef} />
+    return <SessionRefLink value={sessionRef} />
   }
 
   const target = href ? normalizeExternalUrl(href) : href

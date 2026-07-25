@@ -1171,7 +1171,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // the queue entry. The drain must instead go through session.resume to
     // rebind the correct runtime before submitting.
     const requestGateway = vi.fn(
-      async (method: string) =>
+      async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) =>
         (method === 'session.resume' ? { session_id: 'rt-session-a-rebound' } : {}) as never
     )
 

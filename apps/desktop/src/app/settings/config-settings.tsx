@@ -19,6 +19,7 @@ import {
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
+import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -76,6 +77,7 @@ export function ConfigSettings({
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
+  const disableF12 = useStore($disableF12)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
@@ -328,6 +330,12 @@ export function ConfigSettings({
             description={c.keepAwakeDesc}
             label={c.keepAwakeTitle}
             onChange={setKeepAwake}
+          />
+          <ToggleRow
+            checked={disableF12}
+            description={c.disableF12Desc}
+            label={c.disableF12Title}
+            onChange={setDisableF12}
           />
           <QuickEntrySettings />
         </>

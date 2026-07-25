@@ -1179,11 +1179,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     render(
       <Harness
         activeSessionId={'rt-foreground'}
-        storedSessionId={'rt-foreground'}
         getRuntimeIdForStoredSession={() => null}
         onReady={h => (handle = h)}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
+        storedSessionId={'rt-foreground'}
       />
     )
 

@@ -19,6 +19,7 @@
 import type { HermesSkin } from '@hermes/shared/skin'
 import { atom } from 'nanostores'
 
+import { rememberSkinName } from './known-skins'
 import { BUILTIN_THEMES } from './presets'
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme } from './types'
@@ -75,6 +76,10 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
       $backendThemes.set({ ...current, [name]: theme })
     }
+
+    // Record that this name resolved to a live backend skin so the next
+    // launch can trust it before the gateway reconnects.
+    rememberSkinName(name)
   }
 
   if (!apply) {

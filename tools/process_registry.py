@@ -128,9 +128,9 @@ def _systemd_run_user_scope_available() -> bool:
         probe_unit = f"hermes-probe-scope-{os.getpid()}-{int(time.time())}"
         result = subprocess.run(
             [
-                binary, "--user", "--scope",
+                binary, "--user", "--scope", "--quiet",
                 "--unit", probe_unit,
-                "--collect",
+                "--collect", "--",
                 "/bin/true",
             ],
             capture_output=True,
@@ -172,11 +172,42 @@ def _build_systemd_scope_argv(
         binary,
         "--user",
         "--scope",
+        "--quiet",
         "--unit",
         unit_name,
         "--collect",
+        "--",
         *shell_argv,
     ]
+
+
+def _stop_systemd_unit(unit_name: str) -> bool:
+    """Stop a transient systemd user scope by unit name.
+
+    This reaps the *entire* cgroup — catching double-forked descendants that
+    survive a plain PID signal because they were reparented to init inside the
+    scope (issue #70716, reviewer gap #2).  ``systemctl --user stop`` sends
+    SIGTERM to every process in the unit's cgroup and escalates to SIGKILL
+    after the unit's ``TimeoutStopSec``.
+
+    Returns True if the command ran (regardless of exit code — the unit may
+    already be gone), False if ``systemctl`` is unavailable.
+    """
+    import shutil
+
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return False
+    try:
+        subprocess.run(
+            [binary, "--user", "stop", unit_name],
+            capture_output=True,
+            timeout=15,
+        )
+        return True
+    except Exception as exc:
+        logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
+        return False
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -211,6 +242,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run (#70716)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -836,8 +868,43 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+
+                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
+                # Wrap the PTY command in a systemd scope so interactive
+                # executors get their own cgroup, same as pipe mode.
+                pty_use_systemd_scope = False
+                try:
+                    from gateway.restart import is_gateway_supervisor_process
+
+                    pty_under_supervisor = is_gateway_supervisor_process()
+                    pty_use_systemd_scope = (
+                        not _IS_WINDOWS
+                        and pty_under_supervisor
+                        and _systemd_run_user_scope_available()
+                    )
+                except Exception:
+                    pty_use_systemd_scope = False
+
+                if pty_use_systemd_scope:
+                    pty_argv = _build_systemd_scope_argv(
+                        pty_argv, unit_suffix=session.id,
+                    )
+                    session.systemd_unit = f"hermes-worker-{session.id}"
+                elif not _IS_WINDOWS:
+                    try:
+                        from gateway.restart import is_gateway_supervisor_process as _sup
+                        if _sup():
+                            logger.debug(
+                                "PTY background executor not isolated in a "
+                                "systemd scope (systemd-run --user unavailable); "
+                                "worker shares the gateway cgroup."
+                            )
+                    except Exception:
+                        pass
+
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {safe_command}"],
+                    pty_argv,
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -905,6 +972,7 @@ class ProcessRegistry:
             spawn_argv = _build_systemd_scope_argv(
                 shell_argv, unit_suffix=session.id,
             )
+            session.systemd_unit = f"hermes-worker-{session.id}"
             # systemd-run creates the new session/cgroup for us; do NOT also
             # set start_new_session (harmless, but redundant and it can mask
             # scope-creation failures in some systemd versions).
@@ -1854,6 +1922,16 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
+
+            # If the worker was spawned in its own systemd scope (#70716),
+            # stop the entire unit to reap any double-forked descendants that
+            # were reparented inside the scope and survived the PID signal
+            # above (reviewer gap #2).  ``systemctl --user stop`` sends
+            # SIGTERM to every process in the cgroup and escalates to SIGKILL
+            # after TimeoutStopSec.  This is additive — the PID-based kill
+            # above already handled the main process; this catches stragglers.
+            if session.systemd_unit:
+                _stop_systemd_unit(session.systemd_unit)
             # Capture output before marking consumed, then mark consumed before
             # exposing ``exited`` to watcher tasks. This closes the delayed
             # notification race without discarding the terminal transcript.
@@ -2224,6 +2302,7 @@ class ProcessRegistry:
                             "pid": s.pid,
                             "pid_scope": s.pid_scope,
                             "host_start_time": s.host_start_time,
+                            "systemd_unit": s.systemd_unit,
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
@@ -2303,6 +2382,7 @@ class ProcessRegistry:
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
+                systemd_unit=entry.get("systemd_unit", ""),
                 cwd=entry.get("cwd"),
                 started_at=entry.get("started_at", time.time()),
                 detached=True,  # Can't read output, but can report status + kill

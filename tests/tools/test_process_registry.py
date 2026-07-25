@@ -1646,15 +1646,22 @@ class TestSystemdCgroupIsolation:
         assert argv[0] == "/usr/bin/systemd-run", argv
         assert "--user" in argv
         assert "--scope" in argv
+        assert "--quiet" in argv, "systemd-run argv must include --quiet (#70716 gap #3)"
         assert "--unit" in argv
         unit_idx = argv.index("--unit")
         assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
         assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv
-        # The original shell command must still be present at the tail.
-        assert "/bin/bash" in argv
-        assert "set +m; echo hello" in argv
+        # The original shell command must still be present at the tail,
+        # after the ``--`` separator that prevents systemd-run from
+        # interpreting command flags as its own.
+        assert "--" in argv, "systemd-run argv must use -- to separate command"
+        sep_idx = argv.index("--")
+        assert "/bin/bash" in argv[sep_idx:]
+        assert "set +m; echo hello" in argv[sep_idx:]
         # systemd-run owns session/cgroup creation — no start_new_session.
         assert captured["start_new_session"] is False
+        # The session must record the unit name so kill_process can stop it.
+        assert session.systemd_unit == f"hermes-worker-{session.id}"
 
     def test_falls_back_when_systemd_run_unavailable(
         self, registry, monkeypatch

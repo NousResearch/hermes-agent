@@ -498,6 +498,8 @@ export function usePromptActions({
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRoutedStoredSessionId,
+    getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
     openMemoryGraph,

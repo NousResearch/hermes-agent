@@ -317,6 +317,112 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
   })
 }
 
+describe('usePromptActions slash session targeting', () => {
+  const STORED_SESSION_ID = 'stored-db-xyz789'
+  const RECOVERED_SESSION_ID = 'rt-recovered-456'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('runs /goal status against the ROUTED stored session instead of minting a new one', async () => {
+    // Teknium's report: start a goal in the desktop app, then `/goal status`
+    // says there is no goal. `/goal` state lives per-session in SessionDB
+    // (`goal:<session_id>`), and slash.ts used to resolve its target with a
+    // bare `hint || activeRef || createSession()`. With the runtime binding
+    // momentarily absent (profile swap / reconnect / orphan-reap / timeout) it
+    // minted a NEW session, so the status query asked a session that never had
+    // a goal. submit.ts already resumes the routed chat here; both pipelines
+    // must resolve identically.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let boundRuntimeId: null | string = null
+
+    const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        boundRuntimeId = RECOVERED_SESSION_ID
+        selectedStoredSessionIdRef.current = STORED_SESSION_ID
+        activeSessionIdRef.current = RECOVERED_SESSION_ID
+
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      if (method === 'slash.exec') {
+        return { output: '⊙ Goal (active, 1/20 turns): build a rocket' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    await handle!.submitText('/goal status')
+
+    // Never fork the conversation to answer a question about it.
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls.map(c => c.method)).toEqual(['session.resume', 'slash.exec'])
+    expect(calls[0]?.params).toMatchObject({ session_id: STORED_SESSION_ID })
+    // The command lands on the recovered runtime that owns the goal.
+    expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
+  })
+
+  it('does not fork the chat when the routed session cannot be rebound', async () => {
+    const calls: string[] = []
+    const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={{ current: null }}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={{ current: null }}
+        storedSessionId={null}
+      />
+    )
+
+    await handle!.submitText('/goal status')
+
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls).not.toContain('slash.exec')
+  })
+})
+
 describe('usePromptActions /compress', () => {
   beforeEach(() => {
     setSessions(() => [sessionInfo()])

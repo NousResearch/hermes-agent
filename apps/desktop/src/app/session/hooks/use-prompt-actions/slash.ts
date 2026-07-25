@@ -40,6 +40,7 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
+import { resolveTargetSessionId } from './resolve-target-session'
 import {
   type GatewayRequest,
   isSessionIdCandidate,
@@ -75,6 +76,8 @@ interface SlashCommandDeps {
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  getRoutedStoredSessionId: () => null | string
+  getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   handleSkinCommand: (arg: string) => string
   handoffSession: (
     platform: string,
@@ -103,6 +106,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRoutedStoredSessionId,
+    getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
     openMemoryGraph,
@@ -119,8 +124,25 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
   return useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+      // Resolve the session this command targets through the SHARED ladder that
+      // submit.ts uses. A slash command runs backend commands against a runtime
+      // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
+      // that id — so resolving it differently than submit would run the command
+      // against a different session than the user's chat. The old bare
+      // `hint || activeRef || createSession()` did exactly that: with the runtime
+      // binding momentarily absent (profile swap, reconnect, orphan-reap,
+      // timeout) it minted a NEW session, so `/goal status` reported "No active
+      // goal" for a goal that was live on the real chat.
       const ensureSessionId = async (sessionHint?: string) =>
-        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+        resolveTargetSessionId({
+          activeRuntimeId: activeSessionIdRef.current,
+          createSession: () => createBackendSessionForSend(),
+          explicitRuntimeId: sessionHint,
+          getRuntimeIdForStoredSession,
+          requestGateway,
+          routedStoredSessionId: getRoutedStoredSessionId(),
+          selectedStoredSessionId: selectedStoredSessionIdRef.current
+        })
 
       // Resolve the target session plus a writer for inline slash output, or
       // notify + return null when none can be created. Folds the ensure / bail /
@@ -868,6 +890,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       busyRef,
       copy,
       createBackendSessionForSend,
+      getRoutedStoredSessionId,
+      getRuntimeIdForStoredSession,
       handleSkinCommand,
       handoffSession,
       openMemoryGraph,

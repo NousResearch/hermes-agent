@@ -145,6 +145,7 @@ import {
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
+  parseStoredTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
   tokenNeedsRefresh
@@ -6276,11 +6277,15 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
       return null
     }
 
-    const tokens = parseTokenResponse(JSON.parse(plaintext))
+    const tokens = parseStoredTokenSet(JSON.parse(plaintext))
     _nativeTokens.set(baseUrl, tokens)
 
     return tokens
-  } catch {
+  } catch (error) {
+    rememberLog(
+      `[native-oauth] failed to load stored tokens for ${baseUrl}: ${(error as Error).message}`
+    )
+
     return null
   }
 }

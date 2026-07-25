@@ -30,6 +30,10 @@ SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 SELF_NPUB = "npub1nl2u0wnd8mezfknc74q7pl9ec58h9nrrakce4tnk434qgaxl4psqe5twr6"
 OTHER_PUBKEY = "a" * 64
 CHANNEL = "ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd"
+# Real DM conversation as materialized by a hosted relay: `dms list` returns
+# [] for it (#68871) while `channels list` shows it as name "DM", empty
+# description, indistinguishable from a channel except via message p-tags.
+DM_CHANNEL = "6468cc16-a114-4f23-8b8c-02c1655cbf6b"
 
 _ENV_VARS = (
     "BUZZ_RELAY_URL",
@@ -375,6 +379,223 @@ class TestMentionGating:
         a._run_cli = cli
         await a._poll_channel(CHANNEL)
         assert len(a._dispatched) == 1
+
+
+# ── DM classification via p-tags (issue #68871) ──────────────────────────
+#
+# `buzz dms list` returns [] on some hosted relays, so DM conversations leak
+# in via `channels list` and get seeded chat_type="group".  The adapter must
+# reclassify them from the Nostr tags of real traffic: DM messages are
+# p-tagged to our own pubkey WITHOUT the text mentioning us, while channel
+# messages only ever p-tag us when the text visibly @mentions us.
+
+
+def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
+                  created_at=1000, kind=9, p=None, reply_to=None):
+    """Event with the tag shapes observed on a live relay (h/p/e tags)."""
+    tags = [["h", channel]]
+    if reply_to:
+        tags.append(["e", reply_to, "", "reply"])
+    if p:
+        tags.append(["p", p])
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "content": content,
+        "created_at": created_at,
+        "kind": kind,
+        "tags": tags,
+    }
+
+
+class TestDmClassification:
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        # Metadata exactly as `channels list` returns it on the hosted relay.
+        a._channel_meta = {
+            DM_CHANNEL: {"channel_id": DM_CHANNEL, "name": "DM", "description": ""},
+            CHANNEL: {
+                "channel_id": CHANNEL,
+                "name": "general",
+                "description": "General conversation and community updates.",
+            },
+        }
+        a._channel_names = {DM_CHANNEL: "DM", CHANNEL: "general"}
+        # Both leaked in as group — the bug under test.
+        a._channel_state[DM_CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        return a
+
+    async def _poll_with(self, adapter, channel, *events):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", list(events))
+        adapter._run_cli = cli
+        await adapter._poll_channel(channel)
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_ptagged_dm_latches_and_dispatches(self, adapter):
+        """The reported bug: a DM without an @mention must dispatch."""
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="here's a test message", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["chat_type"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_dm_latch_persists_for_followup_messages(self, adapter):
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="first direct message", p=SELF_PUBKEY),
+        )
+        # Follow-up carries no p-tag at all — the latched state must carry it.
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e2", DM_CHANNEL, content="and a follow-up", created_at=1001),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1", "e2"]
+
+    @pytest.mark.asyncio
+    async def test_general_broadcast_without_mention_still_gated(self, adapter):
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e1", CHANNEL, content="just chatting away"),
+        )
+        assert adapter._dispatched == []
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+
+    @pytest.mark.asyncio
+    async def test_general_reply_ptagging_self_stays_channel(self, adapter):
+        """A #general reply to us p-tags our pubkey (observed live) — that
+        must NOT reclassify the channel; mention gating still applies."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e1", CHANNEL, content="@chip what's up?",
+                          p=SELF_PUBKEY, reply_to="root-event"),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        # It carried a mention, so it dispatches — but as a group message.
+        assert [d["chat_type"] for d in adapter._dispatched] == ["group"]
+
+        # And once the mention is absent, the channel gate drops the message
+        # even though the earlier reply p-tagged us.
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e2", CHANNEL, content="thanks everyone", created_at=1001),
+        )
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_general_nonreply_mention_ptag_stays_channel(self, adapter):
+        """Typed channel mentions p-tag us WITHOUT a reply tag (observed
+        live: '@Chip are you up and running?') — still not a DM: the p-tag
+        is explained by the visible mention, and the metadata guard protects
+        real channels regardless."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e1", CHANNEL, content="@Chip are you up and running?", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        assert [d["chat_type"] for d in adapter._dispatched] == ["group"]
+
+    @pytest.mark.asyncio
+    async def test_channel_like_metadata_blocks_latch_even_without_mention(self, adapter):
+        """Second guard on its own: even a p-tagged, un-mentioned message
+        cannot reclassify a conversation whose metadata says real channel."""
+        adapter._channel_meta[CHANNEL]["description"] = ""
+        adapter._channel_meta[CHANNEL]["name"] = "announcements"
+        await self._poll_with(
+            adapter, CHANNEL,
+            _tagged_event("e1", CHANNEL, content="fyi everyone", p=SELF_PUBKEY),
+        )
+        assert adapter._channel_state[CHANNEL]["chat_type"] == "group"
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_configured_channel_without_metadata_not_latched(self):
+        a = _make_adapter({"channels": ["private-chan"]})
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        a._channel_state["private-chan"] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _tagged_event("e1", "private-chan", content="no mention here", p=SELF_PUBKEY),
+        ])
+        a._run_cli = cli
+        await a._poll_channel("private-chan")
+        assert a._channel_state["private-chan"]["chat_type"] == "group"
+        assert a._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_seed_latches_dm_from_history_without_dispatch(self, adapter):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _tagged_event("h1", DM_CHANNEL, content="@Chip hello there", p=SELF_PUBKEY, created_at=100),
+            _tagged_event("h2", DM_CHANNEL, content="here's a test message", p=SELF_PUBKEY, created_at=200),
+            _tagged_event("h3", DM_CHANNEL, content="my own reply", pubkey=SELF_PUBKEY, created_at=300),
+        ])
+        adapter._run_cli = cli
+        await adapter._seed_channel(DM_CHANNEL, chat_type="group")
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
+        # Seeding classifies but never replays history into the agent.
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_non_chat_kind_ptag_does_not_latch(self, adapter):
+        """Housekeeping events (joins, member adds) may p-tag members —
+        only kind-9 chat traffic classifies."""
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _tagged_event("h1", DM_CHANNEL, content="member added", p=SELF_PUBKEY, kind=40002),
+        ])
+        adapter._run_cli = cli
+        await adapter._seed_channel(DM_CHANNEL, chat_type="group")
+        assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "group"
+
+    @pytest.mark.asyncio
+    async def test_dm_leading_mention_stripped_for_commands(self, adapter):
+        adapter._channel_state[DM_CHANNEL]["chat_type"] = "dm"
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _tagged_event("e1", DM_CHANNEL, content="@chip /whoami", p=SELF_PUBKEY),
+        )
+        assert adapter._dispatched[0]["text"] == "/whoami"
+
+    @pytest.mark.asyncio
+    async def test_dm_shaped_channel_discovered_when_dms_list_empty(self):
+        """Fallback discovery: with `dms list` broken (returns []), a
+        DM-shaped `channels list` entry gets watched; real channels not
+        already watched are left alone."""
+        a = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("dms", "list", [])
+        cli.script("channels", "list", [
+            {"channel_id": DM_CHANNEL, "name": "DM", "description": "", "created_at": 1},
+            {"channel_id": CHANNEL, "name": "general",
+             "description": "General conversation and community updates.", "created_at": 2},
+        ])
+        a._run_cli = cli
+        await a._discover_dms(seed=False)
+        # Watched as group; the p-tag latch flips it on the first real DM.
+        assert a._channel_state[DM_CHANNEL]["chat_type"] == "group"
+        assert a._may_reclassify_as_dm(DM_CHANNEL) is True
+        assert CHANNEL not in a._channel_state
+        assert a._may_reclassify_as_dm(CHANNEL) is False
 
 
 # ── Sending ───────────────────────────────────────────────────────────────

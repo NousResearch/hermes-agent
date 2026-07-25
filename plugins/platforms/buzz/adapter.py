@@ -67,7 +67,8 @@ _CHAT_KIND = 9
 _FETCH_LIMIT = 50
 # Bound on the per-channel de-dupe set (events, not bytes).
 _SEEN_CAP = 500
-# Re-run ``buzz dms list`` every N poll sweeps to pick up new conversations.
+# Re-run DM discovery (``dms list`` plus the channels-list fallback) every
+# N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
 
 _DEFAULT_POLL_INTERVAL = 4.0
@@ -362,6 +363,9 @@ class BuzzAdapter(BasePlatformAdapter):
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
+        # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
+        # classification (see _may_reclassify_as_dm).
+        self._channel_meta: Dict[str, dict] = {}
         self._user_names: Dict[str, str] = {}
         self._poll_count = 0
 
@@ -430,6 +434,9 @@ class BuzzAdapter(BasePlatformAdapter):
             for ch in listed
             if ch.get("channel_id")
         }
+        for ch in listed:
+            if ch.get("channel_id"):
+                self._channel_meta[str(ch["channel_id"])] = ch
         watch = self.channels or list(self._channel_names)
         if not watch:
             logger.error("Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)")
@@ -629,24 +636,52 @@ class BuzzAdapter(BasePlatformAdapter):
             if event_id:
                 state["seen"][str(event_id)] = None
             state["last_ts"] = max(state["last_ts"], created_at)
+            # History is never dispatched, but it still classifies: a DM that
+            # leaked in via ``channels list`` latches to chat_type="dm" here,
+            # so it bypasses the mention gate from the very first poll.
+            self._maybe_latch_dm(channel_id, state, event)
         self._trim_seen(state)
 
     async def _discover_dms(self, *, seed: bool) -> None:
         """Watch DM conversations.  New ones found mid-run dispatch from their
         beginning (a fresh conversation has no history worth suppressing);
-        ones present at startup are seeded like channels."""
+        ones present at startup are seeded like channels.
+
+        ``dms list`` is only a best-effort source: on some hosted relays it
+        returns ``[]`` even when DM conversations exist (#68871).  Those DMs
+        DO surface in ``channels list`` as entries named "DM" with an empty
+        description, so that listing is scanned as a fallback.  Fallback
+        finds are watched as ``group`` and latch to ``dm`` via p-tag
+        detection (_is_direct_message_event) rather than trusting the name
+        alone to unlock the mention-free DM path.
+        """
         code, out, _err = await self._run_cli(["dms", "list"])
+        if code == 0:
+            for dm in _parse_json_list(out):
+                dm_id = str(dm.get("dm_id") or "")
+                if not dm_id or dm_id in self._channel_state:
+                    continue
+                if seed:
+                    await self._seed_channel(dm_id, chat_type="dm")
+                else:
+                    self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_names.setdefault(dm_id, "DM")
+
+        code, out, _err = await self._run_cli(["channels", "list"])
         if code != 0:
             return
-        for dm in _parse_json_list(out):
-            dm_id = str(dm.get("dm_id") or "")
-            if not dm_id or dm_id in self._channel_state:
+        for ch in _parse_json_list(out):
+            ch_id = str(ch.get("channel_id") or "")
+            if not ch_id:
+                continue
+            self._channel_meta[ch_id] = ch
+            self._channel_names.setdefault(ch_id, str(ch.get("name") or ch_id))
+            if ch_id in self._channel_state or not self._may_reclassify_as_dm(ch_id):
                 continue
             if seed:
-                await self._seed_channel(dm_id, chat_type="dm")
+                await self._seed_channel(ch_id, chat_type="group")
             else:
-                self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
-            self._channel_names.setdefault(dm_id, "DM")
+                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -687,6 +722,10 @@ class BuzzAdapter(BasePlatformAdapter):
         if pubkey == self._self_pubkey:
             return
 
+        # Reclassify a leaked DM before gating so its first un-mentioned
+        # message both latches the conversation and dispatches.
+        self._maybe_latch_dm(channel_id, state, event)
+
         is_dm = state["chat_type"] == "dm"
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
@@ -700,10 +739,11 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
 
-        # In channels the message addressed us with a leading @mention; strip
-        # it so slash commands (@Chip /whoami -> /whoami) and clean prompts are
-        # recognized. DMs are already clean.
-        dispatch_text = content if is_dm else self._strip_mention(content)
+        # Strip a leading @mention so slash commands (@Chip /whoami ->
+        # /whoami) and clean prompts are recognized. DM messages often still
+        # open with "@Chip" even though no mention is required there, so the
+        # strip applies to both chat types.
+        dispatch_text = self._strip_mention(content)
 
         await self._dispatch_message(
             text=dispatch_text,
@@ -714,6 +754,84 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=event_id,
             created_at=created_at,
         )
+
+    # ── DM classification (issue #68871) ──────────────────────────────────
+    #
+    # ``buzz dms list`` returns [] on some hosted relays even when DM
+    # conversations exist, so DMs leak in via ``channels list`` and get
+    # watched as chat_type="group" — which wrongly puts them behind the
+    # channel mention gate.  Classification therefore keys off the Nostr
+    # tags of the messages themselves.  Observed on a live hosted relay:
+    #
+    #   * every message another user sends IN A DM carries a structural
+    #     ["p", <our pubkey>] tag, even when the text never mentions us
+    #     (recipient addressing);
+    #   * in a real channel, a ["p", <our pubkey>] tag appears only when the
+    #     text visibly @mentions us (typed mention, with or without a reply
+    #     ["e", ...] tag) — never on plain broadcasts.
+    #
+    # So "p-tagged to self WITHOUT a visible mention in the content" is the
+    # DM discriminator: in a channel that combination does not occur, and a
+    # channel reply/mention that p-tags us is excluded because the mention
+    # is right there in the text.  As a second, independent guard, a
+    # conversation whose ``channels list`` metadata looks like a real
+    # community channel (real name / non-empty description) is never
+    # reclassified at all, whereas relay-materialized DMs are always named
+    # "DM" with an empty description.  Nothing is lost while unlatched: a
+    # DM message that DOES mention us dispatches through the mention gate
+    # anyway, so the latch flips exactly on the first message that needs it.
+
+    def _may_reclassify_as_dm(self, channel_id: str) -> bool:
+        """True when the conversation's metadata does not rule out a DM.
+
+        Known real community channels (real name or non-empty description in
+        ``channels list``) must never turn into DMs just because a message
+        p-tags us.  A conversation with no metadata at all is trusted only
+        when the user did not explicitly configure it as a watched channel.
+        """
+        meta = self._channel_meta.get(channel_id)
+        if meta is None:
+            return channel_id not in self.channels
+        name = str(meta.get("name") or "").strip()
+        description = str(meta.get("description") or "").strip()
+        return name == "DM" and not description
+
+    def _is_direct_message_event(self, channel_id: str, event: dict) -> bool:
+        """True when ``event`` is shaped like a direct message to us: a chat
+        message from another user, p-tagged to our pubkey, whose content does
+        NOT visibly mention us — i.e. the p-tag is structural DM addressing,
+        not the artifact of a typed @mention (see block comment above)."""
+        if not self._self_pubkey or not self._may_reclassify_as_dm(channel_id):
+            return False
+        if int(event.get("kind") or 0) != _CHAT_KIND:
+            return False
+        pubkey = str(event.get("pubkey") or "").lower()
+        if not pubkey or pubkey == self._self_pubkey:
+            return False
+        tags = event.get("tags")
+        if not isinstance(tags, list):
+            return False
+        p_tagged_to_self = any(
+            isinstance(tag, (list, tuple))
+            and len(tag) > 1
+            and tag[0] == "p"
+            and str(tag[1]).lower() == self._self_pubkey
+            for tag in tags
+        )
+        if not p_tagged_to_self:
+            return False
+        content = event.get("content")
+        return isinstance(content, str) and not self._is_mentioned(content)
+
+    def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
+        """Latch a group conversation to chat_type="dm" once any direct
+        message is seen; the classification then sticks so subsequent
+        un-mentioned messages in the conversation dispatch too."""
+        if state["chat_type"] == "dm" or not self._is_direct_message_event(channel_id, event):
+            return
+        state["chat_type"] = "dm"
+        self._channel_names.setdefault(channel_id, "DM")
+        logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
     def _is_mentioned(self, content: str) -> bool:
         """True when the message addresses this agent (npub, hex, or name)."""

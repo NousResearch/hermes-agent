@@ -11,7 +11,8 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * Proper venv activation (local checkout, shared worktree checkout, then
+#     ~/.hermes/...)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -51,7 +52,33 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+SHARED_CHECKOUT_ROOT=""
+COMMON_GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+if [ -n "$COMMON_GIT_DIR" ]; then
+  # Resolve relative output from the checkout root without relying on Git's
+  # newer --path-format option. Let `cd` also normalize Git-for-Windows drive
+  # paths into the path spelling understood by the current shell.
+  if RESOLVED_COMMON_GIT_DIR="$(
+    cd "$REPO_ROOT" &&
+    cd "$COMMON_GIT_DIR" 2>/dev/null &&
+    pwd -P
+  )"; then
+    COMMON_GIT_DIR="$RESOLVED_COMMON_GIT_DIR"
+  else
+    COMMON_GIT_DIR=""
+  fi
+fi
+if [ "${COMMON_GIT_DIR##*/}" = ".git" ]; then
+  SHARED_CHECKOUT_ROOT="${COMMON_GIT_DIR%/.git}"
+fi
+
+CANDIDATE_VENVS=("$REPO_ROOT/.venv" "$REPO_ROOT/venv")
+if [ -n "$SHARED_CHECKOUT_ROOT" ] && [ "$SHARED_CHECKOUT_ROOT" != "$REPO_ROOT" ]; then
+  CANDIDATE_VENVS+=("$SHARED_CHECKOUT_ROOT/.venv" "$SHARED_CHECKOUT_ROOT/venv")
+fi
+CANDIDATE_VENVS+=("$HOME/.hermes/hermes-agent/venv")
+
+for candidate in "${CANDIDATE_VENVS[@]}"; do
   if [ -f "$candidate/bin/activate" ]; then
     if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"

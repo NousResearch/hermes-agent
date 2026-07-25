@@ -394,10 +394,41 @@ The gateway calls the transport with action dicts. Source of truth:
 | `edit` | `chat_id`, `message_id`, `content`, `metadata?` | `{success: bool, error?}` |
 | `typing` | `chat_id`, `content?`, `metadata?` | `{success: bool}` |
 | `follow_up` | `session_key`, `kind`, `content`, `metadata?` | `{success: bool, message_id?, error?}` |
+| `send_media` | `chat_id`, `media_kind`, `source_url`, `content?` (caption), `filename?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
-`{name, type}`. Media actions follow the same envelope shape (deferred to a
-later contract revision; additive).
+`{name, type}`.
+
+**`send_media` (Phase 2 media egress).** Media crosses the wire BY REFERENCE:
+`source_url` is either (a) a **connector re-host** the gateway previously
+uploaded via `POST {connector}/relay/media` (raw bytes body, `Content-Type` +
+optional `X-Media-Filename` headers, per-gateway HMAC bearer — the same token
+scheme as the WS upgrade; response `{id, size}` → reference
+`{connector}/relay/media/{id}`), or (b) a **public http(s) URL** (e.g. a
+fal.media generation) the connector downloads directly. `media_kind` is one of
+`image` / `voice` / `audio` / `video` / `document` and selects the
+platform-native upload lane (Telegram `sendPhoto`/`sendVoice`/…, Discord
+multipart attachment, Slack external upload, WhatsApp media upload + media
+message). The caption rides `content` and renders through the platform's
+normal markdown lane; platforms without native captions get a follow-up text
+send (connector-side). Both routes and the op are gated on `supported_ops`
+advertising `send_media` — a legacy connector never sees the op (the gateway's
+media sends degrade to their pre-media text fallbacks). Size cap 25 MB
+(connector `mediaStore.ts` MEDIA_MAX_BYTES; uploads over it are rejected 413).
+
+**Inbound media (Phase 2 media ingress).** An inbound event's `media_urls`
+carry fetchable references: platform-public URLs pass through (Discord CDN);
+auth-gated/expiring platform URLs (Telegram file API, Slack `url_private`,
+WhatsApp Graph media) are downloaded connector-side with the PLATFORM
+credential and re-hosted as `{connector}/relay/media/{id}` — the platform
+credential never crosses the wire. Re-host references are readable by any
+authenticated gateway (capability-URL semantics: the id is 128-bit random and
+was already delivered to every admitted recipient); the gateway downloads each
+reference with its per-gateway bearer and presents LOCAL file paths to the
+agent, mirroring native adapters. Re-hosts expire (TTL ~1h) — download on
+receipt, not lazily. A parallel `media` array (same order) adds `kind`, `mime`,
+`size`, `filename`, `caption` metadata; `message_type` reflects the first
+attachment's kind (`image`/`audio`/`document`).
 
 **`typing` `content?` (Slack status clear).** A `typing` frame normally omits
 `content` — the connector renders its platform's active indicator ("is

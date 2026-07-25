@@ -3248,6 +3248,17 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
+    import hermes_state as _hs
+
+    # The fallback warning is deduped process-globally ("once per process per
+    # database" — _log_wal_fallback_once / _log_wal_reset_bug_once). Any earlier
+    # test in this file that opened a kanban.db already consumed the one-shot
+    # for that label, so without clearing it this test sees zero warnings and
+    # fails only when run as part of the file (it passes in isolation). Clear
+    # both dedup sets so the warning is emitted for this connect().
+    _hs._wal_fallback_warned_paths.clear()
+    _hs._wal_reset_bug_warned_paths.clear()
+
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))

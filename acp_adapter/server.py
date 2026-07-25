@@ -1761,7 +1761,16 @@ class HermesACPAgent(acp.Agent):
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                # ``cwd`` pins the logical working directory for this context,
+                # which is what the system prompt's "Current working directory"
+                # line reports (agent/prompt_builder.py -> resolve_agent_cwd).
+                # Without it the prompt advertises the global Hermes workspace
+                # while the tools are rooted at the client's project, so the
+                # model emits absolute paths under ~/.hermes/workspace and the
+                # edit silently lands outside the editor's workspace.
+                session_tokens = set_session_vars(
+                    session_key=session_id, cwd=state.cwd,
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]

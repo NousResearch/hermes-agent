@@ -310,6 +310,47 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
+def test_browser_cdp_target_id_routes_via_supervisor(
+    chrome_cdp, supervisor_registry, monkeypatch
+):
+    """browser_cdp(target_id=...) reuses the live supervisor session.
+
+    Discovers the target the way an agent does, ``Target.getTargets``
+    through ``browser_cdp`` itself, with no private supervisor attributes.
+    The ``session_id`` field in the payload is the regression signal: the
+    stateless attach path never reports one, so this test fails without
+    supervisor routing.
+    """
+    cdp_url, _port = chrome_cdp
+    from tools import browser_cdp_tool as cdp_tool
+
+    monkeypatch.setattr(cdp_tool, "_resolve_cdp_endpoint", lambda: cdp_url)
+
+    sv = supervisor_registry.get_or_start(task_id="target-id-test", cdp_url=cdp_url)
+    assert sv.snapshot().active
+    infos = json.loads(
+        cdp_tool.browser_cdp(method="Target.getTargets", task_id="target-id-test")
+    )["result"]["targetInfos"]
+    target_id = next(
+        (t["targetId"] for t in infos
+         if t.get("type") == "page" and sv.resolve_target_session(t["targetId"])),
+        None,
+    )
+    assert target_id, "Target.getTargets must list the supervisor's attached page"
+
+    result = cdp_tool.browser_cdp(
+        method="Runtime.evaluate",
+        params={"expression": "1 + 2", "returnByValue": True},
+        target_id=target_id,
+        task_id="target-id-test",
+    )
+    r = json.loads(result)
+    assert r.get("success") is True, f"expected success, got: {r}"
+    assert r.get("target_id") == target_id
+    assert r.get("session_id"), "supervisor route must report the reused session id"
+    assert r.get("session_id") == sv.resolve_target_session(target_id)
+    value = r.get("result", {}).get("result", {}).get("value")
+    assert value == 3, f"expected 3, got {value!r}"
 
 def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     """``Infinity``/``NaN``/``BigInt`` come back via ``unserializableValue``."""

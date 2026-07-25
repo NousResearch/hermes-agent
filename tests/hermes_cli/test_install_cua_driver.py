@@ -464,6 +464,69 @@ class TestInstallerTimeoutKillsProcessGroup:
 
         assert captured.get("start_new_session") is True
 
+    def test_windows_timeout_kills_descendants_and_parent(self):
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        child = MagicMock()
+        parent = MagicMock()
+        parent.children.return_value = [child]
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="powershell", timeout=1),
+            ("", None),
+        ]
+
+        with patch("platform.system", return_value="Windows"), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch("psutil.Process", return_value=parent), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False
+            )
+
+        assert ok is False
+        parent.children.assert_called_once_with(recursive=True)
+        child.kill.assert_called_once_with()
+        parent.kill.assert_called_once_with()
+        fake_proc.kill.assert_not_called()
+        assert fake_proc.communicate.call_count == 2
+
+    def test_windows_tree_enumeration_failure_falls_back_to_direct_kill(self):
+        import psutil
+        import subprocess
+        from unittest.mock import MagicMock
+        from hermes_cli import tools_config
+
+        parent = MagicMock()
+        parent.children.side_effect = psutil.AccessDenied(pid=12345)
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 12345
+        fake_proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="powershell", timeout=1),
+            ("", None),
+        ]
+
+        with patch("platform.system", return_value="Windows"), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch("psutil.Process", return_value=parent), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"):
+            ok = tools_config._run_cua_driver_installer(
+                label="Refreshing", verbose=False
+            )
+
+        assert ok is False
+        fake_proc.kill.assert_called_once_with()
+        assert fake_proc.communicate.call_count == 2
+
 
 class TestInstallerNoShell:
     """The POSIX installer path must not use shell=True or command

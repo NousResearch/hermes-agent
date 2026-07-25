@@ -34,6 +34,7 @@ import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { waitForHermesReady } from './backend-health'
 import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
@@ -4815,39 +4816,12 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token, signal?) {
-  const deadline = Date.now() + 45_000
-  let lastError = null
-
-  while (Date.now() < deadline) {
-    if (signal?.aborted) {
-      const error: any = new Error('SSH bootstrap was superseded by newer connection settings.')
-      error.kind = 'superseded'
-      throw error
-    }
-
-    try {
-      await fetchJson(`${baseUrl}/api/status`, token)
-
-      return
-    } catch (error) {
-      lastError = error
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, 500)
-        signal?.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer)
-            const aborted: any = new Error('SSH bootstrap was superseded by newer connection settings.')
-            aborted.kind = 'superseded'
-            reject(aborted)
-          },
-          { once: true }
-        )
-      })
-    }
-  }
-
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+  return waitForHermesReady(baseUrl, {
+    token,
+    signal,
+    fetchPublicJson,
+    fetchJson
+  })
 }
 
 function getWindowButtonPosition() {

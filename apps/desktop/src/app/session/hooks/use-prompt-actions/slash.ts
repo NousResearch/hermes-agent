@@ -268,6 +268,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // cache entry hasn't landed yet.
             const storedId =
               storedSessionId || $sessionStates.get()[sessionId]?.storedSessionId || $selectedStoredSessionId.get()
+
             const queueKey = resolveComposerSessionKey(storedId, $sessions.get()) || storedId || sessionId
 
             if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message })) {

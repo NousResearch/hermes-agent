@@ -90,6 +90,12 @@ describe('linkifySessionRefs', () => {
     expect(linkifySessionRefs('me@session:abc')).toBe('me@session:abc')
     expect(linkifySessionRefs('a/@session:abc')).toBe('a/@session:abc')
   })
+
+  it('leaves a ref a model already wrapped in a markdown link alone', () => {
+    const text = '[that chat](@session:work/abc123)'
+
+    expect(linkifySessionRefs(text)).toBe(text)
+  })
 })
 
 // The agent-authored path: assistant markdown runs through preprocessMarkdown

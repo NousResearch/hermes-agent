@@ -7,11 +7,9 @@ import type { SessionInfo } from '@/types/hermes'
 import {
   __resetSessionLinkTitleCache,
   fetchSessionLinkTitle,
-  lookupLocalSessionTitle,
-  parseSessionRefValue,
-  sessionRefCacheKey,
-  sessionRefFallbackLabel
+  lookupLocalSessionTitle
 } from './session-link-title'
+import { sessionRefCacheKey } from './session-refs'
 
 vi.mock('@/hermes', () => ({
   getSession: vi.fn()
@@ -41,29 +39,6 @@ afterEach(() => {
   __resetSessionLinkTitleCache()
   $sessions.set([])
   vi.mocked(getSession).mockReset()
-})
-
-describe('parseSessionRefValue', () => {
-  it('splits profile and session id', () => {
-    expect(parseSessionRefValue('work/20260101_abc123')).toEqual({
-      profile: 'work',
-      sessionId: '20260101_abc123'
-    })
-  })
-
-  it('treats bare values as session ids', () => {
-    expect(parseSessionRefValue('20260101_abc123')).toEqual({ sessionId: '20260101_abc123' })
-  })
-})
-
-describe('sessionRefFallbackLabel', () => {
-  it('truncates long ids', () => {
-    expect(sessionRefFallbackLabel('default/20260610_120000_abcdef')).toBe('20260610…')
-  })
-
-  it('leaves short ids alone', () => {
-    expect(sessionRefFallbackLabel('work/abc123')).toBe('abc123')
-  })
 })
 
 describe('lookupLocalSessionTitle', () => {

@@ -8,7 +8,8 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
-import { sessionRefFallbackLabel, useSessionLinkTitle } from '@/lib/session-link-title'
+import { useSessionLinkTitle } from '@/lib/session-link-title'
+import { sessionRefFallbackLabel } from '@/lib/session-refs'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -362,7 +363,7 @@ export function DirectiveContent({ text }: { text: string }) {
         segment.kind === 'text' ? (
           <Fragment key={`t-${index}`}>{segment.text}</Fragment>
         ) : segment.type === 'image' ? null : segment.type === 'session' ? (
-          <SessionDirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} />
+          <SessionRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
         ) : (
           <DirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} type={segment.type} />
         )
@@ -446,13 +447,16 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
   )
 }
 
-const SessionDirectiveChip: FC<{
-  label: string
-  id: string
-}> = ({ label, id }) => {
-  const resolved = useSessionLinkTitle(id, label)
+/** A `@session:<profile>/<id>` reference, rendered as the session's title once
+ *  resolved. Shared by the user transcript (directive segments) and assistant
+ *  markdown (`#session/` links rewritten in `preprocessMarkdown`). */
+export const SessionRefChip: FC<{
+  label?: string
+  value: string
+}> = ({ label, value }) => {
+  const resolved = useSessionLinkTitle(value, label)
 
-  return <DirectiveChip id={id} label={resolved} type="session" />
+  return <DirectiveChip id={value} label={resolved} type="session" />
 }
 
 const DirectiveChip: FC<{

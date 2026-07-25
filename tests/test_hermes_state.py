@@ -4818,6 +4818,39 @@ class TestListSessionsRich:
         assert db.get_session("delegate") is None
         assert db.get_session("branch") is not None
 
+    def test_delete_session_expected_targets_fail_closed_on_new_delegate(self, db):
+        db.create_session("parent", "cli")
+        db.create_session(
+            "delegate",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+        db.create_session(
+            "branch",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+
+        expected_ids = db.get_session_delete_targets("parent")
+        assert expected_ids == ["parent", "delegate"]
+
+        db.create_session(
+            "late-delegate",
+            "cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+
+        assert (
+            db.delete_session("parent", expected_delete_ids=expected_ids) is False
+        )
+        assert db.get_session("parent") is not None
+        assert db.get_session("delegate") is not None
+        assert db.get_session("late-delegate") is not None
+        assert db.get_session("branch") is not None
+
     def test_v16_migration_tags_linked_delegate_rows(self, tmp_path):
         """Pre-marker linked subagent rows get tagged, then cascade with parent."""
         import json

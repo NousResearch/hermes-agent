@@ -16340,10 +16340,10 @@ def main():
                 return
             output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
 
-            def _export_one(session_id: str):
+            def _export_one(session_id: str, *, include_lineage: bool = False):
                 data = (
                     db.export_session_lineage(session_id)
-                    if getattr(args, "lineage", "single") == "logical"
+                    if include_lineage
                     else db.export_session(session_id)
                 )
                 if not data:
@@ -16373,30 +16373,85 @@ def main():
                     print(f"Session '{args.session_id}' not found.")
                     db.close()
                     return
-                try:
-                    data, exported_path = _export_one(resolved_session_id)
-                except FileExistsError as e:
-                    print(f"Export already exists: {e}. Pass --force to overwrite.")
-                    db.close()
-                    return
-                if not data or not exported_path:
-                    print(f"Session '{args.session_id}' not found.")
-                    db.close()
-                    return
-                message_count = len(data.get("messages") or [])
-                suffix = "" if message_count == 1 else "s"
-                print(f"Exported 1 session ({message_count} message{suffix}) to {exported_path}")
+                delete_target_ids = [resolved_session_id]
                 if args.delete_after_verified:
-                    ok, reason = verify_export_file(exported_path, data)
-                    if not ok:
-                        print(f"Export verification failed; not deleting: {reason}")
+                    delete_target_ids = db.get_session_delete_targets(
+                        resolved_session_id
+                    )
+
+                exported_items = []
+                for target_id in delete_target_ids:
+                    try:
+                        data, exported_path = _export_one(
+                            target_id,
+                            include_lineage=(
+                                target_id == resolved_session_id
+                                and getattr(args, "lineage", "single") == "logical"
+                            ),
+                        )
+                    except FileExistsError as e:
+                        print(
+                            f"Export already exists: {e}. "
+                            "Pass --force to overwrite."
+                        )
                         db.close()
                         return
+                    if not data or not exported_path:
+                        print(
+                            f"Session '{target_id}' disappeared during export; "
+                            "nothing was deleted."
+                        )
+                        db.close()
+                        return
+                    exported_items.append((data, exported_path))
+
+                message_count = sum(
+                    len(data.get("messages") or [])
+                    for data, _path in exported_items
+                )
+                suffix = "" if message_count == 1 else "s"
+                if len(exported_items) == 1:
+                    print(
+                        f"Exported 1 session ({message_count} message{suffix}) "
+                        f"to {exported_items[0][1]}"
+                    )
+                else:
+                    print(
+                        f"Exported {len(exported_items)} sessions "
+                        f"({message_count} message{suffix}) to {output_dir}"
+                    )
+                if args.delete_after_verified:
+                    for data, exported_path in exported_items:
+                        ok, reason = verify_export_file(exported_path, data)
+                        if not ok:
+                            print(
+                                "Export verification failed; not deleting "
+                                f"session '{data.get('id')}': {reason}"
+                            )
+                            db.close()
+                            return
                     sessions_dir = get_hermes_home() / "sessions"
-                    if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
-                        print(f"Deleted exported session '{resolved_session_id}'.")
+                    if db.delete_session(
+                        resolved_session_id,
+                        sessions_dir=sessions_dir,
+                        expected_delete_ids=delete_target_ids,
+                    ):
+                        delegate_count = len(delete_target_ids) - 1
+                        delegate_suffix = (
+                            ""
+                            if not delegate_count
+                            else f" and {delegate_count} delegate session"
+                            f"{'' if delegate_count == 1 else 's'}"
+                        )
+                        print(
+                            f"Deleted exported session '{resolved_session_id}'"
+                            f"{delegate_suffix}."
+                        )
                     else:
-                        print(f"Exported, but session '{resolved_session_id}' was not deleted because it was not found.")
+                        print(
+                            f"Exported, but session '{resolved_session_id}' was "
+                            "not deleted because its delegate set changed."
+                        )
                 db.close()
                 return
 
@@ -16422,7 +16477,10 @@ def main():
             exported = 0
             for row in candidates:
                 try:
-                    data, exported_path = _export_one(row["id"])
+                    data, exported_path = _export_one(
+                        row["id"],
+                        include_lineage=getattr(args, "lineage", "single") == "logical",
+                    )
                 except FileExistsError as e:
                     print(f"Skipping existing export: {e}. Pass --force to overwrite.")
                     continue

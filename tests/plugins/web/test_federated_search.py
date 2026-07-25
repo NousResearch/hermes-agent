@@ -12,6 +12,7 @@ import pytest
 from plugins.web.federated.provider import (
     FederatedSearchProvider,
     _extract_custom_results,
+    _HealthCache,
     _rank_results,
     _read_config,
 )
@@ -464,3 +465,425 @@ class TestFederatedConfigDiscovery:
             assert len(cfg["backends"]) == 2
             assert cfg["backends"][0]["name"] == "tavily"
             assert cfg["ranker"]["provider"] == "opencode-go"
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+class TestValidateConfig:
+    """K-way aggregation config validation."""
+
+    def test_valid_minimal(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {"backends": [{"name": "tavily"}]}
+        assert _validate_config(config) is None
+
+    def test_valid_k_equals_backends(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {
+            "k": 3,
+            "backends": [
+                {"name": "a"}, {"name": "b"}, {"name": "c"},
+            ],
+        }
+        assert _validate_config(config) is None
+
+    def test_k_exceeds_max(self) -> None:
+        from plugins.web.federated.provider import _validate_config, _MAX_K
+        config = {"k": _MAX_K + 1, "backends": [{"name": "a"}]}
+        err = _validate_config(config)
+        assert err is not None
+        assert "exceeds maximum" in err
+
+    def test_k_mismatch_too_few(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {"k": 3, "backends": [{"name": "a"}]}
+        err = _validate_config(config)
+        assert err is not None
+        assert "exactly 3" in err
+
+    def test_k_mismatch_too_many(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {"k": 2, "backends": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}
+        err = _validate_config(config)
+        assert err is not None
+        assert "exactly 2" in err
+
+    def test_min_backends_exceeds_k(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {
+            "k": 2, "min_backends": 3,
+            "backends": [{"name": "a"}, {"name": "b"}],
+        }
+        err = _validate_config(config)
+        assert err is not None
+        assert "cannot exceed k" in err
+
+    def test_min_backends_less_than_one(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {
+            "min_backends": 0,
+            "backends": [{"name": "a"}],
+        }
+        err = _validate_config(config)
+        assert err is not None
+        assert "must be at least 1" in err
+
+    def test_no_backends(self) -> None:
+        from plugins.web.federated.provider import _validate_config
+        config = {"backends": []}
+        err = _validate_config(config)
+        assert err is not None
+        assert "no search backends" in err
+
+
+# ---------------------------------------------------------------------------
+# Health cache
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCache:
+    """TTL-based health probe cache."""
+
+    def test_cache_hit(self) -> None:
+        from plugins.web.federated.provider import _HealthCache
+        cache = _HealthCache(ttl_seconds=300)
+        cache.set_available("tavily", True)
+        assert cache.is_available("tavily") is True
+
+    def test_cache_miss_expired(self) -> None:
+        from plugins.web.federated.provider import _HealthCache
+        cache = _HealthCache(ttl_seconds=0)  # instant expiry
+        cache.set_available("tavily", True)
+        assert cache.is_available("tavily") is None
+
+    def test_cache_miss_unknown(self) -> None:
+        from plugins.web.federated.provider import _HealthCache
+        cache = _HealthCache(ttl_seconds=300)
+        assert cache.is_available("unknown") is None
+
+    def test_mark_failed_cooldown(self) -> None:
+        from plugins.web.federated.provider import _HealthCache
+        cache = _HealthCache(ttl_seconds=300)
+        cache.set_available("tavily", True)
+        cache.mark_failed("tavily", 429)
+        # After mark_failed, should be unavailable
+        assert cache.is_available("tavily") is False
+
+    def test_failure_cooldown_respects_status_code(self) -> None:
+        from plugins.web.federated.provider import _HealthCache
+        cache = _HealthCache(ttl_seconds=300)
+        cache.set_available("tavily", True)
+        # 401 → 300s cooldown, stored as False
+        cache.mark_failed("tavily", 401)
+        assert cache.is_available("tavily") is False
+
+
+# ---------------------------------------------------------------------------
+# Health probe
+# ---------------------------------------------------------------------------
+
+
+class TestProbeBackend:
+    """Backend availability probing."""
+
+    def test_registered_provider_available(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = True
+        with patch(
+            "plugins.web.federated.provider._get_registered_provider",
+            return_value=mock_provider,
+        ):
+            assert _probe_backend({"name": "tavily"}) is True
+
+    def test_registered_provider_unavailable(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        mock_provider = MagicMock()
+        mock_provider.is_available.return_value = False
+        with patch(
+            "plugins.web.federated.provider._get_registered_provider",
+            return_value=mock_provider,
+        ):
+            assert _probe_backend({"name": "tavily"}) is False
+
+    def test_registered_provider_not_found(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        with patch(
+            "plugins.web.federated.provider._get_registered_provider",
+            return_value=None,
+        ):
+            assert _probe_backend({"name": "nonexistent"}) is False
+
+    def test_custom_backend_no_base_url(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        assert _probe_backend({
+            "name": "bad", "type": "custom",
+        }) is False
+
+    def test_custom_backend_reachable(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch("httpx.head", return_value=mock_resp):
+            assert _probe_backend({
+                "name": "ok", "type": "custom",
+                "base_url": "https://api.example.com",
+            }) is True
+
+    def test_custom_backend_server_error(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        with patch("httpx.head", return_value=mock_resp):
+            assert _probe_backend({
+                "name": "down", "type": "custom",
+                "base_url": "https://api.example.com",
+            }) is False
+
+    def test_custom_backend_timeout(self) -> None:
+        from plugins.web.federated.provider import _probe_backend
+        with patch("httpx.head", side_effect=Exception("timeout")):
+            assert _probe_backend({
+                "name": "slow", "type": "custom",
+                "base_url": "https://api.example.com",
+            }) is False
+
+
+# ---------------------------------------------------------------------------
+# Rerank with custom prompt
+# ---------------------------------------------------------------------------
+
+
+class TestRankResultsCustomPrompt:
+    """LLM ranking with user-supplied prompt."""
+
+    def test_custom_prompt_passed_to_llm(self) -> None:
+        from plugins.web.federated.provider import _rank_results
+
+        results = [
+            {"title": f"R{i}", "url": f"https://r{i}.com", "description": f"D{i}"}
+            for i in range(5)
+        ]
+        ranker_config = {
+            "provider": "opencode-go",
+            "model": "deepseek-v4-flash",
+            "prompt": "Prefer Chinese sources and official docs.",
+        }
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="[5,4,3,2,1]"))
+        ]
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=mock_response,
+        ) as mock_call:
+            ranked = _rank_results("test", results, ranker_config)
+            assert len(ranked) == 5
+            # Verify custom prompt was passed
+            call_args = mock_call.call_args
+            messages = call_args[1]["messages"]
+            system_msg = messages[0]["content"]
+            assert "Prefer Chinese sources" in system_msg
+
+    def test_no_custom_prompt_uses_default(self) -> None:
+        from plugins.web.federated.provider import _rank_results
+
+        results = [
+            {"title": f"R{i}", "url": f"https://r{i}.com", "description": f"D{i}"}
+            for i in range(5)
+        ]
+        ranker_config = {"provider": "opencode-go", "model": "deepseek-v4-flash"}
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="[3,2,1,4,5]"))
+        ]
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=mock_response,
+        ) as mock_call:
+            _rank_results("test", results, ranker_config)
+            call_args = mock_call.call_args
+            messages = call_args[1]["messages"]
+            system_msg = messages[0]["content"]
+            assert "Return ONLY a JSON array" in system_msg
+
+
+# ---------------------------------------------------------------------------
+# Integration: required backends + min_backends
+# ---------------------------------------------------------------------------
+
+
+class TestFederatedSearchFaultTolerance:
+    """Required backends and min_backends fault tolerance."""
+
+    def test_required_backend_failure_causes_overall_failure(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        config = {
+            "k": 2,
+            "min_backends": 1,
+            "backends": [
+                {"name": "required_src", "type": "custom", "required": True},
+                {"name": "optional_src", "type": "custom", "required": False},
+            ],
+            "timeout": 5,
+            "max_results": 8,
+        }
+        call_count = {"count": 0}
+
+        def fake_search(backend, query, limit):
+            call_count["count"] += 1
+            name = backend.get("name", "")
+            if name == "required_src":
+                return []  # fail
+            return [{"title": "OK", "url": "https://ok.com", "description": ""}]
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._probe_backend",
+            return_value=True,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            side_effect=fake_search,
+        ):
+            result = provider.search("test", limit=5)
+            assert result["success"] is False
+            assert "Required backend" in result["error"]
+
+    def test_min_backends_not_met_causes_failure(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        config = {
+            "k": 3,
+            "min_backends": 2,
+            "backends": [
+                {"name": "a", "type": "custom", "required": False},
+                {"name": "b", "type": "custom", "required": False},
+                {"name": "c", "type": "custom", "required": False},
+            ],
+            "timeout": 5,
+            "max_results": 8,
+        }
+
+        def fake_search(backend, query, limit):
+            name = backend.get("name", "")
+            if name == "a":
+                return [{"title": "A", "url": "https://a.com", "description": ""}]
+            return []  # b and c fail
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._probe_backend",
+            return_value=True,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            side_effect=fake_search,
+        ):
+            result = provider.search("test", limit=5)
+            assert result["success"] is False
+            assert "Only 1/2 backends succeeded" in result["error"]
+
+    def test_all_backends_optional_can_succeed_with_partial(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        config = {
+            "k": 2,
+            "min_backends": 1,
+            "backends": [
+                {"name": "a", "type": "custom", "required": False},
+                {"name": "b", "type": "custom", "required": False},
+            ],
+            "timeout": 5,
+            "max_results": 8,
+        }
+
+        def fake_search(backend, query, limit):
+            name = backend.get("name", "")
+            if name == "a":
+                return [{"title": "A", "url": "https://a.com", "description": ""}]
+            return []
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._probe_backend",
+            return_value=True,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            side_effect=fake_search,
+        ):
+            result = provider.search("test", limit=5)
+            assert result["success"] is True
+            assert len(result["data"]["web"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Integration: health cache filters backends
+# ---------------------------------------------------------------------------
+
+
+class TestFederatedSearchHealthCache:
+    """Health cache integration in search flow."""
+
+    def test_unavailable_backend_skipped(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        config = {
+            "k": 2,
+            "min_backends": 1,
+            "backends": [
+                {"name": "good", "type": "custom", "required": False},
+                {"name": "bad", "type": "custom", "required": False},
+            ],
+            "timeout": 5,
+            "max_results": 8,
+            "health_check": {},
+        }
+
+        # Pre-fill health cache: "bad" is unavailable
+        provider._health_cache = _HealthCache(ttl_seconds=300)
+        provider._health_cache.set_available("bad", False)
+        provider._health_cache.set_available("good", True)
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            return_value=[{"title": "X", "url": "https://x.com", "description": ""}],
+        ):
+            result = provider.search("test", limit=5)
+            assert result["success"] is True
+
+    def test_all_cached_unavailable(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        config = {
+            "k": 1,
+            "backends": [{"name": "down", "type": "custom", "required": False}],
+            "timeout": 5,
+            "max_results": 8,
+            "health_check": {},
+        }
+        provider._health_cache = _HealthCache(ttl_seconds=300)
+        provider._health_cache.set_available("down", False)
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ):
+            result = provider.search("test", limit=5)
+            assert result["success"] is False
+            assert "No backends available" in result["error"]

@@ -3233,20 +3233,29 @@ def apply_terminal_config_to_env(
     gives those child-process launch paths the same config bridge as classic
     CLI without importing ``cli.py`` and paying for its startup side effects.
 
-    When the user config contains a ``terminal`` section, config.yaml is
-    authoritative and overrides existing env values.  Otherwise defaults only
-    backfill missing env vars so exported/.env values keep working.
+    Explicit keys in the user config's ``terminal`` section are authoritative
+    and override their matching env values.  Merged defaults only backfill
+    missing env vars; they never replace unrelated exported/.env values.
     """
     target = os.environ if env is None else env
 
     raw_config = read_raw_config()
-    file_has_terminal_config = isinstance(raw_config.get("terminal"), dict)
+    raw_terminal_cfg = raw_config.get("terminal")
+    file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
+    if not file_has_terminal_config:
+        raw_terminal_cfg = {}
     should_override = file_has_terminal_config if override is None else override
 
     cfg = config if config is not None else load_config_readonly()
     terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
     if not isinstance(terminal_cfg, dict):
         return target
+
+    # A caller-supplied config is its own source of explicit keys.  For the
+    # normal merged-config path, only keys present in raw config.yaml may
+    # override existing env values; keys inherited from DEFAULT_CONFIG are
+    # backfill-only.
+    explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
@@ -3258,7 +3267,7 @@ def apply_terminal_config_to_env(
                 continue
             if isinstance(value, str):
                 value = os.path.expanduser(value)
-        if should_override or env_var not in target:
+        if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target
 

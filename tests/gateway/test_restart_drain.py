@@ -19,6 +19,15 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
     # which changes the restart call signature.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", raising=False)
+    # Hermeticity: neutralize the real container probe (see
+    # test_restart_service_detection.py) — /.dockerenv on a containerized CI
+    # runner would otherwise route via_service=True under this test.
+    monkeypatch.setattr(
+        "gateway.restart.is_container_restart_context", lambda: False
+    )
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     event = MessageEvent(

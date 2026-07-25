@@ -40,6 +40,13 @@ def _make_runner_with_mock_restart(tmp_path, monkeypatch):
     monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
+    # Hermeticity: neutralize the real container probe — on a containerized
+    # CI runner /.dockerenv exists and would route every case via_service=True
+    # regardless of the env markers under test (the detection under test is
+    # the SUPERVISOR markers, not the runner's own containment).
+    monkeypatch.setattr(
+        "gateway.restart.is_container_restart_context", lambda: False
+    )
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     return runner

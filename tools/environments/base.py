@@ -412,9 +412,20 @@ def _export_dump_excluding_session_vars(tmp_path: str) -> str:
     persist across sessions in the shared snapshot. ``grep -vE`` returns exit 1
     when it filters everything, so ``|| true`` keeps the pipeline's success
     contract intact for the callers that chain on it.
+
+    The pipeline MUST be wrapped in a brace group with the redirection applied
+    to the group, not to the last pipeline segment. *tmp_path* typically embeds
+    ``$BASHPID`` for concurrency-safe temp names; a redirection attached
+    directly to ``grep`` is expanded inside grep's own pipeline subshell, where
+    ``$BASHPID`` resolves to the grep subshell's PID — while the caller's
+    follow-up ``mv $tmp`` expands in the parent shell to a DIFFERENT PID. The
+    dump then lands in an orphaned temp file and the snapshot silently never
+    updates (all exported-env persistence breaks). The brace-group redirect is
+    expanded in the current shell, keeping both expansions consistent.
     """
     return (
-        f"export -p | grep -vE '{_SNAPSHOT_EXCLUDED_ENV_REGEX}' > {tmp_path} || true"
+        f"{{ export -p | grep -vE '{_SNAPSHOT_EXCLUDED_ENV_REGEX}' || true; }} "
+        f"> {tmp_path}"
     )
 
 
@@ -678,9 +689,14 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # NOTE: the redirection must be attached to a brace group, not to the
+        # grep pipeline segment — ``_snap_tmp`` embeds ``$BASHPID``, and a
+        # redirect on grep is expanded inside grep's pipeline subshell (a
+        # different PID than the parent shell that expands the ``mv`` operand),
+        # silently orphaning the dump. See _export_dump_excluding_session_vars.
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p | grep -vE '{_SNAPSHOT_EXCLUDED_ENV_REGEX}' > {_snap_tmp} "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )

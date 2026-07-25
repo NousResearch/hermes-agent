@@ -58,7 +58,14 @@ def test_export_snippet_shape():
     assert "export -p" in snippet
     assert "grep -vE" in snippet
     assert "/tmp/snap.tmp.$BASHPID" in snippet
-    assert snippet.rstrip().endswith("|| true")
+    # The redirection must be attached to a brace group wrapping the pipeline,
+    # NOT to the grep segment: a redirect on grep expands $BASHPID inside
+    # grep's pipeline subshell (a different PID than the parent shell that
+    # expands the follow-up ``mv`` operand), silently orphaning the dump and
+    # breaking snapshot env persistence entirely.
+    assert snippet.lstrip().startswith("{ ")
+    assert "|| true; }" in snippet
+    assert snippet.rstrip().endswith("> /tmp/snap.tmp.$BASHPID")
 
 
 # ---------------------------------------------------------------------------

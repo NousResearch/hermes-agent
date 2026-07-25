@@ -79,6 +79,24 @@ def _degraded_report() -> dict:
     }
 
 
+
+
+@pytest.fixture(autouse=True)
+def _default_cli_version_matches_report(monkeypatch):
+    """Existing tests mock only the MCP Popen handshake. ``subprocess.run``
+    (used for ``--version``) goes through Popen too, so without this the
+    mock breaks version probing. Default to a CLI version that matches
+    ``_ok_report`` / ``_degraded_report`` (0.5.8); identity tests override.
+    """
+    from tools.computer_use import doctor
+
+    monkeypatch.setattr(
+        doctor,
+        "_read_cli_version",
+        lambda binary, timeout=5.0: "cua-driver 0.5.8",
+    )
+
+
 # ── exit codes ─────────────────────────────────────────────────────────────
 
 
@@ -286,11 +304,14 @@ class TestJsonOutput:
              patch("subprocess.Popen", return_value=proc), \
              patch("sys.stdout", new_callable=StringIO) as out:
             doctor.run_doctor(json_output=True)
-        # Verify the captured text round-trips through json.loads and matches
-        # the input report (the contract: --json passes the structured payload
-        # through unchanged so downstream tooling can consume it directly).
+        # Verify the captured text round-trips through json.loads. Upstream
+        # health_report keys are preserved; Hermes adds hermes_identity.
         parsed = json.loads(out.getvalue())
-        assert parsed == _ok_report()
+        report = _ok_report()
+        for key, value in report.items():
+            assert parsed[key] == value
+        assert "hermes_identity" in parsed
+        assert parsed["hermes_identity"]["resolved_binary"]
 
 
 # ── HERMES_CUA_DRIVER_CMD resolution ───────────────────────────────────────
@@ -533,7 +554,11 @@ class TestHealthReportFallback:
         assert code == 0
         fallback_mock.assert_not_called()
         parsed = json.loads(out.getvalue())
-        assert parsed == _ok_report()
+        # Upstream health_report keys pass through unchanged; Hermes adds
+        # only the additive hermes_identity envelope.
+        for key, value in _ok_report().items():
+            assert parsed[key] == value
+        assert "hermes_identity" in parsed
         assert "fallback" not in parsed
 
     def test_extract_raises_health_report_unavailable_on_isError(self):
@@ -581,3 +606,68 @@ class TestHealthReportFallback:
         parsed = json.loads(out.getvalue())
         assert parsed["overall"] == "degraded"
         assert parsed.get("fallback") is True
+
+
+# ── binary identity (CLI --version vs health_report) ───────────────────────
+
+
+class TestDoctorVersionIdentity:
+    def test_header_prefers_cli_version_on_mismatch(self):
+        """Windows has been observed reporting 0.8.3 via health_report while
+        the resolved binary is 0.12.6 — doctor must surface the real version."""
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
+        )
+        # _ok_report claims 0.5.8; CLI says 0.12.6
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch.object(doctor, "_read_cli_version", return_value="cua-driver 0.12.6"), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor()
+        assert code == 0
+        text = out.getvalue()
+        assert "0.12.6" in text
+        assert "version mismatch" in text.lower()
+        assert "0.5.8" in text  # health_report value still shown
+
+    def test_json_includes_hermes_identity(self):
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
+        )
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch.object(doctor, "_read_cli_version", return_value="cua-driver 0.12.6"), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(json_output=True)
+        assert code == 0
+        payload = json.loads(out.getvalue())
+        assert payload["overall"] == "ok"
+        assert "hermes_identity" in payload
+        ident = payload["hermes_identity"]
+        assert ident["version_mismatch"] is True
+        assert "0.12.6" in (ident.get("cli_version") or "")
+        assert ident.get("health_report_driver_version") == "0.5.8"
+        assert ident.get("resolved_binary")
+
+    def test_matching_versions_no_mismatch_flag(self):
+        from tools.computer_use import doctor
+
+        proc = _fake_proc_with_responses(
+            {"jsonrpc": "2.0", "id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": _ok_report()}},
+        )
+        with patch("shutil.which", return_value="/fake/cua-driver"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch.object(doctor, "_read_cli_version", return_value="cua-driver 0.5.8"), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            code = doctor.run_doctor(json_output=True)
+        assert code == 0
+        payload = json.loads(out.getvalue())
+        assert payload["hermes_identity"]["version_mismatch"] is False
+

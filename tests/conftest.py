@@ -20,9 +20,12 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import atexit
 import os
+import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -31,6 +34,42 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ── Sandbox HERMES_HOME before ANY test module is imported ──────────────────
+# `hermes_cli/main.py` calls `setup_logging()` at MODULE level, which resolves
+# `get_hermes_home()` and attaches rotating file handlers to the ROOT logger.
+# So merely importing it - which many test modules do, directly or
+# transitively - points the whole pytest session's logging at the operator's
+# real `~/.hermes/logs/agent.log` and `errors.log`.
+#
+# The `_isolate_env` fixture below also sandboxes HERMES_HOME, but fixtures run
+# AFTER collection imports test modules, by which point the handler already
+# holds an absolute path to the real log. Measured on a live install: 126
+# warnings in the operator's agent.log came from test runs, not the gateway -
+# enough noise to make genuine warnings hard to find.
+#
+# conftest is imported before any test module, so setting it here closes that
+# window. The per-test fixture still applies for everything after import.
+#
+# ORDER MATTERS: the kanban write guard's deny-list (further down) must know
+# the REAL Hermes root — capture it BEFORE the sandbox rewires HERMES_HOME,
+# otherwise the deny-list would point at the throwaway tempdir and the guard
+# would silently stop protecting the operator's actual ~/.hermes (#69385).
+_PRE_SANDBOX_KANBAN_OVERRIDE = os.environ.get("HERMES_KANBAN_HOME", "").strip()
+_PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
+if not os.environ.get("HERMES_HOME"):
+    _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
+    os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+    atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
+
+#: HERMES_HOME as it stood when conftest was imported - i.e. before any test
+#: module could import code that configures logging. Recorded so the guard in
+#: tests/test_log_isolation.py can assert the sandbox existed AT THAT MOMENT.
+#: Reading os.environ from inside a test is useless here: the per-test
+#: `_isolate_env` fixture has sandboxed it by then, so the check would pass
+#: even with this block removed.
+HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────
@@ -516,16 +555,23 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
 def _capture_real_kanban_root() -> Path:
     """Resolve the REAL kanban root from the pre-test environment.
 
-    Runs at conftest import time, before any fixture rewires HERMES_HOME.
-    Mirrors ``kanban_db.kanban_home()`` resolution order:
+    Uses the pre-sandbox environment snapshot taken at the very top of this
+    file (before the session HERMES_HOME sandbox rewired the env), so the
+    deny-list keeps pointing at the operator's actual root. Mirrors
+    ``kanban_db.kanban_home()`` resolution order:
     1. ``HERMES_KANBAN_HOME`` env var when set and non-empty
-    2. ``get_default_hermes_root()`` otherwise
+    2. the real (pre-sandbox) Hermes root otherwise
     """
-    override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    from hermes_constants import get_default_hermes_root
-    return get_default_hermes_root().resolve()
+    if _PRE_SANDBOX_KANBAN_OVERRIDE:
+        return Path(_PRE_SANDBOX_KANBAN_OVERRIDE).expanduser().resolve()
+    if _PRE_SANDBOX_HERMES_HOME:
+        # HERMES_HOME was genuinely set before the sandbox — honor it via the
+        # normal resolver (it may be a profile dir whose root matters).
+        from hermes_constants import get_default_hermes_root
+        return get_default_hermes_root().resolve()
+    # No pre-existing HERMES_HOME: the real root is the platform default,
+    # NOT the sandbox tempdir now sitting in the env.
+    return (Path.home() / ".hermes").resolve()
 
 
 _REAL_KANBAN_ROOT = _capture_real_kanban_root()

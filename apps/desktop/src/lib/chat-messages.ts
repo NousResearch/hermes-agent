@@ -311,16 +311,35 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
   return displayKind === 'hidden' ? null : content
 }
 
+// A remote backend older than this app serves display_metadata as raw JSON text,
+// and `in` throws on a primitive — which used to fail the whole session resume.
+function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
+  let parsed: unknown = metadata
+
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return undefined
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return undefined
+  }
+
+  const count = (parsed as { task_count?: unknown }).task_count
+
+  return typeof count === 'number' ? count : undefined
+}
+
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
-    const count =
-      message.display_metadata && 'task_count' in message.display_metadata
-        ? message.display_metadata.task_count
-        : undefined
+    const count = timelineTaskCount(message.display_metadata)
 
     return count === undefined
       ? 'background agent work finished'

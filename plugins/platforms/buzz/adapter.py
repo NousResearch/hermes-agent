@@ -496,6 +496,32 @@ class BuzzAdapter(BasePlatformAdapter):
         """Buzz has no typing indicator API — no-op."""
         pass
 
+    async def send_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Add a reaction to a message via buzz-cli.
+
+        Returns True on success, False on failure. Errors are logged but not
+        raised — reactions are best-effort and should never block the main
+        message flow.
+        """
+        if not self.cli_path or not emoji or not message_id:
+            return False
+        # buzz-cli: `reactions add --event <64-char hex event id> --emoji <e>`.
+        # The event id IS the message_id we recorded on dispatch; channel is
+        # not a parameter to this subcommand.
+        args = [
+            "reactions", "add",
+            "--event", str(message_id),
+            "--emoji", emoji,
+        ]
+        code, _out, err = await self._run_cli(args)
+        if code != 0:
+            logger.debug(
+                "Buzz: reaction add failed for message %s in %s — %s",
+                message_id[:12], chat_id, _cli_error_message(err, code),
+            )
+            return False
+        return True
+
     async def send_image(
         self,
         chat_id: str,
@@ -743,6 +769,13 @@ class BuzzAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
+        
+        # Add a "seen" reaction after dispatching — signals to the user that
+        # their message was received and is being processed.
+        try:
+            await self.send_reaction(chat_id, message_id, "👀")
+        except Exception:
+            logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +799,49 @@ def validate_config(config) -> bool:
 def is_connected(config) -> bool:
     """Check whether Buzz is configured (env or config.yaml)."""
     return validate_config(config)
+
+
+def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
+    """Translate ``config.yaml`` ``buzz.extra`` keys into ``BUZZ_*`` env vars.
+
+    Implements the ``apply_yaml_config_fn`` contract.  ``check_requirements``
+    and the adapter's connect path read configuration from the environment, so
+    a config.yaml-only setup (no ``BUZZ_*`` env vars beyond the secret) would
+    otherwise fail the ``check_fn`` gate and be silently skipped at gateway
+    startup.  This hook bridges the ``extra`` block into env, mirroring the
+    Slack/Telegram pattern.  Env vars win over YAML — every assignment is
+    guarded by ``not os.getenv(...)`` so explicit env overrides survive a
+    config.yaml update.  ``BUZZ_PRIVATE_KEY`` is a secret and stays in ``.env``;
+    it is never sourced from config.yaml here.
+    """
+    extra = buzz_cfg.get("extra", buzz_cfg) or {}
+    if not isinstance(extra, dict):
+        return None
+    _str_keys = {
+        "relay_url": "BUZZ_RELAY_URL",
+        "cli_path": "BUZZ_CLI_PATH",
+        "home_channel": "BUZZ_HOME_CHANNEL",
+    }
+    for src, env in _str_keys.items():
+        val = extra.get(src)
+        if val and not os.getenv(env):
+            os.environ[env] = str(val)
+    interval = extra.get("poll_interval")
+    if interval is not None and not os.getenv("BUZZ_POLL_INTERVAL"):
+        os.environ["BUZZ_POLL_INTERVAL"] = str(interval)
+    channels = extra.get("channels")
+    if channels is not None and not os.getenv("BUZZ_CHANNELS"):
+        if isinstance(channels, (list, tuple)):
+            channels = ",".join(str(c) for c in channels)
+        os.environ["BUZZ_CHANNELS"] = str(channels)
+    allowed = extra.get("allowed_users")
+    if allowed is not None and not os.getenv("BUZZ_ALLOWED_USERS"):
+        if isinstance(allowed, (list, tuple)):
+            allowed = ",".join(str(a) for a in allowed)
+        os.environ["BUZZ_ALLOWED_USERS"] = str(allowed)
+    if "allow_all_users" in extra and not os.getenv("BUZZ_ALLOW_ALL_USERS"):
+        os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
+    return None
 
 
 def _env_enablement() -> Optional[dict]:
@@ -949,6 +1025,10 @@ def register(ctx):
         # relay/channels/poll interval + home_channel so env-only setups show
         # up in gateway status without instantiating the adapter.
         env_enablement_fn=_env_enablement,
+        # Bridge config.yaml buzz.extra -> BUZZ_* env vars so check_fn and the
+        # env-driven connect path work for config.yaml-only setups (secret stays
+        # in .env). Without this the check_fn gate skips Buzz at startup.
+        apply_yaml_config_fn=_apply_yaml_config,
         # Cron home-channel delivery support (deliver=buzz).
         cron_deliver_env_var="BUZZ_HOME_CHANNEL",
         # Out-of-process cron delivery.  Without this hook, deliver=buzz

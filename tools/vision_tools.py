@@ -35,6 +35,7 @@ def _load_auxiliary_client() -> None:
 
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
+from tools.image_source import _file_uri_to_path
 from tools.website_policy import check_website_access
 from tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
@@ -938,7 +939,15 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     from tools.image_source import (
         ImageResolutionError, ResolveContext, _is_local_terminal_backend, resolve_image_source,
     )
-    source = video_url.removeprefix("file://")
+    # ``file://`` URIs go through the shared parser (authority + drive-letter
+    # handling); naive prefix-slicing leaves ``/C:/...`` on Windows.
+    if video_url.lower().startswith("file://"):
+        try:
+            source = _file_uri_to_path(video_url)
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"Invalid video source URI: {exc}") from exc
+    else:
+        source = video_url
     local_path = Path(os.path.expanduser(source))
     lowered = (video_url or "").strip().lower()
     path_like = bool(lowered) and not lowered.startswith(("http://", "https://", "data:"))

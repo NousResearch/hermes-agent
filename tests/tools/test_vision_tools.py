@@ -1126,3 +1126,62 @@ class TestVisionCpuBurstCap:
             f"analyses were serialized to the cap (peak={calls_peak}); only the "
             "encode burst should be bounded, not the whole call"
         )
+
+
+# ---------------------------------------------------------------------------
+# video_analyze_tool — file:// URI resolution & regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestVideoAnalyzeFileURI:
+    @pytest.mark.asyncio
+    async def test_video_analyze_uses_shared_file_uri_parser(self, tmp_path):
+        """video_analyze_tool must invoke _file_uri_to_path on file:// URIs."""
+        from tools.image_source import _file_uri_to_path
+        from tools.vision_tools import video_analyze_tool
+
+        video_file = tmp_path / "sample.mp4"
+        video_file.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
+        uri = f"file://{video_file.as_posix()}"
+
+        mock_resp = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Video analysis result"
+        mock_resp.choices = [mock_choice]
+
+        with (
+            patch("tools.vision_tools._file_uri_to_path", wraps=_file_uri_to_path) as mock_parser,
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_resp),
+        ):
+            res_str = await video_analyze_tool(uri, "Describe video")
+            res = json.loads(res_str)
+
+        assert res["success"] is True
+        assert res["analysis"] == "Video analysis result"
+        mock_parser.assert_called_once_with(uri)
+
+    @pytest.mark.asyncio
+    async def test_video_analyze_windows_drive_letter_not_naive_truncated(self):
+        """Windows file:///C:/... URI must resolve via _file_uri_to_path, not manual slicing to /C:/..."""
+        from tools.vision_tools import video_analyze_tool
+
+        with patch("tools.vision_tools._file_uri_to_path", return_value="C:\\videos\\test.mp4") as mock_parser:
+            with patch("pathlib.Path.is_file", return_value=False):
+                res_str = await video_analyze_tool("file:///C:/videos/test.mp4", "prompt")
+                res = json.loads(res_str)
+
+        mock_parser.assert_called_once_with("file:///C:/videos/test.mp4")
+        assert res["success"] is False
+        assert "Invalid video source" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_video_analyze_invalid_file_uri_security_rejection(self):
+        """Non-local authority file:// URI is rejected without unhandled exception."""
+        from tools.vision_tools import video_analyze_tool
+
+        res_str = await video_analyze_tool("file://remote-server/share/video.mp4", "prompt")
+        res = json.loads(res_str)
+
+        assert res["success"] is False
+        assert "Resolving non-local authority" in res["error"]
+

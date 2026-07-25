@@ -3944,6 +3944,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     result["error"],
                 )
                 _stub_finish_reason = FINISH_REASON_LENGTH
+            # Never persist a content-less, tool-call-less assistant stub.
+            # When a stream dies before any text arrives (and no partial tool
+            # calls were captured), _partial_text is None → the stub becomes an
+            # empty assistant message.  The Anthropic message schema (and the
+            # litellm/Bedrock proxies in front of it) reject any request whose
+            # transcript contains an empty non-final message:
+            #   "all messages must have non-empty content except for the
+            #    optional final assistant message"  (400 INVALID_REQUEST_BODY)
+            # Once such a stub lands mid-transcript, EVERY subsequent turn 400s
+            # until it scrolls out of context — and the 400 gets misread as a
+            # context-overflow "Cannot compress further" loop.  Substitute a
+            # minimal, honest placeholder so the message is always API-valid
+            # and the continuation prompt still reads as an interrupted turn.
+            if not _partial_text:
+                _partial_text = "[response interrupted]"
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,

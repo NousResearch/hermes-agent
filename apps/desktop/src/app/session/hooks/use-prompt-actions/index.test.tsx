@@ -2834,6 +2834,65 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     ])
   })
 
+  it('delivers the first prompt when React Router commits the created-session route late (#62990)', async () => {
+    // The creator requests the navigation, but React Router can still expose
+    // the OLD new-chat route to the submit continuation for a beat, committing
+    // the created session's URL only before the next await settles. Neither
+    // route snapshot (stale '/', then the late-committed session route) is a
+    // user switch — both are the pipeline's own transition and the first
+    // prompt must still reach the gateway.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let sessionCreated = false
+    let routeReadsAfterCreate = 0
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      sessionCreated = true
+
+      return NEW_RUNTIME_ID
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => {
+          if (!sessionCreated) {
+            return '/::'
+          }
+
+          routeReadsAfterCreate += 1
+
+          // React Router can still expose / to the outer submit continuation,
+          // then commit the created-session route before the next await settles.
+          return routeReadsAfterCreate === 1 ? '/::' : `/${NEW_STORED_ID}::`
+        }}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('hello')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: NEW_RUNTIME_ID,
+        text: 'hello'
+      },
+      1_800_000
+    )
+  })
+
   it('aborts a new-session submit when sidebar navigation changes the route before its selected ref (#62562)', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }

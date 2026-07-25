@@ -7060,6 +7060,42 @@ def validate_requested_model(
                     ),
                 }
 
+            # Nous provider: also check the Portal's live
+            # /api/nous/recommended-models feed. That feed can list a model
+            # (e.g. a newly-promoted free/paid recommendation) before it's
+            # been added to the hardcoded _PROVIDER_MODELS["nous"] curated
+            # list or the docs-hosted catalog manifest has been rebuilt.
+            # `hermes chat` already accepts these models via
+            # union_with_portal_free/paid_recommendations() at model-list
+            # build time; this mirrors that same source of truth for the
+            # per-message /model validation path (messaging platform
+            # pickers, /model command), which previously only checked the
+            # curated catalog and rejected valid Portal-recommended models.
+            if normalized == "nous":
+                try:
+                    portal_payload = fetch_nous_recommended_models(
+                        _resolve_nous_portal_url()
+                    )
+                    portal_model_names = {
+                        str(entry.get("modelName", "")).strip().lower()
+                        for tier in ("freeRecommendedModels", "paidRecommendedModels")
+                        for entry in (portal_payload.get(tier) or [])
+                        if isinstance(entry, dict)
+                    }
+                    portal_model_names.discard("")
+                except Exception:
+                    portal_model_names = set()
+                if requested_for_lookup.lower() in portal_model_names:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "message": (
+                            f"Note: `{requested}` was not found in the live /v1/models "
+                            f"listing but is a current Nous Portal recommendation — accepted."
+                        ),
+                    }
+
         return {
             "accepted": False,
             "persist": False,

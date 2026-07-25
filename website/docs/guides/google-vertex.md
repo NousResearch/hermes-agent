@@ -1,12 +1,12 @@
 ---
 sidebar_position: 15
 title: "Google Vertex AI"
-description: "Use Hermes Agent with Gemini on Google Cloud Vertex AI — OAuth2 service account or ADC, GCP billing and quotas, no static API key"
+description: "Use Hermes Agent with Gemini and Claude on Google Cloud Vertex AI — OAuth2 service account or ADC, GCP billing and quotas, no static API key"
 ---
 
 # Google Vertex AI
 
-Hermes Agent supports **Gemini models on Google Cloud Vertex AI** through Vertex's OpenAI-compatible endpoint. Unlike the [Google AI Studio provider](/guides/google-gemini) (which uses a static API key against `generativelanguage.googleapis.com`), Vertex gives you **enterprise-grade rate limits and GCP billing/credits**, and is the right choice when you want Gemini usage to draw on your Google Cloud account rather than an AI Studio key.
+Hermes Agent supports **Gemini and Claude models on Google Cloud Vertex AI**. Gemini (and partner MaaS models such as DeepSeek and Kimi) ride Vertex's OpenAI-compatible endpoint; Claude rides the Anthropic SDK's native Vertex adapter — see [Claude on Vertex](#claude-on-vertex) below. Unlike the [Google AI Studio provider](/guides/google-gemini) (which uses a static API key against `generativelanguage.googleapis.com`), Vertex gives you **enterprise-grade rate limits and GCP billing/credits**, and is the right choice when you want Gemini usage to draw on your Google Cloud account rather than an AI Studio key.
 
 :::info Vertex authenticates with OAuth2, not an API key
 Vertex has **no static API key** for the standard endpoint. Every request needs a short-lived **OAuth2 access token** (≈1 hour TTL) minted from either a service-account JSON or Application Default Credentials (ADC). Hermes mints and **auto-refreshes** these tokens for you — you never paste a token by hand. This is why pasting a temporary token into a custom provider's `api_key` field does not work: it expires mid-session.
@@ -99,6 +99,35 @@ Vertex requires the `google/` vendor prefix on model IDs. The `hermes model` pic
 The Gemini 3.x preview models are served through the `global` endpoint. Regional endpoints (`us-central1`, etc.) may 404 them. Leave `region: global` unless you have a specific reason to pin a region.
 :::
 
+### Claude models
+
+Claude uses **bare publisher IDs** (no `google/`-style prefix — the SDK injects `publishers/anthropic/models/<id>` into the URL). The OpenRouter-style `anthropic/claude-*` alias is accepted and normalized to the bare ID.
+
+| Model | ID |
+|-------|----|
+| Claude Fable 5 | `claude-fable-5` |
+| Claude Sonnet 5 | `claude-sonnet-5` |
+| Claude Opus 4.8 | `claude-opus-4-8` |
+
+## Claude on Vertex
+
+Claude models on Vertex speak the **Anthropic Messages protocol** (`rawPredict` / `streamRawPredict`), not the OpenAI-compatible endpoint that serves Gemini and partner MaaS models. Hermes detects Claude model IDs and routes them through the Anthropic SDK's native **`AnthropicVertex`** client automatically — same config, same `provider: vertex`, full feature parity with direct Anthropic (prompt caching, thinking budgets, fine-grained tool streaming).
+
+Two things differ from the Gemini path:
+
+- **Auth**: the google-auth `Credentials` object is handed to the SDK, which mints and refreshes OAuth2 tokens itself — long-lived gateway sessions never hit the ~1-hour token expiry. User ADC additionally sends the `x-goog-user-project` header so quota is billed to your configured project.
+- **Region**: Claude serves through `global` and a small set of regions (e.g. `us-east5`) — it is **not** available in every region Gemini uses, and the OpenAI-compat endpoint cannot serve it anywhere. `region: global` works for both families.
+
+### Model Garden enablement
+
+Before first use, in the GCP console (Vertex AI → Model Garden → the Claude model card):
+
+1. **Enable** the model for your project (accept the terms).
+2. Some models additionally require **data sharing** to be enabled for publisher `anthropic` — a 403 `"requires data sharing to be enabled"` tells you which.
+3. Fresh projects often have **zero token quota** for Claude — a 429 `Quota exceeded ... per_base_model` on your first tiny request means you need a quota increase (IAM → Quotas → `online_prediction_input_tokens_per_minute_per_base_model` for the `anthropic-claude-*` base model).
+
+You can mix families freely — e.g. an MoA preset with Gemini/Kimi/DeepSeek reference models and a Claude aggregator, all `provider: vertex`.
+
 ## Switching Models Mid-Session
 
 ```text
@@ -137,6 +166,18 @@ You are probably on a regional endpoint. Set `region: global` in the `vertex:` s
 ### 403 / permission denied
 
 The service account (or your ADC identity) needs the `roles/aiplatform.user` role on the project, and the Vertex AI API must be enabled for that project.
+
+### "Malformed publisher model" or 404 on Claude models
+
+The request went to the OpenAI-compatible endpoint, which cannot serve Anthropic models. Upgrade Hermes — older versions routed all Vertex models through that endpoint — and make sure the model ID is a Claude ID Hermes can detect (`claude-*` or `anthropic/claude-*`).
+
+### 403 "requires data sharing to be enabled for publisher 'anthropic'"
+
+Enable data sharing for Anthropic models in the GCP console (Model Garden → the model card). Per-model; newer models are more likely to require it.
+
+### 429 quota exceeded on the first Claude request
+
+Claude token quota defaults to zero on many projects even after enabling the model. Request a quota increase for `online_prediction_input_tokens_per_minute_per_base_model` (base model `anthropic-claude-<name>`).
 
 ## Related
 

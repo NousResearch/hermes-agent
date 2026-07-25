@@ -374,6 +374,27 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
+    # Vertex has no /models discovery endpoint (see plugins/model-providers/
+    # vertex: fetch_models returns None by design), so without a curated entry
+    # here provider_model_ids("vertex") returns [] and the /model picker's
+    # vertex row enumerates zero models — the configured model only appears
+    # when some other cache path (docs catalog, anthropic) happens to render
+    # it, which is why it seemed intermittent. Exact publisher-qualified IDs
+    # only: bare aliases 404 on the Vertex surface. Claude entries use bare
+    # IDs (AnthropicVertex SDK path); Gemini/partner entries use the
+    # "google/" or vendor publisher prefix Vertex's openapi endpoint expects
+    # (see hermes_cli/model_setup_flows.py).
+    "vertex": [
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3.5-flash",
+        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-flash-lite-preview",
+        "deepseek-ai/deepseek-v3.2-maas",
+    ],
     "anthropic": [
         "claude-fable-5",
         "claude-sonnet-5",
@@ -563,18 +584,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
-    # Google Vertex AI — static curated list.  Vertex's OpenAI-compatible
-    # endpoint has no /models listing route, so without this entry the
-    # /model picker only ever shows the currently-configured model.
-    # Model IDs use the "google/" publisher prefix Vertex's openapi
-    # endpoint expects (see hermes_cli/model_setup_flows.py).
-    "vertex": [
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3-pro-preview",
-        "google/gemini-3.5-flash",
-        "google/gemini-3-flash-preview",
-        "google/gemini-3.1-flash-lite-preview",
-    ],
     "novita": [
         "moonshotai/kimi-k2.5",
         "minimax/minimax-m2.7",
@@ -1096,7 +1105,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
-    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
+    ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini + Claude via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),

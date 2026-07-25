@@ -382,7 +382,7 @@ See the [AWS Bedrock guide](/guides/aws-bedrock) for a walkthrough of IAM setup,
 
 ### Google Vertex AI
 
-Gemini models on Google Cloud Vertex AI via Vertex's OpenAI-compatible endpoint. Authentication is **OAuth2** — a short-lived access token (~1 hour) minted from a service-account JSON or Application Default Credentials (ADC). There is **no static API key**; Hermes mints and auto-refreshes the token for you, including re-minting on a mid-session `401`.
+Gemini **and Claude** models on Google Cloud Vertex AI. Gemini and partner MaaS models ride Vertex's OpenAI-compatible endpoint; Claude models are detected by ID and routed through the Anthropic SDK's native `AnthropicVertex` client (Anthropic Messages protocol — prompt caching, thinking budgets). Authentication is **OAuth2** — a short-lived access token (~1 hour) minted from a service-account JSON or Application Default Credentials (ADC). There is **no static API key**; Hermes mints and auto-refreshes the token for you, including re-minting on a mid-session `401`.
 
 ```bash
 # Service account JSON (recommended for servers / gateways)
@@ -397,7 +397,7 @@ Or in `config.yaml` (project/region are non-secret and live here; the credential
 ```yaml
 model:
   provider: "vertex"
-  default: "google/gemini-3-flash-preview"   # Vertex requires the google/ prefix
+  default: "google/gemini-3-flash-preview"   # Gemini/MaaS need the publisher/ prefix; Claude IDs are bare (claude-fable-5)
 vertex:
   project_id: "my-gcp-project"   # blank → use the project embedded in the credentials
   region: "global"               # required for the Gemini 3.x previews

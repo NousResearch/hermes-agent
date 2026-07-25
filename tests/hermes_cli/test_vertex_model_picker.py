@@ -22,11 +22,20 @@ from hermes_cli.models import _PROVIDER_MODELS
 
 
 def test_vertex_has_curated_model_list():
-    """Vertex has no /models route — the picker needs a static curated list."""
+    """Vertex has no /models route — the picker needs a static curated list.
+
+    Claude entries are bare publisher IDs (AnthropicVertex SDK path);
+    Gemini/partner-MaaS entries carry a vendor publisher prefix (e.g.
+    "google/", "deepseek-ai/") that Vertex's openapi endpoint expects.
+    """
+    from agent.vertex_adapter import is_anthropic_vertex_model
+
     models = _PROVIDER_MODELS.get("vertex")
     assert models, "_PROVIDER_MODELS must have a non-empty 'vertex' entry"
-    # Vertex's openapi endpoint expects the google/ publisher prefix.
-    assert all(m.startswith("google/") for m in models)
+    assert all(
+        "/" in m or is_anthropic_vertex_model(m)
+        for m in models
+    )
 
 
 def test_vertex_appears_when_credentials_configured():

@@ -483,6 +483,39 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     return None
 
 
+def _volume_evidence(workdir: Path) -> Dict:
+    """Record the identity of ``workdir``'s parent while the project is live.
+
+    ``(st_dev, st_ino)`` of the parent directory, captured at a moment when
+    the workdir itself is reachable, identifies the *directory* — not just
+    the path.  A mount point resolves to the mounted filesystem's root while
+    the volume is attached and to the underlying (underlay) directory after
+    unmount: same path, different directory, different ``(st_dev, st_ino)``.
+    Orphan pruning uses this to distinguish "the project was deleted out of
+    the directory we knew" from "a different directory is now visible at
+    that path because the volume is detached".
+
+    Returns ``{}`` when the workdir is not currently reachable, when the
+    filesystem does not provide a usable directory identity (a zero
+    ``st_dev`` or ``st_ino`` — e.g. Windows filesystems without file IDs and
+    some network shares), or when the probe fails — callers treat all of
+    these as "no evidence recorded" and orphan pruning stays conservative
+    for the project (never classified as orphan; retention still applies).
+    """
+    try:
+        if not workdir.exists():
+            return {}
+        st = workdir.parent.stat()
+        if not st.st_dev or not st.st_ino:
+            return {}
+        return {
+            "workdir_parent_dev": st.st_dev,
+            "workdir_parent_ino": st.st_ino,
+        }
+    except OSError:
+        return {}
+
+
 def _register_project(store: Path, working_dir: str) -> None:
     """Create or update ``projects/<hash>.json`` with workdir + timestamps."""
     dir_hash = _project_hash(working_dir)
@@ -490,11 +523,22 @@ def _register_project(store: Path, working_dir: str) -> None:
     now = time.time()
     meta: Dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
     if meta_path.exists():
         try:
             existing = json.loads(meta_path.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
                 meta["created_at"] = existing.get("created_at", now)
+                if not evidence:
+                    # Fresh probe failed — keep the previously recorded
+                    # parent identity rather than dropping it. Stale evidence
+                    # only makes pruning MORE conservative (mismatch => not
+                    # an orphan).
+                    for key in ("workdir_parent_dev", "workdir_parent_ino"):
+                        if key in existing:
+                            meta[key] = existing[key]
         except (OSError, ValueError):
             pass
     try:
@@ -520,6 +564,13 @@ def _touch_project(store: Path, working_dir: str) -> None:
     meta["workdir"] = str(_normalize_path(working_dir))
     meta["last_touch"] = time.time()
     meta.setdefault("created_at", meta["last_touch"])
+    # Refresh the parent-directory identity while the project is observably
+    # live — a remount can legitimately change it (new device, new inode).
+    # On probe failure the previous evidence is kept: stale evidence can only
+    # make pruning MORE conservative (mismatch => not an orphan).
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
     try:
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
     except OSError as exc:
@@ -1293,7 +1344,12 @@ def _delete_ref(store: Path, ref: str) -> bool:
     return ok
 
 
-def _workdir_is_observably_gone(workdir: str) -> bool:
+def _workdir_is_observably_gone(
+    workdir: str,
+    parent_dev: Optional[int] = None,
+    parent_ino: Optional[int] = None,
+    require_parent_identity: bool = True,
+) -> bool:
     """True only when we can positively observe that ``workdir`` was removed.
 
     ``Path.exists()`` returns False for a deleted directory AND for one whose
@@ -1304,22 +1360,37 @@ def _workdir_is_observably_gone(workdir: str) -> bool:
     "deleted" throws away the user's restore points over a transient mount
     state, unattended, at startup.
 
-    Require corroboration, in two steps.
+    Require corroboration, in three steps.
 
     First, the parent directory must be present, so the absence of the project
     inside it is something we actually observed. When the parent is missing
     too, the volume is not there and we know nothing.
 
-    Second, the present parent must actually carry information. Detaching
-    storage removes the parent outright in some layouts (``/Volumes/Ext/proj``
-    on macOS, ``/media/<user>/<label>/proj``), but in the classic static
-    layout — ``/mnt/volume/proj``, a container bind-mount, an fstab entry —
-    unmounting leaves the mount point behind as an *empty* directory. An empty
-    parent is therefore the signature of a detached volume just as much as of
-    a deleted project, so it corroborates nothing. Prune only when the parent
-    holds something else (we observed a populated directory that does not
-    contain the project) or is itself a live mount point (the volume is
-    demonstrably attached and the project is demonstrably not on it).
+    Second, the present parent must be the directory we knew — not merely a
+    directory at the same path. Unmounting swaps the directory visible at a
+    mount point: while the volume is attached the path resolves to the
+    mounted filesystem's root; after detach it resolves to the *underlying*
+    (underlay) directory, which may carry entries of its own (a ``.keep``
+    placeholder, sibling mount points). Those entries were never next to the
+    project and prove nothing about the volume being attached. So the
+    parent's ``(st_dev, st_ino)`` must match the identity recorded in the
+    project's metadata while the project was observably live
+    (``parent_dev``/``parent_ino``). A mismatch means a different directory
+    is visible at that path — a detached volume, not an observed deletion.
+    When no identity was ever recorded (metadata written by an older
+    version) and ``require_parent_identity`` is True, stay conservative and
+    do not classify as orphan. Callers that have no identity channel at all
+    (the frozen pre-v2 layout) pass ``require_parent_identity=False`` to
+    keep the structural checks only.
+
+    Third, the (identity-confirmed) parent must actually carry information.
+    Unmounting leaves classic static mount points (``/mnt/volume/proj``, an
+    fstab entry, a container bind-mount) behind as *empty* directories, so an
+    empty parent is the signature of a detached volume just as much as of a
+    deleted project. Prune only when the parent holds something else (we
+    observed a populated directory that does not contain the project) or is
+    itself a live mount point (the volume is demonstrably attached and the
+    project is demonstrably not on it).
 
     Genuinely abandoned projects are still reclaimed by the retention/stale
     rule, which runs off ``last_touch`` rather than a filesystem probe.
@@ -1336,6 +1407,18 @@ def _workdir_is_observably_gone(workdir: str) -> bool:
         if parent == path:
             return False
         if not parent.is_dir():
+            return False
+        if parent_dev is not None and parent_ino is not None:
+            st = parent.stat()
+            if (st.st_dev, st.st_ino) != (parent_dev, parent_ino):
+                # A different directory is visible at the parent's path than
+                # the one the project lived in — the volume is detached (its
+                # underlay showing through) or was swapped. Not a deletion.
+                return False
+        elif require_parent_identity:
+            # No recorded identity to check against — we cannot tell the
+            # project's real parent from an underlay directory exposed by an
+            # unmount. Unsure never deletes; retention still reclaims.
             return False
         if _dir_has_any_entry(parent):
             return True
@@ -1456,7 +1539,12 @@ def prune_checkpoints(
             and not repo["marker_unreadable"]
             and (
                 repo["workdir"] is None
-                or _workdir_is_observably_gone(repo["workdir"])
+                # The frozen pre-v2 layout has no metadata channel to carry a
+                # recorded parent identity, so only the structural checks
+                # (parent present + populated / live mount point) apply here.
+                or _workdir_is_observably_gone(
+                    repo["workdir"], require_parent_identity=False,
+                )
             )
             and (orphan_allowlist is None or str(child) in orphan_allowlist)
         ):
@@ -1498,9 +1586,22 @@ def prune_checkpoints(
                 continue
             result["scanned"] += 1
             reason = None
+            parent_dev = meta.get("workdir_parent_dev")
+            parent_ino = meta.get("workdir_parent_ino")
+            if not isinstance(parent_dev, int) or isinstance(parent_dev, bool):
+                parent_dev = None
+            if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
+                parent_ino = None
             if (
                 delete_orphans
-                and (not workdir or _workdir_is_observably_gone(workdir))
+                and (
+                    not workdir
+                    or _workdir_is_observably_gone(
+                        workdir,
+                        parent_dev=parent_dev,
+                        parent_ino=parent_ino,
+                    )
+                )
                 and (orphan_allowlist is None or dir_hash in orphan_allowlist)
             ):
                 reason = "orphan"

@@ -26,6 +26,12 @@ _ASYNC_SHUTDOWN = object()
 
 # Sessions remembered in _joined_author_peers; the oldest is dropped past this and its authors rejoin on their next write.
 _SESSION_CACHE_MAX_SIZE = 128
+# Honcho persists every message durably and get_or_create() re-hydrates from it on a cache miss,
+# so the local copies are bounded: synced messages beyond the retention cap are trimmed after a
+# flush, and sessions idle past the TTL are evicted (next use costs one extra round trip).
+_SESSION_MESSAGE_RETENTION = 200
+_SESSION_IDLE_TTL_SECONDS = 3600
+_SESSION_SWEEP_INTERVAL_SECONDS = 300
 
 
 @dataclass
@@ -69,6 +75,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         # honcho_session_id -> author peer IDs already joined to that session.
         self._joined_author_peers: dict[str, set[str]] = {}
         self._sessions_cache: dict[str, Any] = {}
+        self._last_idle_sweep_ts: float = 0.0
         # Bumped (under _cache_lock) whenever _force_reauth rebuilds the client, so an
         # in-flight resolver never stores an object bound to the discarded client.
         self._client_generation = 0
@@ -237,10 +244,36 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             honcho_session = self._authed_call("session setup", lambda: self._sdk_session(session_id))
         return honcho_session, existing_messages
 
+    def _sweep_idle_sessions_locked(self) -> int:
+        """Evict sessions idle beyond _SESSION_IDLE_TTL_SECONDS together with their SDK session and
+        prefetch entries. Caller holds _cache_lock."""
+        cutoff = time.time() - _SESSION_IDLE_TTL_SECONDS
+        evicted = 0
+        for key, session in list(self._cache.items()):
+            if session.updated_at.timestamp() >= cutoff:
+                continue
+            del self._cache[key]
+            self._sessions_cache.pop(session.honcho_session_id, None)
+            self._context_cache.pop(key, None)
+            evicted += 1
+        return evicted
+
+    def _maybe_sweep_idle_sessions(self) -> None:
+        """Rate-limited idle sweep, run from get_or_create so no watcher thread is needed."""
+        now = time.time()
+        with self._cache_lock:
+            if now - self._last_idle_sweep_ts < _SESSION_SWEEP_INTERVAL_SECONDS:
+                return
+            self._last_idle_sweep_ts = now
+            evicted = self._sweep_idle_sessions_locked()
+        if evicted:
+            logger.info("Honcho session cache idle sweep evicted %d session(s)", evicted)
+
     def get_or_create(self, key: str, *, user_peer_id: str | None = None) -> HonchoSession:
         """Get an existing session or create a new one for ``key`` (usually channel:chat_id).
         ``user_peer_id`` replaces the resolved user peer when the session's participant is not the
         runtime user, e.g. the sender bot of an a2a session."""
+        self._maybe_sweep_idle_sessions()
         with self._cache_lock:
             if key in self._cache:
                 logger.debug("Local session cache hit: %s", key)
@@ -300,6 +333,14 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             while len(self._joined_author_peers) > _SESSION_CACHE_MAX_SIZE:
                 self._joined_author_peers.pop(next(iter(self._joined_author_peers)))
         return peer
+    @staticmethod
+    def _trim_synced_messages(session: HonchoSession) -> None:
+        """Drop the oldest synced messages beyond _SESSION_MESSAGE_RETENTION. Messages are appended in
+        order, so trimming from the front stops at the first unsynced one and never drops it."""
+        excess = len(session.messages) - _SESSION_MESSAGE_RETENTION
+        while excess > 0 and session.messages and session.messages[0].get("_synced"):
+            session.messages.pop(0)
+            excess -= 1
 
     def _flush_session(self, session: HonchoSession) -> bool:
         """Write unsynced messages to Honcho synchronously."""
@@ -334,6 +375,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             ok = False
         for msg in new_messages:
             msg["_synced"] = ok
+        if ok:
+            self._trim_synced_messages(session)
         with self._cache_lock:
             self._cache[session.key] = session
         return ok

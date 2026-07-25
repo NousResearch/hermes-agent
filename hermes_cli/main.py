@@ -7295,6 +7295,11 @@ def _update_via_zip(args):
             )
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
+        if result.get("relocated"):
+            print(
+                f"  → {len(result['relocated'])} moved to new upstream paths: "
+                f"{', '.join(result['relocated'])}"
+            )
         if not result["copied"] and not result.get("updated"):
             print("  ✓ Skills are up to date")
     except Exception:
@@ -11893,6 +11898,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
+            if result.get("relocated"):
+                print(
+                    f"  → {len(result['relocated'])} moved to new upstream paths: "
+                    f"{', '.join(result['relocated'])}"
+                )
             if not result["copied"] and not result.get("updated"):
                 print("  ✓ Skills are up to date")
         except Exception as e:

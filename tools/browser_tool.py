@@ -1620,6 +1620,12 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # navigation.  Without this, a task that navigated to localhost on the local
 # sidecar would fall back to the cloud session on its next snapshot call.
 _last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
+
+# Tracks the final (post-redirect) URL of the last successful navigation per
+# session_key. Read by the _browser_eval supervisor fast-path gate: the
+# supervisor's attached page must be showing this URL before its eval result
+# can be trusted — see _supervisor_page_matches_daemon for why they diverge.
+_last_navigated_urls: Dict[str, str] = {}  # session_key -> final_url
 _LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
@@ -3484,6 +3490,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Failed opens and blocked redirects must not retarget follow-up clicks
         # or snapshots to a newly-created but irrelevant session.
         _last_active_session_key[effective_task_id] = nav_session_key
+        _last_navigated_urls[nav_session_key] = str(final_url or "")
         _copy_fallback_warning(response, result)
 
         # Detect common "blocked" page patterns from title/url
@@ -4188,6 +4195,52 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
     )
 
 
+def _supervisor_page_matches_daemon(effective_task_id: str, supervisor) -> bool:
+    """Gate for the supervisor eval fast-path: is the supervisor's attached
+    page the page the agent-browser daemon is actually driving?
+
+    The two silently diverge — the supervisor owns a separate CDP connection
+    and attaches to the first page target *that connection* sees:
+
+    * Browserless-style backends spawn a private browser per CDP websocket,
+      so the supervisor's connection can never see the daemon's page; its
+      evals "succeed" against its own about:blank and return empty/wrong
+      results (#32685 family).
+    * On plain Chrome the browser is shared, but the daemon may be driving
+      a different tab than the one the supervisor attached.
+
+    Zero-subprocess check: compare the supervisor's live top-frame URL
+    (tracked from CDP frame events) with the final URL of the task's last
+    successful ``browser_navigate``. No recorded navigation → trust the
+    fast path (legacy behaviour for ``/browser connect``-then-eval flows,
+    where nothing has diverged yet). Mismatch or unreadable supervisor
+    state → the caller falls through to the agent-browser subprocess path,
+    which always evaluates in the daemon's session — SPA route changes
+    after navigation cost only the subprocess spawn, never a wrong-page
+    result.
+    """
+    last_url = _last_navigated_urls.get(effective_task_id, "")
+    if not last_url:
+        return True
+    try:
+        snap = supervisor.snapshot()
+        top = (snap.frame_tree or {}).get("top") or {}
+        sup_url = str(top.get("url") or "")
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug(
+            "browser eval: supervisor page-match probe failed for task=%s: %s",
+            effective_task_id,
+            exc,
+        )
+        return False
+    if not sup_url:
+        return False
+    if sup_url == last_url:
+        return True
+    # Fragment-only differences are the same document.
+    return sup_url.split("#", 1)[0] == last_url.split("#", 1)[0]
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     effective_task_id = _last_session_key(task_id or "default")
@@ -4224,9 +4277,23 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     # spawning an ``agent-browser eval`` CLI process.  Falls through to the
     # subprocess path on any error so behaviour is unchanged when no
     # supervisor is running (e.g. plain agent-browser without a CDP backend).
+    # Gated on _supervisor_page_matches_daemon: the supervisor's connection
+    # can be attached to a different page than the daemon's (a private
+    # per-connection browser on Browserless-style backends, or another tab
+    # on plain Chrome) — evaluating there returns plausible-but-wrong
+    # results, so those cases take the subprocess path instead.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+        if supervisor is not None and not _supervisor_page_matches_daemon(
+            effective_task_id, supervisor
+        ):
+            logger.debug(
+                "browser eval: supervisor page differs from daemon page for "
+                "task=%s — using agent-browser subprocess path",
+                effective_task_id,
+            )
+            supervisor = None
         if supervisor is not None:
             sup_result = supervisor.evaluate_runtime(expression)
             if sup_result.get("ok"):
@@ -4923,6 +4990,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
+        _last_navigated_urls.pop(session_key, None)
 
     # Drop stale last-active ownership. Cleaning a bare task drops its binding;
     # cleaning a sidecar drops the binding only if that sidecar was still the

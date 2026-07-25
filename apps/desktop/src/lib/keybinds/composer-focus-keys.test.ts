@@ -88,6 +88,17 @@ describe('composerFocusBlockedBySurface', () => {
     expect(composerFocusBlockedBySurface()).toBe(true)
   })
 
+  it('ignores a clarify card waiting in a kept-alive background tab', () => {
+    const tab = document.createElement('div')
+    tab.setAttribute('data-pane-hidden', '')
+    const card = document.createElement('div')
+    card.setAttribute('data-clarify-choices', '')
+    tab.append(card)
+    document.body.append(tab)
+
+    expect(composerFocusBlockedBySurface()).toBe(false)
+  })
+
   it('blocks when focus is inside a terminal', () => {
     const term = document.createElement('div')
     term.setAttribute('data-terminal', '')

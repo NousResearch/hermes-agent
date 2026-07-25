@@ -326,6 +326,17 @@ class BuzzAdapter(BasePlatformAdapter):
             interval = _DEFAULT_POLL_INTERVAL
         self.poll_interval = max(_MIN_POLL_INTERVAL, interval)
 
+        # Whether channel messages must @mention the agent to get a response.
+        # Defaults to True (respond only when addressed). Set False to make the
+        # agent respond to every message in a watched channel. DMs always
+        # dispatch regardless. Env (BUZZ_REQUIRE_MENTION) overrides config.yaml.
+        _rm_raw = os.getenv("BUZZ_REQUIRE_MENTION")
+        if _rm_raw is None:
+            _rm_cfg = extra.get("require_mention", True)
+        else:
+            _rm_cfg = _rm_raw
+        self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
+
         # Auth: entries may be hex pubkeys or npubs; normalized to hex
         raw_allowed = os.getenv("BUZZ_ALLOWED_USERS") or extra.get("allowed_users", [])
         if isinstance(raw_allowed, str):
@@ -677,8 +688,10 @@ class BuzzAdapter(BasePlatformAdapter):
             return
 
         is_dm = state["chat_type"] == "dm"
-        # In shared channels only respond when addressed; DMs always dispatch.
-        if not is_dm and not self._is_mentioned(content):
+        # In shared channels, respond only when addressed — unless
+        # require_mention is disabled, in which case respond to every message.
+        # DMs always dispatch.
+        if not is_dm and self.require_mention and not self._is_mentioned(content):
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -873,6 +886,8 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         os.environ["BUZZ_ALLOWED_USERS"] = str(allowed)
     if "allow_all_users" in extra and not os.getenv("BUZZ_ALLOW_ALL_USERS"):
         os.environ["BUZZ_ALLOW_ALL_USERS"] = str(extra["allow_all_users"]).lower()
+    if "require_mention" in extra and not os.getenv("BUZZ_REQUIRE_MENTION"):
+        os.environ["BUZZ_REQUIRE_MENTION"] = str(extra["require_mention"]).lower()
     return None
 
 

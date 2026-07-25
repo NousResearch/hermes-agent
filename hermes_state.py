@@ -2811,6 +2811,21 @@ class SessionDB:
                 # reclaimed until a later VACUUM. Non-fatal.
                 logger.warning("VACUUM after FTS optimize failed: %s", exc)
                 vacuum_ok = False
+            # Best-effort: fold the WAL back into the main file so the on-disk
+            # size settles now rather than at close(). NOTE this is REFUSED
+            # (SQLITE_BUSY) while any other connection holds a WAL read-mark —
+            # e.g. a live gateway sharing the DB — so it is not sufficient on
+            # its own. Callers must therefore NOT size the result by stat()ing
+            # the file; use :meth:`logical_size_bytes`, which is truthful
+            # immediately regardless of readers.
+            try:
+                with self._lock:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception as exc:
+                logger.debug(
+                    "WAL checkpoint (TRUNCATE) after optimize VACUUM failed: %s",
+                    exc,
+                )
 
         # Phase 4: stamp the FTS storage layout as current, clear the "available"
         # flag, and advance schema_version if it was somehow still behind (the
@@ -10179,6 +10194,34 @@ class SessionDB:
                         "FTS rebuild failed for %s: %s", tbl, exc
                     )
         return rebuilt
+
+    def logical_size_bytes(self) -> Optional[int]:
+        """Database size in bytes as SQLite itself accounts for it.
+
+        ``page_count * page_size`` — the size the main DB file will have once
+        the WAL is checkpointed back into it.
+
+        Prefer this over ``os.path.getsize(db_path)`` when reporting the effect
+        of a VACUUM. In WAL mode a VACUUM's rewrite lands in the ``-wal`` file,
+        and the checkpoint that folds it back is refused while any other
+        connection (a live gateway) holds a read-mark. Until that happens the
+        main file on disk still carries its pre-VACUUM size and keeps growing,
+        so a stat()-based before/after delta understates the win and can go
+        negative — the "reclaimed -3820.1 MB" report on a database that had
+        actually shrunk 60%.
+
+        Returns None if the pragmas cannot be read.
+        """
+        try:
+            with self._lock:
+                if self._conn is None:
+                    return None
+                page_count = self._conn.execute("PRAGMA page_count").fetchone()[0]
+                page_size = self._conn.execute("PRAGMA page_size").fetchone()[0]
+            return int(page_count) * int(page_size)
+        except Exception as exc:
+            logger.debug("Could not read logical DB size: %s", exc)
+            return None
 
     def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.

@@ -5929,6 +5929,93 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_optimize_fts_storage_vacuum_reports_truthful_size(self, tmp_path):
+        """``logical_size_bytes()`` must be truthful the moment optimize returns.
+
+        In WAL mode VACUUM's rewrite lands in the ``-wal`` file, and the
+        checkpoint that folds it back is REFUSED (SQLITE_BUSY) while another
+        connection — a live gateway — holds a read-mark. A caller that sizes
+        the result with ``os.path.getsize()`` therefore reads the stale,
+        still-growing main file: that is how `hermes sessions optimize-storage`
+        reported "reclaimed -3820.1 MB" on a DB that had actually shrunk 60%.
+        SQLite's own page accounting is correct immediately.
+        """
+        db_path = tmp_path / "v22.db"
+        self._build_v22_db(db_path)
+
+        # Bulk the DB up so VACUUM actually has pages to move: with only a
+        # handful of rows the whole file fits in the WAL's first frames and the
+        # stale-stat() bug is invisible.
+        bulk = sqlite3.connect(str(db_path))
+        bulk.executemany(
+            "INSERT INTO messages (session_id, timestamp, role, content) "
+            "VALUES ('s1', ?, 'user', ?)",
+            [(time.time(), "filler " + "q" * 2000) for _ in range(4000)],
+        )
+        bulk.commit()
+        bulk.close()
+
+        db = SessionDB(db_path=db_path)
+        reader = None
+        try:
+            if db._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+                pytest.skip("WAL unavailable on this SQLite build")
+
+            # A live gateway/CLI session pinning a WAL read-mark, which is what
+            # blocks the post-VACUUM checkpoint.
+            reader = sqlite3.connect(str(db_path))
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM messages").fetchone()
+
+            assert db.optimize_fts_storage(vacuum=True)["ok"] is True
+
+            reported = db.logical_size_bytes()
+            assert reported is not None
+            stat_size = db_path.stat().st_size
+
+            # Settle for real: release the reader, then checkpoint.
+            reader.rollback()
+            reader.close()
+            reader = None
+            db._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            settled = db_path.stat().st_size
+
+            page_size = db._conn.execute("PRAGMA page_size").fetchone()[0]
+
+            # Precondition for this test to mean anything: stat() must actually
+            # be lagging here, otherwise it isn't exercising the bug.
+            assert stat_size > settled + page_size, (
+                "test precondition failed: stat() did not lag the settled size, "
+                "so this case does not exercise the reporting bug"
+            )
+
+            # The contract: the reported size tracks where the file lands, not
+            # the stale on-disk size.
+            assert abs(reported - settled) <= page_size, (
+                f"logical_size_bytes() reported {reported} but the file settled "
+                f"at {settled} (stale stat() read {stat_size}) — a "
+                f"reclaimed-bytes delta built on this would be wrong"
+            )
+        finally:
+            if reader is not None:
+                reader.close()
+            db.close()
+
+    def test_logical_size_bytes_matches_page_accounting(self, tmp_path):
+        """Sanity: the helper returns page_count * page_size, or None if closed."""
+        db_path = tmp_path / "v22.db"
+        self._build_v22_db(db_path)
+        db = SessionDB(db_path=db_path)
+        try:
+            pc = db._conn.execute("PRAGMA page_count").fetchone()[0]
+            ps = db._conn.execute("PRAGMA page_size").fetchone()[0]
+            assert db.logical_size_bytes() == pc * ps
+        finally:
+            db.close()
+        # After close the connection is gone — must degrade to None, not raise,
+        # so callers can fall back to stat().
+        assert db.logical_size_bytes() is None
+
     def test_optimize_fts_storage_resumable_after_interrupt(self, tmp_path):
         """A partially-completed optimize resumes on re-run: after demote +
         one chunk, re-invoking finishes without duplicating rows."""

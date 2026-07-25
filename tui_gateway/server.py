@@ -6114,6 +6114,35 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _fail_inflight_turn(session: dict, error: Any) -> None:
+    """Mark the in-flight turn terminal-error but keep it replayable.
+
+    Normal completion clears ``inflight_turn`` because the response is now in
+    canonical history. Failures are different: the terminal frame can be lost
+    on a WS disconnect, and the failed turn may never have been committed.
+    Retaining a compact error snapshot lets ``session.resume`` replay the
+    user's prompt, any partial assistant text, and the error itself instead of
+    leaving the client stranded on a spinner or hydrating from stale DB state.
+    The snapshot lives until the next turn starts (``_start_inflight_turn``
+    overwrites it) or the session closes.
+
+    Caller must hold ``session["history_lock"]``.
+    """
+    message = str(error) if not isinstance(error, BaseException) else (str(error) or type(error).__name__)
+    now = time.time()
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        turn = {"assistant": "", "user": "", "started_at": now}
+    turn["assistant"] = str(turn.get("assistant") or "")
+    turn["user"] = str(turn.get("user") or "")
+    turn["error"] = message or "turn failed"
+    turn["status"] = "error"
+    turn["recoverable"] = True
+    turn["streaming"] = False
+    turn["updated_at"] = now
+    session["inflight_turn"] = turn
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -6278,13 +6307,57 @@ def _inflight_snapshot(session: dict) -> dict | None:
     user = str(turn.get("user") or "").strip()
     assistant = str(turn.get("assistant") or "")
     streaming = bool(turn.get("streaming"))
-    if not user and not assistant and not streaming:
+    error = str(turn.get("error") or "").strip()
+    if not user and not assistant and not streaming and not error:
         return None
-    return {
+    snapshot = {
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
     }
+    if error:
+        # Retained failed turn (see _fail_inflight_turn): carry the error
+        # semantics so a resuming client can rebuild the failed-turn bubble
+        # instead of rendering the partial text as a healthy reply.
+        snapshot["error"] = error
+        snapshot["status"] = str(turn.get("status") or "error")
+        snapshot["recoverable"] = bool(turn.get("recoverable"))
+    return snapshot
+
+
+def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
+    """Close a failed turn with a terminal ``message.complete`` frame.
+
+    Emits the same ``status: "error"`` frame shape the returned-error path in
+    ``_run_prompt_submit`` already produces (so TUI/desktop handling is
+    uniform), and retains the failed turn via ``_fail_inflight_turn`` so a
+    client that missed this frame (disconnect window) can recover it from
+    ``session.resume``'s ``inflight`` payload.
+    """
+    with session["history_lock"]:
+        _fail_inflight_turn(session, error)
+        turn = session.get("inflight_turn") or {}
+        message = str(turn.get("error") or "turn failed")
+        partial = str(turn.get("assistant") or "")
+        cols = int(session.get("cols", 80))
+    text = partial or f"Error: {message}"
+    agent = session.get("agent")
+    payload = {
+        "text": text,
+        "usage": _get_usage(agent) if agent is not None else {},
+        "status": "error",
+        "error": message,
+        "recoverable": True,
+    }
+    if partial:
+        payload["partial"] = True
+    try:
+        rendered = render_message(text, cols)
+    except Exception:
+        rendered = ""
+    if rendered:
+        payload["rendered"] = rendered
+    _emit("message.complete", sid, payload)
 
 
 def _queued_prompt_snapshot(session: dict) -> dict | None:
@@ -10340,18 +10413,18 @@ def _(rid, params: dict) -> dict:
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            _emit(
-                "error",
+            # Terminal frame + retained snapshot (not a bare "error" event +
+            # cleared inflight): if the client is disconnected right now, the
+            # retained snapshot is the only way resume can show this failure.
+            _emit_terminal_turn_error(
                 sid,
-                {
-                    "message": (err.get("error") or {}).get(
-                        "message", "agent initialization failed"
-                    )
-                },
+                session,
+                (err.get("error") or {}).get("message", "agent initialization failed"),
             )
             with session["history_lock"]:
                 session["running"] = False
-                _clear_inflight_turn(session)
+                session["last_active"] = time.time()
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
@@ -10852,7 +10925,10 @@ def _run_prompt_submit(
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
-        if not isinstance(session.get("inflight_turn"), dict):
+        inflight = session.get("inflight_turn")
+        # A retained failed turn (see _fail_inflight_turn) is a stale leftover
+        # by the time a new turn starts — replace it, never append onto it.
+        if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(session, text)
     agent = session["agent"]
     if hasattr(agent, "clear_interrupt"):
@@ -10869,6 +10945,9 @@ def _run_prompt_submit(
         goal_followup = None  # set by the post-turn goal hook below
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         one_turn_restore = session.pop("one_turn_model_restore", None)
+        # True once a failed turn's snapshot was retained for resume replay —
+        # tells the finally below to skip the normal inflight clear.
+        turn_error_retained = False
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -11195,7 +11274,23 @@ def _run_prompt_submit(
             if rendered:
                 payload["rendered"] = rendered
             with session["history_lock"]:
-                _clear_inflight_turn(session)
+                if status == "error":
+                    # Returned-error result (provider 4xx, budget, etc.): retain
+                    # the failed turn for resume replay instead of clearing it.
+                    # If this terminal frame is lost to a disconnect, resume's
+                    # inflight payload is the only carrier of the failure.
+                    _fail_inflight_turn(
+                        session,
+                        result.get("error") if isinstance(result, dict) else raw,
+                    )
+                    turn_error_retained = True
+                else:
+                    _clear_inflight_turn(session)
+            if status == "error":
+                payload["error"] = str(
+                    (result.get("error") if isinstance(result, dict) else "") or raw
+                )
+                payload["recoverable"] = True
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -11357,7 +11452,20 @@ def _run_prompt_submit(
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
-            _emit("error", sid, {"message": str(e)})
+            try:
+                # Close the turn with the same terminal error frame shape as
+                # the returned-error path (uniform client handling), retaining
+                # the failed turn for resume replay.
+                _emit_terminal_turn_error(sid, session, e)
+                turn_error_retained = True
+            except Exception as emit_exc:
+                print(
+                    f"[gateway-turn] terminal error emit failed: "
+                    f"{type(emit_exc).__name__}: {emit_exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _emit("error", sid, {"message": str(e)})
         finally:
             if tts_queue is not None:
                 tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
@@ -11383,7 +11491,8 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
-                _clear_inflight_turn(session)
+                if not turn_error_retained:
+                    _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over

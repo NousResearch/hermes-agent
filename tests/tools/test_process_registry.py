@@ -1650,7 +1650,7 @@ class TestSystemdCgroupIsolation:
         assert "--unit" in argv
         unit_idx = argv.index("--unit")
         assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
-        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv
+        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv  # _build_systemd_scope_argv uses bare name
         # The original shell command must still be present at the tail,
         # after the ``--`` separator that prevents systemd-run from
         # interpreting command flags as its own.
@@ -1661,7 +1661,7 @@ class TestSystemdCgroupIsolation:
         # systemd-run owns session/cgroup creation — no start_new_session.
         assert captured["start_new_session"] is False
         # The session must record the unit name so kill_process can stop it.
-        assert session.systemd_unit == f"hermes-worker-{session.id}"
+        assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
     def test_falls_back_when_systemd_run_unavailable(
         self, registry, monkeypatch
@@ -1716,6 +1716,36 @@ class TestSystemdCgroupIsolation:
         argv = captured["argv"]
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
+
+    def test_kill_recovered_detached_already_exited_stops_persisted_scope(
+        self, registry, monkeypatch
+    ):
+        """Recovered detached sessions whose wrapper PID is gone/recycled must
+        still stop their persisted systemd scope before the already_exited
+        return, while retaining the PID-reuse guard (no PID tree kill)."""
+        session = _make_session(sid="proc_recovered_scope", command="daemonize")
+        session.detached = True
+        session.pid_scope = "host"
+        session.pid = 12345
+        session.host_start_time = 67890
+        session.systemd_unit = "hermes-worker-proc_recovered_scope.scope"
+        registry._running[session.id] = session
+
+        stopped = []
+        terminated = []
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: False)
+        monkeypatch.setattr(registry, "_terminate_host_pid", lambda pid, start: terminated.append((pid, start)))
+        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit: stopped.append(unit) or True)
+
+        with patch.object(registry, "_write_checkpoint"):
+            result = registry.kill_process(session.id)
+
+        assert result["status"] == "already_exited"
+        assert stopped == ["hermes-worker-proc_recovered_scope.scope"]
+        assert terminated == []
+        assert session.exited is True
+        assert session.id in registry._finished
+        assert session.id not in registry._running
 
     def test_systemd_run_user_scope_available_caches_after_probe(
         self, registry, monkeypatch

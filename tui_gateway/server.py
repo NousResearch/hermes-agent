@@ -29,6 +29,11 @@ from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
+from tui_gateway.turn_marker import (
+    clear_turn_marker,
+    read_turn_marker,
+    record_turn_start,
+)
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -6143,6 +6148,160 @@ def _fail_inflight_turn(session: dict, error: Any) -> None:
     session["inflight_turn"] = turn
 
 
+# ── Auto-continue: resume a turn killed by a process/machine death ────
+#
+# A turn that concludes — success, handled error, interrupt — clears its
+# durable marker (see tui_gateway/turn_marker.py) in _run_prompt_submit's
+# finally. Only a process death leaves the marker behind, so a marker found
+# at session.resume time is positive proof the turn never finished AND the
+# client never saw a terminal frame. If the interruption is fresh, re-submit
+# the interrupted prompt automatically (the messaging gateway has done this
+# for restart-interrupted sessions since #27856); if it's stale, clear the
+# marker and let the recovered partial transcript speak for itself — the
+# user can ask to continue manually.
+
+_AUTO_CONTINUE_ENABLED_DEFAULT = True
+_AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT = 15
+_AUTO_CONTINUE_MAX_ATTEMPTS_DEFAULT = 2
+
+
+def _auto_continue_config() -> tuple[bool, float, int]:
+    """(enabled, freshness window in seconds, max attempts) from config.yaml."""
+    desktop = _load_cfg().get("desktop")
+    cfg = desktop.get("auto_continue") if isinstance(desktop, dict) else None
+    if not isinstance(cfg, dict):
+        cfg = {}
+    try:
+        minutes = float(cfg.get("freshness_minutes", _AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT))
+    except (TypeError, ValueError):
+        minutes = float(_AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT)
+    return (
+        is_truthy_value(cfg.get("enabled"), default=_AUTO_CONTINUE_ENABLED_DEFAULT),
+        max(0.0, minutes) * 60.0,
+        _coerce_int_config_value(
+            cfg.get("max_attempts"), _AUTO_CONTINUE_MAX_ATTEMPTS_DEFAULT, min_value=0
+        ),
+    )
+
+
+def _session_home(session: dict) -> Path:
+    """The HERMES_HOME the session's durable state lives in (profile-aware)."""
+    profile_home = session.get("profile_home")
+    return Path(profile_home) if profile_home else Path(_hermes_home)
+
+
+def _retire_turn_marker(session: dict, *keys: str) -> None:
+    """Drop the crash marker for a turn whose outcome is about to reach the client.
+
+    Called immediately before the terminal frame rather than at the end of the
+    turn thread: post-turn work (titles, memory sync, goal hooks) runs for a
+    second or more after the client has its answer, and quitting inside that
+    window would leave a marker that looks like a crash — re-running a finished
+    turn on the next launch. Extra ``keys`` cover a session_key that
+    compression rotated mid-turn.
+    """
+    home = _session_home(session)
+    for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
+        if key:
+            clear_turn_marker(home, key)
+
+
+def _auto_continue_note(prompt: str) -> str:
+    # Same opening as the messaging gateway's recovery notes so transcript
+    # tooling recognizes both. The original prompt is embedded because a hard
+    # crash persists nothing of the interrupted turn to the session DB — this
+    # note is the only copy the model will see.
+    return (
+        "[System note: Your previous turn was interrupted mid-run — the app or "
+        "its backend process stopped before the turn could finish. Some of the "
+        "work may already be complete; check the current state before redoing "
+        "anything, then finish the task. The interrupted request was:]\n\n"
+        f"{prompt}"
+    )
+
+
+def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
+    """Kick off a continuation turn for a crash-interrupted session.
+
+    Called from session.resume's cold paths after the live record is
+    registered. Returns a small descriptor for the resume payload when a
+    continuation was scheduled, else None. The turn itself runs on a
+    background thread after the (deferred) agent build finishes, through the
+    same _run_prompt_submit machinery as every other synthesized turn — so
+    the client that just resumed streams it live.
+    """
+    home = _session_home(session)
+    marker = read_turn_marker(home, session_key)
+    if marker is None:
+        return None
+    enabled, freshness_secs, max_attempts = _auto_continue_config()
+    age = time.time() - marker["started_at"]
+    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
+        # Stale, disabled, or crash-looping: stop trying. The journal/partial
+        # transcript still shows what happened; a manual message continues it.
+        clear_turn_marker(home, session_key)
+        return None
+    if session.get("_auto_continue_scheduled"):
+        return None
+    session["_auto_continue_scheduled"] = True
+    attempt = marker["attempts"] + 1
+    text = _auto_continue_note(marker["prompt"])
+
+    def kickoff() -> None:
+        rid = f"__auto_continue__{int(time.time() * 1000)}"
+        try:
+            _start_agent_build(sid, session)
+            err = _wait_agent(session, rid, timeout=120.0)
+        except Exception:
+            logger.warning("auto-continue agent build failed for %s", sid, exc_info=True)
+            err = {"error": {"message": "agent build failed"}}
+        if err:
+            # Leave the marker: the next resume retries (bounded by attempts).
+            session["_auto_continue_scheduled"] = False
+            return
+        with session["history_lock"]:
+            if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
+                # A real user prompt beat us to it — their turn wins, and its
+                # own conclusion clears the marker.
+                session["_auto_continue_scheduled"] = False
+                return
+            session["running"] = True
+            session["last_active"] = time.time()
+            # Hand this turn its own marker inputs (read back by
+            # _run_prompt_submit): count the attempt so a crash during the
+            # continuation trips the breaker, and re-record the ORIGINAL
+            # prompt so a second crash doesn't nest note inside note. Set
+            # here, not at schedule time, so a bail above leaves nothing
+            # behind for a racing user turn to inherit.
+            session["_auto_continue_attempt"] = attempt
+            session["_auto_continue_prompt"] = marker["prompt"]
+        try:
+            _emit(
+                "status.update",
+                sid,
+                {"kind": "process", "text": "Resuming interrupted turn…"},
+            )
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+        except Exception as exc:
+            print(
+                f"[tui_gateway] auto-continue dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+    threading.Thread(target=kickoff, daemon=True).start()
+    logger.info(
+        "auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)",
+        session_key,
+        attempt,
+        age,
+    )
+    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -6357,6 +6516,7 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         rendered = ""
     if rendered:
         payload["rendered"] = rendered
+    _retire_turn_marker(session)
     _emit("message.complete", sid, payload)
 
 
@@ -7016,28 +7176,29 @@ def _(rid, params: dict) -> dict:
 
         _schedule_agent_build(sid)
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+        auto_continue = _maybe_schedule_auto_continue(sid, record, target)
 
         messages = _history_to_messages(display_history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(
-                    cwd,
-                    model=model_override.get("model") or "",
-                    provider=overrides.get("provider_override") or "",
-                    profile=profile,
-                ),
-                "inflight": None,
-                "running": False,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "idle",
-            },
-        )
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(
+                cwd,
+                model=model_override.get("model") or "",
+                provider=overrides.get("provider_override") or "",
+                profile=profile,
+            ),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "idle",
+        }
+        if auto_continue is not None:
+            payload["auto_continue"] = auto_continue
+        return _ok(rid, payload)
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
     # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -7156,21 +7317,24 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
-    return _ok(
-        rid,
-        {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _session_info(agent, session),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": float(session.get("created_at") or time.time()),
-            "status": "idle",
-        },
+    auto_continue = (
+        _maybe_schedule_auto_continue(sid, session, target) if session else None
     )
+    payload = {
+        "session_id": sid,
+        "resumed": target,
+        "message_count": len(messages),
+        "messages": messages,
+        "info": _session_info(agent, session),
+        "inflight": None,
+        "running": False,
+        "session_key": target,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": "idle",
+    }
+    if auto_continue is not None:
+        payload["auto_continue"] = auto_continue
+    return _ok(rid, payload)
 
 
 @method("session.cwd.set")
@@ -10948,6 +11112,18 @@ def _run_prompt_submit(
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False
+        # Durable crash marker: written before the turn runs, retired the
+        # moment its outcome reaches the client (see _retire_turn_marker).
+        # Any concluded turn — success, handled error, interrupt — retires
+        # it, so a marker that survives means the process died mid-turn;
+        # session.resume auto-continues from it. Compression can rotate
+        # session_key mid-turn, so remember the key we wrote under.
+        marker_home = _session_home(session)
+        marker_key = str(session.get("session_key") or "")
+        marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
+        marker_text = session.pop("_auto_continue_prompt", None) or text
+        if isinstance(marker_text, str) and marker_text.strip():
+            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -11291,6 +11467,7 @@ def _run_prompt_submit(
                     (result.get("error") if isinstance(result, dict) else "") or raw
                 )
                 payload["recoverable"] = True
+            _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -11493,6 +11670,10 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
+            # Backstop for turns that never reached a terminal frame (the
+            # frame paths retire the marker as they emit).
+            _retire_turn_marker(session, marker_key)
+            session.pop("_auto_continue_scheduled", None)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over

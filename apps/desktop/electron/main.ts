@@ -35,6 +35,11 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { waitForHermesReady } from './backend-health'
+import {
+  cleanupFailedPoolBackend,
+  terminatePoolBackendEntry,
+  watchPoolBackendChild
+} from './backend-pool-lifecycle'
 import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure } from './backend-start-failure'
@@ -7643,7 +7648,10 @@ async function ensureBackend(profile) {
 
   const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
-    backendPool.delete(key)
+    void cleanupFailedPoolBackend(backendPool, key, entry, {
+      stopBackendChild,
+      waitForBackendExit
+    }).catch(() => {})
     throw error
   })
   backendPool.set(key, entry)
@@ -7798,19 +7806,19 @@ async function spawnPoolBackend(profile, entry) {
     rejectStart = reject
   })
 
-  child.once('error', error => {
-    rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
-    backendPool.delete(profile)
-    rejectStart?.(error)
-  })
-  child.once('exit', (code, signal) => {
-    rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
-    backendPool.delete(profile)
+  watchPoolBackendChild(backendPool, profile, entry, child, {
+    onError: error => {
+      rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
+      rejectStart?.(error)
+    },
+    onExit: (code, signal) => {
+      rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
 
-    if (!ready) {
-      rejectStart?.(
-        new Error(`Hermes backend for profile "${profile}" exited before it became ready (${signal || code}).`)
-      )
+      if (!ready) {
+        rejectStart?.(
+          new Error(`Hermes backend for profile "${profile}" exited before it became ready (${signal || code}).`)
+        )
+      }
     }
   })
 
@@ -7856,7 +7864,7 @@ function stopPoolBackend(profile) {
   }
 
   backendPool.delete(profile)
-  stopBackendChild(entry.process)
+  void terminatePoolBackendEntry(entry, { stopBackendChild, waitForBackendExit }).catch(() => {})
 }
 
 async function teardownPoolBackendAndWait(profile) {
@@ -7867,10 +7875,7 @@ async function teardownPoolBackendAndWait(profile) {
   }
 
   backendPool.delete(profile)
-
-  stopBackendChild(entry.process)
-
-  await waitForBackendExit(entry.process)
+  await terminatePoolBackendEntry(entry, { stopBackendChild, waitForBackendExit })
 }
 
 function stopAllPoolBackends() {

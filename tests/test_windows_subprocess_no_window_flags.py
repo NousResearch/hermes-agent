@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -751,12 +752,17 @@ def test_cli_quick_command_exec_hides_console_window(monkeypatch):
 
     captured = []
 
-    def fake_run(cmd, **kwargs):
+    def fake_popen(cmd, **kwargs):
         captured.append((cmd, kwargs))
-        return _Completed(stdout="qc ok\n")
+        return SimpleNamespace(
+            stdout=io.BytesIO(b"qc ok\n"),
+            stderr=io.BytesIO(),
+            wait=lambda timeout=None: 0,
+        )
 
     _patch_hide_flags(monkeypatch)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_mod.sys, "platform", "win32")
+    monkeypatch.setattr(cli_mod.subprocess, "Popen", fake_popen)
 
     inst = object.__new__(cli_mod.HermesCLI)
     inst.config = {"quick_commands": {"qtest": {"type": "exec", "command": "echo cli-qc-56747"}}}

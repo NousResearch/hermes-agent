@@ -1,0 +1,51 @@
+name: buzz-platform
+label: Buzz
+kind: platform
+version: 1.0.0
+description: >
+  Buzz gateway adapter for Hermes Agent.
+  Connects to a Buzz community relay (Block's open-source human+agent
+  collaboration platform built on Nostr) and relays messages between
+  channels/DMs and the Hermes agent.  Pure stdlib — shells out to the
+  buzz CLI binary (JSON in/out); no Python packages required.
+author: Nous Research
+# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
+# platform-plugin env var injector in ``hermes_cli/config.py``.
+requires_env:
+  - name: BUZZ_RELAY_URL
+    description: "Base URL of the Buzz community relay (e.g. https://mycommunity.communities.buzz.xyz)"
+    prompt: "Buzz relay URL"
+    password: false
+  - name: BUZZ_PRIVATE_KEY
+    description: "Nostr private key for the agent's Buzz identity (nsec or hex) — the only Buzz secret"
+    prompt: "Nostr private key (nsec or hex)"
+    password: true
+optional_env:
+  - name: BUZZ_CHANNELS
+    description: "Comma-separated channel UUIDs to watch (default: all joined channels)"
+    prompt: "Channel UUIDs (comma-separated)"
+    password: false
+  - name: BUZZ_HOME_CHANNEL
+    description: "Channel UUID for cron / notification delivery (defaults to the first watched channel)"
+    prompt: "Home channel UUID (or empty)"
+    password: false
+  - name: BUZZ_ALLOWED_USERS
+    description: "Comma-separated npubs or hex pubkeys allowed to talk to the agent"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: BUZZ_ALLOW_ALL_USERS
+    description: "Allow any community member to talk to the agent (true/false)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: BUZZ_POLL_INTERVAL
+    description: "Seconds between inbound poll sweeps (default: 4)"
+    prompt: "Poll interval seconds"
+    password: false
+  - name: BUZZ_CLI_PATH
+    description: "Path to the buzz CLI binary (default: 'buzz' on PATH, then ~/bin/buzz)"
+    prompt: "buzz CLI path (or empty)"
+    password: false
+  - name: BUZZ_CREDENTIALS_FILE
+    description: "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)"
+    prompt: "Credentials file path (or empty)"
+    password: false

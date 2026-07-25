@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.conversation_compression import CompressionRecoveryUnavailableError
 from agent.context_compressor import ContextCompressor
 from agent.turn_context import TurnContext, build_turn_context
 from hermes_state import SessionDB
@@ -271,6 +272,131 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
     assert all(message.get("content") != "stale parent" for message in ctx.messages)
 
 
+def test_successful_memory_retry_replaces_stale_parent_history():
+    agent = _FakeAgent()
+    stale_history = [{"role": "user", "content": "stale parent"}]
+    child_history = [{"role": "assistant", "content": "durable child"}]
+
+    with (
+        patch(
+            "agent.turn_context.resume_pending_compression_memory_switch",
+            return_value=child_history,
+        ),
+        patch(
+            "agent.turn_context.recover_rotated_compression_session",
+            return_value=None,
+        ),
+    ):
+        ctx = _build(agent, conversation_history=stale_history)
+
+    assert ctx.conversation_history == child_history
+    assert ctx.messages == child_history + [{"role": "user", "content": "hello"}]
+    assert all(message.get("content") != "stale parent" for message in ctx.messages)
+
+
+def test_newer_rotation_history_wins_after_successful_memory_retry():
+    agent = _FakeAgent()
+    stale_history = [{"role": "user", "content": "stale parent"}]
+    resumed_history = [{"role": "assistant", "content": "old child"}]
+    newest_history = [{"role": "assistant", "content": "new child"}]
+
+    with (
+        patch(
+            "agent.turn_context.resume_pending_compression_memory_switch",
+            return_value=resumed_history,
+        ),
+        patch(
+            "agent.turn_context.recover_rotated_compression_session",
+            return_value=newest_history,
+        ),
+    ):
+        ctx = _build(agent, conversation_history=stale_history)
+
+    assert ctx.conversation_history == newest_history
+    assert ctx.messages == newest_history + [{"role": "user", "content": "hello"}]
+
+
+def test_turn_start_aborts_when_compression_tip_cannot_be_recovered():
+    agent = _FakeAgent()
+    stale_history = [{"role": "user", "content": "closed parent"}]
+
+    with patch(
+        "agent.turn_context.recover_rotated_compression_session",
+        side_effect=CompressionRecoveryUnavailableError("tip lease is busy"),
+    ):
+        with pytest.raises(CompressionRecoveryUnavailableError):
+            _build(agent, conversation_history=stale_history)
+
+    assert agent.session_id == "sess-1"
+    assert agent._persist_calls == 0
+    assert agent._session_messages == []
+
+
+def test_context_hook_false_aborts_before_runtime_or_turn_side_effects(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent = "TURN_HOOK_FALSE_PARENT"
+    tip = "TURN_HOOK_FALSE_TIP"
+    db.create_session(parent, source="webui")
+    db.end_session(parent, "compression")
+    db.create_session(tip, source="webui", parent_session_id=parent)
+    db.replace_messages(tip, [{"role": "user", "content": "tip history"}])
+
+    agent = _FakeAgent()
+    agent.session_id = parent
+    setattr(agent, "_session_db", db)
+    agent.context_compressor = types.SimpleNamespace(
+        on_session_start=MagicMock(return_value=False),
+        bind_session_state=MagicMock(),
+    )
+    agent._restore_primary_runtime = MagicMock()
+
+    with pytest.raises(CompressionRecoveryUnavailableError) as exc_info:
+        _build(agent)
+
+    assert exc_info.value.reason == "lifecycle_binding_failed"
+    assert agent.session_id == parent
+    agent._restore_primary_runtime.assert_not_called()
+    assert agent._persist_calls == 0
+    assert agent._session_messages == []
+
+
+def test_turn_start_aborts_while_forward_memory_switch_remains_pending():
+    agent = _FakeAgent()
+    setattr(
+        agent,
+        "_pending_compression_memory_switch",
+        {
+            "session_id": agent.session_id,
+            "parent_session_id": "compression-parent",
+        },
+    )
+    class _PendingMemoryManager:
+        def __init__(self):
+            self.retry_calls = 0
+
+        def retry_pending_session_switch(self):
+            self.retry_calls += 1
+            return False
+
+        def on_session_switch(self, *_args, **_kwargs):
+            raise AssertionError("full switch must not replay while retry is pending")
+
+    memory_manager = _PendingMemoryManager()
+    setattr(agent, "_memory_manager", memory_manager)
+
+    with patch(
+        "agent.turn_context.recover_rotated_compression_session"
+    ) as recover:
+        with pytest.raises(CompressionRecoveryUnavailableError) as exc_info:
+            _build(agent)
+
+    assert exc_info.value.reason == "memory_binding_pending"
+    assert memory_manager.retry_calls == 1
+    recover.assert_not_called()
+    assert agent._persist_calls == 0
+    assert agent._session_messages == []
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
@@ -284,6 +410,29 @@ def test_applies_agent_side_effects():
     # task/turn ids assigned on the agent.
     assert agent._current_task_id
     assert agent._current_turn_id
+
+
+def test_rotation_during_turn_start_persistence_aborts_before_turn_context(tmp_path):
+    agent = _FakeAgent()
+    parent = "TURN_START_PARENT"
+    child = "TURN_START_CHILD"
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(parent, source="webui")
+    setattr(agent, "_session_db", db)
+    agent.session_id = parent
+
+    def _rotate_then_refuse(*_args, **_kwargs):
+        db.end_session(parent, "compression")
+        db.create_session(child, source="webui", parent_session_id=parent)
+        db.replace_messages(child, [{"role": "user", "content": "history"}])
+        return False
+
+    setattr(agent, "_persist_session", _rotate_then_refuse)
+
+    with pytest.raises(CompressionRecoveryUnavailableError) as exc_info:
+        _build(agent)
+
+    assert exc_info.value.reason == "turn_start_persistence_failed"
 
 
 

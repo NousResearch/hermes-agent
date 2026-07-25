@@ -58,6 +58,7 @@ import json
 import logging
 import math
 import os
+import sqlite3
 import tempfile
 import time
 import uuid
@@ -1135,12 +1136,36 @@ def _refresh_persisted_compression_guards(
             logger.debug("compression guard refresh failed (%s): %s", method_name, exc)
 
 
+class _UnsupportedSessionDBError(TypeError):
+    pass
+
+
+def _declares_attribute(owner: Any, name: str) -> bool:
+    """Check declaration without triggering descriptors or dynamic attributes."""
+    try:
+        inspect.getattr_static(owner, name)
+    except (AttributeError, TypeError):
+        return False
+    return True
+
+
+def _declared_callable(owner: Any, name: str) -> Any:
+    """Return a declared callable without triggering dynamic attributes."""
+    if not _declares_attribute(owner, name):
+        return None
+    try:
+        method = getattr(owner, name)
+    except Exception:
+        return None
+    return method if callable(method) else None
+
+
 def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> bool:
     """Return whether another path already rotated this compression parent."""
-    getter = getattr(type(session_db), "get_session", None)
+    getter = _declared_callable(session_db, "get_session")
     if not callable(getter):
-        return False
-    session = getter(session_db, session_id)
+        raise _UnsupportedSessionDBError("session DB does not declare get_session")
+    session = getter(session_id)
     return bool(
         session
         and session.get("ended_at") is not None
@@ -1203,89 +1228,602 @@ def compression_skipped_due_to_lock(agent: Any) -> bool:
     return _sig is True or isinstance(_sig, str)
 
 
-def _adopt_live_compression_child(
+class CompressionRecoveryUnavailableError(RuntimeError):
+    """A compression-ended session could not be rebound to its durable tip."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "unknown",
+        session_id: str = "",
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.session_id = session_id
+        self.retryable = retryable
+
+
+class _CompressionAdoptionAttempt:
+    """Typed internal outcome used to separate contention from hard failures."""
+
+    def __init__(
+        self,
+        history: Optional[List[Dict[str, Any]]] = None,
+        *,
+        reason: str = "unknown",
+        retryable: bool = False,
+        retry_in_place: bool = False,
+    ) -> None:
+        self.history = history
+        self.reason = reason
+        self.retryable = retryable
+        self.retry_in_place = retry_in_place
+
+
+def _lock_method_accepts_bounded_recovery_contract(
+    method: Any,
+    *,
+    require_ttl: bool,
+) -> bool:
+    """Require keyword-safe budget and error propagation on recovery locks."""
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    required = {"patience_s", "raise_on_error"}
+    if require_ttl:
+        required.add("ttl_seconds")
+    for name in required:
+        parameter = parameters.get(name)
+        if parameter is None:
+            return False
+        if parameter.kind not in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }:
+            # A positional-only parameter with this name shadows the keyword
+            # in **kwargs, silently retaining the adapter's legacy default.
+            return False
+    return True
+
+
+def _call_recovery_lock_method(
+    method: Any,
+    *args: Any,
+    ttl_seconds: Optional[float] = None,
+    raise_on_error: bool = False,
+    deadline: Optional[float] = None,
+) -> Any:
+    """Call a lock API while composing its patience with a caller deadline."""
+    kwargs: Dict[str, Any] = {}
+    try:
+        parameters = inspect.signature(method).parameters.values()
+        keyword_names = {
+            parameter.name
+            for parameter in parameters
+            if parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        }
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except (TypeError, ValueError):
+        keyword_names = set()
+        accepts_kwargs = True
+    if ttl_seconds is not None and (
+        accepts_kwargs or "ttl_seconds" in keyword_names
+    ):
+        kwargs["ttl_seconds"] = ttl_seconds
+    if accepts_kwargs or "patience_s" in keyword_names:
+        patience_s = 0.5
+        if deadline is not None:
+            patience_s = min(patience_s, max(deadline - time.monotonic(), 0.0))
+        kwargs["patience_s"] = patience_s
+    if accepts_kwargs or "raise_on_error" in keyword_names:
+        kwargs["raise_on_error"] = raise_on_error
+    return method(*args, **kwargs)
+
+
+def _bind_compression_adoption_lifecycle(
     agent: Any,
     session_db: Any,
-    parent_session_id: str,
-) -> Optional[List[Dict[str, Any]]]:
-    """Move a stale compression contender onto the unique durable child.
-
-    Resolve and load first, then mutate the live agent. This ordering keeps the
-    stale contender fail-closed when lineage is ambiguous or the compacted
-    handoff cannot be read.
-    """
-    finder = getattr(type(session_db), "find_live_compression_child", None)
-    loader = getattr(type(session_db), "get_messages_as_conversation", None)
-    if not callable(finder) or not callable(loader):
-        return None
-    child = finder(session_db, parent_session_id)
-    if not child or not child.get("id"):
-        return None
-    child_session_id = str(child["id"])
-    recovered = loader(session_db, child_session_id)
-    if not isinstance(recovered, list) or not recovered:
-        return None
-    # Revalidate after loading: the child may have rotated or a competing
-    # continuation may have appeared between the two DB reads.
-    confirmed = finder(session_db, parent_session_id)
-    if not confirmed or str(confirmed.get("id") or "") != child_session_id:
-        return None
-
-    agent.session_id = child_session_id
-    try:
-        from gateway.session_context import set_current_session_id
-
-        set_current_session_id(child_session_id)
-    except Exception:
-        os.environ["HERMES_SESSION_ID"] = child_session_id
-    try:
-        from hermes_logging import set_session_context
-
-        set_session_context(child_session_id)
-    except Exception:
-        pass
-
-    agent._session_db_created = True
-    if child.get("system_prompt"):
-        agent._cached_system_prompt = child["system_prompt"]
-    agent._last_flushed_db_idx = len(recovered)
-    agent._flushed_db_message_session_id = child_session_id
-    agent._flushed_db_message_ids = {
-        id(message) for message in recovered if isinstance(message, dict)
-    }
-
-    on_session_start = getattr(agent.context_compressor, "on_session_start", None)
-    if callable(on_session_start):
+    session_id: str,
+    *,
+    old_session_id: str,
+    recovered_from_compression: bool,
+) -> bool:
+    """Bind the rollback-capable context collaborator before core commit."""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return True
+    on_session_start_declared = _declares_attribute(
+        compressor,
+        "on_session_start",
+    )
+    on_session_start = _declared_callable(compressor, "on_session_start")
+    if on_session_start_declared:
+        if not callable(on_session_start):
+            logger.warning("context engine declares a non-callable lifecycle hook")
+            return False
         try:
-            on_session_start(
-                child_session_id,
-                boundary_reason="compression",
-                old_session_id=parent_session_id,
+            bound = on_session_start(
+                session_id,
+                boundary_reason="resume",
+                old_session_id=old_session_id,
+                recovered_from_compression=recovered_from_compression,
                 session_db=session_db,
                 platform=getattr(agent, "platform", None) or "cli",
                 conversation_id=getattr(agent, "_gateway_session_key", None),
             )
+            if bound is False:
+                logger.warning(
+                    "context engine compression-child adoption reported failure"
+                )
+                return False
         except Exception as exc:
-            logger.debug("context engine compression-child adoption failed: %s", exc)
+            logger.warning("context engine compression-child adoption failed: %s", exc)
+            return False
     else:
-        bind_state = getattr(agent.context_compressor, "bind_session_state", None)
-        if callable(bind_state):
-            try:
-                bind_state(session_db=session_db, session_id=child_session_id)
-            except Exception:
-                pass
-    try:
-        if agent._memory_manager:
-            agent._memory_manager.on_session_switch(
-                child_session_id,
-                parent_session_id=parent_session_id,
-                reset=False,
-                reason="compression",
+        if _declares_attribute(compressor, "__getattr__"):
+            logger.warning("context engine may synthesize its lifecycle hook")
+            return False
+        bind_state = _declared_callable(compressor, "bind_session_state")
+        if not callable(bind_state):
+            logger.warning("context engine does not declare a lifecycle binding hook")
+            return False
+        try:
+            bound = bind_state(session_db=session_db, session_id=session_id)
+            if bound is False:
+                logger.warning(
+                    "context engine direct compression-child binding reported failure"
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "context engine direct compression-child binding failed: %s",
+                exc,
             )
-    except Exception as exc:
-        logger.debug("memory manager compression-child adoption failed: %s", exc)
+            return False
+    return True
 
-    return recovered
+
+def _bind_compression_adoption_memory_forward(
+    agent: Any,
+    session_id: str,
+    *,
+    old_session_id: str,
+) -> bool:
+    """Forward-bind memory after core commit, leaving a fail-closed retry gate."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if not memory_manager:
+        return True
+    agent._pending_compression_memory_switch = {
+        "session_id": session_id,
+        "parent_session_id": old_session_id,
+    }
+    on_session_switch = _declared_callable(
+        memory_manager,
+        "on_session_switch",
+    )
+    if not callable(on_session_switch):
+        logger.warning("memory manager does not declare on_session_switch")
+        return False
+    try:
+        memory_bound = on_session_switch(
+            session_id,
+            parent_session_id=old_session_id,
+            reset=False,
+            reason="resume",
+        )
+    except Exception as exc:
+        logger.warning("memory manager compression-child adoption failed: %s", exc)
+        return False
+    if memory_bound is False:
+        logger.warning(
+            "memory manager compression-child adoption reported a provider failure"
+        )
+        return False
+    agent._pending_compression_memory_switch = None
+    return True
+
+
+def resume_pending_compression_memory_switch(
+    agent: Any,
+) -> Optional[List[Dict[str, Any]]]:
+    """Finish a pending memory bind and reload its authoritative transcript."""
+    pending = getattr(agent, "_pending_compression_memory_switch", None)
+    if not isinstance(pending, dict):
+        return
+    session_id = str(pending.get("session_id") or "")
+    parent_session_id = str(pending.get("parent_session_id") or "")
+    current_session_id = str(getattr(agent, "session_id", None) or "")
+    if not session_id or current_session_id != session_id:
+        raise CompressionRecoveryUnavailableError(
+            "pending memory binding does not match the live session",
+            reason="memory_binding_state_mismatch",
+            session_id=current_session_id,
+            retryable=False,
+        )
+    if pending.get("memory_bound") is not True:
+        memory_manager = getattr(agent, "_memory_manager", None)
+        if not memory_manager:
+            raise CompressionRecoveryUnavailableError(
+                f"memory binding unavailable for {session_id}",
+                reason="memory_binding_pending",
+                session_id=session_id,
+                retryable=False,
+            )
+        retry = _declared_callable(
+            memory_manager,
+            "retry_pending_session_switch",
+        )
+        on_session_switch = _declared_callable(
+            memory_manager,
+            "on_session_switch",
+        )
+        try:
+            if callable(retry):
+                memory_bound = retry()
+            elif callable(on_session_switch):
+                memory_bound = on_session_switch(
+                    session_id,
+                    parent_session_id=parent_session_id,
+                    reset=False,
+                    reason="resume",
+                )
+            else:
+                raise CompressionRecoveryUnavailableError(
+                    f"memory manager has no declared switch hook for {session_id}",
+                    reason="memory_binding_pending",
+                    session_id=session_id,
+                    retryable=False,
+                )
+        except CompressionRecoveryUnavailableError:
+            raise
+        except Exception as exc:
+            raise CompressionRecoveryUnavailableError(
+                f"memory binding retry failed for {session_id}",
+                reason="memory_binding_pending",
+                session_id=session_id,
+                retryable=True,
+            ) from exc
+        if memory_bound is False:
+            raise CompressionRecoveryUnavailableError(
+                f"memory binding remains pending for {session_id}",
+                reason="memory_binding_pending",
+                session_id=session_id,
+                retryable=True,
+            )
+        # Record the irreversible provider transition before reading SQLite.
+        # A failed transcript read can then retry without replaying hooks.
+        pending["memory_bound"] = True
+
+    session_db = getattr(agent, "_session_db", None)
+    load_history = _declared_callable(
+        session_db,
+        "get_messages_as_conversation",
+    )
+    if not callable(load_history):
+        raise CompressionRecoveryUnavailableError(
+            f"durable transcript loader unavailable for {session_id}",
+            reason="unsupported_db",
+            session_id=session_id,
+            retryable=False,
+        )
+    try:
+        history = load_history(session_id)
+    except sqlite3.Error as exc:
+        raise CompressionRecoveryUnavailableError(
+            f"durable transcript unavailable for {session_id}",
+            reason="sqlite_error",
+            session_id=session_id,
+            retryable=True,
+        ) from exc
+    except Exception as exc:
+        raise CompressionRecoveryUnavailableError(
+            f"durable transcript unavailable for {session_id}",
+            reason="memory_binding_history_unavailable",
+            session_id=session_id,
+            retryable=False,
+        ) from exc
+    if not isinstance(history, list):
+        raise CompressionRecoveryUnavailableError(
+            f"durable transcript invalid for {session_id}",
+            reason="memory_binding_history_unavailable",
+            session_id=session_id,
+            retryable=False,
+        )
+    agent._pending_compression_memory_switch = None
+    return history
+
+
+def _restore_compression_adoption_binding(
+    agent: Any,
+    session_db: Any,
+    session_id: str,
+) -> None:
+    """Restore core local binding without replaying external lifecycle hooks."""
+    compressor = getattr(agent, "context_compressor", None)
+    bind_state = _declared_callable(compressor, "bind_session_state")
+    if callable(bind_state):
+        try:
+            bind_state(session_db, session_id)
+        except Exception as exc:
+            logger.warning("context engine adoption restore failed: %s", exc)
+
+
+def _adopt_live_compression_child(
+    agent: Any,
+    session_db: Any,
+    parent_session_id: str,
+    *,
+    deadline: Optional[float] = None,
+) -> _CompressionAdoptionAttempt:
+    """Move a stale compression contender onto the unique durable child.
+
+    Resolve a candidate, claim it, then revalidate and load under the same lease
+    before mutating the live agent. A lease lost after lifecycle callbacks is a
+    terminal attempt: fail this turn rather than replay callbacks on another tip.
+    """
+    methods = {
+        name: _declared_callable(session_db, name)
+        for name in (
+            "find_live_compression_child",
+            "get_messages_as_conversation",
+            "get_compression_lock_holder",
+            "try_acquire_compression_lock",
+            "refresh_compression_lock",
+            "release_compression_lock",
+        )
+    }
+    if any(not callable(method) for method in methods.values()):
+        return _CompressionAdoptionAttempt(
+            reason="unsupported_db",
+            retryable=False,
+        )
+    finder = methods["find_live_compression_child"]
+    loader = methods["get_messages_as_conversation"]
+    acquire = methods["try_acquire_compression_lock"]
+    refresh = methods["refresh_compression_lock"]
+    release = methods["release_compression_lock"]
+    if not all(
+        (
+            _lock_method_accepts_bounded_recovery_contract(
+                acquire,
+                require_ttl=True,
+            ),
+            _lock_method_accepts_bounded_recovery_contract(
+                refresh,
+                require_ttl=True,
+            ),
+            _lock_method_accepts_bounded_recovery_contract(
+                release,
+                require_ttl=False,
+            ),
+        )
+    ):
+        return _CompressionAdoptionAttempt(
+            reason="unsupported_db",
+            retryable=False,
+        )
+    child = finder(parent_session_id)
+    if not isinstance(child, dict) or not child.get("id"):
+        return _CompressionAdoptionAttempt(
+            reason="lineage_unavailable",
+            retryable=True,
+            retry_in_place=True,
+        )
+    child_session_id = str(child["id"])
+    immediate_parent_session_id = str(
+        child.get("parent_session_id") or parent_session_id
+    )
+    adoption_holder = f"{_compression_lock_holder(agent)}:adoption"
+    if not _call_recovery_lock_method(
+        acquire,
+        child_session_id,
+        adoption_holder,
+        ttl_seconds=300.0,
+        raise_on_error=True,
+        deadline=deadline,
+    ):
+        return _CompressionAdoptionAttempt(
+            reason="tip_busy",
+            retryable=True,
+            retry_in_place=True,
+        )
+    lease_refresher = None
+    adoption_committed = False
+    try:
+        lease_refresher = _CompressionLockLeaseRefresher(
+            session_db,
+            child_session_id,
+            adoption_holder,
+            ttl_seconds=300.0,
+            deadline=deadline,
+        ).start()
+
+        # Revalidate before loading. The lease blocks both compliant rotation
+        # and ordinary transcript writes, so the following load is a stable
+        # snapshot at the adoption linearization point.
+        confirmed = finder(parent_session_id)
+        if (
+            not isinstance(confirmed, dict)
+            or str(confirmed.get("id") or "") != child_session_id
+        ):
+            return _CompressionAdoptionAttempt(
+                reason="lineage_moved",
+                retryable=True,
+                retry_in_place=True,
+            )
+
+        recovered = loader(child_session_id)
+        if not isinstance(recovered, list) or not recovered:
+            return _CompressionAdoptionAttempt(
+                reason="empty_tip",
+                retryable=False,
+            )
+
+        # Defend against direct/non-compliant state mutations that bypass the
+        # compression lease while the transcript is being read.
+        confirmed_after_load = finder(parent_session_id)
+        if (
+            not isinstance(confirmed_after_load, dict)
+            or str(confirmed_after_load.get("id") or "") != child_session_id
+        ):
+            return _CompressionAdoptionAttempt(
+                reason="lineage_moved",
+                retryable=True,
+                retry_in_place=True,
+            )
+        if not _call_recovery_lock_method(
+            refresh,
+            child_session_id,
+            adoption_holder,
+            ttl_seconds=300.0,
+            raise_on_error=True,
+            deadline=deadline,
+        ):
+            return _CompressionAdoptionAttempt(
+                reason="lease_lost_before_lifecycle",
+                retryable=True,
+                retry_in_place=True,
+            )
+
+        # Prepare plugin state before exposing the new id. If an unbounded hook
+        # outlives the lease and another writer reclaims the tip, fail this turn
+        # without replaying callbacks against a successor. A later turn can
+        # safely recover the new canonical tip from the unchanged parent id.
+        lifecycle_bound = _bind_compression_adoption_lifecycle(
+            agent,
+            session_db,
+            child_session_id,
+            old_session_id=immediate_parent_session_id,
+            recovered_from_compression=True,
+        )
+        if not lifecycle_bound:
+            _restore_compression_adoption_binding(
+                agent,
+                session_db,
+                parent_session_id,
+            )
+            return _CompressionAdoptionAttempt(
+                reason="lifecycle_binding_failed",
+                retryable=False,
+                retry_in_place=False,
+            )
+        try:
+            final_refreshed = _call_recovery_lock_method(
+                refresh,
+                child_session_id,
+                adoption_holder,
+                ttl_seconds=300.0,
+                raise_on_error=True,
+                deadline=deadline,
+            )
+        except Exception:
+            _restore_compression_adoption_binding(
+                agent,
+                session_db,
+                parent_session_id,
+            )
+            raise
+        if not final_refreshed:
+            _restore_compression_adoption_binding(
+                agent,
+                session_db,
+                parent_session_id,
+            )
+            return _CompressionAdoptionAttempt(
+                reason="lease_lost_after_lifecycle",
+                retryable=True,
+                retry_in_place=False,
+            )
+
+        agent.session_id = child_session_id
+        try:
+            from gateway.session_context import set_current_session_id
+
+            set_current_session_id(child_session_id)
+        except Exception:
+            os.environ["HERMES_SESSION_ID"] = child_session_id
+        try:
+            from hermes_logging import set_session_context
+
+            set_session_context(child_session_id)
+        except Exception:
+            pass
+
+        agent._session_db_created = True
+        if child.get("system_prompt"):
+            agent._cached_system_prompt = child["system_prompt"]
+        agent._last_flushed_db_idx = len(recovered)
+        agent._flushed_db_message_session_id = child_session_id
+        agent._flushed_db_message_ids = {
+            id(message) for message in recovered if isinstance(message, dict)
+        }
+        # Keep the owner identity available until release is confirmed. If a
+        # declared adapter raises during release, ordinary writes by this same
+        # agent remain fenced owners rather than being misclassified as foreign
+        # writers for the remainder of the bounded lease.
+        agent._active_compression_lock_holder = adoption_holder
+        adoption_committed = True
+
+        if not _bind_compression_adoption_memory_forward(
+            agent,
+            child_session_id,
+            old_session_id=immediate_parent_session_id,
+        ):
+            return _CompressionAdoptionAttempt(
+                reason="memory_binding_pending",
+                retryable=True,
+                retry_in_place=False,
+            )
+
+        if not _call_recovery_lock_method(
+            refresh,
+            child_session_id,
+            adoption_holder,
+            ttl_seconds=300.0,
+            raise_on_error=True,
+            deadline=deadline,
+        ):
+            return _CompressionAdoptionAttempt(
+                reason="lease_lost_after_commit",
+                retryable=True,
+                retry_in_place=False,
+            )
+
+        return _CompressionAdoptionAttempt(history=recovered, reason="adopted")
+    finally:
+        if lease_refresher is not None:
+            lease_refresher.stop()
+        try:
+            released = _call_recovery_lock_method(
+                release,
+                child_session_id,
+                adoption_holder,
+                raise_on_error=True,
+                deadline=deadline,
+            )
+            if released is False:
+                raise RuntimeError("compression adoption lease release returned False")
+            if (
+                adoption_committed
+                and getattr(agent, "_active_compression_lock_holder", None)
+                == adoption_holder
+            ):
+                agent._active_compression_lock_holder = None
+        except Exception as exc:
+            # Cleanup is idempotent and fenced by holder identity. A failed
+            # adapter release must not rewrite a committed adoption as failure;
+            # the bounded lease remains the final fallback.
+            logger.warning("compression adoption lease release failed: %s", exc)
 
 
 def recover_rotated_compression_session(
@@ -1297,21 +1835,7 @@ def recover_rotated_compression_session(
     if session_db is None or not session_id:
         return None
     try:
-        if not _session_was_rotated_by_compression(session_db, session_id):
-            return None
-        # Rotation publication holds the parent compression lease until the
-        # child handoff is durable. A concurrent turn waits briefly rather than
-        # observing the intentional parent-ended/child-empty intermediate state.
-        holder_getter = getattr(session_db, "get_compression_lock_holder", None)
-        for attempt in range(21):
-            recovered = _adopt_live_compression_child(agent, session_db, session_id)
-            if recovered is not None:
-                return recovered
-            holder = holder_getter(session_id) if callable(holder_getter) else None
-            if not holder or attempt == 20:
-                return None
-            time.sleep(0.05)
-        return None
+        rotated = _session_was_rotated_by_compression(session_db, session_id)
     except Exception as exc:
         logger.warning(
             "compression session recovery failed for session=%s (%s: %s)",
@@ -1319,7 +1843,78 @@ def recover_rotated_compression_session(
             type(exc).__name__,
             exc,
         )
+        reason = (
+            "unsupported_db"
+            if isinstance(exc, _UnsupportedSessionDBError)
+            else "sqlite_error"
+            if isinstance(exc, sqlite3.Error)
+            else "inspection_error"
+        )
+        raise CompressionRecoveryUnavailableError(
+            f"could not inspect compression recovery state for {session_id}",
+            reason=reason,
+            session_id=session_id,
+            retryable=isinstance(exc, sqlite3.Error),
+        ) from exc
+    if not rotated:
         return None
+
+    # A compression-ended parent is never a valid turn target. Retry every
+    # transient adoption miss (parent publication, child lease contention, or
+    # lineage movement), then fail closed rather than returning None and letting
+    # the turn continue on the closed parent. The monotonic deadline is backed by
+    # an attempt cap for tests or runtimes whose sleep/clock is patched.
+    deadline = time.monotonic() + 1.0
+    last_attempt = _CompressionAdoptionAttempt(
+        reason="lineage_unavailable",
+        retryable=True,
+        retry_in_place=True,
+    )
+    for attempt in range(21):
+        try:
+            adoption = _adopt_live_compression_child(
+                agent,
+                session_db,
+                session_id,
+                deadline=deadline,
+            )
+        except sqlite3.Error as exc:
+            raise CompressionRecoveryUnavailableError(
+                f"compression recovery state store unavailable for {session_id}",
+                reason="sqlite_error",
+                session_id=session_id,
+                retryable=True,
+            ) from exc
+        except CompressionRecoveryUnavailableError:
+            raise
+        except Exception as exc:
+            raise CompressionRecoveryUnavailableError(
+                f"compression recovery failed for {session_id}",
+                reason="adoption_error",
+                session_id=session_id,
+                retryable=False,
+            ) from exc
+        if adoption.history is not None:
+            return adoption.history
+        last_attempt = adoption
+        if (
+            not adoption.retry_in_place
+            or attempt >= 20
+            or time.monotonic() >= deadline
+        ):
+            break
+        time.sleep(min(0.05, max(deadline - time.monotonic(), 0.0)))
+
+    logger.warning(
+        "compression session recovery exhausted for session=%s",
+        session_id,
+    )
+    raise CompressionRecoveryUnavailableError(
+        f"compression recovery unavailable for {session_id}",
+        reason=last_attempt.reason,
+        session_id=session_id,
+        retryable=last_attempt.retryable,
+    )
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -1491,11 +2086,13 @@ class _CompressionLockLeaseRefresher:
         holder: str,
         ttl_seconds: float,
         refresh_interval_seconds: float | None = None,
+        deadline: float | None = None,
     ) -> None:
         self._db = db
         self._session_id = session_id
         self._holder = holder
         self._ttl_seconds = ttl_seconds
+        self._deadline = deadline
         if refresh_interval_seconds is None:
             refresh_interval_seconds = max(1.0, min(60.0, ttl_seconds / 2.0))
         self._refresh_interval_seconds = max(0.1, float(refresh_interval_seconds))
@@ -1524,9 +2121,15 @@ class _CompressionLockLeaseRefresher:
         # it's a daemon thread, and a late refresh on an already-released lock
         # matches rowcount 0 (a no-op). stop() returning does not guarantee the
         # thread has fully quiesced, only that we've signalled it and waited
-        # briefly.
+        # briefly within the recovery budget.
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
-            self._thread.join(timeout=1.0)
+            join_timeout = 1.0
+            if self._deadline is not None:
+                join_timeout = min(
+                    join_timeout,
+                    max(self._deadline - time.monotonic(), 0.0),
+                )
+            self._thread.join(timeout=join_timeout)
 
     def _run(self) -> None:
         # A single falsy refresh must NOT permanently kill the lease: a
@@ -1551,10 +2154,20 @@ class _CompressionLockLeaseRefresher:
                 if self._stop.is_set():
                     break
             try:
-                refreshed = self._db.refresh_compression_lock(
-                    self._session_id,
-                    self._holder,
-                    ttl_seconds=self._ttl_seconds,
+                refresh = _declared_callable(
+                    self._db,
+                    "refresh_compression_lock",
+                )
+                refreshed = bool(
+                    refresh
+                    and _call_recovery_lock_method(
+                        refresh,
+                        self._session_id,
+                        self._holder,
+                        ttl_seconds=self._ttl_seconds,
+                        raise_on_error=False,
+                        deadline=self._deadline,
+                    )
                 )
             except Exception as exc:
                 logger.debug("compression lock refresh raised: %s", exc)
@@ -2617,10 +3230,10 @@ def compress_context(
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
         if _parent_already_rotated:
-            recovered_messages = _adopt_live_compression_child(
-                agent, _lock_db, _lock_sid
-            )
-            _release_lock()
+            try:
+                recovered_messages = recover_rotated_compression_session(agent)
+            finally:
+                _release_lock()
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)

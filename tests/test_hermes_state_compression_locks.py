@@ -13,6 +13,7 @@ diagnostic accessor) — not the wiring into compression.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -44,6 +45,41 @@ def test_acquire_blocks_second_holder(db: SessionDB) -> None:
     assert db.try_acquire_compression_lock("sess1", "holder2") is False
     # First holder still owns it
     assert db.get_compression_lock_holder("sess1") == "holder1"
+
+
+@pytest.mark.parametrize(
+    ("method_name", "default_result"),
+    [
+        ("try_acquire_compression_lock", False),
+        ("refresh_compression_lock", False),
+        ("release_compression_lock", None),
+    ],
+)
+def test_lock_primitives_offer_bounded_strict_sqlite_errors(
+    db: SessionDB,
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    default_result: object,
+) -> None:
+    observed_patience: list[float | None] = []
+
+    def _locked(_fn, patience_s=None):
+        observed_patience.append(patience_s)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "_execute_write", _locked)
+    method = getattr(db, method_name)
+
+    assert method("sess1", "holder1", patience_s=0.125) is default_result
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        method(
+            "sess1",
+            "holder1",
+            patience_s=0.25,
+            raise_on_error=True,
+        )
+
+    assert observed_patience == [0.125, 0.25]
 
 
 
@@ -80,6 +116,22 @@ def test_expired_lock_is_reclaimable(db: SessionDB) -> None:
     # New holder can claim it
     assert db.try_acquire_compression_lock("sess1", "fresh_holder") is True
     assert db.get_compression_lock_holder("sess1") == "fresh_holder"
+
+
+def test_expired_lock_cannot_be_refreshed_without_reclaim(
+    db: SessionDB,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    assert db.try_acquire_compression_lock(
+        "sess1", "expired-holder", ttl_seconds=10.0
+    ) is True
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1011.0)
+    assert db.refresh_compression_lock(
+        "sess1", "expired-holder", ttl_seconds=10.0
+    ) is False
+    assert db.get_compression_lock_holder("sess1") is None
 
 
 def test_non_expired_lock_is_held(db: SessionDB) -> None:

@@ -3346,45 +3346,124 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def find_live_compression_child(
         self, parent_session_id: str
     ) -> Optional[Dict[str, Any]]:
-        """Return the unique live direct child of a compression-ended session.
+        """Return the unique live leaf of a compression continuation chain.
 
-        A stale agent may observe that another compression path already rotated
-        its parent. Recovery is safe only when the durable lineage identifies
-        exactly one live direct continuation. Multiple children are treated as
-        ambiguous and fail closed rather than guessing which transcript owns
-        subsequent messages.
+        Every hop is resolved from one SQLite read snapshot. Malformed child
+        metadata, invalid lifecycle states, canonical forks, and cycles fail
+        closed rather than selecting a transcript heuristically.
         """
         if not parent_session_id:
             return None
+
         with self._lock:
-            parent = self._conn.execute(
-                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
-                (parent_session_id,),
-            ).fetchone()
-            if (
-                parent is None
-                or parent["ended_at"] is None
-                or parent["end_reason"] != "compression"
-            ):
+            conn = self._conn
+            if conn is None or conn.in_transaction:
                 return None
-            rows = self._conn.execute(
-                """
-                SELECT s.*,
-                       COALESCE(sp.prompt, s.system_prompt)
-                           AS _system_prompt_resolved
-                FROM sessions s
-                LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
-                WHERE s.parent_session_id = ?
-                  AND s.ended_at IS NULL
-                  AND json_extract(COALESCE(s.model_config, '{}'), '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
-                  AND COALESCE(s.source, '') != 'tool'
-                ORDER BY s.started_at ASC
-                LIMIT 2
-                """,
-                (parent_session_id,),
-            ).fetchall()
-        return self._session_row_dict(rows[0]) if len(rows) == 1 else None
+            def _canonical_children(session_id: str):
+                rows = conn.execute(
+                    """
+                    SELECT id, ended_at, end_reason, model_config, source
+                    FROM sessions
+                    WHERE parent_session_id = ?
+                    ORDER BY started_at ASC, id ASC
+                    """,
+                    (session_id,),
+                ).fetchall()
+                canonical = []
+                for row in rows:
+                    source = row["source"]
+                    if not isinstance(source, str) or not source:
+                        return None
+                    if source.lower() == "tool":
+                        continue
+                    raw_config = row["model_config"]
+                    if raw_config is None:
+                        model_config = {}
+                    elif not isinstance(raw_config, str):
+                        return None
+                    else:
+                        try:
+                            model_config = json.loads(raw_config)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            return None
+                        if not isinstance(model_config, dict):
+                            return None
+                    markers = [
+                        marker
+                        for marker in ("_branched_from", "_delegate_from")
+                        if marker in model_config
+                    ]
+                    if len(markers) > 1:
+                        return None
+                    if markers:
+                        marker_value = model_config[markers[0]]
+                        if (
+                            not isinstance(marker_value, str)
+                            or not marker_value
+                            or marker_value != session_id
+                        ):
+                            return None
+                        continue
+                    canonical.append(row)
+                return canonical
+
+            conn.execute("BEGIN")
+            try:
+                current_session_id = parent_session_id
+                seen: set[str] = set()
+                while current_session_id not in seen:
+                    seen.add(current_session_id)
+                    parent = conn.execute(
+                        "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                        (current_session_id,),
+                    ).fetchone()
+                    if (
+                        parent is None
+                        or parent["ended_at"] is None
+                        or parent["end_reason"] != "compression"
+                    ):
+                        return None
+                    children = _canonical_children(current_session_id)
+                    if children is None or len(children) != 1:
+                        return None
+                    child = children[0]
+                    child_id = child["id"]
+                    if (
+                        not isinstance(child_id, str)
+                        or not child_id
+                        or child_id in seen
+                    ):
+                        return None
+                    if child["ended_at"] is None:
+                        if child["end_reason"] is not None:
+                            return None
+                        descendants = _canonical_children(child_id)
+                        if descendants is None or descendants:
+                            return None
+                        live_child = conn.execute(
+                            """
+                            SELECT s.*,
+                                   COALESCE(sp.prompt, s.system_prompt)
+                                       AS _system_prompt_resolved
+                            FROM sessions s
+                            LEFT JOIN system_prompts sp
+                                ON sp.hash = s.system_prompt_hash
+                            WHERE s.id = ?
+                            """,
+                            (child_id,),
+                        ).fetchone()
+                        return (
+                            self._session_row_dict(live_child)
+                            if live_child is not None
+                            else None
+                        )
+                    if child["end_reason"] != "compression":
+                        return None
+                    current_session_id = child_id
+                return None
+            finally:
+                if conn.in_transaction:
+                    conn.rollback()
 
     def publish_compression_child(
         self,
@@ -3901,24 +3980,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         holder: str,
         ttl_seconds: float = 300.0,
+        *,
+        patience_s: Optional[float] = None,
+        raise_on_error: bool = False,
     ) -> bool:
-        """Extend the compression lock lease if ``holder`` still owns it.
+        """Extend the lease only while ``holder`` still owns an unexpired row.
 
-        Ownership is decided by the ``holder`` column alone, deliberately NOT
-        by ``expires_at``: a live owner whose refresher thread was starved
-        (GC pause, loaded CI runner, a slow write escaping ``_execute_write``'s
-        retry budget) past its own TTL must be able to revive its still-unclaimed
-        row on the next tick. Requiring ``expires_at >= now`` here made such a
-        stall permanent — every later refresh matched 0 rows, so the owner kept
-        compressing and rotating with no lease at all, which is exactly the
-        unprotected window a competing path can fork the session lineage in.
+        Expiry is a fencing boundary, not a liveness hint. Once ``expires_at``
+        passes, an ordinary writer may proceed or another compressor may reclaim
+        the row. Allowing the previous holder to refresh after that boundary
+        would heal an interval with no exclusivity and could adopt a transcript
+        loaded before an intervening durable append. The holder must therefore
+        fail closed after expiry even when no competitor has reclaimed the row.
 
-        This does not resurrect a lock somebody else already took: SQLite
-        serialises writes, so a reclaim (DELETE-expired + INSERT-or-IGNORE in
-        :meth:`try_acquire_compression_lock`) and this UPDATE never interleave.
-        Reclaim-first replaces ``holder``, so this UPDATE matches nothing and
-        returns False; refresh-first pushes ``expires_at`` into the future, so
-        the reclaimer's DELETE-expired matches nothing and its acquire fails.
+        SQLite serialises this conditional UPDATE with reclaim. Refresh-first
+        extends a still-live row and prevents reclaim; expiry/reclaim-first makes
+        this UPDATE match no rows. A stalled owner must abort and retry recovery
+        from a fresh snapshot rather than revive its old lease.
         """
         if not session_id or not holder:
             return False
@@ -3928,14 +4006,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             cur = conn.execute(
                 "UPDATE compression_locks SET expires_at = ? "
-                "WHERE session_id = ? AND holder = ?",
-                (expires_at, session_id, holder),
+                "WHERE session_id = ? AND holder = ? AND expires_at > ?",
+                (expires_at, session_id, holder, now),
             )
             return cur.rowcount > 0
 
         try:
-            return bool(self._execute_write(_do))
+            return bool(self._execute_write(_do, patience_s=patience_s))
         except sqlite3.Error as exc:
+            if raise_on_error:
+                raise
             logger.warning(
                 "refresh_compression_lock(%s) failed: %s",
                 session_id, exc,
@@ -3947,6 +4027,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         holder: str,
         ttl_seconds: float = 300.0,
+        *,
+        patience_s: Optional[float] = None,
+        raise_on_error: bool = False,
     ) -> bool:
         """Try to atomically acquire the compression lock for ``session_id``.
 
@@ -4012,7 +4095,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return acquired, reclaimed_holder
 
         try:
-            acquired, reclaimed_holder = self._execute_write(_do)
+            acquired, reclaimed_holder = self._execute_write(
+                _do,
+                patience_s=patience_s,
+            )
             if reclaimed_holder:
                 logger.warning(
                     "Reclaimed stale compression lock for session=%s "
@@ -4022,15 +4108,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
             return bool(acquired)
         except sqlite3.Error as exc:
+            if raise_on_error:
+                raise
             logger.warning(
                 "try_acquire_compression_lock(%s) failed: %s",
                 session_id, exc,
             )
-            # Fail open: returning False makes the caller skip compression,
-            # which is the safe behaviour when the lock subsystem is broken.
+            # Fail closed: returning False makes ordinary callers skip
+            # compression when the lock subsystem is unavailable.
             return False
 
-    def release_compression_lock(self, session_id: str, holder: str) -> None:
+    def release_compression_lock(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        patience_s: Optional[float] = None,
+        raise_on_error: bool = False,
+    ) -> None:
         """Release the compression lock for ``session_id`` iff we own it.
 
         Idempotent: no-op when the lock has already expired and been
@@ -4049,8 +4144,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
         try:
-            self._execute_write(_do)
+            self._execute_write(_do, patience_s=patience_s)
         except sqlite3.Error as exc:
+            if raise_on_error:
+                raise
             logger.warning(
                 "release_compression_lock(%s) failed: %s",
                 session_id, exc,

@@ -398,6 +398,8 @@ class MemoryManager:
             "abandoned_prefetches": 0,
             "active_tasks": 0,
         }
+        self._session_switch_lock = threading.RLock()
+        self._pending_session_switch: Optional[Dict[str, Any]] = None
 
     # -- Registration --------------------------------------------------------
 
@@ -931,7 +933,7 @@ class MemoryManager:
         reset: bool = False,
         rewound: bool = False,
         **kwargs,
-    ) -> None:
+    ) -> bool:
         """Notify all providers that the agent's session_id has rotated.
 
         Fires on ``/resume``, ``/branch``, ``/reset``, ``/new``, and
@@ -941,14 +943,16 @@ class MemoryManager:
         Providers keep running; they only need to refresh cached
         per-session state so subsequent writes land in the correct
         session's record. See ``MemoryProvider.on_session_switch`` for
-        the full contract.
+        the full contract. Returns ``False`` when any provider failed so
+        fail-closed callers can stop before using partially rebound state;
+        failures remain isolated so all providers are still notified.
 
         ``rewound=True`` signals that session_id is unchanged but the
         transcript was truncated; providers caching per-turn document
         state should invalidate.
         """
         if not new_session_id:
-            return
+            return False
         # Only forward ``rewound`` when it's actually set. Passing it
         # unconditionally would inject ``rewound=False`` into every
         # provider's **kwargs for the common /resume, /branch, /new, and
@@ -957,19 +961,107 @@ class MemoryManager:
         # rewound=True explicitly; everyone else stays clean.
         if rewound:
             kwargs["rewound"] = True
-        for provider in self._providers:
+        with self._session_switch_lock:
+            failed = self._notify_session_switch_providers(
+                list(self._providers),
+                new_session_id,
+                parent_session_id=parent_session_id,
+                reset=reset,
+                kwargs=kwargs,
+            )
+            self._pending_session_switch = (
+                {
+                    "providers": failed,
+                    "new_session_id": new_session_id,
+                    "parent_session_id": parent_session_id,
+                    "reset": reset,
+                    "kwargs": dict(kwargs),
+                }
+                if failed
+                else None
+            )
+            return not failed
+
+    def retry_pending_session_switch(self) -> bool:
+        """Retry only providers that failed the previous forward switch.
+
+        A session switch may have externally visible provider effects, so a
+        successful provider is never replayed as a fake rollback. Callers must
+        keep the turn gated until this method returns ``True``.
+        """
+        with self._session_switch_lock:
+            pending = self._pending_session_switch
+            if not pending:
+                return True
+            failed = self._notify_session_switch_providers(
+                list(pending["providers"]),
+                pending["new_session_id"],
+                parent_session_id=pending["parent_session_id"],
+                reset=bool(pending["reset"]),
+                kwargs=dict(pending["kwargs"]),
+            )
+            if failed:
+                pending["providers"] = failed
+                return False
+            self._pending_session_switch = None
+            return True
+
+    @staticmethod
+    def _notify_session_switch_providers(
+        providers: List[MemoryProvider],
+        new_session_id: str,
+        *,
+        parent_session_id: str,
+        reset: bool,
+        kwargs: Dict[str, Any],
+    ) -> List[MemoryProvider]:
+        failed: List[MemoryProvider] = []
+        for provider in providers:
             try:
-                provider.on_session_switch(
+                inspect.getattr_static(provider, "on_session_switch")
+            except AttributeError:
+                failed.append(provider)
+                try:
+                    provider_name = provider.name
+                except Exception:
+                    provider_name = type(provider).__name__
+                logger.debug(
+                    "Memory provider '%s' has no declared on_session_switch hook",
+                    provider_name,
+                )
+                continue
+            try:
+                on_session_switch = getattr(provider, "on_session_switch")
+                if not callable(on_session_switch):
+                    raise TypeError("declared on_session_switch hook is not callable")
+                result = on_session_switch(
                     new_session_id,
                     parent_session_id=parent_session_id,
                     reset=reset,
                     **kwargs,
                 )
+                if result is False:
+                    failed.append(provider)
+                    try:
+                        provider_name = provider.name
+                    except Exception:
+                        provider_name = type(provider).__name__
+                    logger.debug(
+                        "Memory provider '%s' on_session_switch returned failure",
+                        provider_name,
+                    )
             except Exception as e:
+                failed.append(provider)
+                try:
+                    provider_name = provider.name
+                except Exception:
+                    provider_name = type(provider).__name__
                 logger.debug(
                     "Memory provider '%s' on_session_switch failed: %s",
-                    provider.name, e,
+                    provider_name,
+                    e,
                 )
+        return failed
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Notify all providers before context compression.

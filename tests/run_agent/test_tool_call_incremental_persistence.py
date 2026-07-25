@@ -228,7 +228,7 @@ def test_failed_assistant_persist_blocks_ui_projection_and_tool_side_effects():
         finish_reason="tool_calls",
         tool_calls=[tool_call],
     )
-    agent._flush_messages_to_session_db = MagicMock(return_value=False)
+    agent._flush_messages_to_session_db = MagicMock(side_effect=[True, False])
     agent.interim_assistant_callback = MagicMock()
     agent._execute_tool_calls = MagicMock()
 

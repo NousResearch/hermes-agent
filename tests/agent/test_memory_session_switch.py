@@ -100,7 +100,15 @@ def test_manager_fans_out_to_all_providers():
     mm.add_provider(p1)
     mm.add_provider(p2)
 
-    mm.on_session_switch("new-sid", parent_session_id="old-sid", reset=False, reason="resume")
+    assert (
+        mm.on_session_switch(
+            "new-sid",
+            parent_session_id="old-sid",
+            reset=False,
+            reason="resume",
+        )
+        is True
+    )
 
     assert len(p1.switch_calls) == 1
     assert len(p2.switch_calls) == 1
@@ -118,6 +126,7 @@ def test_manager_isolates_provider_failures():
 
     class _Broken(_RecordingProvider):
         def on_session_switch(self, *args, **kwargs):  # type: ignore[override]
+            self.attempted_session = args[0]
             raise RuntimeError("boom")
 
     mm = MemoryManager()
@@ -129,11 +138,63 @@ def test_manager_isolates_provider_failures():
     mm.add_provider(good)
 
     # Must not raise — exceptions in one provider are swallowed + logged
-    mm.on_session_switch("new-sid", parent_session_id="old-sid")
+    assert mm.on_session_switch("new-sid", parent_session_id="old-sid") is False
+    assert broken.attempted_session == "new-sid"
     assert len(good.switch_calls) == 1
     assert good.switch_calls[0]["new"] == "new-sid"
 
 
+def test_manager_treats_false_as_failure_and_retries_only_failed_provider():
+    class _Flaky(_RecordingProvider):
+        def __init__(self, name):
+            super().__init__(name)
+            self.fail = True
+
+        def on_session_switch(self, *args, **kwargs):  # type: ignore[override]
+            super().on_session_switch(*args, **kwargs)
+            if self.fail:
+                self.fail = False
+                return False
+            return None
+
+    mm = MemoryManager()
+    good = _RecordingProvider(name="builtin")
+    flaky = _Flaky(name="external")
+    mm.add_provider(good)
+    mm.add_provider(flaky)
+
+    assert mm.on_session_switch("new-sid", parent_session_id="old-sid") is False
+    assert len(good.switch_calls) == 1
+    assert len(flaky.switch_calls) == 1
+
+    assert mm.retry_pending_session_switch() is True
+    assert len(good.switch_calls) == 1
+    assert len(flaky.switch_calls) == 2
+
+
+def test_manager_rejects_dynamically_synthesized_session_switch_hook():
+    class _DynamicProvider:
+        name = "dynamic"
+
+        def __init__(self):
+            self.switch_calls = 0
+
+        def __getattr__(self, name):
+            if name != "on_session_switch":
+                raise AttributeError(name)
+
+            def _dynamic_hook(*_args, **_kwargs):
+                self.switch_calls += 1
+
+            return _dynamic_hook
+
+    provider = _DynamicProvider()
+    mm = MemoryManager()
+    mm._providers = [provider]  # type: ignore[list-item]
+
+    assert mm.on_session_switch("new-sid", parent_session_id="old-sid") is False
+    assert provider.switch_calls == 0
+    assert getattr(mm, "_pending_session_switch") is not None
 
 
 # ---------------------------------------------------------------------------

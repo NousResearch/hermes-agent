@@ -41,7 +41,7 @@ import sys
 import threading
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.6.1"
+_MIN_CLIENT_VERSION = "0.8.5"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -477,6 +477,48 @@ def _normalize_observation_scopes(value: Any) -> Any:
         return scopes or None
 
     return None
+
+
+_VALID_MIN_SCORE_KEYS = frozenset({"semantic", "keyword", "reranker", "final"})
+
+
+def _normalize_min_scores(value: Any) -> Optional[Dict[str, float]]:
+    """Validate and normalize a ``recall_min_scores`` config value.
+
+    Returns a ``{stage: floor}`` dict ready to pass as ``min_scores`` to
+    ``client.arecall()``, or ``None`` if the config is unset / entirely invalid
+    (fail-open: no relevance floor applied).
+
+    Only the four known stage keys are accepted (0.8.5 client raises
+    ``ValueError`` on unknown keys).  Non-numeric values are dropped with a
+    ``logger.warning``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        logger.warning("recall_min_scores: expected dict, got %s — ignoring", type(value).__name__)
+        return None
+
+    result: Dict[str, float] = {}
+    for key, raw in value.items():
+        key_str = str(key)
+        if key_str not in _VALID_MIN_SCORE_KEYS:
+            logger.warning(
+                "recall_min_scores: unknown key %r (must be one of %s) — dropping",
+                key_str,
+                ", ".join(sorted(_VALID_MIN_SCORE_KEYS)),
+            )
+            continue
+        try:
+            result[key_str] = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "recall_min_scores: key %r has non-numeric value %r — dropping",
+                key_str,
+                raw,
+            )
+
+    return result or None
 
 
 def _utc_timestamp() -> str:
@@ -1003,6 +1045,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
+            {"key": "recall_min_scores", "description": "Relevance score floors applied to RECALL ONLY (not reflect — server-side limitation). Dict mapping stage name to minimum score, e.g. {\"reranker\": 0.01}. Valid stages: semantic, keyword, reranker, final.", "default": {}},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
@@ -1351,6 +1394,13 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+
+        # Min-scores relevance floor (RECALL ONLY — server ReflectRequest has
+        # no min_scores field, so this does NOT apply to reflect paths).
+        self._recall_min_scores = _normalize_min_scores(
+            self._config.get("recall_min_scores")
+        )
+
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1366,10 +1416,11 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, "
+                     "tags=%s, recall_tags=%s, recall_min_scores=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
-                     self._tags, self._recall_tags)
+                     self._tags, self._recall_tags, self._recall_min_scores)
 
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
@@ -1511,6 +1562,8 @@ class HindsightMemoryProvider(MemoryProvider):
                         recall_kwargs["tags_match"] = self._recall_tags_match
                     if self._recall_types:
                         recall_kwargs["types"] = self._recall_types
+                    if self._recall_min_scores is not None:
+                        recall_kwargs["min_scores"] = self._recall_min_scores
                     logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
                                  self._bank_id, len(query), self._budget)
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
@@ -1740,6 +1793,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     recall_kwargs["tags_match"] = self._recall_tags_match
                 if self._recall_types:
                     recall_kwargs["types"] = self._recall_types
+                if self._recall_min_scores is not None:
+                    recall_kwargs["min_scores"] = self._recall_min_scores
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
                 resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))

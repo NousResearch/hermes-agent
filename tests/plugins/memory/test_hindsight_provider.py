@@ -24,9 +24,11 @@ from plugins.memory.hindsight import (
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
+    _normalize_min_scores,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _VALID_MIN_SCORE_KEYS,
 )
 
 
@@ -1819,3 +1821,121 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+# ---------------------------------------------------------------------------
+# _normalize_min_scores unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeMinScores:
+    """Validate the _normalize_min_scores helper (fail-open whitelist)."""
+
+    def test_none_returns_none(self):
+        assert _normalize_min_scores(None) is None
+
+    def test_valid_dict_returned(self):
+        result = _normalize_min_scores({"reranker": 0.01})
+        assert result == {"reranker": 0.01}
+
+    def test_all_valid_keys_accepted(self):
+        value = {"semantic": 0.1, "keyword": 0.2, "reranker": 0.01, "final": 0.5}
+        result = _normalize_min_scores(value)
+        assert result == value
+
+    def test_unknown_key_dropped_with_warning(self, caplog):
+        result = _normalize_min_scores({"reranker": 0.01, "rerank": 0.5})
+        assert result == {"reranker": 0.01}
+        assert any("unknown key" in rec.message.lower() for rec in caplog.records)
+
+    def test_non_numeric_value_dropped_with_warning(self, caplog):
+        result = _normalize_min_scores({"reranker": 0.01, "semantic": "high"})
+        assert result == {"reranker": 0.01}
+        assert any("non-numeric" in rec.message.lower() for rec in caplog.records)
+
+    def test_all_invalid_returns_none(self, caplog):
+        result = _normalize_min_scores({"bad_key": 0.5})
+        assert result is None
+        # At least one warning logged
+        assert any(rec.levelname == "WARNING" for rec in caplog.records)
+
+    def test_type_error_value_dropped(self, caplog):
+        """A list value should be dropped as non-numeric."""
+        result = _normalize_min_scores({"reranker": [1, 2]})
+        assert result is None  # "reranker" was the only key, value is invalid
+        assert any("non-numeric" in rec.message.lower() for rec in caplog.records)
+
+    def test_not_a_dict_returns_none(self, caplog):
+        result = _normalize_min_scores("reranker:0.01")
+        assert result is None
+        assert any("expected dict" in rec.message.lower() for rec in caplog.records)
+
+    def test_valid_keys_constant(self):
+        assert _VALID_MIN_SCORE_KEYS == {"semantic", "keyword", "reranker", "final"}
+
+    def test_int_value_coerced_to_float(self):
+        result = _normalize_min_scores({"reranker": 1})
+        assert result == {"reranker": 1.0}
+        assert isinstance(result["reranker"], float)
+
+
+# ---------------------------------------------------------------------------
+# Recall min_scores wiring tests
+# ---------------------------------------------------------------------------
+
+
+class TestRecallMinScores:
+    """Verify recall_min_scores reaches arecall at both call sites and that
+    malformed config is dropped (fail-open)."""
+
+    def test_prefetch_passes_min_scores_when_configured(self, provider_with_config):
+        p = provider_with_config(recall_min_scores={"reranker": 0.01})
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["min_scores"] == {"reranker": 0.01}
+
+    def test_prefetch_omits_min_scores_when_unset(self, provider_with_config):
+        p = provider_with_config()
+        p.queue_prefetch("test query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "min_scores" not in call_kwargs
+
+    def test_hindsight_recall_tool_passes_min_scores(self, provider_with_config):
+        p = provider_with_config(recall_min_scores={"reranker": 0.02, "final": 0.1})
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["min_scores"] == {"reranker": 0.02, "final": 0.1}
+
+    def test_hindsight_recall_tool_omits_min_scores_when_unset(self, provider_with_config):
+        p = provider_with_config()
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "min_scores" not in call_kwargs
+
+    def test_malformed_min_scores_unknown_key(self, provider_with_config, caplog):
+        """Unknown key is dropped; min_scores is NOT passed to arecall."""
+        p = provider_with_config(
+            recall_min_scores={"unknown_stage": 0.5}
+        )
+        assert p._recall_min_scores is None  # all entries dropped
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "min_scores" not in call_kwargs
+        assert any("unknown key" in rec.message.lower() for rec in caplog.records)
+
+    def test_malformed_min_scores_non_numeric(self, provider_with_config, caplog):
+        """Non-numeric value is dropped; min_scores is NOT passed to arecall."""
+        p = provider_with_config(
+            recall_min_scores={"reranker": "high"}
+        )
+        assert p._recall_min_scores is None  # all entries dropped
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "min_scores" not in call_kwargs
+        assert any("non-numeric" in rec.message.lower() for rec in caplog.records)

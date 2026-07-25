@@ -1971,6 +1971,12 @@ def init_agent(
     compression_idle_compact_after_seconds = max(
         0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
     )
+    compression_defer_while_aux_inflight = str(
+        _compression_cfg.get("defer_while_aux_inflight", False)
+    ).lower() in {"true", "1", "yes"}
+    compression_defer_hard_ceiling = float(
+        _compression_cfg.get("defer_hard_ceiling", 0.95)
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -2390,6 +2396,8 @@ def init_agent(
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
+            defer_while_aux_inflight=compression_defer_while_aux_inflight,
+            defer_hard_ceiling=compression_defer_hard_ceiling,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

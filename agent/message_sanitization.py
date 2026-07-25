@@ -311,6 +311,61 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+# Fixed, fully static strings for the terminal local-failure path. They are
+# the ONLY text this path may surface to the user, the transcript, or
+# synthetic tool results — exception strings, exception types, URLs,
+# payloads, headers and credential material must never appear here.
+LOCAL_FAILURE_NOTE = (
+    "I ran into a local error while processing the model's response. "
+    "The details are in the logs."
+)
+LOCAL_FAILURE_TOOL_NOTE = (
+    "Tool execution was aborted by a local processing error. "
+    "The details are in the logs."
+)
+
+
+def finalize_local_failure_turn(messages: list, note: str = LOCAL_FAILURE_NOTE) -> str:
+    """Close a turn that failed locally with a role-safe, generic note.
+
+    Two terminal ``local_post_response_error`` exits share this helper:
+
+    * If the transcript tail is a plain assistant row (the model's answer
+      was already appended and possibly shown to the user), the fixed note
+      is APPENDED TO THAT ROW's content — the delivered text is preserved
+      and no second, adjacent assistant row is created.
+    * Otherwise a single generic closing assistant row is appended.
+
+    Returns the final user-visible text (the tail's updated content, or
+    the note itself). Everything returned is built exclusively from the
+    caller's original content and the fixed ``note`` — never from any
+    exception object. The note passes through
+    ``redact_sensitive_text(force=True)`` purely as defense-in-depth; it is
+    already static and must stay that way.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+
+        note = redact_sensitive_text(note, force=True)
+    except Exception:
+        # Redaction is defense-in-depth only; the fixed note is used as-is
+        # if the redactor is unavailable.
+        pass
+    if messages:
+        tail = messages[-1]
+        if (
+            isinstance(tail, dict)
+            and tail.get("role") == "assistant"
+            and not tail.get("tool_calls")
+            and isinstance(tail.get("content"), str)
+            and tail["content"].strip()
+        ):
+            tail["content"] = tail["content"].rstrip() + "\n\n" + note
+            return tail["content"]
+    messages.append({"role": "assistant", "content": note})
+    return note
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -464,6 +519,9 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 __all__ = [
     "_SURROGATE_RE",
     "close_interrupted_tool_sequence",
+    "finalize_local_failure_turn",
+    "LOCAL_FAILURE_NOTE",
+    "LOCAL_FAILURE_TOOL_NOTE",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",

@@ -98,7 +98,7 @@ def test_nonstream_wait_loop_emits_explained_notice(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(api_kwargs, client=None, on_first_delta=None, attempt=None):
         deadline = time.time() + 10
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)

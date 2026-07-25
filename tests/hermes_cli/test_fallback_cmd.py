@@ -230,6 +230,48 @@ class TestAddCommand:
         out = capsys.readouterr().out
         assert "Added fallback" in out
 
+    def test_add_resolves_named_provider_endpoint_metadata(self, isolated_home):
+        _write_config(isolated_home, {
+            "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+            "providers": {
+                "local-backup": {
+                    "base_url": "http://127.0.0.1:8765/v1",
+                    "transport": "codex_responses",
+                    "default_model": "backup-default",
+                }
+            },
+        })
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "local-backup",
+                "default": "backup-selected",
+                # Simulate stale temporary model metadata. The selected named
+                # provider entry must be authoritative for its own endpoint.
+                "base_url": "https://stale-primary.example/v1",
+                "api_mode": "anthropic_messages",
+            }
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \
+                patch("hermes_cli.main._require_tty"):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+            cmd_fallback_add(types.SimpleNamespace())
+
+        cfg = _read_config(isolated_home)
+        assert cfg["model"] == {
+            "provider": "anthropic",
+            "default": "claude-sonnet-4-6",
+        }
+        assert cfg["fallback_providers"] == [{
+            "provider": "local-backup",
+            "model": "backup-selected",
+            "base_url": "http://127.0.0.1:8765/v1",
+            "api_mode": "codex_responses",
+        }]
+
     def test_add_rejects_duplicate(self, isolated_home, capsys):
         _write_config(isolated_home, {
             "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},

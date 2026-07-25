@@ -75,6 +75,27 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
     return entry
 
 
+def _resolve_named_provider_metadata(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlay endpoint metadata from the selected named provider, when any."""
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        resolved = _get_named_custom_provider(str(entry.get("provider") or ""))
+    except Exception:
+        resolved = None
+    if not isinstance(resolved, dict):
+        return entry
+
+    result = dict(entry)
+    for key in ("base_url", "api_mode"):
+        value = str(resolved.get(key) or "").strip()
+        if value:
+            result[key] = value
+        else:
+            result.pop(key, None)
+    return result
+
+
 def _snapshot_auth_active_provider() -> Any:
     """Return the current ``active_provider`` in auth.json, or a sentinel if unavailable."""
     try:
@@ -175,6 +196,8 @@ def cmd_fallback_add(args) -> None:
     model_after = after_cfg.get("model")
 
     new_entry = _extract_fallback_from_model_cfg(model_after)
+    if new_entry:
+        new_entry = _resolve_named_provider_metadata(new_entry)
     if not new_entry:
         # Picker didn't complete (user cancelled or flow bailed).  Nothing to do.
         _restore_model_cfg(model_before)

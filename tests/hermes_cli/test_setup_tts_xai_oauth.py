@@ -1,4 +1,4 @@
-﻿"""Regression: TTS/setup xAI OAuth must not hijack the active chat provider."""
+"""Regression: TTS/setup xAI OAuth must not hijack the active chat provider."""
 
 import json
 
@@ -62,9 +62,15 @@ def test_run_xai_oauth_login_from_setup_does_not_hijack_active_provider(
     )
     monkeypatch.setattr("hermes_cli.auth._is_remote_session", lambda: True)
 
+    from hermes_cli.auth import is_source_suppressed, suppress_credential_source
     from hermes_cli.setup import _run_xai_oauth_login_from_setup
 
+    suppress_credential_source("xai-oauth", "device_code")
+    assert is_source_suppressed("xai-oauth", "device_code") is True
+
     assert _run_xai_oauth_login_from_setup() is True
+
+    assert is_source_suppressed("xai-oauth", "device_code") is False
 
     auth = json.loads(auth_path.read_text(encoding="utf-8"))
     assert auth["active_provider"] == "openrouter"

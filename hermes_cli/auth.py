@@ -4458,8 +4458,9 @@ def _save_xai_oauth_tokens(
 
     When *set_active* is True (default), also promote ``xai-oauth`` to
     ``active_provider`` — appropriate for intentional model/auth login.
-    Pass ``set_active=False`` for side-tool credential bootstrap (TTS, STT,
-    dashboard token save, token refresh) so inference routing is unchanged.
+    Pass ``set_active=False`` for side-tool credential bootstrap (TTS/setup,
+    tools config, dashboard token save, token refresh) so inference routing
+    is unchanged.
     """
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

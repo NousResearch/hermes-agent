@@ -312,12 +312,17 @@ def _read_background_work_count() -> int:
     metric a peer churning through delegated subagents shows ``active_agents=0``
     on the fleet dashboard. Best-effort and content-free: a single integer,
     no job/task identity. Returns 0 if a source can't be imported.
+
+    Delegation is counted TASK-granular (``active_task_count``): a fan-out batch
+    of N subagents contributes N, not 1, so the metric reflects real concurrent
+    subagent load rather than dispatch-unit/pool-slot count. This intentionally
+    differs from the async pool's capacity accounting (one batch = one slot).
     """
     total = 0
     try:
-        from tools.async_delegation import active_count
+        from tools.async_delegation import active_task_count
 
-        total += max(0, int(active_count()))
+        total += max(0, int(active_task_count()))
     except Exception:
         logger.debug("background-work async-delegation count failed", exc_info=True)
     try:

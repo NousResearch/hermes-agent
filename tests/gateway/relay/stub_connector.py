@@ -42,6 +42,8 @@ class StubConnector:
         self.chat_info: Dict[str, Dict[str, Any]] = {}
         # Canned result for the next send_outbound (override per-test).
         self.next_send_result: Dict[str, Any] = {"success": True, "message_id": "m1"}
+        # Canned result for the next send_media op (Phase 2; override per-test).
+        self.next_media_result: Dict[str, Any] = {"success": True, "message_id": "md1"}
         # Canned result for the next send_follow_up (override per-test). Default
         # mimics a resolved capability egress; set success=False to simulate an
         # absent/expired capability or a tenant mismatch on the connector side.
@@ -80,6 +82,8 @@ class StubConnector:
         self.sent_platforms.append(platform)
         if action.get("op") == "send":
             return dict(self.next_send_result)
+        if action.get("op") == "send_media":
+            return dict(self.next_media_result)
         return {"success": True}
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

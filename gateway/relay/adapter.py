@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.relay.descriptor import CapabilityDescriptor
+from gateway.relay.media import RelayMediaClient
 from gateway.relay.transport import RelayTransport
 from gateway.session import SessionSource
 
@@ -87,6 +88,13 @@ class RelayAdapter(BasePlatformAdapter):
         # non-retryable "relay disabled" fatal so the dashboard stops showing a
         # red "retrying" spin against a dead credential.
         self._revocation_monitor: Optional[asyncio.Task[None]] = None
+        # Phase 2 media: the authenticated client for the connector's
+        # /relay/media routes (upload for send_media source_url; download for
+        # inbound re-hosted attachments → local paths the vision/file tools
+        # consume). Built lazily from the relay dial URL + per-gateway creds;
+        # None when either is absent (media lanes then degrade to the
+        # pre-media text fallbacks).
+        self._media_client: Optional["RelayMediaClient"] = None
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -227,7 +235,48 @@ class RelayAdapter(BasePlatformAdapter):
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
         self._capture_scope(event)
+        await self._localize_inbound_media(event)
         await self.handle_message(event)
+
+    async def _localize_inbound_media(self, event) -> None:
+        """Download connector re-hosted attachments to local temp paths.
+
+        The wire's ``media_urls`` name connector re-hosts
+        (``{connector}/relay/media/{id}``, per-gateway-bearer-authenticated) or
+        public platform CDN URLs (Discord pass-through). Every NATIVE adapter
+        presents inbound media to the agent as LOCAL FILE PATHS (the vision /
+        file tools consume paths, and an authenticated URL would be useless in
+        the agent's context anyway) — so mirror that here: fetch each URL and
+        swap the list entries for temp paths. Best-effort per entry: a failed
+        download drops that entry (never the message); no client ⇒ only
+        re-host URLs are dropped (they'd 401 for every consumer downstream),
+        public URLs stay.
+        """
+        try:
+            urls = list(getattr(event, "media_urls", None) or [])
+            if not urls:
+                return
+            client = self._get_media_client()
+            localized: list[str] = []
+            for url in urls:
+                if not isinstance(url, str) or not url:
+                    continue
+                if client is None:
+                    # No authenticated client: keep public URLs, drop re-hosts.
+                    if "/relay/media/" not in url:
+                        localized.append(url)
+                    continue
+                path = await client.download(url)
+                if path:
+                    localized.append(path)
+                elif "/relay/media/" not in url:
+                    # A public URL that failed to download still has value as
+                    # a URL (native adapters pass URLs to vision in some
+                    # lanes); a dead re-host reference does not.
+                    localized.append(url)
+            event.media_urls = localized
+        except Exception:  # noqa: BLE001 - media localization must never break inbound
+            logger.debug("relay inbound media localization failed", exc_info=True)
 
     def _capture_scope(self, event) -> None:
         """Remember a chat_id's egress discriminator from an inbound event so our
@@ -771,4 +820,234 @@ class RelayAdapter(BasePlatformAdapter):
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
             error=result.get("error"),
+        )
+
+    # ── Phase 2 media ─────────────────────────────────────────────────────
+
+    def _get_media_client(self) -> Optional[RelayMediaClient]:
+        """Lazily build the authenticated /relay/media client.
+
+        Uses the SAME connector base URL the WS dials and the SAME per-gateway
+        (id, secret) the upgrade authenticates with — no new configuration.
+        None when either is unavailable (unenrolled/dev), and every media lane
+        then degrades to its pre-media fallback.
+        """
+        if self._media_client is not None:
+            return self._media_client
+        try:
+            from gateway.relay import relay_connection_auth, relay_url
+            from gateway.relay.media import media_base_url
+
+            url = relay_url()
+            gateway_id, secret = relay_connection_auth()
+            if not url:
+                return None
+            client = RelayMediaClient(media_base_url(url), gateway_id, secret)
+            if not client.enabled:
+                return None
+            self._media_client = client
+            return client
+        except Exception:  # noqa: BLE001 - media plumbing must never break the adapter
+            logger.debug("relay media client init failed", exc_info=True)
+            return None
+
+    async def _send_media(
+        self,
+        chat_id: str,
+        *,
+        media_kind: str,
+        source: str,
+        source_is_path: bool,
+        caption: Optional[str] = None,
+        filename: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        """Egress one media object via the connector's ``send_media`` op.
+
+        ``source`` is either a LOCAL file path (uploaded to the connector's
+        /relay/media first — the connector cannot reach our filesystem) or an
+        already-public URL (fal.media output etc. — passed through; the
+        connector downloads it directly).
+
+        Returns None when the lane is unavailable (op not advertised, no
+        transport, upload failed) so each caller can fall back to its
+        pre-media behaviour — media delivery is progressive enhancement,
+        never a regression when the connector predates the op.
+        """
+        if self._transport is None or not self.descriptor.supports_op("send_media"):
+            return None
+        source_url = source
+        if source_is_path:
+            client = self._get_media_client()
+            if client is None:
+                return None
+            uploaded = await client.upload(source, filename=filename)
+            if not uploaded:
+                return None
+            source_url = uploaded
+        action: Dict[str, Any] = {
+            "op": "send_media",
+            "chat_id": chat_id,
+            "media_kind": media_kind,
+            "source_url": source_url,
+            "content": caption or "",
+            "reply_to": reply_to,
+            "metadata": self._with_scope(chat_id, metadata),
+        }
+        if filename:
+            action["filename"] = filename
+        try:
+            result = await self._transport.send_outbound(
+                action,
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:  # noqa: BLE001 - transport failure degrades to the caller's fallback
+            logger.debug("relay send_media transport failure", exc_info=True)
+            return None
+        if not result.get("success"):
+            # A structured connector decline (size cap, platform rejection).
+            # Surface it as a failed lane so the caller's fallback still
+            # delivers SOMETHING (the caption/notice), mirroring native
+            # adapters' upload-failure paths.
+            logger.warning(
+                "relay send_media declined for %s: %s",
+                chat_id,
+                result.get("error"),
+            )
+            return None
+        return SendResult(
+            success=True,
+            message_id=result.get("message_id"),
+            raw_response=result,
+        )
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image (public URL) as a native attachment via the connector."""
+        result = await self._send_media(
+            chat_id,
+            media_kind="image",
+            source=image_url,
+            source_is_path=False,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        return await super().send_image(
+            chat_id, image_url, caption=caption, reply_to=reply_to, metadata=metadata
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file natively (upload → send_media)."""
+        result = await self._send_media(
+            chat_id,
+            media_kind="image",
+            source=image_path,
+            source_is_path=True,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        return await super().send_image_file(
+            chat_id, image_path, caption=caption, reply_to=reply_to,
+            metadata=metadata, **kwargs,
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local audio file as a native voice message (upload → send_media)."""
+        result = await self._send_media(
+            chat_id,
+            media_kind="voice",
+            source=audio_path,
+            source_is_path=True,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        return await super().send_voice(
+            chat_id, audio_path, caption=caption, reply_to=reply_to,
+            metadata=metadata, **kwargs,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local video file natively (upload → send_media)."""
+        result = await self._send_media(
+            chat_id,
+            media_kind="video",
+            source=video_path,
+            source_is_path=True,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        return await super().send_video(
+            chat_id, video_path, caption=caption, reply_to=reply_to,
+            metadata=metadata, **kwargs,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local file as a downloadable attachment (upload → send_media)."""
+        result = await self._send_media(
+            chat_id,
+            media_kind="document",
+            source=file_path,
+            source_is_path=True,
+            caption=caption,
+            filename=file_name,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        return await super().send_document(
+            chat_id, file_path, caption=caption, file_name=file_name,
+            reply_to=reply_to, metadata=metadata, **kwargs,
         )

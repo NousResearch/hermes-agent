@@ -687,8 +687,13 @@ class BuzzAdapter(BasePlatformAdapter):
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
 
+        # In channels the message addressed us with a leading @mention; strip
+        # it so slash commands (@Chip /whoami -> /whoami) and clean prompts are
+        # recognized. DMs are already clean.
+        dispatch_text = content if is_dm else self._strip_mention(content)
+
         await self._dispatch_message(
-            text=content,
+            text=dispatch_text,
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=pubkey,
@@ -709,6 +714,33 @@ class BuzzAdapter(BasePlatformAdapter):
             if re.search(pattern, lowered):
                 return True
         return False
+
+    def _strip_mention(self, content: str) -> str:
+        """Remove a leading @mention of this agent so the remaining text can be
+        recognized as a slash command or clean prompt.
+
+        Mirrors the Discord adapter, which strips its own ``<@id>`` mention
+        before dispatch. Without this a channel message like ``@Chip /whoami``
+        arrives with a leading ``@Chip``; the gateway's ``is_command()`` checks
+        ``text.lstrip().startswith("/")`` and never fires the command. Only a
+        LEADING mention is stripped (case-insensitive); mentions mid-sentence
+        are left intact so normal prose is unaffected.
+        """
+        text = content.strip()
+        candidates = []
+        if self._display_name:
+            candidates.append(re.escape(self._display_name))
+        if self._self_npub:
+            candidates.append(re.escape(self._self_npub))
+        if self._self_pubkey:
+            candidates.append(re.escape(self._self_pubkey))
+        if not candidates:
+            return text
+        # Optional leading '@', one of the identity forms, optional trailing
+        # ':' or ',' and surrounding whitespace.
+        pattern = rf"^@?(?:{'|'.join(candidates)})[\s:,]*"
+        stripped = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
+        return stripped.strip()
 
     async def _resolve_user_name(self, pubkey: str) -> str:
         """Resolve a pubkey to a display name (cached; falls back to npub prefix)."""

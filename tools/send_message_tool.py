@@ -65,7 +65,6 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
-
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
@@ -1169,6 +1168,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
+            result = await _send_via_adapter(
+                platform,
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files if is_last else [],
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- QQBot: route through live adapter or standalone sender ---
     # Both text and media are delivered via _send_via_adapter so that
     # a single QQ outbound/upload implementation is used regardless of
@@ -2078,83 +2091,6 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
-
-
-async def _send_qqbot(pconfig, chat_id, message):
-    """Send via QQBot using the REST API directly (no WebSocket needed).
-
-    Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Supports guild channels, C2C (private) chats,
-    and group chats by trying the appropriate endpoints.
-    """
-    try:
-        import httpx
-    except ImportError:
-        return _error("QQBot direct send requires httpx. Run: pip install httpx")
-
-    # Resolve credential fallbacks through the profile secret scope (with the
-    # plain-environ fallback for unscoped single-profile runs) so a multiplex
-    # profile's direct send never borrows another profile's QQ credentials.
-    from gateway.config import _getenv
-
-    extra = pconfig.extra or {}
-    appid = extra.get("app_id") or _getenv("QQ_APP_ID", "")
-    secret = (pconfig.token or extra.get("client_secret")
-              or _getenv("QQ_CLIENT_SECRET", ""))
-    if not appid or not secret:
-        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            # Step 1: Get access token
-            token_resp = await client.post(
-                "https://bots.qq.com/app/getAppAccessToken",
-                json={"appId": str(appid), "clientSecret": str(secret)},
-            )
-            if token_resp.status_code != 200:
-                return _error(f"QQBot token request failed: {token_resp.status_code}")
-            token_data = token_resp.json()
-            access_token = token_data.get("access_token")
-            if not access_token:
-                return _error("QQBot: no access_token in response")
-
-            # Step 2: Send message via REST
-            # QQ Bot API has separate endpoints for channels, C2C, and groups.
-            # We try them in order: channel first, then fallback to C2C.
-            headers = {
-                "Authorization": f"QQBot {access_token}",
-                "Content-Type": "application/json",
-            }
-            payload = {"content": message[:4000], "msg_type": 0}
-
-            # Try channel endpoint first (works for guild channels)
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code in {200, 201}:
-                data = resp.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If channel endpoint failed (likely "频道不存在"), try C2C endpoint
-            url_c2c = f"https://api.sgroup.qq.com/v2/users/{chat_id}/messages"
-            resp_c2c = await client.post(url_c2c, json=payload, headers=headers)
-            if resp_c2c.status_code in {200, 201}:
-                data = resp_c2c.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # If C2C also failed, try group endpoint
-            url_group = f"https://api.sgroup.qq.com/v2/groups/{chat_id}/messages"
-            resp_group = await client.post(url_group, json=payload, headers=headers)
-            if resp_group.status_code in {200, 201}:
-                data = resp_group.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
-                        "message_id": data.get("id")}
-
-            # All endpoints failed — return the most informative error
-            return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
-    except Exception as e:
-        return _error(f"QQBot send failed: {e}")
 
 
 async def _send_yuanbao(chat_id, message, media_files=None):

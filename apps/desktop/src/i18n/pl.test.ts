@@ -40,5 +40,15 @@ describe('Polish desktop catalog', () => {
     expect(pl.commandCenter.commandCenter).toBe('Centrum poleceń')
     expect(pl.commandCenter.generatePet.hatch).toBe('Wykluj')
     expect(pl.assistant.approval.run).toBe('Uruchom')
+    expect(pl.install.setupChoiceDesc).toBe(
+      'Połącz tę aplikację z działającą bramą Hermesa albo zainstaluj Hermesa lokalnie na tym komputerze.'
+    )
+    expect(pl.install.connectExistingTitle).toBe('Połącz z istniejącą bramą Hermesa')
+    expect(pl.install.connectExistingShort).toBe('Połącz z bramą')
+    expect(pl.install.installLocalTitle).toBe('Zainstaluj Hermesa lokalnie')
+    expect(pl.install.installLocalDesc).toBe(
+      'Pobierz Hermesa, utwórz jego środowisko Python i uruchom backend na tym komputerze.'
+    )
+    expect(pl.install.remoteSetupTitle).toBe('Połącz z istniejącą bramą Hermesa')
   })
 })

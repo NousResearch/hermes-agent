@@ -37,7 +37,9 @@ describe("Polish dashboard localization", () => {
   it("translates representative visible interface and confirmation copy", () => {
     expect(pl.common.save).toBe("Zapisz");
     expect(pl.common.gateway).toBe("Brama");
+    expect(pl.common.tools).toBe("narz.");
     expect(pl.app.nav.sessions).toBe("Sesje");
+    expect(pl.models.toolCalls).toBe("wyw. narzędzi");
     expect(pl.config.resetDefaults).toBe("Przywróć domyślne");
     expect(pl.sessions.confirmDeleteMessage).toContain("trwałe usunięcie");
     expect(pl.sessions.confirmDeleteMessage).toContain("nie można cofnąć");

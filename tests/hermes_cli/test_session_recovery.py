@@ -323,3 +323,39 @@ def test_cli_recover_writes_verified_report_without_touching_source(
     assert report["complete"] is True
     assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
     assert report["verification"]["table_counts"]["messages"] == expected["messages"]
+
+
+def test_failed_repair_points_the_user_at_offline_recovery(tmp_path: Path) -> None:
+    """A failed in-place repair must name the offline recovery command.
+
+    This is the reported dead end: `hermes sessions repair` exhausts its
+    in-place ladder, prints "keep the files", and stops -- leaving the user
+    with no idea that a non-destructive recovery path exists. The failure
+    branch has to hand them the next command, inspection first, seeded with
+    the preserved backup it just made.
+    """
+    hermes_home = tmp_path / "isolated-hermes-home"
+    hermes_home.mkdir()
+    # Not a database at all -> every in-place repair strategy fails.
+    (hermes_home / "state.db").write_bytes(b"SQLite format 3\x00" + b"\x7f" * 2048)
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "sessions", "repair"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Repair failed" in combined, combined
+    # The pointer, and specifically the read-only step first.
+    assert "sessions recover" in combined, combined
+    assert "--inspect-only" in combined, combined
+    # It must offer the source it actually preserved, not a placeholder.
+    assert "--source" in combined, combined
+    assert "malformed-backup" in combined, combined

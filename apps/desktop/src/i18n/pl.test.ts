@@ -50,5 +50,20 @@ describe('Polish desktop catalog', () => {
       'Pobierz Hermesa, utwórz jego środowisko Python i uruchom backend na tym komputerze.'
     )
     expect(pl.install.remoteSetupTitle).toBe('Połącz z istniejącą bramą Hermesa')
+    expect(pl.settings.gateway.sshHermesPathTitle).toBe('Ścieżka Hermesa (opcjonalnie)')
+    expect(pl.settings.gateway.sshReachable('host', 'linux')).toBe('Host osiągalny: host (linux) — znaleziono Hermesa')
+    expect(pl.settings.gateway.sshErrNotInstalled).toContain('ustaw ścieżkę Hermesa.')
+    expect(pl.settings.gateway.sshErrUpdateRequired).toBe(
+      'Przed połączeniem z Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.'
+    )
+    expect(pl.settings.providers.localEndpoint.description).toBe(
+      'Połącz Hermesa z dowolnym endpointem zgodnym z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itd.).'
+    )
+    expect(pl.install.activeDesc).toContain('Instalator Hermesa')
+    expect(pl.install.remoteUrlDesc).toBe('Użyj bazowego URL bramy Hermesa, wraz z https:// dla połączenia zdalnego.')
+    expect(pl.install.probeError).toBe('Nie można połączyć się z tą bramą Hermesa.')
+    expect(pl.assistant.approval.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
+    expect(pl.assistant.clarify.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
+    expect(pl.prompts.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
   })
 })

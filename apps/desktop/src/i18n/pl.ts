@@ -933,14 +933,14 @@ export const pl: Translations = {
       sshPortDesc: 'Puste = 22 albo port z ~/.ssh/config.',
       sshKeyTitle: 'Plik tożsamości',
       sshKeyDesc: 'Ścieżka do klucza prywatnego. Puste = ssh-agent albo ~/.ssh/config.',
-      sshHermesPathTitle: 'Ścieżka Hermes (opcjonalnie)',
+      sshHermesPathTitle: 'Ścieżka Hermesa (opcjonalnie)',
       sshHermesPathDesc: 'Pełna ścieżka do zdalnego pliku wykonywalnego hermes. Puste = wykryj automatycznie.',
       sshHermesPathPlaceholder: 'wykryj automatycznie',
       sshTestConnection: 'Testuj SSH',
       sshConnect: 'Połącz',
       sshButtonsHint:
         'Zapisane ustawienia zaczną obowiązywać przy następnym uruchomieniu. Połącz ponownie nawiązuje połączenie od razu.',
-      sshReachable: (host, platform) => `Host osiągalny: ${host} (${platform}) — znaleziono Hermes`,
+      sshReachable: (host, platform) => `Host osiągalny: ${host} (${platform}) — znaleziono Hermesa`,
       sshIncompleteHost: 'Wprowadź host SSH przed połączeniem.',
       sshErrUnreachable: 'Nie można połączyć się z tym hostem przez SSH. Sprawdź host, port i połączenie sieciowe.',
       sshErrAuth:
@@ -948,11 +948,11 @@ export const pl: Translations = {
       sshErrHostKey:
         'Klucz hosta ZMIENIŁ SIĘ od ostatniego połączenia. Sprawdź, czy zmiana jest oczekiwana, a następnie uruchom ssh-keygen -R <host> i połącz się ponownie.',
       sshErrNotInstalled:
-        'Hermes nie jest zainstalowany na zdalnym hoście. Zainstaluj go tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) albo ustaw ścieżkę Hermes.',
+        'Hermes nie jest zainstalowany na zdalnym hoście. Zainstaluj go tam (curl -fsSL https://hermes-agent.nousresearch.com/install.sh | sh) albo ustaw ścieżkę Hermesa.',
       sshErrPlatform:
         'Nieobsługiwana platforma zdalna. Tryb SSH Hermes Desktop obsługuje zdalne hosty Linux, macOS i Windows.',
       sshErrTimeout: 'Przekroczono limit czasu połączenia SSH. Host może być nieosiągalny albo uśpiony.',
-      sshErrUpdateRequired: 'Przed połączeniem z Hermes Desktop zaktualizuj Hermes na zdalnym hoście.',
+      sshErrUpdateRequired: 'Przed połączeniem z Hermes Desktop zaktualizuj Hermesa na zdalnym hoście.',
       sshErrUnknown: 'Połączenie SSH nie powiodło się.'
     },
     keys: {
@@ -1085,7 +1085,7 @@ export const pl: Translations = {
       loading: 'Ładowanie dostawców…',
       localEndpoint: {
         title: 'Lokalny / własny endpoint',
-        description: 'Połącz Hermes z dowolnym endpointem zgodnym z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itd.).'
+        description: 'Połącz Hermesa z dowolnym endpointem zgodnym z OpenAI (Zyphra, vLLM, llama.cpp, Ollama itd.).'
       }
     },
     sessions: {
@@ -2367,7 +2367,7 @@ export const pl: Translations = {
     failedDesc:
       'Jeden z etapów instalacji nie powiódł się. W systemie Windows może się to zdarzyć, jeśli działa inna instancja Hermes CLI lub Hermes Desktop. Zamknij wszystkie działające instancje Hermesa i spróbuj ponownie. Pełne informacje znajdziesz w szczegółach poniżej lub w logu Hermes Desktop.',
     activeDesc:
-      'Jest to konfiguracja jednorazowa. Instalator Hermes pobiera zależności i konfiguruje Twój komputer. Kolejne uruchomienia pominą ten krok.',
+      'Jest to konfiguracja jednorazowa. Instalator Hermesa pobiera zależności i konfiguruje Twój komputer. Kolejne uruchomienia pominą ten krok.',
     progress: (completed, total) => `Ukończone kroki: ${completed}/${total}`,
     currentStage: stage => `-- teraz: ${stage}`,
     fetchingManifest: 'Pobieranie manifestu instalatora…',
@@ -2397,10 +2397,10 @@ export const pl: Translations = {
     remoteSetupDesc:
       'Wprowadź URL bramy. Hermes Desktop wykryje, czy wymagany jest token, czy logowanie w przeglądarce.',
     remoteUrlTitle: 'URL bramy',
-    remoteUrlDesc: 'Użyj bazowego URL bramy Hermes, wraz z https:// dla połączenia zdalnego.',
+    remoteUrlDesc: 'Użyj bazowego URL bramy Hermesa, wraz z https:// dla połączenia zdalnego.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Wykrywanie sposobu uwierzytelnienia bramy…',
-    probeError: 'Nie można połączyć się z tą bramą Hermes.',
+    probeError: 'Nie można połączyć się z tą bramą Hermesa.',
     identityProvider: 'dostawca tożsamości',
     authTitle: 'Uwierzytelnianie',
     authNeedsOauth: provider => `Zaloguj się przez ${provider} przed przetestowaniem tej bramy.`,
@@ -2875,7 +2875,7 @@ export const pl: Translations = {
       attachingFile: 'Dołączanie…'
     },
     approval: {
-      gatewayDisconnected: 'Brama Hermes nie jest podłączona',
+      gatewayDisconnected: 'Brama Hermesa nie jest podłączona',
       sendFailed: 'Nie można wysłać decyzji dotyczącej zgody',
       run: 'Uruchom',
       command: 'Polecenie',
@@ -2891,7 +2891,7 @@ export const pl: Translations = {
     },
     clarify: {
       notReady: 'Żądanie doprecyzowania nie jest jeszcze gotowe',
-      gatewayDisconnected: 'Brama Hermes nie jest podłączona',
+      gatewayDisconnected: 'Brama Hermesa nie jest podłączona',
       sendFailed: 'Nie można wysłać odpowiedzi',
       loadingQuestion: 'Ładowanie pytania…',
       other: 'Inne (wpisz swoją odpowiedź)',
@@ -3008,7 +3008,7 @@ export const pl: Translations = {
   },
 
   prompts: {
-    gatewayDisconnected: 'Brama Hermes nie jest podłączona',
+    gatewayDisconnected: 'Brama Hermesa nie jest podłączona',
     sudoSendFailed: 'Nie można wysłać hasła sudo',
     secretSendFailed: 'Nie można wysłać sekretu',
     sudoTitle: 'Hasło administratora',

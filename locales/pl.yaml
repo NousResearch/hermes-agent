@@ -104,7 +104,7 @@ gateway:
     header: "**Przesłano raport diagnostyczny:**"
     auto_delete: "⏱ Wklejone dane zostaną automatycznie usunięte po 6 godzinach."
     full_logs_hint: "Aby przesłać pełne logi, uruchom `hermes debug share` w terminalu."
-    share_hint: "Udostępnij te linki zespołowi Hermes, aby uzyskać pomoc."
+    share_hint: "Udostępnij te linki zespołowi Hermesa, aby uzyskać pomoc."
 
   deny:
     stale: "❌ Komenda odrzucona (zgoda była już nieaktualna)."
@@ -280,7 +280,7 @@ gateway:
     success: "✅ Ustawiono kanał główny **{name}** (ID: {chat_id}).\nZadania cron i wiadomości międzyplatformowe będą dostarczane tutaj."
 
   status:
-    header: "📊 **Stan bramy Hermes**"
+    header: "📊 **Stan bramy Hermesa**"
     matrix_scope_header: "**Zakres Matrix:**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"

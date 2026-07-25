@@ -8311,9 +8311,27 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
 
         assert calls["run_prompt"] == 0
         assert session["running"] is False
-        error_events = [e for e in emitted if e and e[0] == "error" and e[1] == "sid"]
-        assert len(error_events) == 1, f"expected one error event, got: {emitted}"
-        assert "No LLM provider configured" in error_events[0][2].get("message", "")
+        # #71184 upgraded failure delivery from a bare "error" event to a
+        # terminal message.complete frame (status=error, recoverable) so
+        # failed turns are retained as replayable inflight snapshots. The
+        # contract this test pins is unchanged: the build failure must reach
+        # the client VISIBLY — never a silent drop.
+        failure_frames = [
+            e
+            for e in emitted
+            if e
+            and e[0] in ("error", "message.complete")
+            and e[1] == "sid"
+            and (
+                "No LLM provider configured" in str(e[2].get("message", ""))
+                or "No LLM provider configured" in str(e[2].get("error", ""))
+                or "No LLM provider configured" in str(e[2].get("text", ""))
+            )
+        ]
+        assert len(failure_frames) == 1, f"expected one visible failure frame, got: {emitted}"
+        frame = failure_frames[0]
+        if frame[0] == "message.complete":
+            assert frame[2].get("status") == "error"
     finally:
         server._sessions.pop("sid", None)
 

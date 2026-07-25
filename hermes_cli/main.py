@@ -5556,6 +5556,99 @@ _PE_MACHINE_NAMES = {
     _PE_MACHINE_ARM64: "ARM64",
 }
 
+# SYSTEM_INFO.wProcessorArchitecture values (winnt.h). Used by
+# GetNativeSystemInfo as a second OS-native probe when IsWow64Process2 is
+# unavailable or fails under a mistyped ctypes HANDLE.
+_PROCESSOR_ARCHITECTURE_INTEL = 0
+_PROCESSOR_ARCHITECTURE_ARM = 5
+_PROCESSOR_ARCHITECTURE_AMD64 = 9
+_PROCESSOR_ARCHITECTURE_ARM64 = 12
+
+_PE_MACHINE_TO_NAME = {
+    _PE_MACHINE_ARM64: "ARM64",
+    _PE_MACHINE_AMD64: "AMD64",
+    _PE_MACHINE_I386: "X86",
+}
+
+_SYSTEM_INFO_ARCH_TO_NAME = {
+    _PROCESSOR_ARCHITECTURE_ARM64: "ARM64",
+    _PROCESSOR_ARCHITECTURE_AMD64: "AMD64",
+    _PROCESSOR_ARCHITECTURE_INTEL: "X86",
+    _PROCESSOR_ARCHITECTURE_ARM: "ARM",
+}
+
+
+def _windows_native_machine_from_iswow64() -> Optional[str]:
+    """Ask IsWow64Process2 for the OS-native machine (None if unavailable/fail).
+
+    ctypes defaults ``GetCurrentProcess``'s restype to ``c_int``, so the
+    current-process pseudo-handle ``(HANDLE)-1`` is truncated to
+    ``0xFFFFFFFF`` and zero-extended into a 64-bit invalid handle. On Win64
+    that makes ``IsWow64Process2`` fail with ``ERROR_INVALID_HANDLE`` (6),
+    which is exactly the residual Windows-on-ARM failure after #71218: the
+    gate fell through to ``PROCESSOR_ARCHITECTURE=AMD64`` (the emulated
+    process arch) and rejected a correctly-built ARM64 ``Hermes.exe``.
+    Binding ``restype``/``argtypes`` to ``wintypes.HANDLE`` keeps the full
+    ``0xFFFFFFFFFFFFFFFF`` pseudo-handle.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.IsWow64Process2.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.USHORT),
+        ctypes.POINTER(wintypes.USHORT),
+    ]
+    kernel32.IsWow64Process2.restype = wintypes.BOOL
+
+    process_machine = wintypes.USHORT(0)
+    native_machine = wintypes.USHORT(0)
+    if not kernel32.IsWow64Process2(
+        kernel32.GetCurrentProcess(),
+        ctypes.byref(process_machine),
+        ctypes.byref(native_machine),
+    ):
+        return None
+    return _PE_MACHINE_TO_NAME.get(native_machine.value)
+
+
+def _windows_native_machine_from_native_system_info() -> Optional[str]:
+    """GetNativeSystemInfo — truthful under x64-on-ARM64 when IsWow64 fails.
+
+    Unlike ``PROCESSOR_ARCHITECTURE`` (process/emulation view) this reports
+    the OS-native architecture, so it covers the residual #71218 failure mode
+    where ``IsWow64Process2`` returns FALSE and the env-var fallback would
+    otherwise lie as AMD64.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class _SYSTEM_INFO(ctypes.Structure):
+        _fields_ = [
+            ("wProcessorArchitecture", wintypes.WORD),
+            ("wReserved", wintypes.WORD),
+            ("dwPageSize", wintypes.DWORD),
+            ("lpMinimumApplicationAddress", ctypes.c_void_p),
+            ("lpMaximumApplicationAddress", ctypes.c_void_p),
+            ("dwActiveProcessorMask", ctypes.c_size_t),
+            ("dwNumberOfProcessors", wintypes.DWORD),
+            ("dwProcessorType", wintypes.DWORD),
+            ("dwAllocationGranularity", wintypes.DWORD),
+            ("wProcessorLevel", wintypes.WORD),
+            ("wProcessorRevision", wintypes.WORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetNativeSystemInfo.argtypes = [ctypes.POINTER(_SYSTEM_INFO)]
+    kernel32.GetNativeSystemInfo.restype = None
+
+    info = _SYSTEM_INFO()
+    kernel32.GetNativeSystemInfo(ctypes.byref(info))
+    return _SYSTEM_INFO_ARCH_TO_NAME.get(info.wProcessorArchitecture)
+
 
 def _windows_native_machine() -> str:
     """The Windows host OS's NATIVE machine architecture, normalized upper.
@@ -5565,35 +5658,29 @@ def _windows_native_machine() -> str:
     x64 Python) on Windows-on-ARM devices, where ``platform.machine()``
     returns ``AMD64`` even though the OS is ARM64. The #71119 integrity gate
     then rejected the CORRECT ARM64 rebuild as an "architecture mismatch"
-    (#69179 follow-up report). ``IsWow64Process2`` asks the OS for the true
-    native machine and works from emulated processes; the classic
-    ``PROCESSOR_ARCHITEW6432`` fallback only covers WOW64 (32-bit processes)
-    and is NOT set under x64-on-ARM64 emulation, so it cannot replace the API
-    probe — it is kept only for pre-1511 Windows 10 hosts without the API.
+    (#69179 follow-up report). Probe order:
+
+    1. ``IsWow64Process2`` with a correctly-typed current-process HANDLE
+       (#71218 + HANDLE-truncation fix).
+    2. ``GetNativeSystemInfo`` — still OS-native when (1) fails under
+       x64-on-ARM64 emulation (env vars alone cannot cover that case).
+    3. ``PROCESSOR_ARCHITEW6432`` / ``PROCESSOR_ARCHITECTURE`` — WOW64
+       (32-bit) hosts and pre-1511 Windows 10 without the newer APIs.
+    4. ``platform.machine()``.
     """
     if sys.platform == "win32":
-        try:
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32
-            process_machine = ctypes.c_ushort(0)
-            native_machine = ctypes.c_ushort(0)
-            if kernel32.IsWow64Process2(
-                kernel32.GetCurrentProcess(),
-                ctypes.byref(process_machine),
-                ctypes.byref(native_machine),
-            ):
-                name = {
-                    _PE_MACHINE_ARM64: "ARM64",
-                    _PE_MACHINE_AMD64: "AMD64",
-                    _PE_MACHINE_I386: "X86",
-                }.get(native_machine.value)
-                if name:
-                    return name
-        except (OSError, AttributeError):
-            # No IsWow64Process2 (pre-1511 Windows 10) — fall through to the
-            # documented WOW64 env vars, then the process architecture.
-            pass
+        for probe in (
+            _windows_native_machine_from_iswow64,
+            _windows_native_machine_from_native_system_info,
+        ):
+            try:
+                name = probe()
+            except (OSError, AttributeError, TypeError, ValueError):
+                # API missing (pre-1511), DLL load failure in tests, or a
+                # mistyped ctypes binding — try the next probe.
+                name = None
+            if name:
+                return name
         env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get(
             "PROCESSOR_ARCHITECTURE"
         )

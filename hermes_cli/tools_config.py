@@ -5515,6 +5515,27 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
 
 
+def _known_tool_platforms() -> set[str]:
+    """Return built-in plus discovered plugin platform names.
+
+    Plugin platforms are registered at runtime rather than in the static CLI
+    display registry. Tool introspection/configuration must recognize those
+    names too, otherwise an active plugin platform cannot audit its authority.
+    """
+    known = set(PLATFORMS)
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+
+        discover_plugins()  # idempotent
+        known.update(platform_registry.registered_names())
+    except Exception:
+        # Plugin discovery is optional. Preserve the built-in CLI path when a
+        # third-party plugin is malformed or its dependencies are unavailable.
+        pass
+    return known
+
+
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform.
 
@@ -5525,8 +5546,9 @@ def tools_disable_enable_command(args):
     platform = getattr(args, "platform", "cli")
     config = load_config()
 
-    if platform not in PLATFORMS:
-        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(PLATFORMS)}")
+    valid_platforms = _known_tool_platforms()
+    if platform not in valid_platforms:
+        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(sorted(valid_platforms))}")
         return
 
     if action == "list":

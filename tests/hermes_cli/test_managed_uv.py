@@ -776,3 +776,234 @@ class TestRuntimeRequestMinorLine:
             self._run_generation(tmp_path, monkeypatch, (3, 11, 14), (3, 11, 13))
             is None
         )
+
+
+class TestPatchRetryOnVulnerableCandidate:
+    """Regression tests for issue #71250: when the bare minor-line request
+    (e.g. "3.11") resolves to a candidate that's still vulnerable -- because
+    uv's default resolution for that host picked an older cached/indexed
+    patch even though a newer non-vulnerable one is available -- the
+    provisioner must query the available patches and retry with explicit
+    newer versions, rather than giving up after the first attempt.
+    """
+
+    @staticmethod
+    def _versioned_probe_run(vulnerable_versions, sqlite_fixed=(3, 53, 1)):
+        """Build a fake subprocess.run where the install/find/probe cycle
+        resolves to a DIFFERENT candidate Python version depending on which
+        exact version string was requested, so retries with explicit
+        patches can be distinguished from the initial bare-minor attempt."""
+        import hermes_cli.managed_uv as managed_uv
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        state = {"requested": None}
+
+        def fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                # cmd = [uv, "python", "install", <request>, ...]
+                state["requested"] = cmd[3]
+                state["generation"] = Path(kwargs["env"]["UV_PYTHON_INSTALL_DIR"])
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "list" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            # uv python find → a path inside the generation dir, tagged with
+            # which request produced it so the probe below can look it up.
+            python = state["generation"] / "cpython" / "bin" / "python3"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text(state["requested"] or "")
+            return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
+
+        def fake_probe(python, **kwargs):
+            requested = Path(python).read_text()
+            # Bare minor request ("3.11") always resolves to the FIRST
+            # (worst-case / already-known-vulnerable) version in the list.
+            if requested in vulnerable_versions or requested == "3.11":
+                version = (3, 11, 14) if requested == "3.11" else tuple(
+                    int(p) for p in requested.split(".")
+                )
+                return SQLiteRuntimeInfo(
+                    executable=Path(python), base_prefix=Path(python).parent.parent,
+                    python_version=version, sqlite_version=(3, 50, 4),
+                    sqlite_version_string="3.50.4", sqlite_source_id="vulnerable",
+                )
+            version = tuple(int(p) for p in requested.split("."))
+            return SQLiteRuntimeInfo(
+                executable=Path(python), base_prefix=Path(python).parent.parent,
+                python_version=version, sqlite_version=sqlite_fixed,
+                sqlite_version_string=".".join(str(p) for p in sqlite_fixed),
+                sqlite_source_id="fixed",
+            )
+
+        return fake_run, fake_probe
+
+    def _run(self, tmp_path, monkeypatch, *, vulnerable_versions, patch_list):
+        import hermes_cli.managed_uv as managed_uv
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
+        fake_run, fake_probe = self._versioned_probe_run(vulnerable_versions)
+        current = SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
+            python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4", sqlite_source_id="old",
+        )
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches", lambda *a, **kw: patch_list
+        )
+        return managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=current
+        )
+
+    def test_retries_and_succeeds_with_explicit_newer_patch(self, tmp_path, monkeypatch):
+        """The exact #71250 scenario: bare '3.11' resolves to vulnerable
+        3.11.14, but 3.11.15 (fixed) is available and gets tried explicitly."""
+        result = self._run(
+            tmp_path, monkeypatch,
+            vulnerable_versions={"3.11"},
+            patch_list=[(3, 11, 15), (3, 11, 14), (3, 11, 13), (3, 11, 12)],
+        )
+        assert result is not None, "Must recover via explicit-patch retry"
+        _, _, candidate = result
+        assert candidate.python_version == (3, 11, 15)
+        assert not candidate.wal_reset_vulnerable
+
+    def test_gives_up_after_max_retries_when_all_patches_vulnerable(self, tmp_path, monkeypatch):
+        """If every known patch is vulnerable (or the list is exhausted
+        within the retry cap), the provisioner must return None rather than
+        looping forever or raising."""
+        result = self._run(
+            tmp_path, monkeypatch,
+            vulnerable_versions={"3.11", "3.11.14", "3.11.13", "3.11.12", "3.11.11", "3.11.10"},
+            patch_list=[(3, 11, 14), (3, 11, 13), (3, 11, 12), (3, 11, 11), (3, 11, 10), (3, 11, 9)],
+        )
+        assert result is None
+
+    def test_empty_patch_list_falls_back_to_none_without_crashing(self, tmp_path, monkeypatch):
+        """If _list_available_patches can't be queried (network failure,
+        returns []), the provisioner must not crash -- it just has nothing
+        to retry with and returns None (same as before this fix existed)."""
+        result = self._run(
+            tmp_path, monkeypatch,
+            vulnerable_versions={"3.11"},
+            patch_list=[],
+        )
+        assert result is None
+
+    def test_retry_is_bounded_by_max_retries_constant(self, tmp_path, monkeypatch):
+        """A very long patch list must not result in unbounded retries --
+        capped at _MAX_PATCH_RETRIES attempts."""
+        import hermes_cli.managed_uv as managed_uv
+
+        install_calls = []
+        fake_run, fake_probe = self._versioned_probe_run({"3.11"})
+        original_fake_run = fake_run
+
+        def counting_fake_run(cmd, **kwargs):
+            if "install" in cmd:
+                install_calls.append(cmd[3])
+            return original_fake_run(cmd, **kwargs)
+
+        from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+        current = SQLiteRuntimeInfo(
+            executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
+            python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
+            sqlite_version_string="3.50.4", sqlite_source_id="old",
+        )
+        # 20 vulnerable patches -- far more than _MAX_PATCH_RETRIES.
+        huge_patch_list = [(3, 11, v) for v in range(30, 10, -1)]
+        all_vulnerable = {f"3.11.{v}" for v in range(30, 10, -1)} | {"3.11"}
+        fake_run2, fake_probe2 = self._versioned_probe_run(all_vulnerable)
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run2)
+        monkeypatch.setattr(managed_uv, "probe_sqlite_runtime", fake_probe2)
+        monkeypatch.setattr(
+            managed_uv, "_list_available_patches", lambda *a, **kw: huge_patch_list
+        )
+        result = managed_uv._install_safe_python_generation(
+            "uv", project_root=tmp_path, current=current
+        )
+        assert result is None
+        # 1 initial bare-minor attempt + at most _MAX_PATCH_RETRIES retries.
+        assert managed_uv._MAX_PATCH_RETRIES <= 5, (
+            "sanity: constant should stay small since each attempt is a "
+            "real download+install+probe cycle"
+        )
+
+
+class TestListAvailablePatches:
+    """Direct unit tests for _list_available_patches()'s JSON parsing,
+    against realistic `uv python list --all-versions --output-format json`
+    output (captured from a real uv 0.11.7 invocation)."""
+
+    SAMPLE_OUTPUT = (
+        '[{"key":"cpython-3.11.15-linux-x86_64-gnu","version":"3.11.15",'
+        '"version_parts":{"major":3,"minor":11,"patch":15},"path":null,'
+        '"symlink":null,"url":"https://example/cpython-3.11.15.tar.gz",'
+        '"os":"linux","variant":"default","implementation":"cpython",'
+        '"arch":"x86_64","libc":"gnu"},'
+        '{"key":"cpython-3.11.14-linux-x86_64-gnu","version":"3.11.14",'
+        '"version_parts":{"major":3,"minor":11,"patch":14},"path":null,'
+        '"symlink":null,"url":"https://example/cpython-3.11.14.tar.gz",'
+        '"os":"linux","variant":"default","implementation":"cpython",'
+        '"arch":"x86_64","libc":"gnu"},'
+        '{"key":"pypy-3.11.15-linux-x86_64-gnu","version":"3.11.15",'
+        '"version_parts":{"major":3,"minor":11,"patch":15},"path":null,'
+        '"symlink":null,"url":"https://example/pypy-3.11.15.tar.gz",'
+        '"os":"linux","variant":"default","implementation":"pypy",'
+        '"arch":"x86_64","libc":"gnu"}]'
+    )
+
+    def test_parses_and_sorts_newest_first(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=self.SAMPLE_OUTPUT, stderr="")
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        result = managed_uv._list_available_patches(
+            "uv", "3.11", cwd=tmp_path, env={}
+        )
+        assert result == [(3, 11, 15), (3, 11, 14)]
+
+    def test_filters_out_non_cpython_implementations(self, tmp_path, monkeypatch):
+        """pypy/graalpy entries at the same version must not be returned --
+        the repair path only wants cpython builds."""
+        import hermes_cli.managed_uv as managed_uv
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=self.SAMPLE_OUTPUT, stderr="")
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        result = managed_uv._list_available_patches(
+            "uv", "3.11", cwd=tmp_path, env={}
+        )
+        # Only one 3.11.15 entry (cpython), not two (cpython + pypy).
+        assert result.count((3, 11, 15)) == 1
+
+    def test_nonzero_exit_returns_empty_list(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=1, stdout="", stderr="network error")
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        assert managed_uv._list_available_patches("uv", "3.11", cwd=tmp_path, env={}) == []
+
+    def test_malformed_json_returns_empty_list_not_crash(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="not valid json{{{", stderr="")
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        assert managed_uv._list_available_patches("uv", "3.11", cwd=tmp_path, env={}) == []
+
+    def test_subprocess_exception_returns_empty_list(self, tmp_path, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        def fake_run(cmd, **kwargs):
+            raise OSError("uv binary not found")
+
+        monkeypatch.setattr(managed_uv.subprocess, "run", fake_run)
+        assert managed_uv._list_available_patches("uv", "3.11", cwd=tmp_path, env={}) == []

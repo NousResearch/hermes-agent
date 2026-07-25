@@ -2973,6 +2973,91 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     expect(selectedStoredSessionIdRef.current).toBe(NEW_STORED_ID)
     expect(calls.some(call => call.method === 'prompt.submit')).toBe(false)
   })
+
+  it('still aborts when the user genuinely switches chats after create, during attachment sync (#62805)', async () => {
+    // The post-create re-baseline (adopting the created chat as the pinned
+    // target) must not mask a REAL switch later in the pipeline: the user
+    // clicks a different session after createBackendSessionForSend lands but
+    // before attachment sync settles — selection AND route both move to the
+    // other chat, and the drift check at the post-attachments boundary must
+    // abort rather than deliver the text into whichever chat won the race.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    let releaseFileAttach: () => void = () => {}
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeToken = `/${NEW_STORED_ID}::`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        // Block here so the user can switch sessions mid-sync.
+        await new Promise<void>(resolve => {
+          releaseFileAttach = resolve
+        })
+
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/test.pdf',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const attachment: ComposerAttachment = {
+      id: 'file:test',
+      kind: 'file',
+      label: 'test.pdf',
+      path: '/abs/test.pdf',
+      refText: '@file:`/abs/test.pdf`'
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('message before the switch', { attachments: [attachment] })
+    await waitFor(() => expect(calls.some(c => c.method === 'file.attach')).toBe(true))
+
+    // Simulate a user switching to a different session after the new session
+    // was created and the sync phase started.
+    selectedStoredSessionIdRef.current = 'stored-other-session'
+    routeToken = '/stored-other-session::'
+    releaseFileAttach()
+
+    expect(await submitting).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
 })
 
 describe('usePromptActions eager attachment upload (drop-time)', () => {

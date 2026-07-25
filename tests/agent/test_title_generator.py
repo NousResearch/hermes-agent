@@ -8,6 +8,8 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    _normalize_emoji_prefix,
+    _title_emoji_prefix_enabled,
     _title_language,
 )
 from hermes_state import SessionDB
@@ -583,3 +585,150 @@ class TestRuntimeValidator:
             assert called.wait(timeout=10), "auto_title thread never ran"
             kwargs = mock_auto.call_args.kwargs
             assert kwargs["runtime_validator"] is _v
+
+
+class TestEmojiPrefix:
+    """auxiliary.title_generation.emoji_prefix — one topical emoji per title."""
+
+    @staticmethod
+    def _response(content):
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = content
+        return resp
+
+    def test_disabled_by_default_leaves_prompt_and_title_untouched(self):
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response("Fixing Imports")) as llm,
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=False),
+        ):
+            assert generate_title("q", "a") == "Fixing Imports"
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "emoji" not in system_prompt.lower()
+
+    def test_enabled_appends_emoji_instruction_to_prompt(self):
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response("🐛 Fixing Imports")) as llm,
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=True),
+        ):
+            assert generate_title("q", "a") == "🐛 Fixing Imports"
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "Begin the title with exactly one emoji" in system_prompt
+
+    def test_emoji_instruction_composes_with_pinned_language(self):
+        """The emoji suffix must not replace the language instruction."""
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response("🐛 修复导入")) as llm,
+            patch("agent.title_generator._title_language", return_value="Chinese"),
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=True),
+        ):
+            generate_title("q", "a")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "Write the title in Chinese" in system_prompt
+        assert "Begin the title with exactly one emoji" in system_prompt
+
+    def test_normalization_applied_only_when_enabled(self):
+        """A trailing emoji is moved to the front when the feature is on, and
+        left exactly as the model wrote it when the feature is off."""
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response("Fixing Imports 🐛")),
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=True),
+        ):
+            assert generate_title("q", "a") == "🐛 Fixing Imports"
+
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response("Fixing Imports 🐛")),
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=False),
+        ):
+            assert generate_title("q", "a") == "Fixing Imports 🐛"
+
+    def test_no_emoji_from_model_degrades_to_plain_title(self):
+        """We never invent an emoji: a non-compliant model just yields today's
+        behaviour rather than a wrong icon."""
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response("Fixing Imports")),
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=True),
+        ):
+            assert generate_title("q", "a") == "Fixing Imports"
+
+    def test_length_cap_still_enforced_with_emoji(self):
+        long_title = "🐛 " + ("word " * 40)
+        with (
+            patch("agent.title_generator.call_llm", return_value=self._response(long_title)),
+            patch("agent.title_generator._title_emoji_prefix_enabled", return_value=True),
+        ):
+            title = generate_title("q", "a")
+
+        assert len(title) <= 80
+        assert title.startswith("🐛 ")
+        assert title.endswith("...")
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("🐛 Fixing Python Import Errors", "🐛 Fixing Python Import Errors"),
+            ("🐛Fixing Python Import Errors", "🐛 Fixing Python Import Errors"),
+            ("🐛 🐍 Fixing Imports", "🐛 Fixing Imports"),
+            ("🐛🐍 Fixing Imports", "🐛 Fixing Imports"),
+            ("Fixing Python Import Errors 🐛", "🐛 Fixing Python Import Errors"),
+            ("Fixing Python Import Errors", "Fixing Python Import Errors"),
+            ("👨\u200d💻 Code Review Session", "👨\u200d💻 Code Review Session"),
+            ("👍🏽 Approving The Plan", "👍🏽 Approving The Plan"),
+            ("✅ Deploy Checklist", "✅ Deploy Checklist"),
+            ("✅\ufe0f Deploy Checklist", "✅\ufe0f Deploy Checklist"),
+            ("🇯🇵 Japanese Lesson", "🇯🇵 Japanese Lesson"),
+            ("1\ufe0f\u20e3 First Task", "1\ufe0f\u20e3 First Task"),
+            ("🐛", "🐛"),
+            ("", ""),
+            ("   ", ""),
+            ("🗾 日本語のタイトル", "🗾 日本語のタイトル"),
+            ("修复 Discord 子区命名 🧵", "🧵 修复 Discord 子区命名"),
+        ],
+    )
+    def test_normalize_emoji_prefix(self, raw, expected):
+        assert _normalize_emoji_prefix(raw) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "日本語のタイトル",
+            "修复代码",
+            "العربية",
+            "Fix bug",
+            "C++ build fails",
+            "50% faster",
+            "Café menu redesign",
+            "Привет мир",
+        ],
+    )
+    def test_non_emoji_scripts_are_never_treated_as_emoji(self, text):
+        """CJK, Arabic, Cyrillic and accented Latin must pass through
+        untouched — the emoji class must not swallow ordinary text."""
+        assert _normalize_emoji_prefix(text) == text
+
+    def test_flag_emoji_keeps_both_regional_indicators(self):
+        """A flag is two regional-indicator code points; slicing one off
+        would render as a stray letter box."""
+        assert _normalize_emoji_prefix("🇯🇵 Japanese Lesson").startswith("🇯🇵")
+
+    def test_config_flag_reads_config_and_defaults_false(self):
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"auxiliary": {"title_generation": {"emoji_prefix": True}}},
+        ):
+            assert _title_emoji_prefix_enabled() is True
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"auxiliary": {"title_generation": {"emoji_prefix": "yes"}}},
+        ):
+            assert _title_emoji_prefix_enabled() is True
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
+            assert _title_emoji_prefix_enabled() is False
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=RuntimeError("bad config"),
+        ):
+            assert _title_emoji_prefix_enabled() is False

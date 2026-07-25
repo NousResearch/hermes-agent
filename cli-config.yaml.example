@@ -617,6 +617,8 @@ prompt_caching:
 #     model: ""
 #     timeout: 30
 #     language: ""           # empty = match the user's language; or e.g. "English"
+#     emoji_prefix: false    # true = start each generated title with one topical emoji
+#                            # (also applies to Discord thread / Telegram topic names)
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:

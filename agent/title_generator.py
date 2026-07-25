@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -39,6 +40,41 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
 
+# Appended to either prompt above when auxiliary.title_generation.emoji_prefix
+# is enabled. Kept as a suffix (rather than a third prompt template) so the
+# language handling above stays the single source of truth.
+_TITLE_PROMPT_EMOJI_SUFFIX = (
+    " Begin the title with exactly one emoji that fits the topic, followed by a space, "
+    "then the title text. Use only a single emoji and never end the title with one."
+)
+
+# Matches a leading emoji-ish grapheme cluster: pictographic code points plus
+# the modifiers/joiners that combine with them (skin tone, ZWJ sequences,
+# variation selectors, keycaps, regional indicators). Used to detect whether
+# the model already prefixed a title so we never double up.
+_EMOJI_CHAR_CLASS = (
+    r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u20E3\u200D"
+    r"\U0001F1E6-\U0001F1FF\U0001F3FB-\U0001F3FF\u2190-\u21FF\u2300-\u23FF]"
+)
+
+_LEADING_EMOJI_RE = re.compile(
+    "^(?:" + _EMOJI_CHAR_CLASS + r"|[0-9#*]\uFE0F?\u20E3)+"
+)
+
+# Same class anchored at the end, so a model that appends the emoji instead of
+# prefixing it can be normalized rather than discarded.
+_TRAILING_EMOJI_RE = re.compile(
+    r"(?:" + _EMOJI_CHAR_CLASS + r"|[0-9#*]\uFE0F?\u20E3)+\s*$"
+)
+
+# Code points that must stay glued to the emoji they modify when we slice a
+# run of emoji down to its first grapheme cluster.
+_EMOJI_MODIFIERS = frozenset(
+    "\u200d\ufe0f\ufe0e\u20e3"
+    + "".join(chr(cp) for cp in range(0x1F3FB, 0x1F400))  # skin tone modifiers
+    + "".join(chr(cp) for cp in range(0x1F1E6, 0x1F200))  # regional indicators
+)
+
 
 def _title_language() -> str:
     """Return configured title language, or empty string to match the user."""
@@ -52,6 +88,90 @@ def _title_language() -> str:
         ).strip()
     except Exception:
         return ""
+
+
+def _title_emoji_prefix_enabled() -> bool:
+    """Return whether generated titles should start with one topical emoji.
+
+    Off by default: a title is reused verbatim as a Discord thread name, a
+    Telegram topic name, and a session-list row, so opting in is the user's
+    call rather than a silent change to every existing surface.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from utils import is_truthy_value
+
+        config = load_config_readonly()
+        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
+        return is_truthy_value(title_config.get("emoji_prefix"), default=False)
+    except Exception:
+        logger.debug("Failed to read title_generation.emoji_prefix", exc_info=True)
+        return False
+
+
+def _normalize_emoji_prefix(title: str) -> str:
+    """Normalize an emoji-prefixed title to exactly ``<emoji> <text>``.
+
+    Models honour the prompt loosely: some emit two emoji, some omit the
+    separating space, some append the emoji to the end instead of the front.
+    Normalizing here keeps the stored title stable, which matters because the
+    same string is reused verbatim as a Discord thread name and a Telegram
+    topic name — surfaces where a trailing emoji reads as noise.
+
+    A title with no emoji at all is returned unchanged: we never invent one,
+    so a model that ignores the instruction degrades to today's behaviour
+    rather than to a wrong icon.
+    """
+    cleaned = str(title or "").strip()
+    if not cleaned:
+        return cleaned
+
+    match = _LEADING_EMOJI_RE.match(cleaned)
+    if match:
+        # Keep the first grapheme cluster only, then drop any further leading
+        # emoji runs — models regularly emit "🐛 🐍 Fixing Imports", where the
+        # space stops the regex after the first run.
+        emoji = _first_emoji_grapheme(match.group(0))
+        rest = cleaned[match.end():].strip()
+        while rest:
+            extra = _LEADING_EMOJI_RE.match(rest)
+            if not extra:
+                break
+            rest = rest[extra.end():].strip()
+        return f"{emoji} {rest}".strip() if rest else emoji
+
+    # No leading emoji — the model may have appended one instead. Move it to
+    # the front rather than discarding the signal.
+    trailing = _TRAILING_EMOJI_RE.search(cleaned)
+    if trailing:
+        rest = cleaned[: trailing.start()].strip()
+        emoji = _first_emoji_grapheme(trailing.group(0).strip())
+        if rest:
+            return f"{emoji} {rest}"
+        return emoji
+
+    return cleaned
+
+
+def _first_emoji_grapheme(emoji_run: str) -> str:
+    """Return the first emoji grapheme cluster from a run of emoji characters.
+
+    ZWJ sequences (👨‍💻) and skin-tone/variation modifiers must stay glued to
+    their base character, so a naive ``[0]`` slice would corrupt them.
+    """
+    run = str(emoji_run or "").strip()
+    if not run:
+        return run
+    end = 1
+    while end < len(run):
+        ch = run[end]
+        prev = run[end - 1]
+        # Continue through combining marks and ZWJ-joined segments.
+        if ch in _EMOJI_MODIFIERS or prev == "\u200d":
+            end += 1
+            continue
+        break
+    return run[:end]
 
 
 def _auto_title_enabled() -> bool:
@@ -115,6 +235,9 @@ def generate_title(
 
     language = _title_language()
     prompt = _TITLE_PROMPT_PINNED_LANGUAGE.format(language=language) if language else _TITLE_PROMPT
+    emoji_prefix = _title_emoji_prefix_enabled()
+    if emoji_prefix:
+        prompt += _TITLE_PROMPT_EMOJI_SUFFIX
 
     messages = [
         {"role": "system", "content": prompt},
@@ -143,6 +266,8 @@ def generate_title(
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
+        if emoji_prefix:
+            title = _normalize_emoji_prefix(title)
         # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."

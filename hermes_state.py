@@ -5984,13 +5984,42 @@ class SessionDB:
         return content
 
     @staticmethod
+    def _encode_display_metadata(display_metadata: Any) -> Optional[str]:
+        """Serialize ``display_metadata`` for its TEXT column without double-encoding.
+
+        Import/replace paths can hand us an already-serialized JSON string (the
+        same hazard ``tool_calls`` guards against above). ``json.dumps`` on that
+        string would store a quoted JSON string, and the single ``json.loads``
+        on read then yields a ``str`` instead of a dict.
+        """
+        if not display_metadata:
+            return None
+        if isinstance(display_metadata, str):
+            try:
+                parsed = json.loads(display_metadata)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Ignoring non-JSON display metadata on write")
+                return None
+            if not isinstance(parsed, dict):
+                logger.warning("Ignoring non-object display metadata on write")
+                return None
+            return json.dumps(parsed)
+        if isinstance(display_metadata, dict):
+            return json.dumps(display_metadata)
+        logger.warning(
+            "Ignoring unexpected display metadata type on write: %s",
+            type(display_metadata).__name__,
+        )
+        return None
+
+    @staticmethod
     def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
         """Decode a ``display_metadata`` column into the dict every reader expects.
 
         Every message read path must go through this. Returning the raw TEXT
         instead reaches the desktop as a string, where ``'task_count' in meta``
-        throws and fails the whole resume. Some rows are double-encoded, so
-        unwrap a second layer when we find one.
+        throws and fails the whole resume. Rows written before the encode guard
+        landed are double-encoded, so unwrap a second layer when we find one.
         """
         if raw is None:
             return None
@@ -6052,7 +6081,7 @@ class SessionDB:
         """
         # Display metadata is presentation-only and never changes the model
         # context role/content replayed to providers.
-        display_metadata_json = json.dumps(display_metadata) if display_metadata else None
+        display_metadata_json = self._encode_display_metadata(display_metadata)
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -6191,7 +6220,7 @@ class SessionDB:
                 "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
                 (
                     _scrub_surrogates(display_kind),
-                    json.dumps(display_metadata) if display_metadata else None,
+                    self._encode_display_metadata(display_metadata),
                     row[0],
                 ),
             )
@@ -6285,7 +6314,7 @@ class SessionDB:
                     1,
                     _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
                     _scrub_surrogates(msg.get("display_kind")) if isinstance(msg.get("display_kind"), str) else None,
-                    json.dumps(msg["display_metadata"]) if msg.get("display_metadata") else None,
+                    self._encode_display_metadata(msg.get("display_metadata")),
                 ),
             )
             inserted += 1

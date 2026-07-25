@@ -2383,16 +2383,17 @@ export const pl: Translations = {
     copyOutput: 'Skopiuj dane wyjściowe',
     reloadRetry: 'Załaduj ponownie i spróbuj ponownie',
     setupChoiceTitle: 'Skonfiguruj Hermes Desktop',
-    setupChoiceDesc: 'Połącz tę aplikację z działającą bramą Hermes albo zainstaluj Hermes lokalnie na tym komputerze.',
-    connectExistingTitle: 'Połącz z istniejącym Hermes',
-    connectExistingShort: 'Połącz istniejący',
+    setupChoiceDesc:
+      'Połącz tę aplikację z działającą bramą Hermesa albo zainstaluj Hermesa lokalnie na tym komputerze.',
+    connectExistingTitle: 'Połącz z istniejącą bramą Hermesa',
+    connectExistingShort: 'Połącz z bramą',
     connectExistingDesc:
       'Użyj zdalnego backendu z tokenem sesji albo logowaniem w przeglądarce. Instalacja lokalna nie zostanie uruchomiona.',
-    installLocalTitle: 'Zainstaluj Hermes lokalnie',
-    installLocalDesc: 'Pobierz Hermes, utwórz jego środowisko Python i uruchom backend na tym komputerze.',
+    installLocalTitle: 'Zainstaluj Hermesa lokalnie',
+    installLocalDesc: 'Pobierz Hermesa, utwórz jego środowisko Python i uruchom backend na tym komputerze.',
     localStartUnavailable:
       'Nie udało się rozpocząć instalacji lokalnej. Uruchom ponownie Hermes Desktop i spróbuj jeszcze raz.',
-    remoteSetupTitle: 'Połącz z istniejącym Hermes',
+    remoteSetupTitle: 'Połącz z istniejącą bramą Hermesa',
     remoteSetupDesc:
       'Wprowadź URL bramy. Hermes Desktop wykryje, czy wymagany jest token, czy logowanie w przeglądarce.',
     remoteUrlTitle: 'URL bramy',

@@ -139,6 +139,13 @@ export function isImageGenerationTool(name?: string): boolean {
   return name === 'image_generate'
 }
 
+// Windows spellings: drive-letter (`C:\…`, `C:/…`), UNC (`\\srv`, `//srv`), or
+// any backslash-rooted path. A single leading `/` stays POSIX. Mirrors the
+// path-identity helper used for project membership in `@/store/projects` so the
+// two desktop path comparisons agree on what counts as a Windows path.
+const isWindowsPath = (path: string): boolean =>
+  /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\') || path.startsWith('//')
+
 export function contextPath(path: string, cwd: string): string {
   if (!cwd) {
     return path
@@ -154,7 +161,17 @@ export function contextPath(path: string, cwd: string): string {
   const normalizedCwdRoot = slash(cwd)
   const normalizedCwd = normalizedCwdRoot.endsWith('/') ? normalizedCwdRoot : `${normalizedCwdRoot}/`
 
-  return normalizedPath.startsWith(normalizedCwd) ? normalizedPath.slice(normalizedCwd.length) : path
+  // Windows path identity is case-insensitive, so `C:\Users\Me\Proj\src\a.ts`
+  // really is under `c:/users/me/proj` and must relativize. Fold case for the
+  // *comparison key only* — the returned slice comes off `normalizedPath`, which
+  // keeps the caller's original spelling in the emitted `@file:` ref. POSIX is
+  // case-sensitive and is left alone.
+  const windows = isWindowsPath(path) || isWindowsPath(cwd)
+  const comparisonKey = (p: string) => (windows ? p.toLowerCase() : p)
+
+  return comparisonKey(normalizedPath).startsWith(comparisonKey(normalizedCwd))
+    ? normalizedPath.slice(normalizedCwd.length)
+    : path
 }
 
 // IDs are content-derived (`kind:value`), not uuids, so upsertAttachment's

@@ -461,7 +461,7 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         return ([], {}, [])
 
     container_ca = "/etc/ssl/certs/hermes-egress-ca.crt"
-    volume_args = ["-v", f"{status.ca_cert_path}:{container_ca}:ro"]
+    volume_args = ["-v", f"{status.ca_cert_path}:{container_ca}:ro,z"]
 
     # tunnel_port serves CONNECT (HTTPS); the plain-HTTP forward listener
     # is on tunnel_port + 1 (see build_proxy_config's listener-role notes).
@@ -925,13 +925,13 @@ class DockerEnvironment(BaseEnvironment):
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", f"{self._home_dir}:/root:z",
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", f"{self._workspace_dir}:/workspace:z",
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -945,7 +945,7 @@ class DockerEnvironment(BaseEnvironment):
 
         if bind_host_cwd:
             logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+            volume_args = ["-v", f"{host_cwd_abs}:/workspace:z", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
@@ -977,7 +977,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro,z",
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
@@ -997,7 +997,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro,z",
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
@@ -1019,7 +1019,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro,z",
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",

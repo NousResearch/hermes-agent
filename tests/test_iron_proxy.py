@@ -925,6 +925,10 @@ def test_docker_egress_args_full_path(hermes_home, monkeypatch):
     assert env["HERMES_PROXY_TOKEN_OPENROUTER_API_KEY"] == mapping.proxy_token
     # Linux host-gateway mapping
     assert host == ["--add-host", "host.docker.internal:host-gateway"]
+    # CA cert bind mount must carry the SELinux :z label alongside :ro, or
+    # containers on SELinux-enforcing hosts (Fedora/RHEL + podman) can't
+    # read it — same root cause as the /workspace and /root mounts.
+    assert any(arg.endswith("hermes-egress-ca.crt:ro,z") for arg in vol)
 
 
 def test_docker_egress_fingerprint_changes_with_tokens(hermes_home, monkeypatch):

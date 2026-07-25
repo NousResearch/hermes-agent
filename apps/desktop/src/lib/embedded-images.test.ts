@@ -88,4 +88,26 @@ describe('extractImageRefs', () => {
 
     expect(result).toEqual({ cleanedText: '', refs: ['@image:/tmp/only.png'] })
   })
+
+  it('lifts a backtick-quoted ref so a path with spaces survives intact', () => {
+    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+    const result = extractImageRefs(`${ref}\nwhat is this?`)
+
+    expect(result).toEqual({ cleanedText: 'what is this?', refs: [ref] })
+  })
+
+  it('drops the [screenshot] placeholder a native-vision turn leaves behind', () => {
+    // Flattening a parts list replaces each image part with `[screenshot]`; the
+    // lifted ref already renders that same attachment.
+    const result = extractImageRefs('@image:/tmp/cat.png\nwhat is in this photo?\n[screenshot]')
+
+    expect(result).toEqual({ cleanedText: 'what is in this photo?', refs: ['@image:/tmp/cat.png'] })
+  })
+
+  it('keeps [screenshot] when the message carries no image refs', () => {
+    expect(extractImageRefs('[screenshot]\nlook at the attached capture')).toEqual({
+      cleanedText: '[screenshot]\nlook at the attached capture',
+      refs: []
+    })
+  })
 })

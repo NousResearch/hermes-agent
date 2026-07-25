@@ -185,15 +185,25 @@ export function textWithoutImageRefs(text: string): string {
 // how the local optimistic composer represents attachments) rather than stay
 // embedded in the bubble's clamped text body, where a large inline thumbnail
 // pushes the caption text out of the clamp's visible area.
+// Native-vision turns are stored as a parts list, which the session store
+// flattens by replacing each image part with a literal `[screenshot]` line. The
+// `@image:` ref describes that same attachment, so keeping both renders the
+// placeholder as stray text under the thumbnail. Drop it only when a ref was
+// actually lifted, so a `[screenshot]` in a message without attachments stays.
+const SCREENSHOT_PLACEHOLDER_LINE_RE = /^\[screenshot\]\n?/gm
+
 export function extractImageRefs(text: string): { cleanedText: string; refs: string[] } {
   const refs: string[] = []
-  const cleanedText = text
-    .replace(IMAGE_REF_LINE_RE, match => {
-      refs.push(match.trim())
 
-      return ''
-    })
-    .trim()
+  let cleanedText = text.replace(IMAGE_REF_LINE_RE, match => {
+    refs.push(match.trim())
 
-  return { cleanedText, refs }
+    return ''
+  })
+
+  if (refs.length) {
+    cleanedText = cleanedText.replace(SCREENSHOT_PLACEHOLDER_LINE_RE, '')
+  }
+
+  return { cleanedText: cleanedText.trim(), refs }
 }

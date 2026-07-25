@@ -186,7 +186,17 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_type=src.get("chat_type", "dm"),
         chat_name=src.get("chat_name"),
         user_id=src.get("user_id"),
-        user_name=src.get("user_name"),
+        # Native adapters surface the human-facing DISPLAY name as user_name
+        # (e.g. Discord `message.author.display_name`); the connector sends the
+        # raw platform username as user_name plus optional user_display_name /
+        # user_handle enrichments (contract §3). Prefer the display name for
+        # parity with native lanes — session keys derive from user_id, never
+        # user_name, so this is presentation-only and key-stable.
+        user_name=(
+            src.get("user_display_name")
+            or src.get("user_name")
+            or src.get("user_handle")
+        ),
         thread_id=src.get("thread_id"),
         chat_topic=src.get("chat_topic"),
         user_id_alt=src.get("user_id_alt"),

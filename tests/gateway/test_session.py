@@ -1360,6 +1360,43 @@ class TestGatewaySessionDbRecovery:
         ]
         db.close()
 
+    def test_compression_chain_reroutes_to_live_tip_without_retry_queue(self, tmp_path):
+        import threading
+        from types import SimpleNamespace
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("parent", source="telegram")
+        db.end_session("parent", "compression")
+        db.create_session("child-1", source="telegram", parent_session_id="parent")
+        db.end_session("child-1", "compression")
+        db.create_session("child-2", source="telegram", parent_session_id="child-1")
+        db.end_session("child-2", "compression")
+        db.create_session("live-tip", source="telegram", parent_session_id="child-2")
+        db.replace_messages("live-tip", [{"role": "user", "content": "summary"}])
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store.__dict__["_lock"] = threading.RLock()
+        store.__dict__["_entries"] = {"route": SimpleNamespace(session_id="parent")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript(
+            "parent", {"role": "assistant", "content": "routed to live tip"}
+        )
+
+        assert store._entries["route"].session_id == "live-tip"
+        assert "parent" not in store._dirty_transcripts
+        assert [m["content"] for m in db.get_messages_as_conversation("live-tip")] == [
+            "summary",
+            "routed to live tip",
+        ]
+        db.close()
+
     def test_transcript_reroute_migrates_remaining_backlog_to_child(self):
         import threading
         from types import SimpleNamespace

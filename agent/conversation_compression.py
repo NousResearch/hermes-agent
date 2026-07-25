@@ -1219,9 +1219,12 @@ def _adopt_live_compression_child(
     if not callable(finder) or not callable(loader):
         return None
     child = finder(session_db, parent_session_id)
-    if not child or not child.get("id"):
+    if not isinstance(child, dict) or not child.get("id"):
         return None
     child_session_id = str(child["id"])
+    immediate_parent_session_id = str(
+        child.get("parent_session_id") or parent_session_id
+    )
     recovered = loader(session_db, child_session_id)
     if not isinstance(recovered, list) or not recovered:
         return None
@@ -1254,13 +1257,19 @@ def _adopt_live_compression_child(
         id(message) for message in recovered if isinstance(message, dict)
     }
 
+    # This is adoption of an already-published session, not a new compression
+    # boundary. Replaying ``boundary_reason='compression'`` would migrate stale
+    # counters from the ancestor into a tip that may already have newer state.
+    # ``resume`` makes engines load the durable tip as-is; the extra flag keeps
+    # the recovery provenance available to plugins without re-emitting a split.
     on_session_start = getattr(agent.context_compressor, "on_session_start", None)
     if callable(on_session_start):
         try:
             on_session_start(
                 child_session_id,
-                boundary_reason="compression",
-                old_session_id=parent_session_id,
+                boundary_reason="resume",
+                old_session_id=immediate_parent_session_id,
+                recovered_from_compression=True,
                 session_db=session_db,
                 platform=getattr(agent, "platform", None) or "cli",
                 conversation_id=getattr(agent, "_gateway_session_key", None),
@@ -1278,9 +1287,9 @@ def _adopt_live_compression_child(
         if agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 child_session_id,
-                parent_session_id=parent_session_id,
+                parent_session_id=immediate_parent_session_id,
                 reset=False,
-                reason="compression",
+                reason="resume",
             )
     except Exception as exc:
         logger.debug("memory manager compression-child adoption failed: %s", exc)

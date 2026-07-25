@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.conversation_compression import recover_rotated_compression_session
 from agent.context_compressor import ContextCompressor
 from hermes_state import SessionDB
 
@@ -306,6 +307,108 @@ class TestFallbackStreakFollowsRotation:
         assert child != parent
         assert compressor._fallback_compression_streak == 1
         assert db.get_compression_fallback_streak(child) == 1
+
+
+class TestRotatedSessionRecovery:
+    def test_recovers_live_tip_across_multiple_compressions(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "STALE_MULTI_HOP_PARENT"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+
+        db.end_session(parent, "compression")
+        db.create_session("COMPRESSED_CHILD_1", source="webui", parent_session_id=parent)
+        db.end_session("COMPRESSED_CHILD_1", "compression")
+        db.create_session(
+            "COMPRESSED_CHILD_2",
+            source="webui",
+            parent_session_id="COMPRESSED_CHILD_1",
+        )
+        db.end_session("COMPRESSED_CHILD_2", "compression")
+        db.create_session(
+            "LIVE_MULTI_HOP_TIP",
+            source="webui",
+            parent_session_id="COMPRESSED_CHILD_2",
+        )
+        db.replace_messages(
+            "LIVE_MULTI_HOP_TIP",
+            [{"role": "user", "content": "latest compacted history"}],
+        )
+        db.set_compression_fallback_streak(parent, 1)
+        db.set_compression_ineffective_count(parent, 1)
+        db.set_compression_fallback_streak("COMPRESSED_CHILD_2", 2)
+        db.set_compression_ineffective_count("COMPRESSED_CHILD_2", 2)
+        db.set_compression_fallback_streak("LIVE_MULTI_HOP_TIP", 7)
+        db.set_compression_ineffective_count("LIVE_MULTI_HOP_TIP", 8)
+        compressor = _bound_context_compressor(db, parent)
+        setattr(agent, "context_compressor", compressor)
+        memory_manager = MagicMock()
+        setattr(agent, "_memory_manager", memory_manager)
+
+        with patch.object(
+            compressor,
+            "on_session_start",
+            wraps=compressor.on_session_start,
+        ) as on_session_start:
+            recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is not None
+        assert [message["content"] for message in recovered] == [
+            "latest compacted history"
+        ]
+        assert getattr(agent, "session_id") == "LIVE_MULTI_HOP_TIP"
+        assert compressor._fallback_compression_streak == 7
+        assert compressor._ineffective_compression_count == 8
+        assert db.get_compression_fallback_streak("LIVE_MULTI_HOP_TIP") == 7
+        assert db.get_compression_ineffective_count("LIVE_MULTI_HOP_TIP") == 8
+        assert on_session_start.call_args.kwargs["boundary_reason"] == "resume"
+        assert on_session_start.call_args.kwargs["old_session_id"] == "COMPRESSED_CHILD_2"
+        assert on_session_start.call_args.kwargs["recovered_from_compression"] is True
+        memory_manager.on_session_switch.assert_called_once_with(
+            "LIVE_MULTI_HOP_TIP",
+            parent_session_id="COMPRESSED_CHILD_2",
+            reset=False,
+            reason="resume",
+        )
+
+    def test_revalidation_rejects_tip_that_rotates_during_load(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "STALE_RACING_PARENT"
+        db.create_session(parent, source="webui")
+        agent = _build_agent_with_db(db, parent, platform="webui")
+        db.end_session(parent, "compression")
+        db.create_session("RACING_TIP", source="webui", parent_session_id=parent)
+        db.replace_messages(
+            "RACING_TIP",
+            [{"role": "user", "content": "loaded before rotation"}],
+        )
+        original_loader = SessionDB.get_messages_as_conversation
+
+        def _load_then_rotate(session_db: SessionDB, session_id: str):
+            loaded = original_loader(session_db, session_id)
+            if session_id == "RACING_TIP":
+                session_db.end_session("RACING_TIP", "compression")
+                session_db.create_session(
+                    "NEW_RACING_TIP",
+                    source="webui",
+                    parent_session_id="RACING_TIP",
+                )
+                session_db.replace_messages(
+                    "NEW_RACING_TIP",
+                    [{"role": "user", "content": "new durable tip"}],
+                )
+            return loaded
+
+        with patch.object(
+            SessionDB,
+            "get_messages_as_conversation",
+            _load_then_rotate,
+        ):
+            recovered = recover_rotated_compression_session(agent)
+
+        assert recovered is None
+        assert getattr(agent, "session_id") == parent
+        getattr(agent, "context_compressor").on_session_start.assert_not_called()
 
 
 class TestAutomaticCompressionStateRefreshAfterLock:

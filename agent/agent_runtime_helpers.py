@@ -2779,6 +2779,117 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+# Placeholder substituted for an empty non-final message that would otherwise
+# make the provider reject the whole request. Kept identical to the stub-
+# creation placeholder in chat_completion_helpers so a healed transcript reads
+# consistently whether the empty turn was caught at write time or send time.
+_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
+
+
+def _msg_has_payload(msg: Dict[str, Any]) -> bool:
+    """True if ``msg`` carries anything the API treats as non-empty content.
+
+    Covers string content, non-empty multimodal content lists, tool_calls,
+    tool_call_id linkage (tool results), and reasoning payloads. Mirrors the
+    emptiness checks used by ``AIAgent._is_thinking_only_assistant`` but is
+    role-agnostic so it can vet user/assistant/tool turns uniformly.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            return True
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                # any typed block (text/image/tool_use/document/...) counts,
+                # as long as a text block is not itself blank
+                if block.get("type") == "text":
+                    if isinstance(block.get("text"), str) and block["text"].strip():
+                        return True
+                    continue
+                return True
+            elif block:
+                return True
+    elif content not in (None, ""):
+        return True
+    # Structural payloads that make an "empty-content" message still valid.
+    if msg.get("tool_calls"):
+        return True
+    if isinstance(msg.get("reasoning_content"), str) and msg["reasoning_content"].strip():
+        return True
+    if msg.get("reasoning") or msg.get("reasoning_details"):
+        return True
+    return False
+
+
+def repair_empty_non_final_messages(
+    messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Heal empty-content non-final messages before they reach the provider.
+
+    Root-cause context: a stream that dies with 0 recovered characters (peer
+    reset, stall-kill) could persist an assistant turn with ``content=None``
+    and no tool_calls. The Anthropic message schema — and the litellm/Bedrock
+    proxies in front of it — reject ANY request whose transcript contains an
+    empty non-final message:
+
+        "all messages must have non-empty content except for the optional
+         final assistant message"  (HTTP 400 INVALID_REQUEST_BODY)
+
+    Once such a message lands mid-transcript it poisons EVERY subsequent turn
+    of that session until it scrolls out of context. The write-time guard in
+    ``chat_completion_helpers`` stops NEW stubs, but sessions already carrying
+    one (persisted before the guard, or fed in from a host history) stay stuck
+    and previously needed a manual DB edit + gateway restart to recover.
+
+    This pass is the self-healing counterpart: it runs unconditionally on the
+    per-call ``api_messages`` copy, so a poisoned transcript repairs itself
+    IN MEMORY on the very next send — no restart, no DB surgery. The final
+    message is left untouched (an empty final assistant turn is legal). The
+    stored conversation history is never mutated; only the wire copy is
+    repaired, so the UI/session trace stays faithful.
+
+    Repair strategy is substitution, not deletion: dropping a mid-transcript
+    turn can break role alternation and tool-call pairing, whereas an honest
+    minimal placeholder keeps the sequence intact and reads correctly as an
+    interrupted turn on replay.
+    """
+    if not messages or len(messages) < 2:
+        return messages
+
+    repaired: List[Dict[str, Any]] = []
+    healed = 0
+    last_idx = len(messages) - 1
+    for idx, msg in enumerate(messages):
+        if (
+            idx != last_idx
+            and isinstance(msg, dict)
+            # tool results are validated by their own orphan/pairing pass; an
+            # empty tool result is a separate (and rarer) concern.
+            and msg.get("role") in ("assistant", "user")
+            and not _msg_has_payload(msg)
+        ):
+            # Shallow-copy so stored history / prompt caching stays byte-stable.
+            fixed = dict(msg)
+            fixed["content"] = _INTERRUPTED_PLACEHOLDER
+            repaired.append(fixed)
+            healed += 1
+        else:
+            repaired.append(msg)
+
+    if healed:
+        _ra().logger.warning(
+            "Pre-call sanitizer: healed %d empty non-final message(s) by "
+            "substituting placeholder content — an empty-content turn was in "
+            "the transcript and would 400 the request ('messages must have "
+            "non-empty content' / INVALID_REQUEST_BODY). Self-recovering the "
+            "poisoned transcript in memory; no restart needed.",
+            healed,
+        )
+        return repaired
+    return messages
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2798,6 +2909,15 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             continue
         filtered.append(msg)
     messages = filtered
+
+    # --- Heal empty-content non-final messages (self-recovery) ---
+    # A dead stream can leave an empty assistant stub (or an empty user turn)
+    # mid-transcript; the provider then 400s EVERY subsequent request until it
+    # scrolls out. Repair it here, on the per-call copy, so a poisoned session
+    # recovers itself in memory on the next send — no restart, no DB edit.
+    # Done first so a substituted turn participates normally in the tool-pair
+    # and dedup passes below.
+    messages = repair_empty_non_final_messages(messages)
 
     # --- Drop empty / malformed tool_calls arrays on assistant messages ---
     # An assistant message carrying ``tool_calls: []`` (an empty array) — or a

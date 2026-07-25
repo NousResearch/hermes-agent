@@ -1670,6 +1670,124 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+# The deferred prompt path waits in short slices so a cancel is honored
+# promptly and a slow build can be reported to the client exactly once.
+_AGENT_BUILD_WAIT_SLICE = 5.0
+_AGENT_BUILD_SLOW_NOTICE_AFTER = 30.0
+_AGENT_BUILD_SLOW_NOTICE_KEY = "agent-build-slow"
+
+
+def _agent_build_wait_cap() -> float:
+    """Upper bound (seconds) a submitted prompt waits for the deferred agent
+    build before failing permanently. ``agent.build_wait_timeout`` in
+    config.yaml overrides the 600s default (raise it for deployments with
+    many slow/unreachable MCP servers or high-latency provider metadata)."""
+    try:
+        agent_cfg = _load_cfg().get("agent") or {}
+        raw = agent_cfg.get("build_wait_timeout")
+        if raw is not None:
+            value = float(raw)
+            if value > 0:
+                return value
+    except Exception:
+        pass
+    return 600.0
+
+
+def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
+    """Patient variant of ``_wait_agent`` for the deferred prompt.submit path.
+
+    The flat 30s ``_wait_agent`` ceiling was a message-eating cliff (#63078):
+    ``prompt.submit`` has already returned ``{"status": "streaming"}``, the
+    user's first message IS the turn in flight, and the deferred agent build
+    (MCP discovery with per-server retry backoff, synchronous model-metadata
+    HTTP, skills scanning) routinely outlives 30 seconds on cold starts. On
+    timeout the old path emitted an error EVENT and returned without ever
+    calling ``_run_prompt_submit`` — the first message was permanently
+    discarded while the build finished successfully in the background, leaving
+    the blank first session.
+
+    This wait instead:
+      - keeps the pending prompt attached to this (already off-RPC) thread and
+        delivers it the moment the still-running build completes;
+      - waits in short slices so a cancel (session.interrupt / session churn)
+        is honored promptly instead of after the full timeout;
+      - tells the client once, via a keyed notice, when the build outlives
+        ``_AGENT_BUILD_SLOW_NOTICE_AFTER`` — the wait is patient but never
+        silent;
+      - fails permanently only when the build itself fails: the build thread
+        died without signalling ready, or the bounded cap
+        (``agent.build_wait_timeout``, default 600s — no infinite waits)
+        expired on a genuinely hung build.
+
+    Returns ``None`` on success OR when the turn was cancelled mid-wait (the
+    caller's cancel branch owns that messaging), an ``_err`` dict otherwise.
+    """
+    ready = session.get("agent_ready")
+    if ready is None:
+        return None
+    start = time.monotonic()
+    cap = _agent_build_wait_cap()
+    notified_slow = False
+    while not ready.wait(timeout=_AGENT_BUILD_WAIT_SLICE):
+        with session["history_lock"]:
+            cancelled = session.get("_turn_cancel_requested") or not session.get(
+                "running"
+            )
+        if cancelled:
+            # The caller's cancel/not-running branch emits the user-visible
+            # event for this — bail without an error of our own.
+            return None
+        waited = time.monotonic() - start
+        if waited >= cap:
+            return _err(
+                rid,
+                5032,
+                f"agent initialization timed out after {int(waited)}s — "
+                "your message was not sent; retry once the session is ready",
+            )
+        build_thread = session.get("_agent_build_thread")
+        if (
+            build_thread is not None
+            and not build_thread.is_alive()
+            and not ready.is_set()
+        ):
+            # _build's ``finally`` guarantees ready.set(); a dead thread with
+            # ready still unset means the build died hard (interpreter-level
+            # kill) — don't wait on a corpse for the rest of the cap.
+            return _err(
+                rid,
+                5032,
+                session.get("agent_error")
+                or "agent initialization failed before completing",
+            )
+        if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
+            # One keyed, replace-in-place notice: the desktop shows it as a
+            # toast, the TUI in its status bar. Without this the extended wait
+            # would be exactly the silent hang this function exists to fix.
+            notified_slow = True
+            _emit(
+                "notification.show",
+                sid,
+                {
+                    "text": (
+                        "Still starting the agent (tool discovery / model "
+                        "setup) — your message will be sent as soon as it's "
+                        "ready."
+                    ),
+                    "level": "info",
+                    "kind": "agent",
+                    "ttl_ms": None,
+                    "key": _AGENT_BUILD_SLOW_NOTICE_KEY,
+                    "id": _AGENT_BUILD_SLOW_NOTICE_KEY,
+                },
+            )
+    if notified_slow:
+        _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
+    err = session.get("agent_error")
+    return _err(rid, 5032, err) if err else None
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -1846,7 +1964,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     pass
             ready.set()
 
-    threading.Thread(target=_build, daemon=True).start()
+    build_thread = threading.Thread(target=_build, daemon=True)
+    # Handle for _wait_agent_for_prompt: a dead build thread with agent_ready
+    # still unset means the build died hard — waiters must not sit out the
+    # full cap on a corpse.
+    session["_agent_build_thread"] = build_thread
+    build_thread.start()
 
 
 def _sess_nowait(params, rid):
@@ -10338,7 +10461,12 @@ def _(rid, params: dict) -> dict:
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
-        err = _wait_agent(session, rid)
+        # Patient wait (#63078): the user's message is already the accepted
+        # in-flight turn, so a slow deferred build must not eat it. The wait
+        # delivers the prompt when the still-running build completes, honors a
+        # cancel promptly, notices the user once past the slow threshold, and
+        # only errors when the build itself fails or the bounded cap expires.
+        err = _wait_agent_for_prompt(session, rid, sid)
         if err:
             _emit(
                 "error",

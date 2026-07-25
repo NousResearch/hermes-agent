@@ -966,6 +966,14 @@ DEFAULT_CONFIG = {
         # Set a positive value in config.yaml only if you explicitly want a
         # grace window on /restart (and keep it well under TimeoutStopSec).
         "restart_drain_timeout": 0,
+        # Upper bound (seconds) a submitted prompt waits for the deferred
+        # agent build (MCP discovery, model metadata, skills scan) before
+        # failing with a visible error (#63078). The gateway's wait is
+        # patient — the prompt is delivered the moment the build completes
+        # and a progress notice is emitted past 30s — so this cap only fires
+        # on a genuinely hung build. Raise it for deployments with many slow
+        # or unreachable MCP servers.
+        "build_wait_timeout": 600,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries

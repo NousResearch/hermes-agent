@@ -293,6 +293,8 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
     monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
     monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
+    # The deferred inline-fallback thread now waits via the patient variant.
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda _session, _rid, _sid: None)
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
@@ -8097,6 +8099,329 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
         assert len(error_events) == 1, f"expected one error event, got: {emitted}"
         msg = error_events[0][2].get("message", "")
         assert "no longer running" in msg.lower(), f"unexpected message: {msg}"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
+    """#63078 server-side half: a deferred build slower than the old 30s
+    ``_wait_agent`` cliff must NOT eat the first message. The patient wait
+    keeps the pending prompt attached and delivers it as soon as the
+    still-running build completes."""
+    threads = []
+    emitted = []
+    calls = {"run_prompt": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    ready = threading.Event()
+    session = _session(agent_ready=ready)
+    session["agent"] = None
+    server._sessions["sid"] = session
+
+    # The build "completes" only after the wait loop has already gone through
+    # several empty slices — i.e. well past what a single fixed-timeout wait
+    # slice would tolerate.
+    slices = {"n": 0}
+
+    class _SlowReady:
+        def wait(self, timeout=None):
+            slices["n"] += 1
+            if slices["n"] >= 3:
+                ready.set()
+                session["agent"] = types.SimpleNamespace()
+                return True
+            return False
+
+        def is_set(self):
+            return ready.is_set()
+
+    session["agent_ready"] = _SlowReady()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "first message"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+
+        threads[0].target()
+
+        # The message was DELIVERED, not dropped, and no error event fired.
+        assert calls["run_prompt"] == 1
+        error_events = [e for e in emitted if e and e[0] == "error"]
+        assert not error_events, f"unexpected error events: {error_events}"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
+    """Past the slow threshold the patient wait must tell the user once
+    (keyed notification.show) and clear the notice when the build lands —
+    a long wait is acceptable, a silent one is not."""
+    threads = []
+    emitted = []
+    calls = {"run_prompt": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    ready = threading.Event()
+    session = _session(agent_ready=ready)
+    session["agent"] = None
+    server._sessions["sid"] = session
+
+    slices = {"n": 0}
+
+    class _SlowReady:
+        def wait(self, timeout=None):
+            slices["n"] += 1
+            if slices["n"] >= 3:
+                ready.set()
+                session["agent"] = types.SimpleNamespace()
+                return True
+            return False
+
+        def is_set(self):
+            return ready.is_set()
+
+    session["agent_ready"] = _SlowReady()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        # Every wait slice lands past the slow threshold.
+        monkeypatch.setattr(server, "_AGENT_BUILD_SLOW_NOTICE_AFTER", 0.0)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "first message"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+
+        threads[0].target()
+
+        assert calls["run_prompt"] == 1
+        shows = [e for e in emitted if e and e[0] == "notification.show" and e[1] == "sid"]
+        clears = [e for e in emitted if e and e[0] == "notification.clear" and e[1] == "sid"]
+        # Exactly one keyed notice, replaced-in-place semantics, then cleared.
+        assert len(shows) == 1, f"expected one slow-build notice, got: {shows}"
+        assert shows[0][2].get("key") == server._AGENT_BUILD_SLOW_NOTICE_KEY
+        assert len(clears) == 1 and clears[0][2].get("key") == server._AGENT_BUILD_SLOW_NOTICE_KEY
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
+    """When the build itself FAILS (agent_error set when ready fires), the
+    prompt must not run and the failure must reach the client as a visible
+    error event — never a silent drop."""
+    threads = []
+    emitted = []
+    calls = {"run_prompt": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    ready = threading.Event()
+    ready.set()  # build finished...
+    session = _session(agent_ready=ready)
+    session["agent"] = None
+    session["agent_error"] = "No LLM provider configured"  # ...but failed
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "first message"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+
+        threads[0].target()
+
+        assert calls["run_prompt"] == 0
+        assert session["running"] is False
+        error_events = [e for e in emitted if e and e[0] == "error" and e[1] == "sid"]
+        assert len(error_events) == 1, f"expected one error event, got: {emitted}"
+        assert "No LLM provider configured" in error_events[0][2].get("message", "")
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_dead_build_thread_fails_fast_not_full_cap(monkeypatch):
+    """A build thread that died without setting agent_ready means the build
+    died hard — the waiter must fail promptly with a visible error instead of
+    sitting out the full wait cap on a corpse."""
+    emitted = []
+
+    class _DeadThread:
+        def is_alive(self):
+            return False
+
+    ready = threading.Event()  # never set
+    session = _session(agent_ready=ready)
+    session["agent"] = None
+    session["running"] = True
+    session["_agent_build_thread"] = _DeadThread()
+    session["agent_error"] = "agent init failed: boom"
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        # Short slices so the test is fast; the dead-thread check fires on the
+        # first empty slice, far below the cap.
+        monkeypatch.setattr(server, "_AGENT_BUILD_WAIT_SLICE", 0.01)
+
+        start = time.monotonic()
+        err = server._wait_agent_for_prompt(session, "rid-1", "sid")
+        elapsed = time.monotonic() - start
+
+        assert err is not None
+        assert "boom" in (err.get("error") or {}).get("message", "")
+        assert elapsed < 5.0, f"dead-thread detection took {elapsed:.1f}s"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_wait_agent_for_prompt_honors_cancel_mid_wait(monkeypatch):
+    """A cancel arriving during the patient wait must end it promptly and
+    return None (the caller's cancel branch owns the user-visible event)."""
+    ready = threading.Event()  # never set
+    session = _session(agent_ready=ready)
+    session["agent"] = None
+    session["running"] = True
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server, "_AGENT_BUILD_WAIT_SLICE", 0.01)
+
+        def cancel_soon():
+            time.sleep(0.05)
+            with session["history_lock"]:
+                session["_turn_cancel_requested"] = True
+
+        canceller = threading.Thread(target=cancel_soon)
+        canceller.start()
+        start = time.monotonic()
+        err = server._wait_agent_for_prompt(session, "rid-1", "sid")
+        elapsed = time.monotonic() - start
+        canceller.join()
+
+        assert err is None
+        assert elapsed < 5.0, f"cancel honored only after {elapsed:.1f}s"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_agent_build_wait_cap_config_override(monkeypatch):
+    """agent.build_wait_timeout in config.yaml overrides the default cap;
+    invalid/absent values fall back to 600s."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": 90}})
+    assert server._agent_build_wait_cap() == 90.0
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+    assert server._agent_build_wait_cap() == 600.0
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": 0}})
+    assert server._agent_build_wait_cap() == 600.0
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"build_wait_timeout": "nonsense"}})
+    assert server._agent_build_wait_cap() == 600.0
+
+
+def test_wait_agent_for_prompt_expires_at_cap(monkeypatch):
+    """A genuinely hung build (thread alive, never ready) still fails at the
+    bounded cap with a message that tells the user their text was not sent."""
+    class _AliveThread:
+        def is_alive(self):
+            return True
+
+    ready = threading.Event()  # never set
+    session = _session(agent_ready=ready)
+    session["agent"] = None
+    session["running"] = True
+    session["_agent_build_thread"] = _AliveThread()
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server, "_AGENT_BUILD_WAIT_SLICE", 0.01)
+        monkeypatch.setattr(server, "_agent_build_wait_cap", lambda: 0.05)
+
+        err = server._wait_agent_for_prompt(session, "rid-1", "sid")
+
+        assert err is not None
+        message = (err.get("error") or {}).get("message", "")
+        assert "timed out" in message and "was not sent" in message
     finally:
         server._sessions.pop("sid", None)
 

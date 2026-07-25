@@ -16367,6 +16367,8 @@ def main():
                 db.close()
                 return
 
+            lineage_is_logical = getattr(args, "lineage", "single") == "logical"
+
             if args.session_id:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
@@ -16386,7 +16388,7 @@ def main():
                             target_id,
                             include_lineage=(
                                 target_id == resolved_session_id
-                                and getattr(args, "lineage", "single") == "logical"
+                                and lineage_is_logical
                             ),
                         )
                     except FileExistsError as e:
@@ -16479,7 +16481,7 @@ def main():
                 try:
                     data, exported_path = _export_one(
                         row["id"],
-                        include_lineage=getattr(args, "lineage", "single") == "logical",
+                        include_lineage=lineage_is_logical,
                     )
                 except FileExistsError as e:
                     print(f"Skipping existing export: {e}. Pass --force to overwrite.")

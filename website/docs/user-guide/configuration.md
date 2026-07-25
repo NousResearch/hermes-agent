@@ -985,6 +985,18 @@ If you do not want Hermes to auto-generate titles after the first exchange, set
 `auxiliary.title_generation.enabled: false`. Manual titles still work through
 `/title` and `hermes sessions rename`.
 
+### Stream-only endpoints
+
+Some OpenAI-compatible endpoints reject non-streaming chat requests outright (e.g. Tencent Copilot returns HTTP 400 `"Non-stream chat request is currently not supported"`). Interactive chat already streams, but auxiliary tasks (title generation, compression, web extraction) use non-streaming calls and would fail on every attempt. Hermes always treats `copilot.tencent.com` as stream-only; for any other such endpoint, list a URL substring under `auxiliary.stream_only_base_urls`:
+
+```yaml
+auxiliary:
+  stream_only_base_urls:
+    - "my-stream-only-proxy.example.com"
+```
+
+Matching auxiliary calls are sent with `stream=True` and the chunks (including tool-call deltas) are aggregated client-side — no behavior change for any other endpoint.
+
 ### Video Tutorial
 
 <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>

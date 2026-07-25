@@ -689,12 +689,16 @@ class TestInterpreterPropagationThroughRunJob:
         }
 
         with patch("cron.scheduler._run_job_script", return_value=(True, "ok")) as mock_run:
-            success, output = _run_job_script_with_claim_heartbeat(job, "monitor.py")
+            success, output = _run_job_script_with_claim_heartbeat(
+                job, "monitor.py", workdir="/srv/reporting"
+            )
 
         assert success is True
         assert output == "ok"
         mock_run.assert_called_once_with(
-            "monitor.py", workdir=None, interpreter="/opt/venv/bin/python"
+            "monitor.py",
+            workdir="/srv/reporting",
+            interpreter="/opt/venv/bin/python",
         )
 
     def test_one_shot_heartbeat_forwards_interpreter_to_runner(self, cron_env, monkeypatch):
@@ -750,12 +754,16 @@ class TestInterpreterPropagationThroughRunJob:
         monkeypatch.setattr(sched_mod.threading, "Thread", _BrokenThread)
 
         with patch("cron.scheduler._run_job_script", return_value=(True, "ok")) as mock_run:
-            success, output = _run_job_script_with_claim_heartbeat(job, "oneshot.py")
+            success, output = _run_job_script_with_claim_heartbeat(
+                job, "oneshot.py", workdir="/srv/fallback"
+            )
 
         assert success is True
         assert output == "ok"
         mock_run.assert_called_once_with(
-            "oneshot.py", workdir=None, interpreter="/opt/venv/bin/python"
+            "oneshot.py",
+            workdir="/srv/fallback",
+            interpreter="/opt/venv/bin/python",
         )
 
 

@@ -1,16 +1,6 @@
-import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
-
-import { PageLoader } from '@/components/page-loader'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { getAutomationBlueprints } from '@/hermes'
 import type { AutomationBlueprint, AutomationBlueprintField } from '@/hermes'
-import { useI18n } from '@/i18n'
-import { selectableCardClass } from '@/lib/selectable-card'
-import { cn } from '@/lib/utils'
-
-import { PanelDetail, PanelEmpty, PanelPill } from '../overlays/panel'
 
 // The blueprint catalog is shared with the dashboard, so its deliver slot
 // defaults to "origin" (the chat/home-channel a dashboard or gateway job was
@@ -97,68 +87,5 @@ export function BlueprintSlotControl({
       type="text"
       value={value}
     />
-  )
-}
-
-// A clickable blueprint card — mirrors the app's other selectable cards
-// (theme/pet/gateway/profile pickers) via selectableCardClass. Clicking opens
-// the shared cron editor dialog pre-filled with this blueprint's slots; there's
-// no inline expand form or divider.
-function BlueprintCard({ blueprint, onSetUp }: { blueprint: AutomationBlueprint; onSetUp: () => void }) {
-  return (
-    <button
-      className={cn(selectableCardClass({ prominent: true }), 'w-full p-2 text-left')}
-      onClick={onSetUp}
-      type="button"
-    >
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-foreground">{blueprint.title}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{blueprint.description}</p>
-        {blueprint.tags.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {blueprint.tags.map(tag => (
-              <PanelPill key={tag}>{tag}</PanelPill>
-            ))}
-          </div>
-        )}
-      </div>
-    </button>
-  )
-}
-
-// Automation Blueprints gallery — the desktop counterpart to the dashboard's
-// blueprint tab. Each card opens the shared cron editor dialog pre-filled with
-// the blueprint's typed slots; submitting POSTs to
-// /api/cron/blueprints/instantiate, which fills the blueprint and creates the
-// job via the same create_job path as a hand-written cron.
-export function BlueprintsPanel({ onSetUp }: { onSetUp: (blueprint: AutomationBlueprint) => void }) {
-  const { t } = useI18n()
-  const c = t.cron
-
-  const blueprints = useQuery({
-    queryKey: ['cron-blueprints'],
-    queryFn: async () => (await getAutomationBlueprints()).blueprints
-  })
-
-  const cards = useMemo(() => blueprints.data ?? [], [blueprints.data])
-
-  if (blueprints.isLoading) {
-    return <PageLoader label={c.blueprints.loading} />
-  }
-
-  if (blueprints.isError) {
-    return <PanelEmpty description={c.blueprints.failedLoad} icon="warning" title={c.blueprints.failedLoad} />
-  }
-
-  if (cards.length === 0) {
-    return <PanelEmpty description={c.blueprints.emptyDesc} icon="lightbulb" title={c.blueprints.emptyTitle} />
-  }
-
-  return (
-    <PanelDetail>
-      {cards.map(blueprint => (
-        <BlueprintCard blueprint={blueprint} key={blueprint.key} onSetUp={() => onSetUp(blueprint)} />
-      ))}
-    </PanelDetail>
   )
 }

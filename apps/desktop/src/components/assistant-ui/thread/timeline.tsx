@@ -101,8 +101,15 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
   jumpRaf = requestAnimationFrame(step)
 }
 
-function scrollToPrompt(id: string) {
-  const viewport = document.querySelector<HTMLElement>(VIEWPORT)
+// A timeline belongs to ONE chat surface, and several are mounted at once — side
+// by side in a split, and stacked (hidden but kept alive) as inactive tabs. Walk
+// up to this timeline's own surface before looking for the viewport; a
+// document-wide lookup scrolls somebody else's thread.
+export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
+  (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
+
+function scrollToPrompt(root: HTMLElement | null, id: string) {
+  const viewport = ownViewport(root)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
   if (!viewport || !node) {
@@ -139,6 +146,8 @@ export const ThreadTimeline: FC = () => {
   const [activeIndex, setActiveIndex] = useState(0)
   const [open, setOpen] = useState(false)
   const closeTimerRef = useRef<number | undefined>(undefined)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const jump = useCallback((id: string) => scrollToPrompt(rootRef.current, id), [])
 
   // Hover sync lives on the DOM, not in React state — the tick and its popover
   // row are siblings in different subtrees, so a shared index-keyed paint() lights
@@ -176,7 +185,7 @@ export const ThreadTimeline: FC = () => {
   useEffect(() => () => window.clearTimeout(closeTimerRef.current), [])
 
   useEffect(() => {
-    const viewport = document.querySelector<HTMLElement>(VIEWPORT)
+    const viewport = ownViewport(rootRef.current)
 
     if (!viewport || entries.length === 0) {
       return
@@ -236,20 +245,15 @@ export const ThreadTimeline: FC = () => {
       data-suppress-pane-reveal=""
       onMouseEnter={keepOpen}
       onMouseLeave={closeSoon}
+      ref={rootRef}
       role="navigation"
     >
-      <TimelineTicks
-        activeIndex={activeIndex}
-        entries={entries}
-        onHover={paint}
-        onJump={scrollToPrompt}
-        tickRefs={tickRefs}
-      />
+      <TimelineTicks activeIndex={activeIndex} entries={entries} onHover={paint} onJump={jump} tickRefs={tickRefs} />
       <TimelinePopover
         activeIndex={activeIndex}
         entries={entries}
         onHover={paint}
-        onJump={scrollToPrompt}
+        onJump={jump}
         open={open}
         rowRefs={rowRefs}
       />

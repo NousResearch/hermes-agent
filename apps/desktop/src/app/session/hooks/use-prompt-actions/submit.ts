@@ -174,9 +174,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // drain is for the current view (no storedSessionId, or it matches the
       // foreground), the foreground runtime is correct and must be kept.
       const isBackgroundQueueDrain = Boolean(
-        options?.fromQueue &&
-          options?.storedSessionId &&
-          options.storedSessionId !== selectedStoredSessionIdRef.current
+        options?.fromQueue && options?.storedSessionId && options.storedSessionId !== selectedStoredSessionIdRef.current
       )
 
       let sessionId: null | string = options?.sessionId ?? (isBackgroundQueueDrain ? null : activeSessionIdRef.current)

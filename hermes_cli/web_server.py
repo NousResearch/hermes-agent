@@ -11153,6 +11153,9 @@ def _xai_device_poller(session_id: str) -> None:
                 discovery=discovery,
                 last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 auth_mode="oauth_device_code",
+                # Dashboard OAuth only bootstraps credentials for side tools;
+                # do not hijack the active chat inference provider.
+                set_active=False,
             )
             # The singleton write above is the single source of truth: the
             # credential-pool load seeds it as the canonical ``device_code``

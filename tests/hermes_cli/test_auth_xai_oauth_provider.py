@@ -281,6 +281,40 @@ def test_save_and_read_xai_oauth_tokens_roundtrip(tmp_path, monkeypatch):
     assert data["discovery"]["token_endpoint"] == "https://auth.x.ai/oauth2/token"
 
 
+def test_save_xai_oauth_tokens_set_active_false_preserves_active_provider(
+    tmp_path, monkeypatch
+):
+    """Side-tool credential saves must not flip auth.json active_provider."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openrouter",
+                "providers": {},
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_xai_oauth_tokens(
+        {
+            "access_token": "side-tool-at",
+            "refresh_token": "side-tool-rt",
+            "id_token": "",
+            "token_type": "Bearer",
+        },
+        discovery={"token_endpoint": "https://auth.x.ai/oauth2/token"},
+        set_active=False,
+    )
+
+    raw = json.loads(auth_path.read_text())
+    assert raw["active_provider"] == "openrouter"
+    assert raw["providers"]["xai-oauth"]["tokens"]["access_token"] == "side-tool-at"
+
+
 def test_read_xai_oauth_tokens_missing(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

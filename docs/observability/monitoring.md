@@ -16,7 +16,7 @@ capture is a separate plane served by the NeMo Relay integration
 
 | Signal | OTLP route | Content |
 | --- | --- | --- |
-| Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/background_work/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
+| Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/background_work/background_delegations/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
 | Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
 | Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), a monotonic catch-up-occurrence count from the scheduler's stale-window branch, enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
@@ -26,16 +26,19 @@ Signals carry `service.name`, version, supervision mode, and a stable one-way
 hash of the install id so an operator can distinguish instances without
 exporting account/profile identity or the raw install identifier.
 
-`hermes.gateway.active_agents` and `hermes.gateway.background_work` are
-complementary and deliberately disjoint. `active_agents` counts foreground
-message turns plus in-flight cron jobs plus API runs — the work the gateway
-drains on shutdown. `background_work` counts detached work that `active_agents`
-never includes: backgrounded `delegate_task` subagents, `terminal(background=true)`
-processes, and kanban workers. `background_work` is **task-granular** — a
-fan-out batch of N subagents counts as N, not as one dispatch unit — so it
-reflects real concurrent subagent load rather than async-pool slot usage (a
-batch occupies one slot but runs N children). Sum both for total live work per
-instance.
+`hermes.gateway.active_agents`, `hermes.gateway.background_work`, and
+`hermes.gateway.background_delegations` are complementary. `active_agents`
+counts foreground message turns plus in-flight cron jobs plus API runs — the
+work the gateway drains on shutdown. `background_work` counts detached work that
+`active_agents` never includes: backgrounded `delegate_task` subagents,
+`terminal(background=true)` processes, and kanban workers; it is
+**task-granular** — a fan-out batch of N subagents counts as N — so it reflects
+real concurrent subagent load. `background_delegations` counts only async
+delegation **units** (each `delegate_task` dispatch is one, a fan-out batch is
+one), matching the async pool's capacity accounting; alert it against
+`delegation.max_concurrent_children` to see slot pressure. Sum `active_agents`
+and `background_work` for total live work per instance; use
+`background_delegations` for pool-saturation.
 
 ## Enabling
 

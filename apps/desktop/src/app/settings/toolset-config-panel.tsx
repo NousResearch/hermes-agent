@@ -497,6 +497,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // Guard the Nous Portal sign-in poll loop against unmount/state updates.
   const mountedRef = useRef(true)
 
+  // eslint-disable-next-line no-restricted-syntax -- mount flag guarding an async poll loop, not an atom mirror
   useEffect(() => {
     mountedRef.current = true
 
@@ -538,6 +539,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // first fully-configured provider, else the first provider. Without this the
   // panel highlighted the first keyless provider (e.g. Nous Portal) even when
   // the user had already selected another (e.g. DuckDuckGo).
+  // eslint-disable-next-line no-restricted-syntax -- one-shot provider-choice claim flag, not an atom mirror
   useEffect(() => {
     if (providerChoiceClaimedRef.current || activeProvider || providers.length === 0) {
       return

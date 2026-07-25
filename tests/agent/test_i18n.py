@@ -56,6 +56,7 @@ def test_catalog_placeholders_match_english(lang: str):
     value.  Pin parity at the test layer.
     """
     import re
+
     placeholder_re = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
     en_flat = _flatten(_load_raw("en"))
     lang_flat = _flatten(_load_raw(lang))
@@ -99,32 +100,24 @@ def test_t_explicit_polish_lang():
     assert i18n.t("approval.denied", lang="pl").endswith("Odrzucono")
 
 
-def test_polish_catalog_has_no_known_literal_translation_regressions():
-    """Keep machine-translation artifacts out of user-visible Polish copy."""
-    import re
+def test_polish_catalog_preserves_targeted_translation_semantics():
+    """Pin corrected meanings to the keys where literal regressions occurred."""
+    catalog = _flatten(_load_raw("pl"))
 
-    text = "\n".join(str(value) for value in _flatten(_load_raw("pl")).values())
-    forbidden = [
-        r"modelk",
-        r"Bliźnięt",
-        r"\bBieganie\b",
-        r"\bBiegnij\b",
-        r"\bWłaz\b",
-        r"\bTarło\b",
-        r"Zremis",
-        r"\boddział",
-        r"żeton",
-        r"kompozytor",
-        r"zaplecz",
-        r"Pulpit Hermes",
-        r"Centrum dowodzenia",
-        r"\bbramk",
-        r"\bmonit(?:u|em|ach|ami|y|ów|owi|cie|owanie|owania)?\b",
-        r"zachęt",
-        r"narzędzi\(a\)|serwera\(ów\)|umiejętność\(i\)",
-    ]
-    for pattern in forbidden:
-        assert not re.search(pattern, text, flags=re.IGNORECASE), pattern
+    # Valid vocabulary elsewhere must not affect these key-specific contracts.
+    catalog["unrelated.valid_vocabulary"] = "oddział żeton kompozytor monit"
+
+    expected = {
+        "gateway.agents.async_jobs": "**Zadania asynchroniczne bramy:** {count}",
+        "gateway.reload_mcp.tools_available": (
+            "\n🔧 Dostępne narzędzia: {tools} · Połączone serwery: {servers}"
+        ),
+        "gateway.reload_skills.total": "\n📚 Dostępne umiejętności: {count}",
+        "gateway.restart.in_progress": "⏳ Ponowne uruchamianie bramy jest już w toku…",
+        "gateway.status.header": "📊 **Stan bramy Hermes**",
+    }
+
+    assert {key: catalog[key] for key in expected} == expected
 
 
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):

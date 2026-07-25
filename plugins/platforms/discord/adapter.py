@@ -9224,7 +9224,16 @@ def _define_discord_view_classes() -> None:
             self.add_item(cancel_btn)
 
         def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown for a specific provider."""
+            """Build the model dropdown(s) for a specific provider.
+
+            Discord caps each ``discord.ui.Select`` at 25 options and a View at
+            5 action rows. We keep 2 rows for Back/Cancel, so partition the
+            model list across up to 3 select menus (75 slots) instead of
+            truncating at 25. This matters for providers like Nous whose
+            curated + Portal free-recommendation list exceeds 25 entries — the
+            tail (typically the ``:free`` Portal picks) was previously dropped
+            on Discord, so free-tier models never surfaced there.
+            """
             self.clear_items()
             provider = next(
                 (p for p in self.providers if p["slug"] == provider_slug), None
@@ -9233,31 +9242,45 @@ def _define_discord_view_classes() -> None:
                 return
 
             models = provider.get("models", [])
-            options = []
-            for model_id in models[:25]:
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
-                options.append(
-                    discord.SelectOption(
-                        label=_truncate_discord_component_text(
-                            short,
-                            _DISCORD_SELECT_FIELD_LIMIT,
-                        ),
-                        value=_truncate_discord_component_text(
-                            model_id,
-                            _DISCORD_SELECT_FIELD_LIMIT,
-                        ),
-                    )
-                )
-            if not options:
+            if not models:
                 return
 
-            select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
-                options=options,
-                custom_id="model_model_select",
-            )
-            select.callback = self._on_model_selected
-            self.add_item(select)
+            # Slice the model list into chunks of <= 25 across (up to) 3 select
+            # rows. Stash the full partitioned list so the count message in
+            # _on_provider_selected can report how many are actually shown.
+            chunks = [
+                models[i : i + 25] for i in range(0, len(models), 25)
+            ][:3]
+            self._model_chunks = chunks
+
+            total_rows = len(chunks) + 2  # + Back/Cancel buttons
+            placeholder_base = f"Choose a model from {provider.get('name', provider_slug)}"
+            for idx, chunk in enumerate(chunks):
+                options = []
+                for model_id in chunk:
+                    short = model_id.split("/")[-1] if "/" in model_id else model_id
+                    options.append(
+                        discord.SelectOption(
+                            label=_truncate_discord_component_text(
+                                short,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                            value=_truncate_discord_component_text(
+                                model_id,
+                                _DISCORD_SELECT_FIELD_LIMIT,
+                            ),
+                        )
+                    )
+                suffix = f" ({idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+                select = discord.ui.Select(
+                    placeholder=f"{placeholder_base}{suffix}...",
+                    options=options,
+                    custom_id=f"model_model_select_{idx}",
+                )
+                # All model selects resolve through the same handler — the
+                # selected value is the model id, identical across rows.
+                select.callback = self._on_model_selected
+                self.add_item(select)
 
             back_btn = discord.ui.Button(
                 label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
@@ -9322,8 +9345,15 @@ def _define_discord_view_classes() -> None:
 
             self._build_model_select(provider_slug)
 
+            # `shown` counts models actually rendered across the partitioned
+            # select menus (up to 3×25 = 75); older code hard-capped at 25 and
+            # silently dropped the tail (e.g. Nous `:free` Portal picks).
             total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
+            chunks = getattr(self, "_model_chunks", None)
+            if chunks is not None:
+                shown = sum(len(c) for c in chunks)
+            else:
+                shown = min(len(provider.get("models", [])), 25) if provider else 0
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(

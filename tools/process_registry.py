@@ -79,6 +79,106 @@ WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
 
+# ---------------------------------------------------------------------------
+# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# ---------------------------------------------------------------------------
+# When Hermes runs as a systemd gateway with MemoryHigh/MemoryMax limits,
+# local background terminal commands inherit the gateway's cgroup.  A
+# memory-heavy executor (Codex, tests, Node) can push the whole cgroup past
+# MemoryMax and trigger systemd-oomd to kill the ENTIRE gateway — taking down
+# the messaging control plane and silently losing the active turn.
+#
+# Wrapping the spawn in ``systemd-run --user --scope --unit=hermes-worker-<pid>``
+# places the worker in its own transient cgroup so an OOM in the worker kills
+# only the worker, not the gateway.  We probe *once* whether
+# ``systemd-run --user --scope`` is actually usable (the binary can exist on
+# the PATH while the user D-Bus session is unavailable — common for system
+# services and containers), and cache the result for the process lifetime.
+
+_SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+
+
+def _systemd_run_user_scope_available() -> bool:
+    """Return True if ``systemd-run --user --scope`` can create a cgroup.
+
+    Cached after the first probe.  ``shutil.which`` alone is insufficient:
+    in system-service deployments (and containers) the user D-Bus session
+    bus that ``systemd-run --user`` needs may be absent even though the
+    binary is on PATH, causing every spawn to fail with
+    ``Failed to connect to user bus``.  We do a cheap no-op probe
+    (``systemd-run --user --scope --unit=… -- /bin/true``) and remember the
+    outcome.
+    """
+    global _SYSTEMD_SCOPE_AVAILABLE
+    if _SYSTEMD_SCOPE_AVAILABLE is not None:
+        return _SYSTEMD_SCOPE_AVAILABLE
+
+    _SYSTEMD_SCOPE_AVAILABLE = False
+    if _IS_WINDOWS:
+        return False
+    try:
+        import shutil
+
+        binary = shutil.which("systemd-run")
+        if not binary:
+            return False
+        # Probe: create a transient scope that immediately exits.  Use a
+        # unique unit name so concurrent probes don't collide.  A short
+        # timeout guards against a hung D-Bus.
+        probe_unit = f"hermes-probe-scope-{os.getpid()}-{int(time.time())}"
+        result = subprocess.run(
+            [
+                binary, "--user", "--scope",
+                "--unit", probe_unit,
+                "--collect",
+                "/bin/true",
+            ],
+            capture_output=True,
+            timeout=3,
+        )
+        _SYSTEMD_SCOPE_AVAILABLE = result.returncode == 0
+        if not _SYSTEMD_SCOPE_AVAILABLE:
+            logger.debug(
+                "systemd-run --user --scope probe failed (rc=%s): %s",
+                result.returncode,
+                (result.stderr or b"").decode("utf-8", "replace").strip(),
+            )
+    except Exception as exc:
+        logger.debug("systemd-run --user --scope probe error: %s", exc)
+        _SYSTEMD_SCOPE_AVAILABLE = False
+    return _SYSTEMD_SCOPE_AVAILABLE
+
+
+def _build_systemd_scope_argv(
+    shell_argv: List[str],
+    unit_suffix: str,
+) -> List[str]:
+    """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
+
+    The resulting cgroup gets its own memory accounting so an OOM in the
+    worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
+    the transient scope self-clean after exit; ``--unit`` gives it a
+    recognisable name for ``systemctl --user status`` / journalctl.
+    """
+    import shutil
+
+    binary = shutil.which("systemd-run")
+    if binary is None:
+        # Caller should have checked _systemd_run_user_scope_available();
+        # guard anyway so we never pass None into Popen.
+        return shell_argv
+    unit_name = f"hermes-worker-{unit_suffix}"
+    return [
+        binary,
+        "--user",
+        "--scope",
+        "--unit",
+        unit_name,
+        "--collect",
+        *shell_argv,
+    ]
+
+
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -780,8 +880,52 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
+        # Cgroup isolation (#70716): when running under a service manager
+        # (systemd gateway), wrap the worker in its own transient systemd
+        # scope so it gets a separate cgroup.  An OOM in the worker then
+        # kills only the worker instead of taking down the whole gateway
+        # cgroup (and the messaging control plane with it).  We only do this
+        # for the common pipe-mode path; PTY mode is left as future work.
+        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        use_systemd_scope = False
+        under_supervisor = False
+        try:
+            from gateway.restart import is_gateway_supervisor_process
+
+            under_supervisor = is_gateway_supervisor_process()
+            use_systemd_scope = (
+                not _IS_WINDOWS
+                and under_supervisor
+                and _systemd_run_user_scope_available()
+            )
+        except Exception:
+            use_systemd_scope = False
+
+        if use_systemd_scope:
+            spawn_argv = _build_systemd_scope_argv(
+                shell_argv, unit_suffix=session.id,
+            )
+            # systemd-run creates the new session/cgroup for us; do NOT also
+            # set start_new_session (harmless, but redundant and it can mask
+            # scope-creation failures in some systemd versions).
+            popen_start_new_session = False
+        else:
+            spawn_argv = shell_argv
+            popen_start_new_session = True
+            if not _IS_WINDOWS and under_supervisor:
+                # Running under a supervisor but could not get a private
+                # cgroup — the worker shares the gateway cgroup, so an OOM
+                # in the worker can still kill the whole gateway (#70716).
+                logger.debug(
+                    "Local background executor not isolated in a systemd scope "
+                    "(supervisor=%s, systemd-run --user available=%s); "
+                    "worker shares the gateway cgroup.",
+                    under_supervisor,
+                    _systemd_run_user_scope_available(),
+                )
+
         proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {safe_command}"],
+            spawn_argv,
             text=True,
             cwd=session.cwd,
             env=bg_env,
@@ -790,7 +934,7 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=popen_start_new_session,
             **_popen_kwargs,
         )
 

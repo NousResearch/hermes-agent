@@ -26,6 +26,21 @@ def registry():
     return ProcessRegistry()
 
 
+@pytest.fixture(autouse=True)
+def _reset_systemd_scope_cache():
+    """Reset the cached ``systemd-run --user --scope`` availability flag
+    before each test so a probe run on a real systemd host (where
+    ``INVOCATION_ID`` is set) doesn't leak into tests that mock
+    ``subprocess.Popen``. Tests that exercise the probe directly reset the
+    cache themselves."""
+    import tools.process_registry as _pr
+
+    original = _pr._SYSTEMD_SCOPE_AVAILABLE
+    _pr._SYSTEMD_SCOPE_AVAILABLE = False
+    yield
+    _pr._SYSTEMD_SCOPE_AVAILABLE = original
+
+
 def _make_session(
     sid="proc_test123",
     command="echo hello",
@@ -1572,3 +1587,149 @@ class TestReaderLoopOrphanedPipe:
             except (ProcessLookupError, PermissionError):
                 pass
 
+# =========================================================================
+# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# =========================================================================
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
+class TestSystemdCgroupIsolation:
+    """Verify spawn_local wraps the worker in ``systemd-run --user --scope``
+    when running under a supervisor and systemd-run is available, and falls
+    back to the legacy ``start_new_session`` path otherwise.
+
+    Issue #70716: local background terminal executors inherit the gateway's
+    cgroup, so an OOM in a memory-heavy worker lets systemd-oomd kill the
+    ENTIRE gateway cgroup, taking down the messaging control plane.
+    """
+
+    def _fake_popen_capture(self):
+        """Return (fake_popen, captured) where captured["argv"] gets the
+        argv passed to subprocess.Popen."""
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["start_new_session"] = kwargs.get("start_new_session")
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.stdout = iter([])
+            proc.stdin = MagicMock()
+            proc.poll.return_value = None
+            return proc
+
+        return fake_popen, captured
+
+    def test_wraps_in_systemd_scope_when_supervisor_and_available(
+        self, registry, monkeypatch
+    ):
+        """Under a supervisor with systemd-run available, the spawn argv is
+        wrapped in ``systemd-run --user --scope --unit=hermes-worker-<id>``."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+        # _build_systemd_scope_argv calls shutil.which — point it at a stub.
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv[0] == "/usr/bin/systemd-run", argv
+        assert "--user" in argv
+        assert "--scope" in argv
+        assert "--unit" in argv
+        unit_idx = argv.index("--unit")
+        assert argv[unit_idx + 1].startswith("hermes-worker-"), argv
+        assert argv[unit_idx + 1] == f"hermes-worker-{session.id}", argv
+        # The original shell command must still be present at the tail.
+        assert "/bin/bash" in argv
+        assert "set +m; echo hello" in argv
+        # systemd-run owns session/cgroup creation — no start_new_session.
+        assert captured["start_new_session"] is False
+
+    def test_falls_back_when_systemd_run_unavailable(
+        self, registry, monkeypatch
+    ):
+        """Under a supervisor but without systemd-run, fall back to the
+        legacy ``start_new_session=True`` path (worker shares the gateway
+        cgroup)."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: True,
+        )
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        # No systemd-run wrapping — direct shell invocation.
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+
+    def test_falls_back_when_not_under_supervisor(
+        self, registry, monkeypatch
+    ):
+        """CLI mode (no supervisor) must NOT wrap in a systemd scope even if
+        systemd-run is available — isolation is a gateway concern."""
+        fake_popen, captured = self._fake_popen_capture()
+
+        monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            "tools.process_registry._systemd_run_user_scope_available",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "gateway.restart.is_gateway_supervisor_process",
+            lambda: False,
+        )
+
+        with patch("subprocess.Popen", side_effect=fake_popen), \
+            patch("threading.Thread", return_value=MagicMock()), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_local("echo hello", cwd="/tmp")
+
+        argv = captured["argv"]
+        assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
+        assert captured["start_new_session"] is True
+
+    def test_systemd_run_user_scope_available_caches_after_probe(
+        self, registry, monkeypatch
+    ):
+        """The availability check probes once and caches — a second call must
+        not re-probe (and must return the same value)."""
+        import tools.process_registry as pr
+
+        # Reset the cache.
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        first = pr._systemd_run_user_scope_available()
+        second = pr._systemd_run_user_scope_available()
+        assert first is True
+        assert second is True
+        assert len(probe_calls) == 1, "probe must run only once (cached)"

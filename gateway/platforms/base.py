@@ -1807,6 +1807,16 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+
+    # Structured interactive-prompt reply (relay Phase 3). Present when this
+    # event is the user answering a native interactive prompt rendered by the
+    # relay connector (Discord component / Telegram inline keyboard / Slack
+    # Block Kit / WhatsApp button-list). Shape mirrors the wire contract:
+    # {prompt_id, option_id, label?, prompt_message_id?}. The RelayAdapter
+    # consumes it in _on_inbound (routing to the approval/slash-confirm/
+    # clarify resolvers) BEFORE normal dispatch; native adapters never set it
+    # (their button callbacks resolve in-process).
+    prompt_response: Optional[Dict[str, Any]] = None
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.

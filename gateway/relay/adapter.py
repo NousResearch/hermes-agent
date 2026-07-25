@@ -95,6 +95,14 @@ class RelayAdapter(BasePlatformAdapter):
         # None when either is absent (media lanes then degrade to the
         # pre-media text fallbacks).
         self._media_client: Optional["RelayMediaClient"] = None
+        # Phase 3 interactive: prompt_id -> pending-prompt state. A `prompt`
+        # op renders native options; the user's pick comes back inbound as a
+        # prompt_response naming this id. The registry maps it back to the
+        # waiting primitive (approval / slash-confirm / clarify) so the click
+        # resolves EXACTLY like the native adapters' button callbacks.
+        # Entries expire lazily (see _pop_prompt) so an unanswered prompt
+        # never leaks. Keyed by our own minted 8-hex ids.
+        self._pending_prompts: Dict[str, Dict[str, Any]] = {}
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -235,6 +243,12 @@ class RelayAdapter(BasePlatformAdapter):
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
         self._capture_scope(event)
+        # Phase 3: a structured prompt answer resolves its waiting primitive
+        # (approval/confirm/clarify) and is CONSUMED — it must not also
+        # dispatch as a chat message. Unknown/expired prompt ids fall through
+        # (the command-shaped text then behaves like a typed reply).
+        if await self._consume_prompt_response(event):
+            return
         await self._localize_inbound_media(event)
         await self.handle_message(event)
 
@@ -432,6 +446,11 @@ class RelayAdapter(BasePlatformAdapter):
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
                     self._capture_scope(event)
+                    # Phase 3: a component press carrying a Hermes prompt token
+                    # resolves its waiting primitive and is consumed (same
+                    # gate as _on_inbound's prompt_response arm).
+                    if await self._consume_prompt_response(event):
+                        return
                     await self.handle_message(event)
                     return
             logger.info(
@@ -499,7 +518,49 @@ class RelayAdapter(BasePlatformAdapter):
             scope_id=str(guild_id) if guild_id else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
         )
-        return MessageEvent(text=text, message_type=message_type, source=source)
+        event = MessageEvent(text=text, message_type=message_type, source=source)
+        if itype == 3:
+            # Phase 3: a component press whose custom_id is a Hermes prompt
+            # token (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt
+            # answer — _on_inbound's _consume_prompt_response then resolves
+            # the waiting approval/confirm/clarify, replacing the bare-
+            # custom_id-as-text stub. Foreign custom_ids keep the legacy
+            # best-effort TEXT shape.
+            decoded = self._decode_prompt_token(text)
+            if decoded:
+                prompt_id, option_id = decoded
+                msg = payload.get("message") or {}
+                prompt_message_id = (
+                    str(msg.get("id")) if isinstance(msg, dict) and msg.get("id") else None
+                )
+                event.prompt_response = {
+                    "prompt_id": prompt_id,
+                    "option_id": option_id,
+                    "prompt_message_id": prompt_message_id,
+                }
+                event.text = f"/{option_id}"
+                event.message_type = MessageType.COMMAND
+        return event
+
+    @staticmethod
+    def _decode_prompt_token(token: str):
+        """Decode an hp1:<prompt_id>:<option_id> callback token, or None.
+
+        Mirrors the connector's promptCodec.decodePromptCallback (the token
+        alphabet is [A-Za-z0-9_.-], ≤32 per id) so both ends agree on what is
+        — and is not — a Hermes prompt answer.
+        """
+        import re
+
+        if not token:
+            return None
+        parts = token.split(":")
+        if len(parts) != 3 or parts[0] != "hp1":
+            return None
+        id_re = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
+        if not id_re.match(parts[1]) or not id_re.match(parts[2]):
+            return None
+        return parts[1], parts[2]
 
     @staticmethod
     def _render_interaction_options(options) -> list:
@@ -1051,3 +1112,413 @@ class RelayAdapter(BasePlatformAdapter):
             chat_id, file_path, caption=caption, file_name=file_name,
             reply_to=reply_to, metadata=metadata, **kwargs,
         )
+
+    # ── Phase 3 interactive: prompt + react ──────────────────────────────
+
+    def _mint_prompt(self, kind: str, state: Dict[str, Any], timeout_s: float = 3600.0) -> str:
+        """Register a pending prompt and return its 8-hex id.
+
+        ``state`` carries what the resolver needs when the answer comes back
+        (session_key, resolver kind, per-kind extras). Expiry is enforced
+        gateway-side on consumption (_pop_prompt) — the wire's timeout_s is
+        advisory only.
+        """
+        import secrets
+        import time
+
+        prompt_id = secrets.token_hex(4)
+        self._pending_prompts[prompt_id] = {
+            **state,
+            "kind": kind,
+            "expires_at": time.time() + timeout_s,
+        }
+        # Opportunistic sweep so abandoned prompts can't accumulate: drop
+        # anything already expired (cheap — dict is small by construction).
+        now = time.time()
+        for stale in [k for k, v in self._pending_prompts.items() if v.get("expires_at", 0) < now]:
+            self._pending_prompts.pop(stale, None)
+        return prompt_id
+
+    def _pop_prompt(self, prompt_id: str) -> Optional[Dict[str, Any]]:
+        """Consume a pending prompt: one answer wins, expired entries miss."""
+        import time
+
+        state = self._pending_prompts.pop(str(prompt_id), None)
+        if not state:
+            return None
+        if state.get("expires_at", 0) < time.time():
+            return None
+        return state
+
+    async def _send_prompt(
+        self,
+        chat_id: str,
+        *,
+        prompt_kind: str,
+        text: str,
+        prompt_id: str,
+        options: list,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_s: Optional[int] = None,
+    ) -> Optional[SendResult]:
+        """Egress one `prompt` op; None when the lane is unavailable.
+
+        Mirrors _send_media's progressive-enhancement posture: op-gated on the
+        descriptor advertising `prompt`, and every failure returns None so the
+        caller falls back to its numbered-text base behaviour (which is the
+        pre-Phase-3 UX, still fully functional via typed replies).
+        """
+        if self._transport is None or not self.descriptor.supports_op("prompt"):
+            return None
+        action: Dict[str, Any] = {
+            "op": "prompt",
+            "chat_id": chat_id,
+            "content": text,
+            "prompt_kind": prompt_kind,
+            "prompt_id": prompt_id,
+            "options": options,
+            "reply_to": reply_to,
+            "metadata": self._with_scope(chat_id, metadata),
+        }
+        if timeout_s is not None:
+            action["timeout_s"] = int(timeout_s)
+        try:
+            result = await self._transport.send_outbound(
+                action,
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+        except Exception:  # noqa: BLE001 - transport failure degrades to fallback
+            logger.debug("relay prompt transport failure", exc_info=True)
+            return None
+        if not result.get("success"):
+            logger.warning(
+                "relay prompt declined for %s: %s", chat_id, result.get("error")
+            )
+            return None
+        return SendResult(
+            success=True,
+            message_id=result.get("message_id"),
+            raw_response=result,
+        )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        allow_session: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Native-button exec approval over the relay (Phase 3).
+
+        Renders the same choice set as the native adapters (Allow Once /
+        Session / Always / Deny, gated by the same flags) through the
+        connector's `prompt` op. The user's press comes back as a
+        prompt_response and resolves via tools.approval.resolve_gateway_approval
+        — the exact mechanism the native button handlers use. When the lane is
+        unavailable the send FAILS (success=False) so gateway/run.py's existing
+        button→text fallback takes over (same contract as a native adapter's
+        failed button send).
+        """
+        options: list = [{"id": "once", "label": "✅ Allow Once", "style": "success"}]
+        if not smart_denied and allow_session:
+            options.append({"id": "session", "label": "✅ Session", "style": "primary"})
+            if allow_permanent:
+                options.append({"id": "always", "label": "✅ Always", "style": "primary"})
+        options.append({"id": "deny", "label": "❌ Deny", "style": "danger"})
+
+        cmd_preview = command if len(command) <= 1500 else command[:1500] + "..."
+        text = (
+            "⚠️ **Command Approval Required**\n\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {description}"
+        )
+        if smart_denied:
+            text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+
+        prompt_id = self._mint_prompt(
+            "exec_approval",
+            {"session_key": session_key, "chat_id": str(chat_id)},
+        )
+        result = await self._send_prompt(
+            chat_id,
+            prompt_kind="approval",
+            text=text,
+            prompt_id=prompt_id,
+            options=options,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        # Lane unavailable: unregister and let run.py's text fallback run.
+        self._pending_prompts.pop(prompt_id, None)
+        return SendResult(success=False, error="relay prompt op unavailable")
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Three-button slash-command confirmation over the relay (Phase 3).
+
+        Resolves via tools.slash_confirm.resolve() — the same primitive the
+        native button handlers call. Falls back (success=False) to the
+        gateway's text-intercept flow when the prompt lane is unavailable.
+        """
+        options = [
+            {"id": "once", "label": "✅ Approve Once", "style": "success"},
+            {"id": "always", "label": "🔒 Always Approve", "style": "primary"},
+            {"id": "cancel", "label": "❌ Cancel", "style": "danger"},
+        ]
+        text = f"**{title}**\n\n{message}" if title else message
+        prompt_id = self._mint_prompt(
+            "slash_confirm",
+            {
+                "session_key": session_key,
+                "confirm_id": confirm_id,
+                "chat_id": str(chat_id),
+            },
+        )
+        result = await self._send_prompt(
+            chat_id,
+            prompt_kind="approval",
+            text=text,
+            prompt_id=prompt_id,
+            options=options,
+            metadata=metadata,
+        )
+        if result is not None:
+            return result
+        self._pending_prompts.pop(prompt_id, None)
+        return SendResult(success=False, error="relay prompt op unavailable")
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Native-button clarify over the relay (Phase 3).
+
+        Multiple-choice clarifies render as a `prompt` op (one button per
+        choice + Other). A press resolves via
+        tools.clarify_gateway.resolve_gateway_clarify with the CHOICE TEXT
+        (never the option id); "Other" flips the clarify to text-capture
+        exactly like the native adapters. Open-ended clarifies and
+        unavailable lanes fall back to the base numbered-text behaviour.
+
+        Option ids are positional (c0..cN / other) — choice text can be
+        arbitrary UTF-8 and would blow the 64-byte callback budget; the
+        registry maps ids back to the real strings on the answer.
+        """
+        if choices and self.descriptor.supports_op("prompt"):
+            options = [
+                {"id": f"c{i}", "label": str(choice)[:75]}
+                for i, choice in enumerate(choices)
+            ]
+            options.append({"id": "other", "label": "✏️ Other (type your answer)"})
+            prompt_id = self._mint_prompt(
+                "clarify",
+                {
+                    "session_key": session_key,
+                    "clarify_id": clarify_id,
+                    "choices": [str(c) for c in choices],
+                    "chat_id": str(chat_id),
+                },
+            )
+            result = await self._send_prompt(
+                chat_id,
+                prompt_kind="clarify",
+                text=f"❓ {question}",
+                prompt_id=prompt_id,
+                options=options,
+                metadata=metadata,
+            )
+            if result is not None:
+                return result
+            self._pending_prompts.pop(prompt_id, None)
+        return await super().send_clarify(
+            chat_id, question, choices, clarify_id, session_key, metadata=metadata
+        )
+
+    async def _consume_prompt_response(self, event) -> bool:
+        """Route an inbound prompt_response to its waiting primitive.
+
+        Returns True when the event was a prompt answer (consumed — do NOT
+        dispatch it as a chat message), False otherwise. Unknown/expired
+        prompt ids fall through to normal dispatch: the command-shaped text
+        ("/once", "/deny", …) then behaves like a typed reply, which the
+        approval/confirm text lanes already understand — the same stale-tap
+        degradation the native adapters implement with an "expired" edit.
+        """
+        pr = getattr(event, "prompt_response", None)
+        if not isinstance(pr, dict):
+            return False
+        prompt_id = str(pr.get("prompt_id") or "")
+        option_id = str(pr.get("option_id") or "")
+        if not prompt_id or not option_id:
+            return False
+        state = self._pop_prompt(prompt_id)
+        if state is None:
+            logger.info(
+                "relay prompt_response for unknown/expired prompt %s (option=%s) — "
+                "falling through to text dispatch",
+                prompt_id,
+                option_id,
+            )
+            return False
+
+        kind = state.get("kind")
+        chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
+        session_key = str(state.get("session_key") or "")
+        try:
+            if kind == "exec_approval":
+                from tools.approval import resolve_gateway_approval
+
+                choice = option_id if option_id in {"once", "session", "always", "deny"} else "deny"
+                count = resolve_gateway_approval(session_key, choice)
+                label = {
+                    "once": "✅ Approved once",
+                    "session": "✅ Approved for session",
+                    "always": "✅ Approved permanently",
+                    "deny": "❌ Denied",
+                }.get(choice, "Resolved")
+                if not count:
+                    label = "⌛ Approval expired — no command was waiting."
+                # Acknowledge in-channel (the connector's prompt message can't
+                # be edited cross-platform yet — edit support varies; a short
+                # confirmation preserves the audit trail the native edit gives).
+                await self.send(chat_id, label, metadata=self._prompt_reply_metadata(event))
+                if count:
+                    self.resume_typing_for_chat(chat_id)
+            elif kind == "slash_confirm":
+                from tools import slash_confirm as slash_confirm_mod
+
+                choice = option_id if option_id in {"once", "always", "cancel"} else "cancel"
+                result_text = await slash_confirm_mod.resolve(
+                    session_key, str(state.get("confirm_id") or ""), choice
+                )
+                label = {
+                    "once": "✅ Approved once",
+                    "always": "🔒 Always approve",
+                    "cancel": "❌ Cancelled",
+                }.get(choice, "Resolved")
+                await self.send(chat_id, label, metadata=self._prompt_reply_metadata(event))
+                if result_text:
+                    await self.send(
+                        chat_id, str(result_text), metadata=self._prompt_reply_metadata(event)
+                    )
+            elif kind == "clarify":
+                from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
+
+                clarify_id = str(state.get("clarify_id") or "")
+                if option_id == "other":
+                    mark_awaiting_text(clarify_id)
+                    await self.send(
+                        chat_id,
+                        "✏️ Type your answer:",
+                        metadata=self._prompt_reply_metadata(event),
+                    )
+                else:
+                    choices = state.get("choices") or []
+                    try:
+                        idx = int(option_id[1:]) if option_id.startswith("c") else -1
+                    except ValueError:
+                        idx = -1
+                    if 0 <= idx < len(choices):
+                        resolve_gateway_clarify(clarify_id, str(choices[idx]))
+                        await self.send(
+                            chat_id,
+                            f"✅ {choices[idx]}",
+                            metadata=self._prompt_reply_metadata(event),
+                        )
+                    else:
+                        # Unmappable option: flip to text capture so the user
+                        # can answer by typing (never dead-end a clarify).
+                        mark_awaiting_text(clarify_id)
+            else:
+                logger.warning("relay prompt_response with unknown kind %r", kind)
+        except Exception:  # noqa: BLE001 - a resolver failure must not kill the reader
+            logger.warning("relay prompt_response resolution failed", exc_info=True)
+        return True
+
+    def _prompt_reply_metadata(self, event) -> Dict[str, Any]:
+        """Thread/topic metadata so prompt acks land where the prompt lives."""
+        meta: Dict[str, Any] = {}
+        thread_id = getattr(event.source, "thread_id", None)
+        if thread_id:
+            meta["thread_id"] = str(thread_id)
+        return meta
+
+    # ── Phase 3 ack lifecycle (👀 → ✅/❌) ────────────────────────────────
+
+    async def _react(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        *,
+        remove: bool = False,
+    ) -> bool:
+        """Egress one `react` op; best-effort (False on any failure).
+
+        Reactions are cosmetic by contract: a failure is logged at debug and
+        never surfaces to the caller's flow (mirrors the native Discord
+        adapter's _add_reaction posture).
+        """
+        if self._transport is None or not self.descriptor.supports_op("react"):
+            return False
+        if not chat_id or not message_id:
+            return False
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "react",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "emoji": emoji,
+                    "remove": remove,
+                    "metadata": self._with_scope(chat_id, None),
+                },
+                platform=self._platform_by_chat.get(str(chat_id)),
+            )
+            return bool(result.get("success"))
+        except Exception:  # noqa: BLE001 - reactions are cosmetic
+            logger.debug("relay react failed", exc_info=True)
+            return False
+
+    async def on_processing_start(self, event) -> None:
+        """Add the 👀 in-progress reaction (op-gated; silent no-op otherwise)."""
+        message_id = getattr(event, "message_id", None) or getattr(
+            event.source, "message_id", None
+        )
+        chat_id = getattr(event.source, "chat_id", None)
+        if message_id and chat_id:
+            await self._react(str(chat_id), str(message_id), "👀")
+
+    async def on_processing_complete(self, event, outcome) -> None:
+        """Swap 👀 for ✅/❌ per outcome (op-gated; silent no-op otherwise)."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        message_id = getattr(event, "message_id", None) or getattr(
+            event.source, "message_id", None
+        )
+        chat_id = getattr(event.source, "chat_id", None)
+        if not (message_id and chat_id):
+            return
+        await self._react(str(chat_id), str(message_id), "👀", remove=True)
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._react(str(chat_id), str(message_id), "✅")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._react(str(chat_id), str(message_id), "❌")

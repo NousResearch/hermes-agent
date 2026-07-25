@@ -2041,6 +2041,77 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/nonexistent", state)
         assert result is None
 
+    def test_slash_handler_pins_the_session_cwd(self, agent, mock_manager, tmp_path):
+        """A slash handler must resolve the client's cwd, not the install tree.
+
+        Slash commands run on the event-loop thread, outside the per-turn
+        ``copy_context()`` that pins the cwd for the agent call. ``/compress``
+        reaches ``agent._build_system_prompt()``, whose "Current working
+        directory" line comes from ``resolve_agent_cwd()`` — and the rebuilt
+        prompt is PERSISTED as the session's cached prompt, so an unpinned
+        handler poisons every later turn even though the turn is pinned.
+        """
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        state = mock_manager.create_session(cwd=str(workspace))
+        state.cwd = str(workspace)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        state.history = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+        ]
+        state.agent.compression_enabled = True
+        state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
+        state.agent._session_db = None
+
+        observed = {}
+
+        def _compress(messages, system_prompt, **kwargs):
+            from agent.runtime_cwd import resolve_agent_cwd
+
+            observed["cwd"] = str(resolve_agent_cwd())
+            return [{"role": "user", "content": "summary"}], "new-system"
+
+        state.agent._compress_context = _compress
+
+        with (
+            patch.object(agent.session_manager, "save_session"),
+            patch(
+                "agent.model_metadata.estimate_request_tokens_rough",
+                side_effect=[40, 12],
+            ),
+        ):
+            agent._handle_slash_command("/compress", state)
+
+        assert observed.get("cwd") == str(workspace), (
+            "the slash handler resolved "
+            f"{observed.get('cwd')!r} instead of the ACP client's cwd "
+            f"{str(workspace)!r}"
+        )
+
+    def test_slash_handler_cwd_pin_does_not_leak(self, agent, mock_manager, tmp_path):
+        """The pin is scoped to the handler's own context copy.
+
+        Concurrent ACP sessions share the event loop, so a handler that pinned
+        the ambient context would leave its workspace bound for whatever runs
+        next. Asserting the ambient value is unchanged after dispatch keeps the
+        fix from trading one cross-session leak for another.
+        """
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        state = mock_manager.create_session(cwd=str(workspace))
+        state.cwd = str(workspace)
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        before = str(resolve_agent_cwd())
+        agent._handle_slash_command("/help", state)
+        assert str(resolve_agent_cwd()) == before
+
     @pytest.mark.asyncio
     async def test_slash_command_intercepted_in_prompt(self, agent, mock_manager):
         """Slash commands should be handled without calling the LLM."""

@@ -10228,6 +10228,19 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
+def _size_delta_label(saved_mb: float) -> str:
+    """Human label for a before/after database size delta, in MB.
+
+    A negative delta means the file GREW — concurrent session writes during a
+    long optimize can outweigh what the rebuild freed. Printing
+    "reclaimed -163.0 MB" for that reads as data loss, so say "grew by"
+    instead.
+    """
+    if saved_mb >= 0:
+        return f"reclaimed {saved_mb:.1f} MB"
+    return f"grew by {-saved_mb:.1f} MB"
+
+
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 
 # Per-file size cap for the pre-update quick snapshot. Anything larger is
@@ -16674,11 +16687,18 @@ def main():
                 if db_path.exists()
                 else 0.0
             )
+            # Same WAL caveat as optimize-storage: after a VACUUM the main file
+            # on disk lags until the WAL is checkpointed back (refused while a
+            # live gateway holds a read-mark), so stat() understates the win and
+            # can go negative. SQLite's page accounting is correct immediately.
+            logical_after = db.logical_size_bytes()
+            if logical_after is not None:
+                after_mb = logical_after / (1024 * 1024)
             saved = before_mb - after_mb
             print(f"Optimized {n} FTS index(es).")
             print(
                 f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
-                f"(reclaimed {saved:.1f} MB)"
+                f"({_size_delta_label(saved)})"
             )
 
         elif action == "optimize-storage":
@@ -16761,12 +16781,21 @@ def main():
             after_mb = (
                 os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
             )
+            # Prefer SQLite's own page accounting over stat(). In WAL mode a
+            # VACUUM's rewrite sits in the -wal file until a checkpoint folds it
+            # back, and that checkpoint is refused while another connection (a
+            # live gateway) holds a read-mark — so the main file on disk still
+            # reads at its pre-VACUUM size and keeps growing. stat()ing it here
+            # reported "reclaimed -3820.1 MB" on a DB that had actually shrunk
+            # 60%. page_count * page_size is correct immediately.
+            logical_after = db.logical_size_bytes()
+            if logical_after is not None:
+                after_mb = logical_after / (1024 * 1024)
             saved = before_mb - after_mb
-            saved_label = f"reclaimed {saved:.1f} MB" if saved >= 0 else f"grew by {-saved:.1f} MB"
             print(f"\n✓ Search index optimized.")
             print(
                 f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
-                f"({saved_label})"
+                f"({_size_delta_label(saved)})"
             )
             if result.get("vacuumed") is False:
                 print("  (VACUUM was skipped or failed — run "

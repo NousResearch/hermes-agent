@@ -1326,6 +1326,14 @@ def _classify_400(
         any(p in error_msg for p in _INVALID_MESSAGE_BODY_PATTERNS)
         or error_code_lower == "invalid_request_body"
     ):
+        logger.warning(
+            "Malformed message array 400 (invalid request body) classified as "
+            "format_error, NOT context overflow — failing fast + falling back "
+            "instead of entering the compression loop. This usually means an "
+            "empty-content assistant stub is in the transcript; num_messages=%s "
+            "approx_tokens=%s. error=%.200s",
+            num_messages, approx_tokens, error_msg,
+        )
         return result_fn(
             FailoverReason.format_error,
             retryable=False,

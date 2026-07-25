@@ -251,6 +251,16 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # connector that doesn't send it, a dm, or a no-context platform, so
         # this is purely additive and byte-identical to today when unset.
         channel_context=_render_relay_context(raw.get("context")),
+        # Structured interactive-prompt reply (Phase 3): carried verbatim off
+        # the wire when present ({prompt_id, option_id, label?,
+        # prompt_message_id?}). The RelayAdapter's inbound bridge consumes it
+        # to resolve pending approvals/confirms/clarifies; a gateway that
+        # predates the resolvers just sees the command-shaped text.
+        prompt_response=(
+            dict(raw["prompt_response"])
+            if isinstance(raw.get("prompt_response"), dict)
+            else None
+        ),
     )
 
 

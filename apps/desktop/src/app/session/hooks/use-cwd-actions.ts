@@ -17,11 +17,7 @@ interface CwdActionsOptions {
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useCwdActions({
-  activeSessionIdRef,
-  onSessionRuntimeInfo,
-  requestGateway
-}: CwdActionsOptions) {
+export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, requestGateway }: CwdActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 

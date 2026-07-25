@@ -732,13 +732,7 @@ export function usePromptActions({
 
       return false
     },
-    [
-      activeSessionIdRef,
-      appendSessionTextMessage,
-      requestGateway,
-      selectedStoredSessionIdRef,
-      updateSessionState
-    ]
+    [activeSessionIdRef, appendSessionTextMessage, requestGateway, selectedStoredSessionIdRef, updateSessionState]
   )
 
   const reloadFromMessage = useCallback(

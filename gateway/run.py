@@ -13191,6 +13191,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_compression_enabled = True
             _hyg_hard_msg_limit = 5000
             _hyg_timeout_seconds = 30.0
+            _hyg_total_ceiling_seconds = 600.0
             _hyg_failure_cooldown_seconds = 300.0
             _hyg_config_context_length = None
             _hyg_provider = None
@@ -13245,6 +13246,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_timeout_seconds = _parsed
                             except (TypeError, ValueError):
                                 pass
+                        _raw_ceiling = _comp_cfg.get("hygiene_total_ceiling_seconds")
+                        if _raw_ceiling is not None:
+                            try:
+                                _parsed = float(_raw_ceiling)
+                                if _parsed > 0:
+                                    _hyg_total_ceiling_seconds = _parsed
+                            except (TypeError, ValueError):
+                                pass
+                        # The ceiling can never be tighter than one idle
+                        # window, or the extension loop would be dead code.
+                        _hyg_total_ceiling_seconds = max(
+                            _hyg_total_ceiling_seconds, _hyg_timeout_seconds,
+                        )
                         _raw_cooldown = _comp_cfg.get("hygiene_failure_cooldown_seconds")
                         if _raw_cooldown is not None:
                             try:
@@ -13465,10 +13479,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         ),
                                     )
                                     try:
-                                        _compressed, _ = await asyncio.wait_for(
-                                            asyncio.shield(_hyg_future),
-                                            timeout=_hyg_timeout_seconds,
-                                        )
+                                        # Progress-aware wait: the timeout is an
+                                        # INACTIVITY budget, not a total one. The
+                                        # compression worker streams its summary
+                                        # call and ticks the fence per token
+                                        # (CompressionCommitFence.touch_progress),
+                                        # so a slow reasoning model that is still
+                                        # generating keeps extending the deadline;
+                                        # only a genuinely silent worker times out.
+                                        # A hard ceiling bounds the total wait so
+                                        # a degenerate trickle stream can't hold
+                                        # the turn forever.
+                                        _hyg_wait_started = time.monotonic()
+                                        while True:
+                                            try:
+                                                _compressed, _ = await asyncio.wait_for(
+                                                    asyncio.shield(_hyg_future),
+                                                    timeout=_hyg_timeout_seconds,
+                                                )
+                                                break
+                                            except asyncio.TimeoutError:
+                                                _hyg_waited = time.monotonic() - _hyg_wait_started
+                                                _idle = _hyg_commit_fence.seconds_since_progress()
+                                                if (
+                                                    _idle < _hyg_timeout_seconds
+                                                    and _hyg_waited < _hyg_total_ceiling_seconds
+                                                ):
+                                                    logger.info(
+                                                        "Session hygiene compression for "
+                                                        "session %s still streaming after "
+                                                        "%.0fs (last progress %.1fs ago) — "
+                                                        "extending wait (ceiling %.0fs)",
+                                                        session_entry.session_id,
+                                                        _hyg_waited, _idle,
+                                                        _hyg_total_ceiling_seconds,
+                                                    )
+                                                    continue
+                                                raise
                                     except asyncio.TimeoutError:
                                         _cancelled = None
                                         while _cancelled is None:
@@ -13497,14 +13544,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 ] = time.time() + _hyg_failure_cooldown_seconds
                                             logger.warning(
                                                 "Session hygiene compression for session %s "
-                                                "timed out after %.1fs; continuing without "
-                                                "compression",
+                                                "made no progress for %.1fs "
+                                                "(total wait %.1fs, ceiling %.1fs); "
+                                                "continuing without compression",
                                                 session_entry.session_id,
-                                                _hyg_timeout_seconds,
+                                                _hyg_commit_fence.seconds_since_progress(),
+                                                time.monotonic() - _hyg_wait_started,
+                                                _hyg_total_ceiling_seconds,
                                             )
                                             _timeout_msg = (
                                                 "⚠️ Context compression timed out "
-                                                f"after {_hyg_timeout_seconds:.1f}s. "
+                                                f"after {_hyg_timeout_seconds:.1f}s "
+                                                "with no output from the summary model. "
                                                 "No messages were dropped — continuing without "
                                                 "compression. Run /compress to retry, /reset for "
                                                 "a clean session, or check your "

@@ -221,6 +221,25 @@ class CompressionCommitFence:
         self._lock = threading.Lock()
         self._cancelled = False
         self._commit_started = False
+        # Forward-progress telemetry: the compression worker touches this
+        # whenever the streamed summary call produces a token (see
+        # ContextCompressor._call_summary_llm). Waiters use it to distinguish
+        # a SLOW-but-alive summary model from a HUNG one, so slow models are
+        # not killed by a fixed wall-clock deadline while tokens are moving.
+        self._last_progress = time.monotonic()
+
+    def touch_progress(self) -> None:
+        """Record forward progress (e.g. a streamed summary token arriving).
+
+        Called from the compression worker thread; read by async waiters via
+        :meth:`seconds_since_progress`. A bare float store is atomic in
+        CPython, so no lock is needed.
+        """
+        self._last_progress = time.monotonic()
+
+    def seconds_since_progress(self) -> float:
+        """Seconds since the worker last reported forward progress."""
+        return max(0.0, time.monotonic() - self._last_progress)
 
     def cancel_before_commit(self) -> bool:
         """Cancel a pending commit, or wait for an active commit to finish.
@@ -1741,7 +1760,17 @@ def compress_context(
 
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(agent).start()
-        compressed = compress_fn(messages, **compress_kwargs)
+        # Publish forward progress to the commit fence while the summary LLM
+        # call streams. Async hosts (gateway session hygiene) poll
+        # ``commit_fence.seconds_since_progress()`` to extend their deadline
+        # while tokens are moving — so a SLOW summary model is only killed
+        # when it is actually silent, not merely thorough. The hook is
+        # thread-local and the compress call is synchronous on this thread,
+        # so it cannot leak into unrelated auxiliary calls.
+        from agent.auxiliary_client import aux_progress_hook
+        _progress_hook = commit_fence.touch_progress if commit_fence is not None else None
+        with aux_progress_hook(_progress_hook):
+            compressed = compress_fn(messages, **compress_kwargs)
     except BaseException as _compress_exc:
         # ANY exception after lock acquisition — memory hook, capability
         # inspection, engine lookup, or compress() — must release the lock so

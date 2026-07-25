@@ -20,6 +20,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from gateway import shutdown_notice
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
@@ -855,6 +856,24 @@ class GatewayShutdownMixin:
             dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
             if dedup_key in notified:
                 continue
+            # Durable cross-process cooldown. The ``notified`` set above only dedupes within THIS
+            # process, so a host that repeatedly cycles the gateway (WSL under Windows Modern
+            # Standby, a crash-looping supervisor) re-broadcasts on every fresh start. Gate only
+            # the home-channel broadcast; the per-active-session pings above stay ungated, exactly
+            # like the drain suppress flag.
+            cooldown_seconds = getattr(self.config, "shutdown_notification_cooldown_seconds", 0)
+            cooldown_key = shutdown_notice.destination_key(
+                platform.value, home.chat_id, home.thread_id
+            )
+            if not shutdown_notice.should_send_home_notice(
+                cooldown_key, cooldown_seconds=cooldown_seconds
+            ):
+                logger.info(
+                    "Home-channel shutdown notification suppressed for %s:%s "
+                    "(sent within the last %ss)",
+                    platform.value, home.chat_id, cooldown_seconds,
+                )
+                continue
             try:
                 metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
             except Exception as e:
@@ -868,6 +887,7 @@ class GatewayShutdownMixin:
                 **({"metadata": metadata} if metadata else {}),
             ):
                 notified.add(dedup_key)
+                shutdown_notice.record_home_notice(cooldown_key)
 
     # Agent finalization / resource cleanup
     @staticmethod

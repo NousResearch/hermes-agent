@@ -8993,8 +8993,10 @@ class SessionDB:
         session. When *expected_delete_ids* is provided, deletion proceeds only
         if the parent plus delegate cascade still matches that exact set. This
         lets export-before-delete callers fail closed if a new delegate appears
-        after they materialize their archive. Returns True if the session was
-        found and deleted.
+        after they materialize their archive. The delegate tree is re-walked
+        inside the write transaction on purpose (TOCTOU guard); the cost is
+        accepted for correctness. Returns True if the session was found and
+        deleted.
         """
         removed_delegate_ids: List[str] = []
         expected_ids = (

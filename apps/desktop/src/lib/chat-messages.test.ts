@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import type { SessionMessage } from '@/types/hermes'
+
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
@@ -190,6 +192,30 @@ describe('toChatMessages', () => {
       'model changed',
       'background agent work finished'
     ])
+  })
+
+  // A backend older than this app serves display_metadata as unparsed JSON
+  // text. Indexing into that string used to throw and fail the whole resume.
+  it.each([
+    ['an object', { delegation_id: 'deleg_1', task_count: 2 }, '2 background agents finished'],
+    ['JSON text', JSON.stringify({ delegation_id: 'deleg_1', task_count: 1 }), '1 background agent finished'],
+    ['unparseable text', '{not-json', 'background agent work finished'],
+    ['text that is not an object', '"deleg_1"', 'background agent work finished'],
+    ['a missing task count', { delegation_id: 'deleg_1' }, 'background agent work finished']
+  ])('labels a delegation event given %s', (_case, displayMetadata, expected) => {
+    const read = () =>
+      toChatMessages([
+        {
+          role: 'user',
+          content: 'opaque delegation context payload',
+          display_kind: 'async_delegation_complete',
+          display_metadata: displayMetadata as SessionMessage['display_metadata'],
+          timestamp: 1
+        }
+      ])
+
+    expect(read).not.toThrow()
+    expect(chatMessageText(read()[0])).toBe(expected)
   })
 })
 

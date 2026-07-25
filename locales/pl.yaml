@@ -124,6 +124,9 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "fast"
     status_normal: "normal"
+    picker_title: "⚡ **Priority Processing**\n\nBieżący tryb: `{mode}`\n\nWybierz opcję:"
+    choice_fast: "fast — włącz Priority Processing"
+    choice_normal: "normal — standardowe przetwarzanie"
 
   footer:
     status: "📎 Stopka środowiska uruchomieniowego: **{state}**\nPola: `{fields}`\nPlatforma: `{platform}`"
@@ -193,7 +196,12 @@ gateway:
     display_set_off: "🧠 ✓ Wyświetlanie rozumowania: **WYŁĄCZONE** na platformie **{platform}**"
     reset_global_unsupported: "⚠️ `/reasoning reset --global` nie jest obsługiwane. Użyj `/reasoning <level> --global`, aby zmienić globalną wartość domyślną."
     reset_done: "🧠 ✓ Usunięto nadpisanie poziomu rozumowania dla sesji; obowiązuje konfiguracja globalna."
-    unknown_arg: "⚠️ Nieznany argument: `{arg}`\n\n**Prawidłowe poziomy:** none, minimal, low, medium, high, xhigh\n**Wyświetlanie:** show, hide\n**Zapisywanie:** dodaj `--global`, aby zachować ustawienie poza tą sesją"
+    unknown_arg: "⚠️ Nieznany argument: `{arg}`\n\n**Prawidłowe poziomy:** none, minimal, low, medium, high, xhigh, max, ultra\n**Wyświetlanie:** show, hide\n**Zapisywanie:** dodaj `--global`, aby zachować ustawienie poza tą sesją"
+    picker_title: "🧠 **Ustawienia rozumowania**\n\n**Poziom:** `{level}`\n**Zakres:** {scope}\n**Wyświetlanie:** {display}\n\nWybierz opcję:"
+    choice_none: "none — wyłącz rozumowanie"
+    choice_reset: "reset — usuń nadpisanie dla sesji"
+    choice_show: "pokaż rozumowanie w odpowiedziach"
+    choice_hide: "ukryj rozumowanie w odpowiedziach"
     set_global: "🧠 ✓ Ustawiono poziom rozumowania `{effort}` (zapisano w konfiguracji)\n_(zacznie obowiązywać od następnej wiadomości)_"
     set_global_save_failed: "🧠 ✓ Ustawiono poziom rozumowania `{effort}` (tylko w tej sesji — nie udało się zapisać konfiguracji)\n_(zacznie obowiązywać od następnej wiadomości)_"
     set_session: "🧠 ✓ Ustawiono poziom rozumowania `{effort}` (tylko w tej sesji — dodaj `--global`, aby zapisać na stałe)\n_(zacznie obowiązywać od następnej wiadomości)_"

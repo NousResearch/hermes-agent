@@ -83,6 +83,7 @@ import subprocess
 import sys
 import threading
 import logging
+import stat
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -7890,7 +7891,17 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        payload = {"pid": int(pid)}
+        launch_mode = getattr(pid, "launch_mode", None)
+        scope_unit = getattr(pid, "scope_unit", None)
+        verification_status = getattr(pid, "verification_status", None)
+        if launch_mode is not None:
+            payload["launch_mode"] = launch_mode
+        if scope_unit is not None:
+            payload["scope_unit"] = scope_unit
+        if verification_status is not None:
+            payload["verification_status"] = verification_status
+        _append_event(conn, task_id, "spawned", payload, run_id=run_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -8471,7 +8482,7 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(conn, claimed.id, pid)
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -8566,7 +8577,7 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(conn, claimed.id, pid)
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
@@ -8865,8 +8876,338 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+_SYSTEMD_WORKER_SCOPE_PREFIX = "hermes-kanban-worker-"
+_SYSTEMD_SCOPE_MIN_VERSION = 236
+_SYSTEMD_SCOPE_PROBE_TIMEOUT = 2.0
+_SYSTEMD_SCOPE_VERIFY_TIMEOUT = 2.0
+_SYSTEMD_SCOPE_CLEANUP_TIMEOUT = 2.0
+_SYSTEMD_WORKER_SCOPE_RE = re.compile(
+    rf"^{re.escape(_SYSTEMD_WORKER_SCOPE_PREFIX)}[0-9a-f]{{32}}\.scope$"
+)
 
 
+@dataclass(frozen=True)
+class _SystemdUserManagerTarget:
+    """Authenticated identity of the current process's user manager."""
+
+    uid: int
+    runtime_dir: Path = field(repr=False)
+    bus_path: Path = field(repr=False)
+
+
+class _WorkerLaunchPid(int):
+    """Integer-compatible PID with a verified launch receipt."""
+
+    def __new__(
+        cls,
+        pid: int,
+        *,
+        launch_mode: str = "direct",
+        scope_unit: Optional[str] = None,
+        verification_status: str = "not-applicable",
+    ):
+        value = int.__new__(cls, int(pid))
+        value.launch_mode = launch_mode
+        value.scope_unit = scope_unit
+        value.verification_status = verification_status
+        return value
+
+
+def _systemd_user_manager_environment(
+    target: _SystemdUserManagerTarget,
+) -> dict[str, str]:
+    return {
+        "XDG_RUNTIME_DIR": str(target.runtime_dir),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={target.bus_path}",
+    }
+
+
+def _systemd_user_manager_target_for_cgroup(
+    cgroup_path: Optional[str],
+) -> Optional[_SystemdUserManagerTarget]:
+    """Return a trusted same-UID user bus only for a user-service cgroup."""
+    if not sys.platform.startswith("linux") or not cgroup_path:
+        return None
+    path = cgroup_path.rstrip("/")
+    match = re.search(r"/user@(\d+)\.service(?:/|$)", path)
+    if (
+        not match
+        or not path.rsplit("/", 1)[-1].endswith(".service")
+        or not re.search(r"/user@\d+\.service/.+\.service$", path)
+    ):
+        return None
+    getuid = getattr(os, "getuid", None)
+    geteuid = getattr(os, "geteuid", None)
+    if getuid is None or geteuid is None:
+        return None
+    uid = int(match.group(1))
+    if uid != int(getuid()) or uid != int(geteuid()):
+        return None
+    runtime_dir = Path("/run/user") / str(uid)
+    bus_path = runtime_dir / "bus"
+    try:
+        runtime_stat = os.lstat(runtime_dir)
+        bus_stat = os.lstat(bus_path)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(runtime_stat.st_mode)
+        or runtime_stat.st_uid != uid
+        or stat.S_IMODE(runtime_stat.st_mode) & 0o077
+        or not stat.S_ISSOCK(bus_stat.st_mode)
+        or bus_stat.st_uid != uid
+    ):
+        return None
+    return _SystemdUserManagerTarget(uid, runtime_dir, bus_path)
+
+
+def _current_cgroup_path() -> Optional[str]:
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            hierarchy, controllers, path = line.split(":", 2)
+            if hierarchy == "0" and not controllers:
+                return path
+            if "name=systemd" in controllers.split(","):
+                return path
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _systemd_run_version(
+    runner: str,
+    *,
+    run_fn=None,
+) -> Optional[int]:
+    run = run_fn or subprocess.run
+    try:
+        result = run(
+            [runner, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_SYSTEMD_SCOPE_PROBE_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return None
+    match = re.search(r"\bsystemd\s+(\d+)\b", result.stdout or "")
+    return int(match.group(1)) if result.returncode == 0 and match else None
+
+
+def _systemd_user_manager_reachable(
+    target: _SystemdUserManagerTarget,
+    *,
+    systemctl: Optional[str] = None,
+    run_fn=None,
+) -> bool:
+    controller = systemctl or shutil.which("systemctl")
+    if not controller:
+        return False
+    run = run_fn or subprocess.run
+    try:
+        result = run(
+            [controller, "--user", "show", "--property=Version", "--value"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_SYSTEMD_SCOPE_PROBE_TIMEOUT,
+            check=False,
+            env=_systemd_user_manager_environment(target),
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return False
+    return result.returncode == 0 and bool((result.stdout or "").strip())
+
+
+def _systemd_scope_unit_name(
+    task_id: str,
+    run_id: int,
+    *,
+    board: Optional[str] = None,
+) -> str:
+    """Derive a bounded unit name from canonical board DB, task, and run."""
+    db_identity = os.path.normcase(
+        str(kanban_db_path(board=board).expanduser().resolve(strict=False))
+    )
+    digest = hashlib.blake2s(
+        f"v1\0{db_identity}\0{task_id}\0{int(run_id)}".encode("utf-8"),
+        digest_size=16,
+    ).hexdigest()
+    return f"{_SYSTEMD_WORKER_SCOPE_PREFIX}{digest}.scope"
+
+
+def _systemd_scope_argv(
+    cmd: list[str],
+    task: Task,
+    *,
+    board: Optional[str] = None,
+    cgroup_path: Optional[str] = None,
+    manager_target: Optional[_SystemdUserManagerTarget] = None,
+    systemd_run: Optional[str] = None,
+    user_manager_ready: Optional[bool] = None,
+) -> tuple[list[str], Optional[str], Optional[_SystemdUserManagerTarget]]:
+    """Return a scoped argv only when the dispatcher identity is trusted."""
+    if not sys.platform.startswith("linux") or task.current_run_id is None:
+        return cmd, None, None
+    current = cgroup_path if cgroup_path is not None else _current_cgroup_path()
+    target = manager_target or _systemd_user_manager_target_for_cgroup(current)
+    runner = systemd_run or shutil.which("systemd-run")
+    if target is None or runner is None:
+        return cmd, None, None
+    if user_manager_ready is None:
+        version = _systemd_run_version(runner)
+        ready = (
+            version is not None
+            and version >= _SYSTEMD_SCOPE_MIN_VERSION
+            and _systemd_user_manager_reachable(target)
+        )
+    else:
+        ready = bool(user_manager_ready)
+    if not ready:
+        return cmd, None, None
+    try:
+        unit = _systemd_scope_unit_name(task.id, int(task.current_run_id), board=board)
+    except (OSError, TypeError, ValueError):
+        return cmd, None, None
+    return (
+        [runner, "--user", "--scope", "--quiet", "--collect", f"--unit={unit}", "--", *cmd],
+        unit,
+        target,
+    )
+
+
+def _systemd_scope_properties(
+    unit: str,
+    target: _SystemdUserManagerTarget,
+    *,
+    systemctl: Optional[str] = None,
+    run_fn=None,
+) -> Optional[dict[str, str]]:
+    if not _SYSTEMD_WORKER_SCOPE_RE.fullmatch(unit):
+        return None
+    controller = systemctl or shutil.which("systemctl")
+    if not controller:
+        return None
+    run = run_fn or subprocess.run
+    try:
+        result = run(
+            [
+                controller,
+                "--user",
+                "show",
+                unit,
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=ControlGroup",
+                "--no-pager",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_SYSTEMD_SCOPE_PROBE_TIMEOUT,
+            check=False,
+            env=_systemd_user_manager_environment(target),
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return None
+    if result.returncode != 0:
+        return None
+    return {
+        key: value
+        for key, value in (
+            line.split("=", 1)
+            for line in (result.stdout or "").splitlines()
+            if "=" in line
+        )
+    }
+
+
+def _process_cgroup_path(pid: int) -> Optional[str]:
+    try:
+        for line in Path(f"/proc/{int(pid)}/cgroup").read_text(encoding="utf-8").splitlines():
+            hierarchy, controllers, path = line.split(":", 2)
+            if hierarchy == "0" and not controllers:
+                return path
+            if "name=systemd" in controllers.split(","):
+                return path
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _verify_systemd_scope_pid(
+    proc: subprocess.Popen,
+    unit: str,
+    target: _SystemdUserManagerTarget,
+) -> None:
+    """Require this exact Popen PID to be in this manager-owned scope."""
+    deadline = time.monotonic() + _SYSTEMD_SCOPE_VERIFY_TIMEOUT
+    last_reason = "scope identity was not observable"
+    while time.monotonic() < deadline:
+        if getattr(proc, "poll", lambda: None)() is not None:
+            raise RuntimeError(f"systemd scope launcher exited before verification: {unit}")
+        props = _systemd_scope_properties(unit, target)
+        if props is not None:
+            load_state = props.get("LoadState")
+            active_state = props.get("ActiveState")
+            control_group = (props.get("ControlGroup") or "").rstrip("/")
+            process_group = (_process_cgroup_path(proc.pid) or "").rstrip("/")
+            if load_state != "loaded":
+                last_reason = f"scope unit load state was {load_state!r}"
+            elif active_state not in {"active", "activating"}:
+                last_reason = f"scope unit state was {active_state!r}"
+            elif not control_group:
+                last_reason = "scope has no control group"
+            elif process_group != control_group:
+                last_reason = (
+                    f"Popen PID {proc.pid} was in {process_group!r}, "
+                    f"expected {control_group!r}"
+                )
+            else:
+                return
+        time.sleep(0.05)
+    raise RuntimeError(f"could not verify systemd scope {unit}: {last_reason}")
+
+
+def _cleanup_systemd_scope_launch(
+    proc: subprocess.Popen,
+    unit: str,
+    target: _SystemdUserManagerTarget,
+) -> None:
+    """Stop exactly the transient unit and reap exactly its Popen wrapper."""
+    controller = shutil.which("systemctl")
+    if controller:
+        try:
+            subprocess.run(
+                [controller, "--user", "stop", unit],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_SYSTEMD_SCOPE_CLEANUP_TIMEOUT,
+                check=False,
+                env=_systemd_user_manager_environment(target),
+            )
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            pass
+    try:
+        proc.wait(timeout=_SYSTEMD_SCOPE_CLEANUP_TIMEOUT)
+        return
+    except (subprocess.TimeoutExpired, AttributeError):
+        pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=_SYSTEMD_SCOPE_CLEANUP_TIMEOUT)
+    except (ProcessLookupError, OSError, subprocess.TimeoutExpired, AttributeError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError, AttributeError):
+            return
+        try:
+            proc.wait(timeout=_SYSTEMD_SCOPE_CLEANUP_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired, AttributeError):
+            pass
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -9040,6 +9381,19 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    worker_cmd = cmd
+    direct_env = dict(env)
+    cmd, scope_unit, scope_target = _systemd_scope_argv(
+        worker_cmd,
+        task,
+        board=board,
+    )
+    if scope_unit is not None and scope_target is not None:
+        # Use the same authenticated user manager for the launcher and its
+        # verification queries; do not inherit a different session bus.
+        for key in ("DBUS_STARTER_ADDRESS", "DBUS_STARTER_BUS_TYPE"):
+            env.pop(key, None)
+        env.update(_systemd_user_manager_environment(scope_target))
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
@@ -9052,28 +9406,63 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    popen_kwargs = {
+        "cwd": workspace if os.path.isdir(workspace) else None,
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_f,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+        "start_new_session": True,
+        "creationflags": subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+    }
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            **popen_kwargs,
         )
     except FileNotFoundError:
-        log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+        if scope_unit is None:
+            log_f.close()
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            )
+        # A PATH race can remove systemd-run after the capability probe. Treat
+        # that as the unavailable-runtime case and retain direct launching.
+        scope_unit = None
+        scope_target = None
+        cmd = worker_cmd
+        popen_kwargs["env"] = direct_env
+        try:
+            proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+                cmd,
+                **popen_kwargs,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            )
+    if scope_unit is not None and scope_target is not None:
+        try:
+            _verify_systemd_scope_pid(proc, scope_unit, scope_target)
+        except Exception:
+            _cleanup_systemd_scope_launch(proc, scope_unit, scope_target)
+            log_f.close()
+            raise
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    if scope_unit is not None:
+        return _WorkerLaunchPid(
+            proc.pid,
+            launch_mode="systemd-user-scope",
+            scope_unit=scope_unit,
+            verification_status="verified",
+        )
     return proc.pid
 
 

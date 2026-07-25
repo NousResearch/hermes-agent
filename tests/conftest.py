@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -541,6 +542,44 @@ def _ensure_current_event_loop(request):
 # delivery is harmless.
 
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
+_REQUIRES_WAL_MARK = "requires_wal"
+
+
+def _wal_is_usable() -> bool:
+    """True when Hermes will actually put a database into WAL mode here.
+
+    Hermes refuses journal_mode=WAL on SQLite builds carrying the upstream
+    WAL-reset corruption bug (3.7.0–3.51.2, excluding backports 3.50.7 /
+    3.44.6) and falls back to DELETE. On such a build NO ``-wal`` sidecar is
+    ever created, so a test asserting on WAL frames, ``-wal`` file size, or
+    checkpoint behaviour cannot pass — it is testing a mode the runtime
+    declined to enable, not a regression.
+
+    This matters because the interpreter running the tests and the interpreter
+    running Hermes can link DIFFERENT SQLite versions: a repo ``.venv`` on
+    3.50.4 (vulnerable → DELETE) alongside a Hermes managed runtime on 3.53.1
+    (fixed → WAL). The same test then passes in one and fails in the other.
+
+    IMPORTANT: this must NOT import ``hermes_state``. That module computes
+    ``DEFAULT_DB_PATH`` from ``get_hermes_home()`` at import time, so importing
+    it during collection — before the per-test ``_isolate_hermes_home`` fixture
+    redirects ``HERMES_HOME`` — permanently caches the DEVELOPER'S REAL
+    ``~/.hermes/state.db`` for the whole session. Tests then read live
+    production sessions instead of a tempdir. The version predicate is
+    duplicated from ``hermes_state._is_sqlite_wal_reset_vulnerable`` (upstream
+    fixed ranges, stable) rather than imported, and
+    ``test_conftest_wal_gate.py`` pins the two implementations in agreement.
+    """
+    info = sqlite3.sqlite_version_info
+    if info < (3, 7, 0):
+        return True  # pre-WAL library: cannot hit the race
+    if info >= (3, 51, 3):
+        return True  # fixed upstream
+    if (3, 50, 7) <= info < (3, 51, 0):
+        return True  # 3.50.x backport
+    if (3, 44, 6) <= info < (3, 45, 0):
+        return True  # 3.44.x backport
+    return False
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -551,6 +590,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
     )
+    config.addinivalue_line(
+        "markers",
+        f"{_REQUIRES_WAL_MARK}: test needs the runtime to actually enable "
+        "SQLite WAL mode; skipped on builds where Hermes falls back to "
+        "journal_mode=DELETE for the WAL-reset bug.",
+    )
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on
     # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
@@ -559,6 +604,26 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     # suite runs natively there (POSIX keeps the more reliable signal method).
     if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
         config.option.timeout_method = "thread"
+
+
+def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
+    """Skip ``requires_wal`` tests when the linked SQLite can't use WAL.
+
+    Cheaper and more honest than each test hand-rolling a version check: the
+    reason string names the actual linked version so the skip is diagnosable
+    rather than mysterious.
+    """
+    if _wal_is_usable():
+        return
+
+    reason = (
+        f"SQLite {sqlite3.sqlite_version} has the WAL-reset bug — Hermes uses "
+        "journal_mode=DELETE here, so no -wal sidecar exists to assert on"
+    )
+    skip_marker = pytest.mark.skip(reason=reason)
+    for item in items:
+        if item.get_closest_marker(_REQUIRES_WAL_MARK) is not None:
+            item.add_marker(skip_marker)
 
 
 @pytest.fixture(autouse=True)

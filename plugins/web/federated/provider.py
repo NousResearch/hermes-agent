@@ -7,25 +7,46 @@ Configuration in config.yaml::
     web:
       search_backend: federated
       federated:
-        timeout: 10                  # seconds to wait for all backends (config item 1)
-        max_results: 8               # top N results after ranking (config item 3)
-        ranker:                      # LLM for relevance ranking (config item 2)
+        timeout: 10                  # seconds to wait for all backends
+        max_results: 8               # top N results after ranking
+
+        # ── K-way aggregation ──
+        k: 3                         # exactly K backends required (max 32)
+        min_backends: 2              # at least N backends must succeed
+
+        # ── ranking ──
+        ranker:                      # LLM for relevance ranking
                                      # Note: LLM providers may have concurrency limits.
                                      # When the ranking LLM fails (timeout, rate limit, etc.)
-                                     # the plugin automatically falls back to NONE mode
-                                     # (keyword-based scoring, no LLM call).
+                                     # the plugin automatically falls back to keyword scoring.
                                      # For best results, use a non-main-model provider
                                      # or one with higher concurrency limits.
           provider: opencode-go
           model: deepseek-v4-flash
+          prompt: |                  # optional: custom ranking preferences
+            优先中文来源，优先官方文档
+
+        # ── health checks (cached, avoids per-search quota consumption) ──
+        health_check:
+          ttl_seconds: 300           # cache probe results for N seconds
+          timeout: 5                 # per-probe timeout
+
+        # ── K backends (exactly K) ──
         backends:
           - name: tavily             # use an existing registered provider
+            required: false
           - name: minimax            # custom HTTP backend
             type: custom
             base_url: "https://api.minimaxi.com"
             api_key_env: MINIMAX_CN_API_KEY
             search_path: /v1/coding_plan/search
             query_param: "q"
+            required: false
+          - name: searxng
+            type: custom
+            base_url: "https://search.example.com"
+            api_key_env: SEARXNG_API_KEY
+            required: true
 """
 
 from __future__ import annotations
@@ -51,6 +72,14 @@ _CUSTOM_BACKEND_MAX_RESULTS = 10
 _SKIP_RANK_IF = 3
 _MAX_RANK_INPUT = 10
 _RANK_TIMEOUT = 20
+
+# K-way aggregation
+_MAX_K = 32
+
+# Health check defaults
+_DEFAULT_HEALTH_TTL = 300
+_DEFAULT_HEALTH_TIMEOUT = 5
+
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -85,6 +114,138 @@ def _get_registered_provider(name: str) -> Optional[WebSearchProvider]:
         return get_provider(name)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_config(config: Dict[str, Any]) -> Optional[str]:
+    """Validate federated search configuration. Returns error message or None.
+
+    Checks:
+    - k ≤ _MAX_K
+    - len(backends) == k
+    - 1 ≤ min_backends ≤ k
+    """
+    backends = config.get("backends", [])
+    if not isinstance(backends, list) or not backends:
+        return "no search backends configured"
+
+    k = int(config.get("k", len(backends)))
+    if k > _MAX_K:
+        return f"k={k} exceeds maximum {_MAX_K}"
+    if k < 1:
+        return f"k={k} must be at least 1"
+
+    if len(backends) != k:
+        return (
+            f"k={k} but {len(backends)} backend(s) configured — "
+            f"exactly {k} required"
+        )
+
+    min_backends = int(config.get("min_backends", 1))
+    if min_backends < 1:
+        return f"min_backends={min_backends} must be at least 1"
+    if min_backends > k:
+        return f"min_backends={min_backends} cannot exceed k={k}"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Health check cache
+# ---------------------------------------------------------------------------
+
+
+class _HealthCache:
+    """TTL-based cache for backend health probe results.
+
+    Avoids consuming provider quota on every search by caching HEAD probe
+    results for ``ttl_seconds``.  A real search failure (HTTP 401/403/429)
+    bypasses the cache and marks the backend unavailable for the configured
+    cooldown period.
+    """
+
+    def __init__(self, ttl_seconds: int = _DEFAULT_HEALTH_TTL):
+        self._ttl = ttl_seconds
+        self._cache: Dict[str, tuple[bool, float]] = {}
+        # Cooldown after real search failure: status_code → seconds
+        self._failure_cooldown: Dict[int, int] = {
+            401: 300,
+            403: 300,
+            429: 3600,
+        }
+
+    def is_available(self, backend_name: str) -> Optional[bool]:
+        """Return cached availability or None if cache miss."""
+        entry = self._cache.get(backend_name)
+        if entry is None:
+            return None
+        available, timestamp = entry
+        if time.time() - timestamp < self._ttl:
+            return available
+        # Expired — remove and return miss
+        del self._cache[backend_name]
+        return None
+
+    def set_available(self, backend_name: str, available: bool) -> None:
+        self._cache[backend_name] = (available, time.time())
+
+    def mark_failed(self, backend_name: str, status_code: int) -> None:
+        """Mark backend unavailable after a real search failure.
+
+        Uses a longer cooldown than the probe TTL — quota/billing failures
+        don't resolve in seconds.
+        """
+        cooldown = self._failure_cooldown.get(status_code, 300)
+        # Store with an artificial timestamp so the entry expires after
+        # cooldown seconds regardless of normal TTL.
+        self._cache[backend_name] = (False, time.time() - self._ttl + cooldown)
+
+
+# ---------------------------------------------------------------------------
+# Backend health probe
+# ---------------------------------------------------------------------------
+
+
+def _probe_backend(
+    backend: Dict[str, Any],
+    timeout: int = _DEFAULT_HEALTH_TIMEOUT,
+) -> bool:
+    """Lightweight availability probe for a custom HTTP backend.
+
+    Sends HEAD to ``base_url`` (no search query, no API consumption).
+    For registered providers, delegates to ``provider.is_available()``.
+
+    Returns True when the backend appears reachable.
+    """
+    name = str(backend.get("name", "?"))
+    typ = str(backend.get("type", "") or "")
+
+    if typ != "custom":
+        provider = _get_registered_provider(name)
+        if provider is None:
+            return False
+        try:
+            return provider.is_available()
+        except Exception:
+            return False
+
+    # Custom HTTP backend — HEAD probe
+    import httpx
+    base_url = (backend.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return False
+
+    try:
+        resp = httpx.head(base_url, timeout=timeout, follow_redirects=True)
+        # 2xx/3xx/4xx all mean the service is reachable (auth failures are
+        # handled at search time, not probe time)
+        return resp.status_code < 500
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +292,10 @@ def _rank_results(
     - ``"auto"`` or a real provider name → LLM-based ranking.
       On LLM failure (timeout, rate limit, concurrency limit) the function
       automatically falls back to keyword (``none``) ranking.
-      **Recommendation**: use a non-main-model provider or one with higher
-      concurrency limits to avoid ranking failures degrading search quality.
+
+    If *ranker_config* contains a ``prompt`` key, it is used as the system
+    prompt for LLM ranking, allowing users to inject preferences
+    (e.g. "prefer Chinese sources", "prefer official documentation").
 
     Optimizations:
     - Skip LLM ranking when <= _SKIP_RANK_IF results.
@@ -160,12 +323,21 @@ def _rank_results(
             lines.append(f"[{i + 1}] {title}\n{desc}")
         results_text = "\n".join(lines)
 
-        sys = (
-            "You rank search results by relevance. Rules:\n"
-            "- Return ONLY a JSON array of result indices ranked by relevance, e.g. [3,1,5,2,4]\n"
-            "- Include ALL results. Most relevant first.\n"
-            "- No other text."
-        )
+        custom_prompt = (ranker_config or {}).get("prompt", "").strip()
+        if custom_prompt:
+            sys = custom_prompt + (
+                "\n\nReturn ONLY a JSON array of result indices ranked by "
+                "relevance, e.g. [3,1,5,2,4]. Include ALL results. "
+                "No other text."
+            )
+        else:
+            sys = (
+                "You rank search results by relevance. Rules:\n"
+                "- Return ONLY a JSON array of result indices ranked by "
+                "relevance, e.g. [3,1,5,2,4]\n"
+                "- Include ALL results. Most relevant first.\n"
+                "- No other text."
+            )
         user = f"Query: {query}\n\nResults:\n{results_text}\n\nRanked indices:"
 
         logger.info(
@@ -186,7 +358,7 @@ def _rank_results(
         raw = (response.choices[0].message.content or "").strip()
         import json, re
 
-        match = re.search(r"\[[\d\s,,\]]+\]", raw)
+        match = re.search(r"\[[\d\s,,]+\]", raw)
         if match:
             indices = json.loads(match.group())
             if isinstance(indices, list):
@@ -359,7 +531,23 @@ def _search_one_backend(backend: Dict[str, Any], query: str, limit: int) -> List
 
 
 class FederatedSearchProvider(WebSearchProvider):
-    """Aggregated search provider that fans out to multiple sub-backends."""
+    """Aggregated search provider that fans out to multiple sub-backends.
+
+    Supports K-way aggregation with per-backend health checking,
+    configurable re-rank prompts, and fault-tolerance via ``min_backends``
+    and ``required`` flags.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._health_cache: Optional[_HealthCache] = None
+
+    def _get_health_cache(self, config: Dict[str, Any]) -> _HealthCache:
+        if self._health_cache is None:
+            hc = config.get("health_check") or {}
+            ttl = int(hc.get("ttl_seconds", _DEFAULT_HEALTH_TTL))
+            self._health_cache = _HealthCache(ttl_seconds=ttl)
+        return self._health_cache
 
     @property
     def name(self) -> str:
@@ -392,27 +580,67 @@ class FederatedSearchProvider(WebSearchProvider):
             if not config:
                 return {"success": False, "error": "federated search not configured"}
 
-            backends = config.get("backends", [])
-            if not isinstance(backends, list) or not backends:
-                return {"success": False, "error": "no search backends configured"}
+            # ── config validation ──
+            validation_error = _validate_config(config)
+            if validation_error:
+                return {"success": False, "error": validation_error}
 
+            backends: List[Dict[str, Any]] = config["backends"]
             timeout = int(config.get("timeout", _DEFAULT_TIMEOUT))
             max_results = int(config.get("max_results", _DEFAULT_MAX_RESULTS))
             ranker_config = config.get("ranker")
+            min_backends = int(config.get("min_backends", 1))
+
+            # ── health checks (cached, TTL-based) ──
+            # Only active when ``health_check`` is explicitly configured.
+            # Without it, all backends are dispatched directly (backward compat).
+            hc_config = config.get("health_check")
+            health_cache: Optional[_HealthCache] = None
+            if hc_config is not None:
+                health_cache = self._get_health_cache(config)
+                probe_timeout = int(hc_config.get("timeout", _DEFAULT_HEALTH_TIMEOUT))
+
+                active_backends: List[Dict[str, Any]] = []
+                for b in backends:
+                    name = str(b.get("name", "?"))
+                    cached = health_cache.is_available(name)
+                    if cached is False:
+                        logger.info("Backend '%s' cached as unavailable, skipping probe", name)
+                        continue
+                    if cached is True:
+                        active_backends.append(b)
+                        continue
+                    available = _probe_backend(b, timeout=probe_timeout)
+                    health_cache.set_available(name, available)
+                    if available:
+                        active_backends.append(b)
+                    else:
+                        logger.info("Backend '%s' probe failed, skipping", name)
+            else:
+                active_backends = list(backends)
+
+            if not active_backends:
+                return {"success": False, "error": "No backends available"}
 
             logger.info(
-                "Federated search: '%s' (%d backends, timeout=%ds, max_results=%d)",
-                query, len(backends), timeout, max_results,
+                "Federated search: '%s' (%d/%d backends active, timeout=%ds, max_results=%d)",
+                query, len(active_backends), len(backends), timeout, max_results,
             )
 
-            # ---------- parallel backend execution ----------
+            # ── parallel backend execution ──
             all_results: List[Dict[str, Any]] = []
+            backend_results: Dict[str, tuple[List[Dict], Optional[int]]] = {}
             errors: List[str] = []
             start_time = time.time()
 
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(backends))
+            pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(active_backends), _MAX_K),
+            )
             try:
-                futures = {pool.submit(_search_one_backend, b, query, limit): b for b in backends}
+                futures = {
+                    pool.submit(_search_one_backend, b, query, limit): b
+                    for b in active_backends
+                }
 
                 done, not_done = concurrent.futures.wait(
                     futures, timeout=timeout,
@@ -420,53 +648,84 @@ class FederatedSearchProvider(WebSearchProvider):
 
                 for f in not_done:
                     b = futures[f]
-                    errors.append(f"backend '{b.get('name','?')}' timed out")
+                    name = str(b.get("name", "?"))
+                    errors.append(f"backend '{name}' timed out")
+                    backend_results[name] = ([], None)
                     f.cancel()
 
                 for f in done:
                     if is_interrupted():
                         break
+                    b = futures[f]
+                    name = str(b.get("name", "?"))
                     try:
                         results = f.result(timeout=2)
                         all_results.extend(results)
+                        backend_results[name] = (results, None)
                     except Exception as exc:
-                        b = futures[f]
-                        errors.append(f"backend '{b.get('name','?')}' failed: {exc}")
+                        errors.append(f"backend '{name}' failed: {exc}")
+                        backend_results[name] = ([], None)
 
                 if not_done:
                     logger.warning(
                         "Federated search timed out after %ds, collected partial "
                         "results from %d/%d backends",
-                        timeout,
-                        len(done),
-                        len(futures),
+                        timeout, len(done), len(futures),
                     )
             finally:
                 pool.shutdown(wait=False)
+
+            # ── outcome evaluation ──
+            successful = [
+                name for name, (results, _) in backend_results.items()
+                if results
+            ]
+            required_failed = []
+            for b in active_backends:
+                name = str(b.get("name", "?"))
+                if b.get("required", False) and name not in successful:
+                    required_failed.append(name)
+
+            if required_failed:
+                for name in required_failed:
+                    if health_cache is not None:
+                        health_cache.set_available(name, False)
+                return {
+                    "success": False,
+                    "error": (
+                        f"Required backend(s) failed: {', '.join(required_failed)}"
+                    ),
+                }
+
+            if len(successful) < min_backends:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Only {len(successful)}/{min_backends} backends succeeded "
+                        f"(minimum {min_backends} required)"
+                    ),
+                }
 
             if not all_results:
                 if errors:
                     return {"success": False, "error": "All backends failed: " + "; ".join(errors)}
                 return {"success": True, "data": {"web": []}}
 
-            # ---------- ranking ----------
-            # _rank_results handles all modes internally:
-            # - provider: none / empty → keyword scoring (fast)
-            # - provider: <real>      → LLM, falls back to keyword on failure
+            # ── ranking ──
             rank_input_count = max(max_results + 5, _MAX_RANK_INPUT)
             rank_input = all_results[:rank_input_count]
             ranked = _rank_results(query, rank_input, ranker_config)
 
-            # Top N — honour the caller's requested limit while respecting
-            # the configured max_results cap.
+            # Top N
             output_count = min(limit, max_results)
             top = ranked[:output_count]
             for i, r in enumerate(top):
                 r["position"] = i + 1
 
             logger.info(
-                "Federated search: %d raw -> %d ranked (total %.1fs)",
+                "Federated search: %d raw -> %d ranked (total %.1fs, %d/%d backends)",
                 len(all_results), len(top), time.time() - start_time,
+                len(successful), len(active_backends),
             )
 
             return {
@@ -490,7 +749,8 @@ class FederatedSearchProvider(WebSearchProvider):
             "badge": "advanced",
             "tag": (
                 "Aggregate multiple search backends with LLM-based ranking. "
-                "Configure backends under web.federated.backends in config.yaml."
+                "Configure backends under web.federated.backends in config.yaml. "
+                "Supports K-way aggregation, health checks, and custom re-rank prompts."
             ),
             "env_vars": [],
         }

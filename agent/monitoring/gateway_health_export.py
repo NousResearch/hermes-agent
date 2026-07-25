@@ -334,6 +334,27 @@ def _read_background_work_count() -> int:
     return total
 
 
+def _read_background_delegations_count() -> int:
+    """Count live async delegation UNITS (dispatch/pool slots).
+
+    Complements ``_read_background_work_count`` (which is task-granular): this
+    counts each ``delegate_task`` dispatch as ONE regardless of fan-out width,
+    matching the async pool's capacity accounting (a batch = one slot). Together
+    the two metrics let an operator see both slot pressure
+    (``background_delegations``, alert vs ``max_concurrent_children``) and real
+    concurrent subagent load (``background_work``). Delegations only — it does
+    not include ``terminal(background)`` / kanban work, which are already folded
+    into ``background_work``. Best-effort; 0 if the source can't be imported.
+    """
+    try:
+        from tools.async_delegation import active_count
+
+        return max(0, int(active_count()))
+    except Exception:
+        logger.debug("background-delegations count failed", exc_info=True)
+        return 0
+
+
 def _read_runtime_snapshot(config: Dict[str, Any]):
     gateway_snapshot = _read_gateway_snapshot(config)
     # Background/subagent work — a distinct metric from active_agents (which
@@ -347,6 +368,13 @@ def _read_runtime_snapshot(config: Dict[str, Any]):
             GatewayMetric(
                 name="hermes.gateway.background_work",
                 value=_read_background_work_count(),
+                attributes=base,
+            )
+        )
+        gateway_snapshot.metrics.append(
+            GatewayMetric(
+                name="hermes.gateway.background_delegations",
+                value=_read_background_delegations_count(),
                 attributes=base,
             )
         )
@@ -414,6 +442,7 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
         "hermes.gateway.drainable",
         "hermes.gateway.restart_requested",
         "hermes.gateway.background_work",
+        "hermes.gateway.background_delegations",
         "hermes.platform.up",
         "hermes.platform.degraded",
         "hermes.cron.scheduler.heartbeat_age_seconds",

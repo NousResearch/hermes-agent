@@ -193,12 +193,39 @@ def test_gateway_export_includes_cron_metrics_and_only_accepted_event_planes(mon
     names = [metric.name for metric in snapshot.metrics]
     # Cron metrics are folded into the gateway snapshot...
     assert "hermes.cron.jobs.enabled" in names
-    # ...and the background/subagent-work gauge is appended (distinct from
+    # ...and the background/subagent-work gauges are appended (distinct from
     # active_agents). Assert the relationship, not a frozen exact list.
     assert "hermes.gateway.background_work" in names
+    assert "hermes.gateway.background_delegations" in names
     assert gateway_health_export._gateway_health_event({"event": "cron_execution"}) is True
     assert gateway_health_export._gateway_health_event({"event": "gateway_health"}) is True
     assert gateway_health_export._gateway_health_event({"event": "run"}) is False
+
+
+def test_background_work_is_task_granular_and_delegations_is_unit_granular(monkeypatch):
+    """background_work expands batches to child tasks; background_delegations
+    counts dispatch units. A 3-task batch => work +3, delegations +1.
+    """
+    from agent.monitoring import gateway_health_export
+    from tools import async_delegation as ad
+
+    with ad._records_lock:
+        saved = dict(ad._records)
+        ad._records.clear()
+        ad._records["single"] = {"status": "running"}
+        ad._records["batch3"] = {"status": "running", "is_batch": True, "goals": ["a", "b", "c"]}
+    # Isolate from process_registry so we measure only the delegation contribution.
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.count_running", lambda: 0, raising=False
+    )
+    try:
+        # work = single(1) + batch(3) = 4 tasks; delegations = 2 units.
+        assert gateway_health_export._read_background_work_count() == 4
+        assert gateway_health_export._read_background_delegations_count() == 2
+    finally:
+        with ad._records_lock:
+            ad._records.clear()
+            ad._records.update(saved)
 
 
 def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):

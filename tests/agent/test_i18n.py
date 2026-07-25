@@ -114,7 +114,10 @@ def test_polish_catalog_preserves_targeted_translation_semantics():
         ),
         "gateway.reload_skills.total": "\n📚 Dostępne umiejętności: {count}",
         "gateway.restart.in_progress": "⏳ Ponowne uruchamianie bramy jest już w toku…",
-        "gateway.status.header": "📊 **Stan bramy Hermes**",
+        "gateway.debug.share_hint": (
+            "Udostępnij te linki zespołowi Hermesa, aby uzyskać pomoc."
+        ),
+        "gateway.status.header": "📊 **Stan bramy Hermesa**",
     }
 
     assert {key: catalog[key] for key in expected} == expected

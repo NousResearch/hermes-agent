@@ -197,6 +197,16 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
 
     monkeypatch.setenv("HOME", str(real_home))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    # Hermeticity: an ambient HERMES_REAL_HOME (exported by Hermes' own
+    # terminal contract on dev boxes) outranks HOME in the candidate ladder,
+    # and an ambient TERMINAL_HOME_MODE would change the policy under test.
+    monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+    monkeypatch.delenv("TERMINAL_HOME_MODE", raising=False)
+    # Hermeticity: get_subprocess_home()'s auto mode prefers the profile home
+    # when is_container() is True — on a containerized CI runner that real
+    # probe flips the resolution this test asserts. The host/VM branch is the
+    # contract under test; pin containment off.
+    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
 
     captured = {}
     client = _make_home_client(tmp_path)

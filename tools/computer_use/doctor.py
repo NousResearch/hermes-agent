@@ -98,6 +98,57 @@ def _is_valid_health_report(payload: Any) -> bool:
     return True
 
 
+def _read_cli_version(binary: str, *, timeout: float = 5.0) -> Optional[str]:
+    """Return ``cua-driver --version`` stdout (stripped), or None on failure.
+
+    health_report's ``driver_version`` / binary_version check can disagree
+    with the actual binary (observed on Windows: health_report claims
+    0.8.3 while ``--version`` and the on-disk release are 0.12.6). Doctor
+    surfaces both so operators are not misled when debugging session
+    issues against a "wrong" version string.
+    """
+    try:
+        completed = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=_sanitized_cua_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        return None
+    text = (completed.stdout or completed.stderr or "").strip()
+    if not text:
+        return None
+    # First non-empty line only — keep the banner compact.
+    return text.splitlines()[0].strip()
+
+
+def _normalize_version_token(text: str) -> str:
+    """Pull a dotted version-ish token out of a free-form version string."""
+    if not text:
+        return ""
+    m = re.search(r"(\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?)", text)
+    return m.group(1) if m else text.strip().lower()
+
+
+def _build_identity(binary: str, report: Dict[str, Any]) -> Dict[str, Any]:
+    """Hermes-side identity block comparing resolved binary vs health_report."""
+    cli = _read_cli_version(binary) or ""
+    report_v = str(report.get("driver_version") or "")
+    cli_tok = _normalize_version_token(cli)
+    report_tok = _normalize_version_token(report_v)
+    mismatch = bool(cli_tok and report_tok and cli_tok != report_tok)
+    return {
+        "resolved_binary": binary,
+        "cli_version": cli or None,
+        "health_report_driver_version": report_v or None,
+        "version_mismatch": mismatch,
+    }
+
+
 def _extract_health_report_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Pull a schema_version=1 report out of an MCP tools/call result.
 
@@ -649,13 +700,28 @@ def _drive_health_report_or_fallback(
         )
 
 
-def _print_text_report(report: Dict[str, Any], color: bool) -> None:
+def _print_text_report(
+    report: Dict[str, Any],
+    color: bool,
+    *,
+    identity: Optional[Dict[str, Any]] = None,
+) -> None:
     """Render the report in the same style as `cua-driver call health_report`
-    would (one line per check + a summary footer)."""
+    would (one line per check + a summary footer).
+
+    When *identity* is provided (resolved binary + ``--version``), the header
+    prefers the CLI version if health_report's ``driver_version`` disagrees,
+    and a short identity block is printed under the header.
+    """
     schema = report.get("schema_version", "?")
     platform = report.get("platform", "?")
-    driver_v = report.get("driver_version", "?")
+    report_v = report.get("driver_version", "?")
     overall = report.get("overall", "?")
+    identity = identity or {}
+    cli_v = identity.get("cli_version") or ""
+    mismatch = bool(identity.get("version_mismatch"))
+    # Prefer the binary's own --version when health_report is wrong/stale.
+    header_v = cli_v or report_v
 
     header_glyph = _OVERALL_GLYPH.get(overall, "•")
 
@@ -673,9 +739,32 @@ def _print_text_report(report: Dict[str, Any], color: bool) -> None:
         col_for = ""
 
     print(
-        f"{header_glyph} cua-driver {driver_v} on {platform} — "
+        f"{header_glyph} cua-driver {header_v} on {platform} — "
         f"{col_for}{overall}{col_reset}"
     )
+    if identity.get("resolved_binary"):
+        print(f"  {col_dim}binary: {identity['resolved_binary']}{col_reset}")
+    if cli_v and report_v and str(report_v) not in str(cli_v) and str(cli_v) not in str(report_v):
+        # Only annotate when the free-form strings clearly differ.
+        print(
+            f"  {col_dim}--version: {cli_v}{col_reset}"
+        )
+        print(
+            f"  {col_dim}health_report.driver_version: {report_v}{col_reset}"
+        )
+    elif cli_v and not mismatch:
+        # Still show the resolved path; version already matches header.
+        pass
+    if mismatch:
+        warn = col_yellow if color else ""
+        print(
+            f"  {warn}⚠️ version mismatch: health_report says {report_v!r} "
+            f"but binary --version is {cli_v!r}{col_reset}"
+        )
+        print(
+            f"  {col_dim}→ trust --version / packages/current for debugging; "
+            f"health_report's binary_version check can lag on Windows{col_reset}"
+        )
 
     for check in report.get("checks", []):
         name = check.get("name", "?")
@@ -749,13 +838,20 @@ def run_doctor(
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
 
+    identity = _build_identity(binary, report)
+
     if json_output:
-        json.dump(report, sys.stdout, indent=2, sort_keys=True)
+        # Additive envelope: preserve the upstream health_report keys and
+        # attach Hermes identity under hermes_identity so existing parsers
+        # that only read overall/checks keep working.
+        payload = dict(report)
+        payload["hermes_identity"] = identity
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
         if color is None:
             color = sys.stdout.isatty()
-        _print_text_report(report, color=bool(color))
+        _print_text_report(report, color=bool(color), identity=identity)
 
     overall = report.get("overall")
     if overall in ("degraded", "failed"):

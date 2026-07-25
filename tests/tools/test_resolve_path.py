@@ -37,3 +37,30 @@ class TestResolvePath:
             terminal_tool.clear_session_cwd(task_id)
 
         assert result == live_dir / "nested" / "file.txt"
+
+    def test_ssh_tilde_not_expanded_on_host(self, monkeypatch):
+        """#71201: on the ssh backend a leading ~ must NOT be expanded against
+        the gateway HOME — it must pass through for remote-side expansion."""
+        from tools import file_tools_paths
+
+        monkeypatch.setattr(
+            file_tools_paths, "_terminal_env_type_for_task",
+            lambda task_id="default": "ssh",
+        )
+
+        assert str(file_tools_paths._resolve_path_for_task("~/notes.txt")) == "~/notes.txt"
+        assert str(file_tools_paths._resolve_path_for_task("~")) == "~"
+        assert str(file_tools_paths._resolve_path_for_task("~user/file.txt")) == "~user/file.txt"
+
+    def test_local_tilde_still_expanded(self, monkeypatch):
+        """On the local backend ~ is still expanded (regression guard)."""
+        from tools import file_tools_paths
+
+        monkeypatch.setattr(
+            file_tools_paths, "_terminal_env_type_for_task",
+            lambda task_id="default": "local",
+        )
+
+        result = file_tools_paths._resolve_path_for_task("~/notes.txt")
+        assert "~" not in str(result)
+        assert result.is_absolute()

@@ -171,7 +171,14 @@ def _resolve_base_dir(
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
-    (absolute inputs are returned resolved-but-unanchored)."""
+    (absolute inputs are returned resolved-but-unanchored).
+
+    On the ssh backend a leading ``~`` is returned untouched: expanding it here names
+    the GATEWAY's home, but the path runs on the remote, whose ``$HOME`` differs
+    (#71201). ``ShellFileOperations._expand_path`` expands it through the remote shell.
+    """
+    if filepath.startswith("~") and _terminal_env_type_for_task(task_id) == "ssh":
+        return PurePosixPath(filepath)
     container_paths = _uses_container_paths(task_id)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)

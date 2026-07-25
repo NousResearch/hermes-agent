@@ -129,6 +129,7 @@ export const zhHant = defineLocale({
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
+      gatewayAuthFailed: '閘道認證失敗 — 請檢查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
@@ -164,12 +165,22 @@ export const zhHant = defineLocale({
       turnDoneBody: '回覆已就緒。',
       turnErrorTitle: '本輪失敗',
       backgroundDoneTitle: '背景工作已完成',
-      backgroundFailedTitle: '背景工作失敗'
+      backgroundFailedTitle: '背景工作失敗',
+      creditsTitle: '額度'
     }
   },
 
   remoteDisplayBanner: {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous 額度已用盡',
+    titleProvider: provider => `額度已用盡 — ${provider}`,
+    fallbackMessage: '您的帳戶額度已用盡。請儲值以繼續使用。',
+    openBilling: '開啟帳單',
+    addCredits: '新增額度',
+    dismiss: '忽略'
   },
 
   titlebar: {
@@ -247,6 +258,10 @@ export const zhHant = defineLocale({
         backgroundDone: {
           label: '背景工作完成',
           description: '背景終端機指令已完成。'
+        },
+        credits: {
+          label: '額度提醒',
+          description: '額度存取被暫停或恢復。'
         }
       },
       test: '傳送測試通知',
@@ -848,6 +863,12 @@ export const zhHant = defineLocale({
       messages: count => `${count} 則訊息`,
       restored: '已還原',
       deleteConfirm: title => `永久刪除「${title}」？此操作無法復原。`,
+      autoArchiveTitle: '自動封存閒置對話',
+      autoArchiveDesc:
+        '自動封存你一段時間未使用的對話。已釘選的對話永遠不會被封存，也不會刪除任何內容——封存的對話會移到這裡。',
+      autoArchiveDaysLabel: '封存前',
+      autoArchiveDaysUnit: '天無活動',
+      autoArchiveFailed: '無法更新自動封存設定',
       defaultDirTitle: '預設專案目錄',
       defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
       defaultDirUpdated: '預設專案目錄已更新',
@@ -1025,6 +1046,7 @@ export const zhHant = defineLocale({
     ageSeconds: seconds => `${seconds} 秒前`,
     ageMinutes: minutes => `${minutes} 分鐘前`,
     ageHours: hours => `${hours} 小時前`,
+    ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 詞元`
@@ -1468,6 +1490,7 @@ export const zhHant = defineLocale({
     promptPlaceholder: '代理每次執行時應做什麼？',
     frequencyLabel: '頻率',
     deliverLabel: '傳遞至',
+    deliverNeedsHomeChannel: '請先設定主頻道',
     modelLabel: '模型',
     modelDefault: '預設（全域模型）',
     customScheduleLabel: '自訂排程',
@@ -1479,7 +1502,25 @@ export const zhHant = defineLocale({
     scheduleRequired: '排程為必填項目。',
     scriptOnlyEditHint: '僅腳本任務（無 AI 提示詞）。任務 ID：',
     saveChanges: '儲存變更',
-    createAction: '建立排程工作'
+    createAction: '建立排程工作',
+    tabs: {
+      jobs: '工作',
+      blueprints: '藍圖'
+    },
+    blueprints: {
+      tab: '藍圖',
+      startFrom: '從此開始',
+      custom: '自訂',
+      subtitle: '現成的自動化',
+      dialogDesc: '填寫詳細資訊並進行排程。',
+      scheduleIt: '安排工作',
+      scheduling: '安排中...',
+      scheduled: '藍圖已安排',
+      loading: '正在載入藍圖...',
+      failedLoad: '載入藍圖失敗',
+      emptyTitle: '沒有可用的藍圖',
+      emptyDesc: '此後端上沒有可用的自動化藍圖。'
+    }
   },
 
   artifacts: {
@@ -1636,6 +1677,13 @@ export const zhHant = defineLocale({
       ageDay: '天',
       ageHour: '時',
       ageMin: '分'
+    },
+    dateDivider: {
+      today: '今天稍早',
+      yesterday: '昨天',
+      thisWeek: '本週',
+      lastWeek: '上週',
+      thisMonth: '本月'
     }
   },
 
@@ -1901,6 +1949,39 @@ export const zhHant = defineLocale({
     viewDocs: '檢視安裝文件',
     installTo: '將安裝至',
     retryAfterRun: '我已執行 -- 重試',
+    setupChoiceTitle: '設定 Hermes Desktop',
+    setupChoiceDesc: '將此應用程式連線到您已執行的 Hermes 閘道，或在這台電腦上本機安裝 Hermes。',
+    connectExistingTitle: '連線到現有 Hermes',
+    connectExistingShort: '連線現有環境',
+    connectExistingDesc: '使用工作階段權杖或瀏覽器登入連線遠端後端。不會啟動本機安裝。',
+    installLocalTitle: '本機安裝 Hermes',
+    installLocalDesc: '下載 Hermes、建立 Python 環境，並在這台電腦上執行後端。',
+    localStartUnavailable: '無法啟動本機安裝。請重新啟動 Hermes Desktop 後再試一次。',
+    remoteSetupTitle: '連線到現有 Hermes',
+    remoteSetupDesc: '輸入閘道 URL。Hermes Desktop 會偵測需要權杖還是瀏覽器登入。',
+    remoteUrlTitle: '閘道 URL',
+    remoteUrlDesc: '使用 Hermes 閘道的基礎 URL；遠端位址請包含 https://。',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: '正在偵測閘道驗證方式...',
+    probeError: '無法連線到該 Hermes 閘道。',
+    identityProvider: '您的身分提供者',
+    authTitle: '驗證',
+    authNeedsOauth: provider => `測試此閘道前請先使用 ${provider} 登入。`,
+    authSignedIn: '瀏覽器登入已完成。',
+    connected: '已連線',
+    signIn: '登入',
+    signInWith: provider => `使用 ${provider} 登入`,
+    enterUrlFirst: '請先輸入閘道 URL。',
+    signInIncomplete: '驗證完成前登入視窗已關閉。',
+    tokenTitle: '工作階段權杖',
+    tokenDesc: '貼上遠端閘道 .env 檔案中的工作階段權杖。',
+    pasteSessionToken: '貼上工作階段權杖',
+    incompleteSignInTest: '測試此受 OAuth 保護的閘道前請先登入。',
+    incompleteTokenTest: '測試此閘道前請輸入工作階段權杖。',
+    testConnection: '測試連線',
+    testSucceeded: (baseUrl, version) => `已連線到 ${baseUrl}${version ? ` (${version})` : ''}。`,
+    applyRemote: '套用並重新連線',
+    backToSetup: '返回',
     failedTitle: '安裝失敗',
     settingUpTitle: '正在設定 Hermes Agent',
     finishingTitle: '正在收尾',
@@ -2004,7 +2085,8 @@ export const zhHant = defineLocale({
     proNeedsSubscription: 'Pro 模型需要付費 Nous 訂閱。',
     free: '免費',
     freeTier: '免費層',
-    priceTitle: '每百萬 Token 的輸入/輸出價格'
+    priceTitle: '每百萬 Token 的輸入/輸出價格',
+    wasPrice: '原價'
   },
 
   modelVisibility: {
@@ -2279,6 +2361,7 @@ export const zhHant = defineLocale({
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
+    newSessionTab: '新增工作階段分頁',
     split: dir => `向${dir}分割`,
     move: dir => `向${dir}移動`,
     dirUp: '上',
@@ -2369,7 +2452,10 @@ export const zhHant = defineLocale({
       placeholder: '輸入您的答案…',
       skip: '略過',
       skipped: '已略過',
-      continueLabel: '繼續'
+      continueLabel: '繼續',
+      lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
+      lateAnswerTip: '將此回答起草為後續訊息',
+      lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。'
     },
     tool: {
       code: '程式碼',

@@ -263,6 +263,38 @@ def build_models_payload(
     }
 
 
+def build_model_options_payload(
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    refresh: bool = False,
+) -> dict:
+    """Build the shared API-server/dashboard/TUI model-options payload.
+
+    This wraps ``build_models_payload`` with the stable picker shape and the
+    safe custom-provider probe policy used for normal GUI/TUI opens:
+
+    - normal open: probe only the current custom provider so offline saved
+      endpoints do not block the picker
+    - explicit refresh: probe every custom provider while busting the model
+      cache so live catalogs repopulate fully
+    """
+    refresh = bool(refresh)
+    return build_models_payload(
+        ctx,
+        explicit_only=bool(explicit_only),
+        include_unconfigured=bool(include_unconfigured),
+        picker_hints=True,
+        canonical_order=True,
+        pricing=True,
+        capabilities=True,
+        refresh=refresh,
+        probe_custom_providers=refresh,
+        probe_current_custom_provider=not refresh,
+    )
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
     """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
 
@@ -537,6 +569,7 @@ def _apply_pricing(
     from hermes_cli.models import (
         _format_price_per_mtok,
         check_nous_free_tier,
+        compute_sale_discount,
         get_pricing_for_provider,
         partition_nous_models_by_tier,
     )
@@ -569,12 +602,32 @@ def _apply_pricing(
             cache = _format_price_per_mtok(cache_raw) if cache_raw else None
             # A model is "free" when both input and output cost nothing.
             is_free = inp == "free" and (out == "free" or out == "")
-            formatted[mid] = {
+            entry: dict = {
                 "input": inp,
                 "output": out,
                 "cache": cache,
                 "free": is_free,
             }
+            # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
+            # Novita, …) never get discount_percent / was_* even if a nested
+            # pricing.original somehow appeared in their catalog. Free / $0
+            # models never get sale chrome either — even if original leaked.
+            if slug == "nous" and not is_free:
+                sale = compute_sale_discount(
+                    inp_raw, out_raw, p.get("original")
+                )
+                if sale is not None:
+                    discount_percent, was_prompt_raw, was_out_raw = sale
+                    entry["discount_percent"] = discount_percent
+                    if was_prompt_raw != "":
+                        entry["was_input"] = _format_price_per_mtok(
+                            was_prompt_raw
+                        )
+                    if was_out_raw != "":
+                        entry["was_output"] = _format_price_per_mtok(
+                            was_out_raw
+                        )
+            formatted[mid] = entry
 
         if formatted:
             row["pricing"] = formatted

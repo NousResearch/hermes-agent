@@ -11,6 +11,7 @@ from plugins.memory.mem0._setup import (
     parse_flags,
     build_oss_config,
     _write_env,
+    _prompt_api_key,
     post_setup,
     _check_qdrant_path,
     _check_ollama,
@@ -180,6 +181,48 @@ class TestWriteEnv:
         assert "OPENAI_API_KEY=new" in content
         assert "OTHER=keep" in content
         assert "old" not in content
+
+    def test_preserves_non_ascii_existing_lines(self, tmp_path):
+        """Existing non-ASCII .env content must survive the read-modify-write
+        as UTF-8 (the locale codec would crash/mangle it on Windows)."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("PROXY_NOTE=café-zürich-完了\n".encode("utf-8"))
+        _write_env(env_path, {"OPENAI_API_KEY": "sk-test"})
+        content = env_path.read_text(encoding="utf-8")
+        assert "PROXY_NOTE=café-zürich-完了" in content
+        assert "OPENAI_API_KEY=sk-test" in content
+
+    def test_updates_first_key_with_bom(self, tmp_path):
+        """A Notepad-edited .env carries a BOM; the first key must still be
+        matched/updated in place, not duplicated."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿OPENAI_API_KEY=old\n".encode("utf-8"))
+        _write_env(env_path, {"OPENAI_API_KEY": "new"})
+        content = env_path.read_text(encoding="utf-8")
+        assert content.count("OPENAI_API_KEY=") == 1
+        assert "OPENAI_API_KEY=new" in content
+
+
+class TestPromptApiKey:
+
+    def test_existing_key_found_behind_bom(self, tmp_path, monkeypatch):
+        """The masked-current-value lookup must see a key on the BOM'd first
+        line of a Notepad-edited .env instead of prompting from scratch."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿OPENAI_API_KEY=sk-existing\n".encode("utf-8"))
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        prompts: list[str] = []
+
+        def _fake_getpass(prompt):
+            prompts.append(prompt)
+            return ""
+
+        monkeypatch.setattr("plugins.memory.mem0._setup.getpass.getpass", _fake_getpass)
+        _prompt_api_key("OpenAI", "OPENAI_API_KEY", str(tmp_path))
+
+        assert len(prompts) == 1
+        assert "current: ...ting" in prompts[0]
 
 
 class TestPostSetup:

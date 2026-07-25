@@ -16,7 +16,7 @@
     "lint:fix": "eslint src/ --fix",
     "fix": "npm run lint:fix",
     "typecheck": "tsc -p . --noEmit",
-    "check": "npm run typecheck"
+    "check": "npm run typecheck && npm run lint"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

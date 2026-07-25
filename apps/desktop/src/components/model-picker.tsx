@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
@@ -25,6 +25,7 @@ interface ModelPickerDialogProps {
   currentModel: string
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
+  profile?: string
   /**
    * Optional class to apply to DialogContent. Use to override z-index when
    * stacking the picker on top of another fixed overlay (e.g. the desktop
@@ -42,6 +43,7 @@ export function ModelPickerDialog({
   currentModel,
   currentProvider,
   onSelect,
+  profile = 'default',
   contentClassName
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
@@ -54,7 +56,7 @@ export function ModelPickerDialog({
   const [search, setSearch] = useState('')
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
+    queryKey: modelOptionsQueryKey(profile, sessionId),
     queryFn: () => requestModelOptions({ gateway: gw, sessionId }),
     enabled: open
   })
@@ -266,15 +268,39 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
     )
   }
 
+  const onSale = typeof price.discount_percent === 'number' && Boolean(price.was_input || price.was_output)
+
   return (
     <span
       className={cn(
-        'shrink-0 text-[0.66rem] tabular-nums',
+        'shrink-0 inline-flex items-center gap-1.5 text-[0.66rem] tabular-nums',
         isCurrent ? 'text-primary-foreground/80' : 'text-muted-foreground'
       )}
       title={copy.priceTitle}
     >
-      {price.input || '?'} / {price.output || '?'}
+      {onSale ? (
+        <span
+          className={cn(
+            'rounded-sm px-1 py-0.5 text-[0.62rem] font-semibold',
+            isCurrent ? 'bg-primary-foreground/20' : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+          )}
+        >
+          -{price.discount_percent}%
+        </span>
+      ) : null}
+      <span>
+        {price.input || '?'} / {price.output || '?'}
+      </span>
+      {onSale ? (
+        <span
+          className={cn(
+            'line-through decoration-from-font opacity-70',
+            isCurrent ? 'text-primary-foreground/60' : 'text-muted-foreground/80'
+          )}
+        >
+          {copy.wasPrice} {price.was_input || '?'} / {price.was_output || '?'}
+        </span>
+      ) : null}
     </span>
   )
 }

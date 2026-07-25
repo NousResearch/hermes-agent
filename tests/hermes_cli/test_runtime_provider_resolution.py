@@ -3426,7 +3426,9 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
         },
     )
 
-    resolved = rp._resolve_named_custom_runtime(requested_provider="custom:lmstudio")
+    # Exercise the public resolver: it is responsible for preserving the
+    # original named identity after the pool path canonicalizes to "custom".
+    resolved = rp.resolve_runtime_provider(requested="custom:lmstudio")
 
     assert resolved is not None
     assert resolved["extra_headers"] == {
@@ -3435,3 +3437,5 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+    assert resolved["provider"] == "custom"
+    assert resolved["requested_provider"] == "custom:lmstudio"

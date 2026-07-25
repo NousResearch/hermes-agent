@@ -181,10 +181,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
     // ⌘W: close the focused tab (terminal / preview target / zone tree tab).
-    // On macOS the menu accelerator owns ⌘W and routes through the same
+    // On the main tab with session tabs stacked, it shifts the next one in —
+    // the loader navigates to that session's route (loads it into main). On
+    // macOS the menu accelerator owns ⌘W and routes through the same
     // closeActiveTab via IPC (see use-desktop-integrations); this binding is
     // the Win/Linux path where ⌘W reaches the renderer directly.
-    'view.closeTab': () => void closeActiveTab(),
+    'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),

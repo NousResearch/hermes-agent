@@ -196,3 +196,37 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     save_config.assert_not_called()
     provider.save_config.assert_not_called()
     assert not (tmp_path / ".env").exists()
+
+
+def test_write_env_vars_strips_line_separators_and_nul(tmp_path):
+    """A pasted secret with embedded CR/LF/NUL must not inject an extra
+    KEY=VALUE line into .env (mirrors the openviking plugin's writer)."""
+    env_path = tmp_path / ".env"
+
+    memory_setup._write_env_vars(
+        env_path,
+        {"PROVIDER_API_KEY": "good\nINJECTED_KEY=attacker\r\u2028\x00tail"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["PROVIDER_API_KEY=goodINJECTED_KEY=attackertail"]
+    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
+    assert set(parsed) == {"PROVIDER_API_KEY"}
+
+
+def test_write_env_vars_strips_newlines_when_updating_existing_key(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PROVIDER_API_KEY=old\nKEEP=1\n", encoding="utf-8")
+
+    memory_setup._write_env_vars(env_path, {"PROVIDER_API_KEY": "new\r\nROGUE=1"})
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert "PROVIDER_API_KEY=newROGUE=1" in lines
+    assert "KEEP=1" in lines
+    assert all(not line.startswith("ROGUE=") for line in lines)
+
+
+def test_write_env_vars_plain_value_roundtrips(tmp_path):
+    env_path = tmp_path / ".env"
+    memory_setup._write_env_vars(env_path, {"PROVIDER_API_KEY": "sk-plain-1234"})
+    assert env_path.read_text(encoding="utf-8") == "PROVIDER_API_KEY=sk-plain-1234\n"

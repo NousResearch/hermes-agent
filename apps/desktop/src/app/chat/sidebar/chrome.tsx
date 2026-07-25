@@ -43,6 +43,22 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
   return <SidebarRowStack className={cn('pb-1 pl-4', className)} {...props} />
 }
 
+/**
+ * Chronological date-bucket separator ("Yesterday" / "Last week" / "June") for
+ * the session list. One flat row — a small caption plus a hairline rule — so it
+ * groups sessions by recency without adding a level of indentation.
+ */
+export function SidebarDateDivider({ className, label, ...props }: React.ComponentProps<'div'> & { label: string }) {
+  return (
+    <div className={cn('flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
+      <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+        {label}
+      </span>
+      <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+    </div>
+  )
+}
+
 /** Outer grid — sole owner of row height. */
 export function SidebarRowShell({
   actions,

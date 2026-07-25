@@ -1803,6 +1803,13 @@ export interface StatusResponse {
    * Empty in loopback mode; empty + ``auth_required=true`` is a
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
+  /** Supported dashboard auth flows for the client to choose from. In gated
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
+   * brokerable OAuth provider is registered, signalling that the desktop can
+   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
+   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
+   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+  auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
   can_update_hermes?: boolean;
@@ -2326,6 +2333,7 @@ export interface MoaModelSlot {
   model: string;
   /** Optional per-slot reasoning effort — round-tripped, not edited here. */
   reasoning_effort?: string;
+  enabled?: boolean;
 }
 
 export interface MoaConfigResponse {
@@ -2336,10 +2344,12 @@ export interface MoaConfigResponse {
     aggregator: MoaModelSlot;
     reference_temperature: number;
     aggregator_temperature: number;
+    reference_timeout: number | null;
+    degraded_reference_policy: "loud" | "silent";
     max_tokens: number;
     /** Optional advisor output cap — round-tripped, not edited here. */
     reference_max_tokens?: number | null;
-    /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+    /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
     enabled: boolean;
   }>;
@@ -2347,6 +2357,8 @@ export interface MoaConfigResponse {
   aggregator: MoaModelSlot;
   reference_temperature: number;
   aggregator_temperature: number;
+  reference_timeout: number | null;
+  degraded_reference_policy: "loud" | "silent";
   max_tokens: number;
   enabled: boolean;
 }

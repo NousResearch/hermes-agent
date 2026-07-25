@@ -208,6 +208,47 @@ def atomic_json_write(
         raise
 
 
+def warn_if_credential_file_broadly_readable(
+    path: Union[str, Path],
+    *,
+    label: str = "",
+    log: logging.Logger | None = None,
+) -> bool:
+    """Warn (once per call) when a credential file is group/world-readable.
+
+    Secret-bearing files that users create by hand (or that older Hermes
+    versions wrote without an explicit mode) commonly end up 0o644 under the
+    default umask. This helper is the shared read-time check for that class:
+    call it before loading any token/credential file so the owner gets a
+    remediation hint in the logs.
+
+    Returns True when a warning was emitted. No-ops (returns False) on
+    platforms without POSIX permission bits semantics (best effort), when the
+    file is missing, or when permissions are already tight.
+    """
+    p = Path(path)
+    _log = log or logger
+    try:
+        file_mode = p.stat().st_mode
+    except OSError:
+        return False
+    if os.name != "posix":
+        # Windows ACLs don't map onto POSIX group/other bits; st_mode there
+        # is synthesized and would false-positive.
+        return False
+    if not (file_mode & (stat.S_IRGRP | stat.S_IROTH)):
+        return False
+    _log.warning(
+        "%s%s is group/world-readable (mode 0%o) and contains secrets. "
+        "Run: chmod 600 %s",
+        f"{label} " if label else "",
+        p.name,
+        stat.S_IMODE(file_mode),
+        p,
+    )
+    return True
+
+
 class IndentDumper(yaml.SafeDumper):
     """PyYAML dumper that indents list items under mapping keys (2-space).
 

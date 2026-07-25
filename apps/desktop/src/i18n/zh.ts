@@ -129,6 +129,7 @@ export const zh: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
+      gatewayAuthFailed: '网关认证失败 — 请检查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
@@ -164,12 +165,22 @@ export const zh: Translations = {
       turnDoneBody: '回复已就绪。',
       turnErrorTitle: '本轮失败',
       backgroundDoneTitle: '后台任务已完成',
-      backgroundFailedTitle: '后台任务失败'
+      backgroundFailedTitle: '后台任务失败',
+      creditsTitle: '额度'
     }
   },
 
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
+  },
+
+  billingBlock: {
+    titleNous: 'Nous 额度已用尽',
+    titleProvider: provider => `额度已用尽 — ${provider}`,
+    fallbackMessage: '您的账户额度已用尽。请充值以继续使用。',
+    openBilling: '打开账单',
+    addCredits: '添加额度',
+    dismiss: '忽略'
   },
 
   titlebar: {
@@ -274,6 +285,7 @@ export const zh: Translations = {
       'composer.send': '发送消息',
       'composer.newline': '插入换行',
       'composer.steer': '引导正在运行的回合',
+      'composer.queue': '消息排队',
       'composer.sendQueued': '发送下一条排队消息',
       'composer.mention': '引用文件、文件夹、网址',
       'composer.slash': '斜杠命令面板',
@@ -358,6 +370,10 @@ export const zh: Translations = {
         backgroundDone: {
           label: '后台任务完成',
           description: '后台终端命令已完成。'
+        },
+        credits: {
+          label: '额度提醒',
+          description: '额度访问被暂停或恢复。'
         }
       },
       test: '发送测试通知',
@@ -1026,6 +1042,12 @@ export const zh: Translations = {
       messages: count => `${count} 条消息`,
       restored: '已恢复',
       deleteConfirm: title => `永久删除“${title}”？此操作无法撤销。`,
+      autoArchiveTitle: '自动归档闲置会话',
+      autoArchiveDesc:
+        '自动归档你一段时间未使用的会话。已置顶的会话永远不会被归档，也不会删除任何内容——归档的会话会移动到这里。',
+      autoArchiveDaysLabel: '归档前',
+      autoArchiveDaysUnit: '天无活动',
+      autoArchiveFailed: '无法更新自动归档设置',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
       defaultDirUpdated: '默认项目目录已更新',
@@ -1272,6 +1294,7 @@ export const zh: Translations = {
     ageSeconds: seconds => `${seconds} 秒前`,
     ageMinutes: minutes => `${minutes} 分钟前`,
     ageHours: hours => `${hours} 小时前`,
+    ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 词元`
@@ -1591,6 +1614,72 @@ export const zh: Translations = {
     }
   },
 
+  webhooks: {
+    search: '搜索 Webhook…',
+    loading: '正在加载 Webhook…',
+    loadFailed: 'Webhook 加载失败',
+    subscriptions: (count: number) => `订阅（${count}）`,
+    hint: '接收器运行后，订阅更改会热重载。已禁用的订阅会拒绝传入事件。',
+    empty: '暂无 Webhook 订阅。',
+    disabledTitle: 'Webhook 接收器已禁用',
+    disabledBody:
+      'Webhook 是独立的网关平台。在此启用以接受传入的 HTTP 事件；仅当订阅投递到 Telegram、Discord、Slack 或其他渠道时才需要聊天渠道。',
+    enable: '启用 Webhook',
+    enabling: '正在启用…',
+    enabled: (name: string) => `已启用：“${name}”`,
+    disabled: (name: string) => `已禁用：“${name}”`,
+    enableRow: '启用',
+    disableRow: '禁用',
+    delete: '删除',
+    deleting: '删除中…',
+    deleted: 'Webhook 已删除',
+    deleteTitle: '删除 Webhook',
+    deleteDescPrefix: '这将永久移除 ',
+    deleteDescSuffix: '。此操作无法撤销。',
+    deleteFailed: (name: string) => `删除“${name}”失败`,
+    toggleFailed: (name: string) => `更新“${name}”失败`,
+    newSubscription: '新建订阅',
+    restarting: '网关正在重启…',
+    restartNeeded: 'Webhook 已启用，但网关仍需重启后接收器才能上线。',
+    restartGateway: '重启网关',
+    restartingGateway: '正在重启…',
+    restartFailed: (detail: string) => `网关重启失败${detail}`,
+    enabledRestarting: 'Webhook 已启用；网关正在重启…',
+    all: '（全部）',
+    deliverOnly: '仅投递',
+    createdTitle: '订阅已创建',
+    createdSecretHint: '请立即复制密钥 —— 它只显示一次。',
+    webhookUrl: 'Webhook URL',
+    secretOnce: '密钥（仅显示一次）',
+    done: '完成',
+    fieldName: '名称',
+    fieldNamePlaceholder: '例如 github-push',
+    fieldDescription: '描述',
+    fieldDescriptionPlaceholder: '此 Webhook 的用途（可选）',
+    fieldEvents: '事件',
+    fieldEventsPlaceholder: '以逗号分隔，留空表示全部',
+    fieldSkills: '技能',
+    fieldSkillsPlaceholder: '以逗号分隔的技能名称（可选）',
+    fieldDeliver: '投递到',
+    fieldDeliverOnly: '仅投递载荷',
+    fieldPrompt: '提示词',
+    fieldPromptPlaceholder: '此 Webhook 触发时给智能体的说明（可选）',
+    nameRequired: '需要名称',
+    create: '创建',
+    creating: '正在创建…',
+    created: '已创建',
+    createFailed: (detail: string) => `创建失败：${detail}`,
+    copy: '复制',
+    deliverOptions: {
+      log: '日志',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      email: '电子邮件',
+      github_comment: 'GitHub 评论'
+    }
+  },
+
   profiles: {
     close: '关闭配置档案',
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
@@ -1771,6 +1860,7 @@ export const zh: Translations = {
     promptPlaceholder: '总结我未读的 Slack 话题，并把前 5 条邮件发给我…',
     frequencyLabel: '频率',
     deliverLabel: '投递至',
+    deliverNeedsHomeChannel: '请先设置主频道',
     modelLabel: '模型',
     modelDefault: '默认（全局模型）',
     customScheduleLabel: '自定义排程',
@@ -1782,7 +1872,25 @@ export const zh: Translations = {
     scheduleRequired: '排程为必填项。',
     scriptOnlyEditHint: '仅脚本任务（无 AI 提示词）。任务 ID：',
     saveChanges: '保存更改',
-    createAction: '创建定时任务'
+    createAction: '创建定时任务',
+    tabs: {
+      jobs: '任务',
+      blueprints: '蓝图'
+    },
+    blueprints: {
+      tab: '蓝图',
+      startFrom: '从此开始',
+      custom: '自定义',
+      subtitle: '现成的自动化',
+      dialogDesc: '填写详细信息并进行排程。',
+      scheduleIt: '安排任务',
+      scheduling: '安排中...',
+      scheduled: '蓝图已安排',
+      loading: '正在加载蓝图...',
+      failedLoad: '加载蓝图失败',
+      emptyTitle: '没有可用的蓝图',
+      emptyDesc: '此后端上没有可用的自动化蓝图。'
+    }
   },
 
   artifacts: {
@@ -1945,6 +2053,13 @@ export const zh: Translations = {
       ageDay: '天',
       ageHour: '时',
       ageMin: '分'
+    },
+    dateDivider: {
+      today: '今天早些时候',
+      yesterday: '昨天',
+      thisWeek: '本周',
+      lastWeek: '上周',
+      thisMonth: '本月'
     }
   },
 
@@ -2211,6 +2326,39 @@ export const zh: Translations = {
     viewDocs: '查看安装文档',
     installTo: '将安装到',
     retryAfterRun: '我已运行 -- 重试',
+    setupChoiceTitle: '设置 Hermes Desktop',
+    setupChoiceDesc: '将此应用连接到你已运行的 Hermes 网关，或在这台电脑上本地安装 Hermes。',
+    connectExistingTitle: '连接到现有 Hermes',
+    connectExistingShort: '连接现有环境',
+    connectExistingDesc: '使用会话令牌或浏览器登录连接远程后端。不会启动本地安装。',
+    installLocalTitle: '本地安装 Hermes',
+    installLocalDesc: '下载 Hermes，创建 Python 环境，并在这台电脑上运行后端。',
+    localStartUnavailable: '无法启动本地安装。请重启 Hermes Desktop 后重试。',
+    remoteSetupTitle: '连接到现有 Hermes',
+    remoteSetupDesc: '输入网关 URL。Hermes Desktop 会检测需要令牌还是浏览器登录。',
+    remoteUrlTitle: '网关 URL',
+    remoteUrlDesc: '使用 Hermes 网关的基础 URL；远程地址请包含 https://。',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: '正在检测网关认证方式...',
+    probeError: '无法连接到该 Hermes 网关。',
+    identityProvider: '你的身份提供方',
+    authTitle: '认证',
+    authNeedsOauth: provider => `测试此网关前请先使用 ${provider} 登录。`,
+    authSignedIn: '浏览器登录已完成。',
+    connected: '已连接',
+    signIn: '登录',
+    signInWith: provider => `使用 ${provider} 登录`,
+    enterUrlFirst: '请先输入网关 URL。',
+    signInIncomplete: '认证完成前登录窗口已关闭。',
+    tokenTitle: '会话令牌',
+    tokenDesc: '粘贴远程网关 .env 文件中的会话令牌。',
+    pasteSessionToken: '粘贴会话令牌',
+    incompleteSignInTest: '测试此受 OAuth 保护的网关前请先登录。',
+    incompleteTokenTest: '测试此网关前请输入会话令牌。',
+    testConnection: '测试连接',
+    testSucceeded: (baseUrl, version) => `已连接到 ${baseUrl}${version ? ` (${version})` : ''}。`,
+    applyRemote: '应用并重新连接',
+    backToSetup: '返回',
     failedTitle: '安装失败',
     settingUpTitle: '正在设置 Hermes Agent',
     finishingTitle: '正在收尾',
@@ -2315,7 +2463,8 @@ export const zh: Translations = {
     proNeedsSubscription: 'Pro 模型需要付费 Nous 订阅。',
     free: '免费',
     freeTier: '免费层',
-    priceTitle: '每百万 token 的输入/输出价格'
+    priceTitle: '每百万 token 的输入/输出价格',
+    wasPrice: '原价'
   },
 
   modelVisibility: {
@@ -2416,6 +2565,8 @@ export const zh: Translations = {
       running: count => `${count} 个运行中`,
       cron: '排程',
       openCron: '打开排程任务',
+      webhooks: 'Webhook',
+      openWebhooks: '打开 Webhook',
       starmap: '记忆图谱',
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
@@ -2593,6 +2744,7 @@ export const zh: Translations = {
     closeOthers: '关闭其他',
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',
+    newSessionTab: '新建会话标签',
     split: dir => `向${dir}拆分`,
     move: dir => `向${dir}移动`,
     dirUp: '上',
@@ -2685,7 +2837,10 @@ export const zh: Translations = {
       placeholder: '输入你的答案…',
       skip: '跳过',
       skipped: '已跳过',
-      continueLabel: '继续'
+      continueLabel: '继续',
+      lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
+      lateAnswerTip: '将此回答起草为后续消息',
+      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     tool: {
       code: '代码',

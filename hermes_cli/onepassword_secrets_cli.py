@@ -487,6 +487,8 @@ def _op_version(binary: Path) -> str:
             [str(binary), "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if res.returncode == 0:
@@ -514,7 +516,8 @@ def _op_whoami(
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
     try:
         res = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=10
+            cmd, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

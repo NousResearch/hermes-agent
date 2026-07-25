@@ -79,4 +79,14 @@ describe('useMessageStream compaction lifecycle', () => {
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
   })
+
+  it('clears the compaction phase on the structured completion edge', async () => {
+    await mountStream()
+    setSessionCompacting(OTHER_SID, true)
+
+    emit('status.update', { kind: 'compacting' })
+    emit('status.update', { kind: 'compacted' })
+
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
 })

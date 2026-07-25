@@ -186,6 +186,164 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     assert acknowledgements == ["deleg_duplicate"]
 
 
+def _persist_pending_completion(event):
+    from tools import async_delegation
+
+    async_delegation._persist_dispatch({
+        "delegation_id": event["delegation_id"],
+        "session_key": event["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": event.get("parent_session_id"),
+        "dispatched_at": event["dispatched_at"],
+    })
+    async_delegation._persist_completion(event, {
+        "status": "completed",
+        "summary": event["summary"],
+    })
+
+
+def test_compression_parent_delivery_targets_tip_and_is_acked(
+    monkeypatch, isolated_registry,
+):
+    """A compression-rotated parent with a live tip is deliverable + acked."""
+    from tools import async_delegation
+
+    event = _async_event("deleg_compression")
+    event["parent_session_id"] = "sess_parent"
+    _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(side_effect=lambda session_id: {
+            "sess_parent": {
+                "id": "sess_parent",
+                "ended_at": "2026-07-16T12:00:00",
+                "end_reason": "compression",
+            },
+            "sess_tip": {"id": "sess_tip", "ended_at": None, "end_reason": None},
+        }.get(session_id)),
+        get_compression_tip=AsyncMock(return_value="sess_tip"),
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion", event)
+    ) is True
+
+    adapter.handle_message.assert_awaited_once()
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["delivery_state"] == "delivered"
+
+
+def test_explicit_reset_drop_is_terminal_not_falsely_delivered(
+    monkeypatch, isolated_registry,
+):
+    """An explicit /new boundary drop gets a terminal 'dropped' disposition.
+
+    Not 'delivered' (the ack must stay honest — nothing was injected) and not
+    'pending' (restart recovery would replay a completion that is fail-closed
+    dropped again on every boot).
+    """
+    from tools import async_delegation
+
+    event = _async_event("deleg_explicit_new")
+    event["parent_session_id"] = "sess_reset"
+    _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(return_value={
+            "id": "sess_reset",
+            "ended_at": "2026-07-16T12:00:00",
+            "end_reason": "session_reset",
+        }),
+        get_compression_tip=AsyncMock(),
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion", event)
+    ) is None
+
+    adapter.handle_message.assert_not_awaited()
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["delivery_state"] == "dropped"
+    restored = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(restored) == 0
+
+
+def test_midflight_compression_rotation_stays_pending_for_retry(
+    monkeypatch, isolated_registry,
+):
+    """A rotation without a visible continuation yet is retryable, not dropped."""
+    from tools import async_delegation
+
+    event = _async_event("deleg_midflight")
+    event["parent_session_id"] = "sess_rotating"
+    _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(return_value={
+            "id": "sess_rotating",
+            "ended_at": "2026-07-16T12:00:00",
+            "end_reason": "compression",
+        }),
+        get_compression_tip=AsyncMock(return_value=None),
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion", event)
+    ) is False
+
+    adapter.handle_message.assert_not_awaited()
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["delivery_state"] == "pending"
+    restored = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(restored) == 1
+    assert restored.get_nowait()["delegation_id"] == event["delegation_id"]
+
+
+def test_retry_attempts_are_capped_to_a_terminal_drop(
+    monkeypatch, isolated_registry,
+):
+    """Endless claim/release churn converges to a terminal 'dropped' state."""
+    from tools import async_delegation
+
+    event = _async_event("deleg_attempt_cap")
+    event["parent_session_id"] = "sess_rotating"
+    _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(return_value={
+            "id": "sess_rotating",
+            "ended_at": "2026-07-16T12:00:00",
+            "end_reason": "compression",
+        }),
+        get_compression_tip=AsyncMock(return_value=None),
+    )
+
+    async def _churn():
+        for _ in range(async_delegation._MAX_DELIVERY_ATTEMPTS + 2):
+            await runner._deliver_completion_notification("completion", event)
+
+    asyncio.run(_churn())
+
+    adapter.handle_message.assert_not_awaited()
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["delivery_state"] == "dropped"
+    assert durable["delivery_attempts"] <= async_delegation._MAX_DELIVERY_ATTEMPTS
+    restored = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(restored) == 0
+
+
 def test_distinct_process_incarnations_are_not_deduplicated():
     """Producer spawn time distinguishes a reused process session ID."""
     adapter = SimpleNamespace(handle_message=AsyncMock())

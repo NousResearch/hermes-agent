@@ -62,5 +62,6 @@ def test_prompt_toolkit_model_picker_defers_confirmation_off_key_handler(monkeyp
     assert self_._model_picker_state is None
     assert captured["started"] is True
     assert captured["daemon"] is True
-    assert captured["args"] == (result, True)
+    # Third arg is the fresh picker custom_providers snapshot (None here).
+    assert captured["args"] == (result, True, None)
     assert "ran_inline" not in captured

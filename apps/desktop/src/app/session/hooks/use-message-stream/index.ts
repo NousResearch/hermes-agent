@@ -32,6 +32,7 @@ import { useGatewayEventHandler } from './gateway-event'
 import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
+  activeGatewayProfile?: string
   activeSessionIdRef: MutableRefObject<string | null>
   hydrateFromStoredSession: (
     attempts?: number,
@@ -54,7 +55,15 @@ interface QueuedStreamDeltas {
   reasoning: string
 }
 
+// Date.now() alone can collide when an interim seal and the next segment's
+// first delta land in the same millisecond — the new segment would then find
+// the sealed bubble by id and append into it instead of starting fresh.
+let streamMessageSeq = 0
+
+const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
+
 export function useMessageStream({
+  activeGatewayProfile = 'default',
   activeSessionIdRef,
   hydrateFromStoredSession,
   queryClient,
@@ -89,7 +98,7 @@ export function useMessageStream({
             return state
           }
 
-          const streamId = state.streamId ?? `assistant-stream-${Date.now()}`
+          const streamId = state.streamId ?? nextStreamMessageId('assistant-stream')
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -395,19 +404,21 @@ export function useMessageStream({
         let nextMessages = state.messages
 
         if (streamId && nextMessages.some(m => m.id === streamId)) {
-          // Finalize the existing streaming bubble in place
+          // Seal the streaming bubble in place, marked interim so it renders
+          // without an action footer (see ChatMessage.interim).
           nextMessages = nextMessages.map(m =>
-            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false } : m
+            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false, interim: true } : m
           )
         } else {
           // No streaming bubble — create a standalone interim message
           nextMessages = [
             ...nextMessages,
             {
-              id: `assistant-interim-${Date.now()}`,
+              id: nextStreamMessageId('assistant-interim'),
               role: 'assistant' as const,
               parts: [assistantTextPart(authoritativeText)],
               pending: false,
+              interim: true,
               branchGroupId: state.pendingBranchGroup ?? undefined
             }
           ]
@@ -457,19 +468,15 @@ export function useMessageStream({
           return mergeFinalAssistantText(parts, visibleFinalText)
         }
 
-        const completeMessage = (message: ChatMessage): ChatMessage =>
-          completionError
-            ? {
-                ...message,
-                error: completionError,
-                parts: message.parts.filter(part => part.type !== 'text'),
-                pending: false
-              }
-            : {
-                ...message,
-                parts: replaceTextPart(message.parts),
-                pending: false
-              }
+        // Settling the final response onto a bubble makes it the turn's real
+        // reply — clear `interim` so it regains the action footer.
+        const completeMessage = (message: ChatMessage): ChatMessage => {
+          const settled = { ...message, pending: false, interim: false }
+
+          return completionError
+            ? { ...settled, error: completionError, parts: message.parts.filter(part => part.type !== 'text') }
+            : { ...settled, parts: replaceTextPart(message.parts) }
+        }
 
         const newAssistantFromCompletion = (): ChatMessage => ({
           id: `assistant-${Date.now()}`,
@@ -494,27 +501,36 @@ export function useMessageStream({
             const existing = prev[index]
             const existingText = chatMessageText(existing).trim()
 
+            // The last assistant row is a sealed interim (a tool-call turn or a
+            // verify-on-stop candidate — `message.interim` fires for BOTH, see
+            // tui_gateway `_load_interim_assistant_messages`). When the final
+            // completion is the SAME turn's reply, settle it onto that interim
+            // instead of appending a second bubble. Continuity, not exact
+            // equality: streaming can drop characters and the final may add a
+            // trailing delta, so treat prefix-either-way as the same message.
+            // (mergeFinalAssistantText, via completeMessage, does the real
+            // text merge — replaces the interim's text with the full final.)
+            const finalContinuesInterim = Boolean(
+              existing.interim &&
+              finalText &&
+              existingText &&
+              (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
+            )
+
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (
-              interimBoundaryPending &&
-              responsePreviewed &&
-              finalText &&
-              existingText &&
-              finalText.startsWith(existingText)
-            ) {
-              // The verification candidate was published provisionally as an
-              // interim message and then reused as the terminal response
-              // (continuation-budget fallback). Settle the interim in place
-              // instead of creating a duplicate — the DB has one row, so the
-              // live UI must agree. (#65919 review: duplicate-message blocker)
-              //
-              // Prefix match (not exact equality): the final response may be
-              // the streamed text plus a trailing delta.  mergeFinalAssistantText
-              // (called via completeMessage) handles the actual merge — it
-              // strips the old text parts and appends the full final text.
+            } else if (interimBoundaryPending && (responsePreviewed || finalContinuesInterim)) {
+              // Settle the interim in place instead of creating a duplicate —
+              // the DB has one row, so the live UI must agree. Previously this
+              // was gated on `responsePreviewed` alone, so a NON-previewed
+              // tool-call turn whose final matched its sealed interim appended a
+              // second bubble (the "renders twice: partial first copy + clean
+              // final" bug, #63679). `finalContinuesInterim` closes that gap
+              // for ordinary tool-call turns while `responsePreviewed` still
+              // covers the verify-on-stop continuation-budget case even when the
+              // final text was rewritten and no longer shares a prefix.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
@@ -613,6 +629,7 @@ export function useMessageStream({
   )
 
   const handleGatewayEvent = useGatewayEventHandler({
+    activeGatewayProfile,
     appendAssistantDelta,
     appendReasoningDelta,
     activeSessionIdRef,

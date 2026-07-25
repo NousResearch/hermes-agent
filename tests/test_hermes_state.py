@@ -139,6 +139,155 @@ class TestSessionLifecycle:
         assert session["cwd"] == "/work/repo"
         assert session["git_branch"] == "pets-feature"
 
+    def test_child_session_inherits_cwd_and_git_repo_root_from_parent(self, db):
+        """A parent_session_id child born without cwd/git_repo_root (e.g. the
+        compression-fork path) must inherit both from its parent, so it
+        doesn't silently drop out of the project sidebar (#64709)."""
+        db.create_session(session_id="parent", source="cli")
+        db.update_session_cwd("parent", "/work/repo", git_repo_root="/work/repo")
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        child = db.get_session("child")
+        assert child["cwd"] == "/work/repo"
+        assert child["git_repo_root"] == "/work/repo"
+
+    def test_child_session_explicit_cwd_is_not_overwritten_by_parent(self, db):
+        """A child that explicitly sets its own cwd/git_repo_root keeps it —
+        parent inheritance only fills in NULLs, never clobbers."""
+        db.create_session(session_id="parent", source="cli")
+        db.update_session_cwd("parent", "/work/repo-a", git_repo_root="/work/repo-a")
+
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent",
+            cwd="/work/repo-b", git_repo_root="/work/repo-b",
+        )
+
+        child = db.get_session("child")
+        assert child["cwd"] == "/work/repo-b"
+        assert child["git_repo_root"] == "/work/repo-b"
+
+    def test_multi_generation_lineage_inherits_cwd(self, db):
+        """cwd/git_repo_root propagate through a multi-hop compression chain
+        (root -> gen1 -> gen2), mirroring the multi-generation lineage from
+        the reported issue where a single conversation forked repeatedly."""
+        db.create_session(session_id="root", source="cli")
+        db.update_session_cwd("root", "/work/repo", git_repo_root="/work/repo")
+
+        db.create_session(session_id="gen1", source="cli", parent_session_id="root")
+        db.create_session(session_id="gen2", source="cli", parent_session_id="gen1")
+
+        assert db.get_session("gen1")["cwd"] == "/work/repo"
+        assert db.get_session("gen2")["cwd"] == "/work/repo"
+
+    def test_child_session_inherits_git_branch_from_parent(self, db):
+        """git_branch travels with cwd/git_repo_root — the Desktop sidebar
+        shows the branch chip per session, so a compression child born
+        without it loses the chip even though the workspace didn't change."""
+        db.create_session(session_id="parent", source="cli")
+        db.update_session_cwd(
+            "parent", "/work/repo", git_branch="feature-x", git_repo_root="/work/repo"
+        )
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        child = db.get_session("child")
+        assert child["git_branch"] == "feature-x"
+
+    def test_child_session_inherits_profile_name_from_parent(self, db):
+        """A parented child born without profile_name (compression rotation,
+        /branch) must inherit its parent's owning profile — otherwise the
+        lineage silently migrates to the launch/default profile in unified
+        session lists (the cross-profile session-jump bug)."""
+        db.create_session(session_id="parent", source="cli", profile_name="ai-engineer")
+        # Rotation path: parent is ended with 'compression' BEFORE the child
+        # row is created (agent/conversation_compression.py).
+        db.end_session("parent", "compression")
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        assert db.get_session("child")["profile_name"] == "ai-engineer"
+
+    def test_child_session_explicit_profile_name_is_not_overwritten(self, db):
+        """Inheritance only fills NULLs — an explicit profile_name on the
+        child is never clobbered by the parent's."""
+        db.create_session(session_id="parent", source="cli", profile_name="ai-engineer")
+
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent",
+            profile_name="other",
+        )
+
+        assert db.get_session("child")["profile_name"] == "other"
+
+    def test_multi_generation_lineage_inherits_profile_name(self, db):
+        """profile_name survives a compress-then-branch chain (root -> rotation
+        child -> branch tip) — the exact lineage that used to land on default."""
+        db.create_session(session_id="root", source="cli", profile_name="ai-engineer")
+        db.end_session("root", "compression")
+
+        db.create_session(session_id="gen1", source="cli", parent_session_id="root")
+        db.create_session(session_id="gen2", source="cli", parent_session_id="gen1")
+
+        assert db.get_session("gen1")["profile_name"] == "ai-engineer"
+        assert db.get_session("gen2")["profile_name"] == "ai-engineer"
+
+    def test_compression_child_inherits_gateway_origin_columns(self, db):
+        """A compression fork's child inherits gateway routing metadata
+        (session_key/chat_id/...) from the ended parent, so a crash before
+        the gateway re-records the peer can't strand it (#59527)."""
+        db.create_session(
+            session_id="parent", source="telegram",
+            user_id="u1", session_key="telegram:u1:c1",
+            chat_id="c1", chat_type="private", thread_id="t1",
+        )
+        db.record_gateway_session_peer(
+            "parent", source="telegram", user_id="u1",
+            session_key="telegram:u1:c1", chat_id="c1", chat_type="private",
+            thread_id="t1", display_name="Chat One", origin_json='{"p":"telegram"}',
+        )
+        # Rotation path: parent is ended with 'compression' BEFORE the child
+        # row is created (agent/conversation_compression.py).
+        db.end_session("parent", "compression")
+
+        db.create_session(
+            session_id="child", source="telegram", parent_session_id="parent"
+        )
+
+        child = db.get_session("child")
+        assert child["user_id"] == "u1"
+        assert child["session_key"] == "telegram:u1:c1"
+        assert child["chat_id"] == "c1"
+        assert child["chat_type"] == "private"
+        assert child["thread_id"] == "t1"
+        assert child["display_name"] == "Chat One"
+        assert child["origin_json"] == '{"p":"telegram"}'
+
+    def test_live_parent_child_does_not_inherit_gateway_origin(self, db):
+        """Delegate/subagent children (parent still live) must NOT inherit
+        routing keys — peer recovery could otherwise repoint gateway traffic
+        into a subagent's session."""
+        db.create_session(
+            session_id="parent", source="telegram",
+            user_id="u1", session_key="telegram:u1:c1",
+            chat_id="c1", chat_type="private",
+        )
+
+        db.create_session(
+            session_id="sub", source="telegram", parent_session_id="parent"
+        )
+
+        sub = db.get_session("sub")
+        assert sub["session_key"] is None
+        assert sub["chat_id"] is None
+        assert sub["user_id"] is None
+        # Workspace metadata still inherits — that part is safe for any child.
+        db.update_session_cwd("parent", "/work/repo", git_repo_root="/work/repo")
+        db.create_session(
+            session_id="sub2", source="telegram", parent_session_id="parent"
+        )
+        assert db.get_session("sub2")["cwd"] == "/work/repo"
+
     def test_update_session_cwd_empty_branch_does_not_clobber(self, db):
         """A failed branch probe (empty string) must not wipe a branch we
         already captured — only the cwd updates."""
@@ -217,6 +366,58 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["end_reason"] == "compression"
         assert session["ended_at"] == first_ended_at
+
+    def test_end_session_first_reason_wins_across_concurrent_connections(
+        self, db
+    ):
+        """Concurrent finalizers perform one transition, not last-write-wins."""
+        import threading
+
+        db.create_session(session_id="s1", source="cron")
+        db._conn.execute(
+            "CREATE TABLE session_end_audit (reason TEXT NOT NULL)"
+        )
+        db._conn.execute(
+            """
+            CREATE TRIGGER audit_session_end
+            AFTER UPDATE OF ended_at ON sessions
+            WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+            BEGIN
+                INSERT INTO session_end_audit(reason) VALUES (NEW.end_reason);
+            END
+            """
+        )
+
+        peer = SessionDB(db_path=db.db_path)
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def _end(session_db, reason):
+            try:
+                barrier.wait(timeout=5)
+                session_db.end_session("s1", reason)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_end, args=(db, "compression")),
+            threading.Thread(target=_end, args=(peer, "cron_complete")),
+        ]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            assert all(not thread.is_alive() for thread in threads)
+            assert errors == []
+            audit_rows = db._conn.execute(
+                "SELECT reason FROM session_end_audit"
+            ).fetchall()
+            assert len(audit_rows) == 1
+            assert db.get_session("s1")["end_reason"] == audit_rows[0]["reason"]
+        finally:
+            peer.close()
 
     def test_end_session_after_reopen_allows_re_end(self, db):
         """reopen_session() is the explicit escape hatch for re-ending a
@@ -341,6 +542,30 @@ class TestSessionLifecycle:
         db.update_token_counts("s1", input_tokens=10, output_tokens=5,
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
+    def test_update_session_model_clears_browser_lock_and_preserves_lineage(self, db):
+        """A later /model switch must replace, not compete with, a Browser lock."""
+        db.create_session(
+            session_id="s1",
+            source="hermes_browser",
+            model="x-ai/grok-4.5",
+            model_config={
+                "_branched_from": "parent-session",
+                "browser_model_lock": {
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "confirmed": True,
+                },
+            },
+        )
+
+        db.update_session_model("s1", "anthropic/claude-opus-4.8")
+
+        session = db.get_session("s1")
+        model_config = json.loads(session["model_config"])
+        assert session["model"] == "anthropic/claude-opus-4.8"
+        assert "browser_model_lock" not in model_config
+        assert model_config["_branched_from"] == "parent-session"
 
     def test_update_session_billing_route_overwrites_after_switch(self, db):
         """A mid-session provider switch must overwrite the billing route.
@@ -1637,6 +1862,236 @@ class TestMessageStorage:
         assert len(conv) == 1
         assert conv[0]["codex_reasoning_items"] == codex_items
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
+
+
+# =========================================================================
+# Timestamp preservation
+# =========================================================================
+
+
+class TestTimestampPreservation:
+    """Tests for the timestamp preservation feature.
+
+    ``append_message()`` and ``replace_messages()`` now accept/forward an
+    optional ``timestamp`` parameter.  These tests verify custom timestamps
+    survive the round trip through the DB and fall back to ``time.time()``
+    when omitted.
+    """
+
+    @staticmethod
+    def _build_messages(ts_list, contents=None, roles=None):
+        """Build message dicts with explicit timestamps for testing."""
+        if contents is None:
+            contents = [f"msg-{i}" for i in range(len(ts_list))]
+        if roles is None:
+            roles = ["user", "assistant"] * (len(ts_list) // 2 + 1)
+        return [
+            {"role": roles[i], "content": contents[i], "timestamp": ts}
+            for i, ts in enumerate(ts_list)
+        ]
+
+    def _raw_timestamps(self, db, session_id):
+        """Query timestamp column directly from SQLite for verification."""
+        rows = db._conn.execute(
+            "SELECT timestamp FROM messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def test_append_message_with_explicit_timestamp(self, db):
+        """A caller-supplied timestamp is stored and round-tripped."""
+        db.create_session(session_id="s1", source="cli")
+        ts = 1_234_567.0
+        mid = db.append_message("s1", role="user", content="hello",
+                                timestamp=ts)
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 1
+        assert msgs[0]["timestamp"] == ts
+        assert msgs[0]["id"] == mid
+        raw = self._raw_timestamps(db, "s1")
+        assert raw == [ts]
+
+    def test_append_message_multiple_timestamps(self, db):
+        """Multiple messages with different explicit timestamps."""
+        db.create_session(session_id="s1", source="cli")
+        timestamps = [1_000_000.0, 2_000_000.0, 3_000_000.0]
+        for i, ts in enumerate(timestamps, 1):
+            db.append_message("s1", role="user", content=f"msg {i}",
+                              timestamp=ts)
+        msgs = db.get_messages("s1")
+        assert [m["timestamp"] for m in msgs] == timestamps
+        assert self._raw_timestamps(db, "s1") == timestamps
+
+    def test_append_message_without_timestamp_defaults(self, db):
+        """Omitting timestamp stores a recent time.time() value."""
+        db.create_session(session_id="s1", source="cli")
+        before = time.time()
+        db.append_message("s1", role="user", content="hello")
+        after = time.time()
+        msgs = db.get_messages("s1")
+        stored = msgs[0]["timestamp"]
+        assert before <= stored <= after, (
+            f"Expected timestamp between {before} and {after}, got {stored}"
+        )
+        raw_stored = self._raw_timestamps(db, "s1")[0]
+        assert before <= raw_stored <= after
+
+    def test_append_message_mixed_timestamps(self, db):
+        """Messages with and without explicit timestamps — those without
+        get a current time, those with keep their value."""
+        db.create_session(session_id="s1", source="cli")
+        explicit_ts = 500_000.0
+        db.append_message("s1", role="user", content="explicit",
+                          timestamp=explicit_ts)
+        before = time.time()
+        db.append_message("s1", role="user", content="default")
+        after = time.time()
+        msgs = db.get_messages("s1")
+        assert msgs[0]["timestamp"] == explicit_ts
+        assert before <= msgs[1]["timestamp"] <= after
+        raw = self._raw_timestamps(db, "s1")
+        assert raw[0] == explicit_ts
+        assert before <= raw[1] <= after
+
+    def test_replace_messages_preserves_timestamps(self, db):
+        """Message dicts with ``timestamp`` passed to ``replace_messages``
+        retain those timestamps after the rewrite."""
+        db.create_session(session_id="s1", source="cli")
+        msgs_in = [
+            {"role": "user", "content": "first", "timestamp": 100.0},
+            {"role": "assistant", "content": "second", "timestamp": 200.0},
+            {"role": "user", "content": "third", "timestamp": 300.0},
+        ]
+        db.replace_messages("s1", msgs_in)
+        msgs_out = db.get_messages("s1")
+        assert [m["timestamp"] for m in msgs_out] == [100.0, 200.0, 300.0]
+        assert self._raw_timestamps(db, "s1") == [100.0, 200.0, 300.0]
+
+    def test_replace_messages_fallback_when_no_timestamp(self, db):
+        """Message dicts without ``timestamp`` get auto-incrementing
+        fallback values (starting from ~time.time())."""
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages("s1", [
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+        ])
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        t0, t1 = msgs[0]["timestamp"], msgs[1]["timestamp"]
+        assert t1 > t0
+        raw = self._raw_timestamps(db, "s1")
+        assert len(raw) == 2
+        assert raw[1] > raw[0]
+
+    def test_replace_messages_mixed_timestamps(self, db):
+        """Some messages with timestamp, some without — a message without
+        timestamp uses the fallback clock, which is larger than any
+        explicit historical timestamp."""
+        db.create_session(session_id="s1", source="cli")
+        old_ts = 1_000.0
+        db.replace_messages("s1", [
+            {"role": "user", "content": "old", "timestamp": old_ts},
+            {"role": "user", "content": "new"},
+        ])
+        msgs = db.get_messages("s1")
+        assert msgs[0]["timestamp"] == old_ts
+        assert msgs[1]["timestamp"] > old_ts
+        raw = self._raw_timestamps(db, "s1")
+        assert raw[0] == old_ts
+        assert raw[1] > old_ts
+
+    def test_fork_chain_preserves_timestamps(self, db):
+        """Simulate a /branch fork: copy messages from parent to child,
+        verify timestamps are identical in both via raw SQL."""
+        base_ts = 1_700_000_000.0
+        timestamps = [base_ts + i * 20 for i in range(5)]
+        contents = [
+            "how do I fix a TypeError?",
+            "show me the traceback",
+            "TypeError at line 42",
+            "issue in utils.py",
+            "try int(...)",
+        ]
+        roles = ["user", "assistant", "tool", "user", "assistant"]
+        parent_msgs = self._build_messages(timestamps, contents, roles)
+
+        db.create_session(session_id="parent", source="cli")
+        for msg in parent_msgs:
+            db.append_message("parent", role=msg["role"],
+                              content=msg["content"],
+                              timestamp=msg["timestamp"])
+
+        db.create_session(session_id="child", source="cli",
+                          parent_session_id="parent")
+        for msg in parent_msgs:
+            db.append_message("child", role=msg["role"],
+                              content=msg["content"],
+                              timestamp=msg["timestamp"])
+
+        parent_raw = self._raw_timestamps(db, "parent")
+        child_raw = self._raw_timestamps(db, "child")
+        assert parent_raw == timestamps
+        assert child_raw == timestamps
+        assert parent_raw == child_raw
+
+    def test_branch_copy_roundtrip_preserves_timestamps(self, db):
+        """End-to-end branch copy: load the parent transcript via
+        get_messages_as_conversation (the dict shape the CLI/gateway/TUI
+        branch loops iterate) and re-append into a child forwarding
+        ``msg.get("timestamp")`` — the copies must keep the originals
+        instead of being restamped with time.time() (#28841).
+        """
+        timestamps = [1_600_000_000.0, 1_600_000_060.0, 1_600_000_120.0]
+        db.create_session(session_id="parent", source="cli")
+        for i, ts in enumerate(timestamps):
+            db.append_message(
+                "parent",
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg-{i}",
+                timestamp=ts,
+            )
+
+        history = db.get_messages_as_conversation("parent")
+        assert [m.get("timestamp") for m in history] == timestamps
+
+        db.create_session(session_id="child", source="cli",
+                          parent_session_id="parent")
+        # Mirrors the branch copy loops in gateway/slash_commands.py,
+        # hermes_cli/cli_commands_mixin.py and tui_gateway/server.py.
+        for msg in history:
+            db.append_message(
+                "child",
+                role=msg.get("role", "user"),
+                content=msg.get("content"),
+                timestamp=msg.get("timestamp"),
+            )
+
+        assert self._raw_timestamps(db, "child") == timestamps
+
+    def test_compression_replace_roundtrip_preserves_timestamps(self, db):
+        """Compression-style rewrite: replace_messages with dicts loaded from
+        get_messages_as_conversation must keep the surviving messages'
+        original timestamps (#28841)."""
+        timestamps = [1_500_000_000.0, 1_500_000_100.0, 1_500_000_200.0]
+        db.create_session(session_id="s1", source="cli")
+        for i, ts in enumerate(timestamps):
+            db.append_message(
+                "s1",
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg-{i}",
+                timestamp=ts,
+            )
+
+        history = db.get_messages_as_conversation("s1")
+        # Simulate a compression that keeps the last two turns verbatim and
+        # prepends a fresh summary message (no timestamp — falls back to now).
+        compressed = [{"role": "user", "content": "[summary]"}] + history[-2:]
+        db.replace_messages("s1", compressed)
+
+        raw = self._raw_timestamps(db, "s1")
+        assert len(raw) == 3
+        assert raw[1:] == timestamps[-2:]
+        assert raw[0] > timestamps[-1]  # summary stamped with a current time
 
 
 # =========================================================================
@@ -3438,9 +3893,15 @@ class TestSanitizeTitle:
 
 class TestSchemaInit:
     def test_wal_mode(self, db):
+        """Prefer WAL on fixed SQLite; DELETE on WAL-reset-vulnerable builds (#69784)."""
+        from hermes_state import is_sqlite_wal_reset_vulnerable
+
         cursor = db._conn.execute("PRAGMA journal_mode")
-        mode = cursor.fetchone()[0]
-        assert mode == "wal"
+        mode = cursor.fetchone()[0].lower()
+        if is_sqlite_wal_reset_vulnerable():
+            assert mode == "delete"
+        else:
+            assert mode == "wal"
 
     def test_foreign_keys_enabled(self, db):
         cursor = db._conn.execute("PRAGMA foreign_keys")
@@ -4232,13 +4693,13 @@ class TestListSessionsRich:
         """
         t0 = 1709500000.0
         db.create_session("root1", "cli")
+        db.append_message("root1", "user", "old ask")
         with db._lock:
             db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
             db._conn.execute(
                 "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
                 (t0 + 100, "compression", "root1"),
             )
-        db.append_message("root1", "user", "old ask")
 
         # Continuation tip created after root ended; last activity much later.
         db.create_session("tip1", "cli", parent_session_id="root1")
@@ -5630,6 +6091,15 @@ class TestFTSExternalContentMigration:
 class TestApplyWalProbe:
     """Unit tests for the journal_mode probe in apply_wal_with_fallback."""
 
+    @pytest.fixture(autouse=True)
+    def _assume_fixed_sqlite(self, monkeypatch):
+        """These cases cover the fixed-SQLite WAL path (not the #69784 gate)."""
+        import hermes_state
+
+        monkeypatch.setattr(
+            hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        )
+
     def test_skips_set_pragma_when_already_wal(self, tmp_path):
         """Already-WAL connection must not trigger the set-pragma."""
         import sqlite3
@@ -6041,6 +6511,133 @@ class TestSessionArchive:
         assert both == {"live", "hidden"}
         assert db.session_count(include_archived=True) == 2
 
+
+class TestSessionPinAndStaleArchive:
+    """Pin as a durable keep flag + last-activity-based stale auto-archive."""
+
+    def _pinned(self, db, sid):
+        row = db._conn.execute(
+            "SELECT pinned FROM sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        return row["pinned"] if row is not None else None
+
+    def _make_idle(self, db, sid, *, days_idle, source="cli"):
+        """A session whose latest activity was ``days_idle`` days ago."""
+        db.create_session(session_id=sid, source=source)
+        db.append_message(session_id=sid, role="user", content=f"msg {sid}")
+        old = time.time() - days_idle * 86400
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old, sid))
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, sid)
+        )
+        db._conn.commit()
+
+    # ── pin flag ──────────────────────────────────────────────────────────
+    def test_set_session_pinned_roundtrip(self, db):
+        db.create_session(session_id="s1", source="cli")
+        assert db.set_session_pinned("s1", True) is True
+        assert self._pinned(db, "s1") == 1
+        assert db.set_session_pinned("s1", False) is True
+        assert self._pinned(db, "s1") == 0
+
+    def test_set_session_pinned_missing_row(self, db):
+        assert db.set_session_pinned("nope", True) is False
+
+    def test_pin_propagates_across_compression_lineage(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="tip", source="cli", parent_session_id="root")
+
+        # Pinning the surfaced tip pins the compressed-away root too.
+        assert db.set_session_pinned("tip", True) is True
+        assert self._pinned(db, "root") == 1
+        assert self._pinned(db, "tip") == 1
+
+    # ── stale archive ─────────────────────────────────────────────────────
+    def test_archives_only_sessions_idle_past_threshold(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        self._make_idle(db, "fresh", days_idle=1)
+
+        assert db.archive_stale_sessions(3) == 1
+        assert db.get_session("stale")["archived"] == 1
+        assert db.get_session("fresh")["archived"] == 0
+
+    def test_recency_uses_last_activity_not_creation(self, db):
+        # Created long ago, but a message landed today -> not stale.
+        db.create_session(session_id="old_but_active", source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 60 * 86400, "old_but_active"),
+        )
+        db._conn.commit()
+        db.append_message(
+            session_id="old_but_active", role="user", content="fresh activity"
+        )
+
+        assert db.archive_stale_sessions(3) == 0
+        assert db.get_session("old_but_active")["archived"] == 0
+
+    def test_pinned_sessions_are_spared(self, db):
+        self._make_idle(db, "keep", days_idle=10)
+        db.set_session_pinned("keep", True)
+
+        assert db.archive_stale_sessions(3) == 0
+        assert db.get_session("keep")["archived"] == 0
+        # Opting out of the pin guard sweeps it.
+        assert db.archive_stale_sessions(3, exclude_pinned=False) == 1
+        assert db.get_session("keep")["archived"] == 1
+
+    def test_already_archived_is_idempotent(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        assert db.archive_stale_sessions(3) == 1
+        assert db.archive_stale_sessions(3) == 0
+
+    def test_stale_tip_archives_whole_compression_chain(self, db):
+        # A compressed-away root is never a candidate on its own (its live
+        # continuation may be fresh); the tip drives the decision and archives
+        # the chain as a unit.
+        db.create_session(session_id="root", source="cli")
+        db.end_session("root", end_reason="compression")
+        db.create_session(session_id="tip", source="cli", parent_session_id="root")
+        old = time.time() - 9 * 86400
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id IN ('root', 'tip')", (old,)
+        )
+        db._conn.commit()
+
+        assert db.archive_stale_sessions(3) == 1  # one candidate (the tip)
+        assert db.get_session("root")["archived"] == 1
+        assert db.get_session("tip")["archived"] == 1
+
+    def test_non_positive_threshold_archives_nothing(self, db):
+        self._make_idle(db, "stale", days_idle=100)
+        assert db.archive_stale_sessions(-1) == 0
+        assert db.get_session("stale")["archived"] == 0
+
+    # ── throttled wrapper ─────────────────────────────────────────────────
+    def test_maybe_auto_archive_runs_then_throttles(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        first = db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        assert first["skipped"] is False
+        assert first["archived"] == 1
+        assert db.get_meta("last_auto_archive") is not None
+
+        # A newly-stale session within the interval is left untouched.
+        self._make_idle(db, "stale2", days_idle=5)
+        second = db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        assert second["skipped"] is True
+        assert second["archived"] == 0
+        assert db.get_session("stale2")["archived"] == 0
+
+    def test_maybe_auto_archive_reruns_after_interval(self, db):
+        self._make_idle(db, "stale", days_idle=5)
+        db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        db.set_meta("last_auto_archive", str(time.time() - 48 * 3600))
+
+        self._make_idle(db, "stale2", days_idle=5)
+        result = db.maybe_auto_archive(idle_days=3, min_interval_hours=24)
+        assert result["skipped"] is False
+        assert result["archived"] == 1
 
 
 class TestSessionIdSearch:
@@ -6495,6 +7092,22 @@ def test_compression_fallback_streak_round_trips(db):
     assert db.get_compression_fallback_streak("s1") == 2
 
 
+def test_compression_ineffective_count_round_trips(db):
+    db.create_session("s1", "cli")
+
+    assert db.get_compression_ineffective_count("s1") == 0
+    db.set_compression_ineffective_count("s1", 2)
+    assert db.get_compression_ineffective_count("s1") == 2
+    # Clearing (real usage dipped below the threshold) round-trips too.
+    db.set_compression_ineffective_count("s1", 0)
+    assert db.get_compression_ineffective_count("s1") == 0
+    # Negative and missing-session inputs are normalized/ignored.
+    db.set_compression_ineffective_count("s1", -3)
+    assert db.get_compression_ineffective_count("s1") == 0
+    assert db.get_compression_ineffective_count("nope") == 0
+    assert db.get_compression_ineffective_count("") == 0
+
+
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
     db.create_session("s1", "cli")
 
@@ -6762,4 +7375,159 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
+
+
+class TestDisplayMetadataPersistence:
+    """Round-trip display_kind/display_metadata through every write path."""
+
+    def test_append_message_round_trips_display_fields(self, db):
+        db.create_session("s1", source="cli")
+        meta = {"task_count": 2, "delegation_id": "del-1"}
+        db.append_message(
+            "s1", "user", "event text",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["display_kind"] == "async_delegation_complete"
+        assert conv[0]["display_metadata"] == meta
+
+    def test_replace_messages_preserves_display_metadata(self, db):
+        db.create_session("s1", source="cli")
+        meta = {"task_count": 3, "delegation_id": "del-2", "duration_seconds": 12.5}
+        db.append_message(
+            "s1", "user", "event",
+            display_kind="async_delegation_complete",
+            display_metadata=meta,
+        )
+        # Reload via get_messages_as_conversation (which decodes display fields)
+        # then replace_messages (which re-inserts via _insert_message_rows).
+        conv = db.get_messages_as_conversation("s1")
+        db.replace_messages("s1", conv)
+        reloaded = db.get_messages_as_conversation("s1")
+        assert reloaded[0]["display_kind"] == "async_delegation_complete"
+        assert reloaded[0]["display_metadata"] == meta
+
+    def test_archive_and_compact_preserves_display_metadata(self, db):
+        db.create_session("s1", source="cli")
+        meta = {"model": "test-model", "provider": "test-provider"}
+        db.append_message(
+            "s1", "user", "switch event",
+            display_kind="model_switch",
+            display_metadata=meta,
+        )
+        db.append_message("s1", "assistant", "reply")
+        conv = db.get_messages_as_conversation("s1")
+        db.archive_and_compact("s1", conv)
+        reloaded = db.get_messages_as_conversation("s1")
+        switched = [m for m in reloaded if m.get("display_kind") == "model_switch"]
+        assert len(switched) == 1
+        assert switched[0]["display_metadata"] == meta
+
+
+class TestDisplayMetadataReadPaths:
+    """Every message read path must hand back the decoded dict.
+
+    Returning the raw column instead reaches the desktop as a string, where
+    ``'task_count' in meta`` throws and fails the whole session resume.
+    """
+
+    META = {
+        "delegation_id": "deleg_0d84d484",
+        "task_count": 1,
+        "completed_count": 1,
+        "failed_count": 0,
+        "duration_seconds": 193.55,
+    }
+
+    @staticmethod
+    def _seed(db):
+        db.create_session("s1", source="desktop")
+        message_id = db.append_message(
+            "s1", "user", "event",
+            display_kind="async_delegation_complete",
+            display_metadata=TestDisplayMetadataReadPaths.META,
+        )
+        return message_id, db.append_message("s1", "assistant", "anchor")
+
+    @staticmethod
+    def _read(db, reader, message_id, anchor_id):
+        if reader == "get_messages":
+            return db.get_messages("s1")[0]
+        if reader == "get_messages_around":
+            return db.get_messages_around("s1", message_id, window=0)["window"][0]
+        if reader == "get_anchored_view":
+            view = db.get_anchored_view("s1", anchor_id, window=0, bookend=1)
+            return view["bookend_start"][0]
+        return db.get_messages_as_conversation("s1")[0]
+
+    READERS = ("get_messages", "get_messages_around", "get_anchored_view", "conversation")
+
+    @pytest.mark.parametrize("reader", READERS)
+    def test_every_reader_decodes_display_metadata(self, db, reader):
+        message_id, anchor_id = self._seed(db)
+        assert self._read(db, reader, message_id, anchor_id)["display_metadata"] == self.META
+
+    @pytest.mark.parametrize("reader", READERS)
+    def test_every_reader_unwraps_historically_double_encoded_rows(self, db, reader):
+        """Rows written before the encode guard landed carry a second JSON layer."""
+        message_id, anchor_id = self._seed(db)
+
+        def _corrupt(conn):
+            conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                (json.dumps(json.dumps(self.META)), message_id),
+            )
+
+        db._execute_write(_corrupt)
+        assert self._read(db, reader, message_id, anchor_id)["display_metadata"] == self.META
+
+    @pytest.mark.parametrize("reader", READERS)
+    @pytest.mark.parametrize("raw", ["", "{not-json", "[]", '"text"', "0"])
+    def test_every_reader_drops_unusable_display_metadata(self, db, reader, raw):
+        """Bad presentation metadata must not take the message down with it."""
+        message_id, anchor_id = self._seed(db)
+
+        def _corrupt(conn):
+            conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                (raw, message_id),
+            )
+
+        db._execute_write(_corrupt)
+        message = self._read(db, reader, message_id, anchor_id)
+        assert message.get("display_metadata") is None
+        assert message["content"] == "event"
+
+    def test_export_import_round_trip_keeps_metadata_decodable(self, db, tmp_path):
+        """The read leak used to write a permanently double-encoded row here.
+
+        ``export_session`` reads through ``get_messages``, so an undecoded
+        string went back through ``_insert_message_rows`` and got re-dumped.
+        """
+        self._seed(db)
+        blob = db.export_session("s1")
+        assert isinstance(blob["messages"][0]["display_metadata"], dict)
+
+        target = SessionDB(db_path=tmp_path / "imported.db")
+        try:
+            target.import_sessions([json.loads(json.dumps(blob))])
+            assert target.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
+            assert target.get_messages("s1")[0]["display_metadata"] == self.META
+        finally:
+            target.close()
+
+    def test_write_paths_do_not_double_encode_serialized_metadata(self, db):
+        """Import/replace can hand us metadata that is already a JSON string."""
+        db.create_session("s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [{
+                "role": "user",
+                "content": "event",
+                "display_kind": "async_delegation_complete",
+                "display_metadata": json.dumps(self.META),
+            }],
+        )
+        assert db.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
 

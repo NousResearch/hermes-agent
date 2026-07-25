@@ -49,7 +49,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "execute_code",  # children should reason step-by-step, not write scripts
         "cronjob",  # no scheduling more work in the parent's name
     ]
 )
@@ -774,13 +773,14 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """
     # Composite toolsets that should never pass through to children, even
     # though their individual tools aren't all in DELEGATE_BLOCKED_TOOLS.
-    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation", "code_execution"})
+    _COMPOSITE_BLOCKED_TOOLSETS = frozenset({"delegation"})
     blocked_toolset_names = {
         name
         for name, defn in TOOLSETS.items()
         if name in _COMPOSITE_BLOCKED_TOOLSETS
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
+    blocked_toolset_names.add("kanban")
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
@@ -1176,7 +1176,7 @@ def _build_child_agent(
         ]
     child_disabled_toolsets = list(
         dict.fromkeys(
-            inherited_disabled + _blocked_toolsets_for_role(effective_role)
+            inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"]
         )
     )
 
@@ -1361,47 +1361,50 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
-    child = AIAgent(
-        base_url=effective_base_url,
-        api_key=effective_api_key,
-        model=effective_model,
-        provider=effective_provider,
-        api_mode=effective_api_mode,
-        acp_command=effective_acp_command,
-        acp_args=effective_acp_args,
-        max_iterations=max_iterations,
+    from agent.delegation_context import delegated_child_context
 
-        reasoning_config=child_reasoning,
-        prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
-        enabled_toolsets=child_toolsets,
-        disabled_toolsets=child_disabled_toolsets,
-        quiet_mode=True,
-        ephemeral_system_prompt=child_prompt,
-        log_prefix=f"[subagent-{task_index}]",
-        platform="subagent",
-        skip_context_files=True,
-        skip_memory=True,
-        clarify_callback=None,
-        thinking_callback=child_thinking_cb,
-        session_db=getattr(parent_agent, "_session_db", None),
-        parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=child_providers_allowed,
-        providers_ignored=child_providers_ignored,
-        providers_order=child_providers_order,
-        provider_sort=child_provider_sort,
-        provider_require_parameters=child_provider_require_parameters,
-        provider_data_collection=child_provider_data_collection,
-        request_overrides=(
-            dict(override_request_overrides or {})
-            if override_provider
-            else dict(getattr(parent_agent, "request_overrides", {}) or {})
-        ),
-        openrouter_min_coding_score=child_openrouter_min_coding_score,
-        tool_progress_callback=child_progress_cb,
-        iteration_budget=None,  # fresh budget per subagent
-        **child_optional_kwargs,
-    )
+    with delegated_child_context():
+        child = AIAgent(
+            base_url=effective_base_url,
+            api_key=effective_api_key,
+            model=effective_model,
+            provider=effective_provider,
+            api_mode=effective_api_mode,
+            acp_command=effective_acp_command,
+            acp_args=effective_acp_args,
+            max_iterations=max_iterations,
+
+            reasoning_config=child_reasoning,
+            prefill_messages=getattr(parent_agent, "prefill_messages", None),
+            fallback_model=parent_fallback,
+            enabled_toolsets=child_toolsets,
+            disabled_toolsets=child_disabled_toolsets,
+            quiet_mode=True,
+            ephemeral_system_prompt=child_prompt,
+            log_prefix=f"[subagent-{task_index}]",
+            platform="subagent",
+            skip_context_files=True,
+            skip_memory=True,
+            clarify_callback=None,
+            thinking_callback=child_thinking_cb,
+            session_db=getattr(parent_agent, "_session_db", None),
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            providers_allowed=child_providers_allowed,
+            providers_ignored=child_providers_ignored,
+            providers_order=child_providers_order,
+            provider_sort=child_provider_sort,
+            provider_require_parameters=child_provider_require_parameters,
+            provider_data_collection=child_provider_data_collection,
+            request_overrides=(
+                dict(override_request_overrides or {})
+                if override_provider
+                else dict(getattr(parent_agent, "request_overrides", {}) or {})
+            ),
+            openrouter_min_coding_score=child_openrouter_min_coding_score,
+            tool_progress_callback=child_progress_cb,
+            iteration_budget=None,  # fresh budget per subagent
+            **child_optional_kwargs,
+        )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -2002,11 +2005,14 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-            )
+            from agent.delegation_context import delegated_child_context
+
+            with delegated_child_context():
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
@@ -2577,6 +2583,18 @@ def delegate_task(
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
+    # Capture the ORIGINATING session's wake target BEFORE any child agent is
+    # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
+    # set_current_session_id(child.session_id), which clobbers the
+    # HERMES_SESSION_ID ContextVar and os.environ with the subagent's internal
+    # id before the background-dispatch code below would read it. The
+    # request-scoped chat_id binding (the raw X-Hermes-Session-Id on
+    # api_server) is untouched by child construction, so read it here and
+    # thread it through the dispatch.
+    from tools.async_delegation import _current_origin_session_id
+
+    _origin_wake_sid = _current_origin_session_id()
+
     # Build all child agents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
@@ -2904,32 +2922,54 @@ def delegate_task(
         from tools.async_delegation import dispatch_async_delegation_batch
         from tools.approval import get_current_session_key
 
-        # Stateless request/response sessions (the API server / WebUI path)
-        # cannot route a detached subagent result back to the agent after the
-        # turn ends — there is no persistent channel and the adapter's send()
-        # is a no-op, so a background dispatch would silently never re-enter the
-        # conversation (issue #10760). Fall back to SYNCHRONOUS execution: the
-        # work still runs and its result returns in this same response, which is
-        # strictly better than a handle that never resolves. Mirrors the
+        # Finite sessions cannot route a detached subagent result back to the
+        # agent after their turn/process ends. This includes stateless HTTP
+        # requests (#10760) and one-shot Kanban workers (#63169). Fall back to
+        # SYNCHRONOUS execution so the result returns in this same turn instead
+        # of handing out a handle with no durable consumer. Mirrors the
         # pool-at-capacity inline fallback below.
         try:
             from gateway.session_context import async_delivery_supported
             _async_ok = async_delivery_supported()
         except Exception:
             _async_ok = True
+
+        _wake_sid = ""
+        if not _async_ok:
+            # The adapter itself cannot push, but if a raw session id is
+            # bound (the API server always binds one — see
+            # ApiServerAdapter._bind_api_server_session), gateway.wake can
+            # still reach the session by self-POSTing /v1/chat/completions
+            # with that id in X-Hermes-Session-Id once the batch completes.
+            # Only fall back to forced-sync execution when there is truly no
+            # session id to wake. Uses the origin captured before child
+            # construction (see _origin_wake_sid above) — reading
+            # HERMES_SESSION_ID here would return the subagent's internal id.
+            _wake_sid = _origin_wake_sid
+            if _wake_sid:
+                logger.info(
+                    "delegate_task: async delivery unsupported on this "
+                    "session, but a session id is bound (%s) — dispatching "
+                    "in the background and waking the session via self-post "
+                    "when it completes instead of forcing synchronous "
+                    "execution.",
+                    _wake_sid,
+                )
+                _async_ok = True
+
         if not _async_ok:
             logger.info(
                 "delegate_task: async delivery unsupported on this session "
-                "(stateless HTTP API); running the batch synchronously instead."
+                "runtime; running the batch synchronously instead."
             )
             _sync_result = _execute_and_aggregate()
             if isinstance(_sync_result, dict):
                 _sync_result["note"] = (
                     "background=true is not available in this session — it cannot "
                     "receive a detached subagent result after the turn ends (a "
-                    "one-shot runner such as `hermes -z` or a cron job, or a "
-                    "stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY "
-                    "and the result is included above."
+                    "one-shot runner such as `hermes -z`, a cron job, a Kanban "
+                    "worker, or a stateless HTTP endpoint). The subagent(s) ran "
+                    "SYNCHRONOUSLY and the result is included above."
                 )
             return json.dumps(_sync_result, ensure_ascii=False)
 
@@ -3009,6 +3049,7 @@ def delegate_task(
             model=creds["model"],
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
+            origin_session_id=_wake_sid,
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
@@ -3427,10 +3468,10 @@ def _build_top_level_description() -> str:
         "status) and verify it yourself — fetch the URL, stat the file, read "
         "back the content — before telling the user the operation succeeded.\n"
         "- Leaf subagents (role='leaf', the default) CANNOT call: "
-        "delegate_task, clarify, memory, send_message, execute_code.\n"
+        "delegate_task, clarify, memory, send_message.\n"
         "- Orchestrator subagents (role='orchestrator') retain "
         "delegate_task so they can spawn their own workers, but still "
-        "cannot use clarify, memory, send_message, or execute_code. "
+        "cannot use clarify, memory, or send_message. "
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"

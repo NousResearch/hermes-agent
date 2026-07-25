@@ -317,13 +317,24 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     return normalized_configured == normalized_provider
 
 
-def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
+def _copilot_runtime_api_mode(
+    model_cfg: Dict[str, Any],
+    api_key: str,
+    *,
+    target_model: Optional[str] = None,
+) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
+    # Use the model being resolved for this runtime, not the persisted global
+    # default. MoA slots, fallback models, and mid-session model switches all
+    # resolve credentials for a target model that can differ from config.yaml's
+    # model.default. If we derive Copilot api_mode from the stale default, a
+    # Claude/Gemini MoA slot can inherit codex_responses from a GPT-5 default and
+    # fail with "model ... does not support Responses API".
+    model_name = str(target_model or model_cfg.get("default") or "").strip()
     if not model_name:
         return "chat_completions"
 
@@ -449,7 +460,11 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "chat_completions"
         base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
+        api_mode = _copilot_runtime_api_mode(
+            model_cfg,
+            getattr(entry, "runtime_api_key", ""),
+            target_model=effective_model,
+        )
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
     elif provider == "azure-foundry":
         # Azure Foundry: read api_mode and base_url from config
@@ -847,10 +862,78 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     return None
 
 
+def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
+    """Map a model id back to the ``custom:<name>`` entry that serves it.
+
+    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
+    / ``custom_providers:`` entry whose ``model`` / ``default_model`` matches,
+    or whose ``models`` catalog (dict or list shape) contains the id.
+    ``None`` when no entry serves the model.
+
+    Companion to :func:`find_custom_provider_identity` (URL reverse-lookup)
+    for the persistence paths where no base_url survived the round-trip: the
+    session row always stores the model name, and a custom endpoint's model
+    ids (e.g. an in-house SFT checkpoint) virtually never collide with
+    catalog models on built-in providers, so the model is the last durable
+    fact that can recover the entry identity.
+    """
+    target = str(model or "").strip().lower()
+    if not target:
+        return None
+    try:
+        config = load_config()
+    except Exception:
+        return None
+
+    def _entry_serves_model(entry: Dict[str, Any]) -> bool:
+        for key in ("model", "default_model"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip().lower() == target:
+                return True
+        models = entry.get("models")
+        if isinstance(models, dict):
+            return any(
+                str(mid).strip().lower() == target for mid in models.keys()
+            )
+        if isinstance(models, list):
+            for item in models:
+                if isinstance(item, str) and item.strip().lower() == target:
+                    return True
+                if isinstance(item, dict):
+                    mid = item.get("id") or item.get("name")
+                    if isinstance(mid, str) and mid.strip().lower() == target:
+                        return True
+        return False
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            if _entry_serves_model(entry):
+                return f"custom:{_normalize_custom_provider_name(str(ep_name))}"
+
+    try:
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if _entry_serves_model(entry):
+            return f"custom:{_normalize_custom_provider_name(name)}"
+
+    return None
+
+
 def canonical_custom_identity(
     *,
     base_url: Optional[str] = None,
     config_provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Optional[str]:
     """Recover a routable ``custom:<name>`` identity for a bare custom provider.
 
@@ -862,17 +945,24 @@ def canonical_custom_identity(
 
     Any code path that persists or restores a session's provider override
     must run the resolved provider through this helper so a bare ``"custom"``
-    is upgraded back to its durable ``custom:<name>`` menu key. Two recovery
-    sources, in priority order:
+    is upgraded back to its durable ``custom:<name>`` menu key. Three
+    recovery sources, in priority order:
 
     1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
        (the one fact that always survives the persistence round-trip when a
        URL was recorded).
-    2. ``config_provider`` — the active ``config.model.provider`` (or its
-       ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When the agent
-       was built without a base_url on the override (the recurring
-       Desktop/TUI regression vector), the configured provider is the only
-       durable identity left, so fall back to it when it names a real entry.
+    2. ``model`` — reverse-lookup the entry that serves the session's model
+       (``model``/``default_model``/``models`` catalog). The session row
+       always stores the model name, so when no base_url survived (the
+       recurring Desktop/TUI regression vector) the model is the last
+       session-scoped fact that can recover the entry — and unlike the
+       config fallback below it stays correct after the user points their
+       global default at a different provider.
+    3. ``config_provider`` — the active ``config.model.provider`` (or its
+       ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When neither
+       a base_url nor a model recovered the entry, the configured provider
+       is the only durable identity left, so fall back to it when it names
+       a real entry.
 
     Returns ``custom:<name>`` when a routable identity is recovered, else
     ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
@@ -884,7 +974,13 @@ def canonical_custom_identity(
         if identity:
             return identity
 
-    # 2. Fall back to the configured provider when it names a real entry.
+    # 2. Reverse-lookup by the session's model name.
+    if model:
+        identity = find_custom_provider_identity_by_model(model)
+        if identity:
+            return identity
+
+    # 3. Fall back to the configured provider when it names a real entry.
     candidate = str(config_provider or "").strip()
     if not candidate:
         try:
@@ -1371,6 +1467,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1493,7 +1590,11 @@ def _resolve_explicit_runtime(
 
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg,
+                api_key,
+                target_model=target_model,
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:
@@ -1626,7 +1727,7 @@ def resolve_runtime_provider(
                 "in ~/.hermes/.env, or run 'gcloud auth application-default "
                 "login' for ADC. Set the GCP project/region under vertex: in "
                 "config.yaml if they aren't embedded in the credentials. "
-                "Install the extra with: pip install 'hermes-agent[vertex]'."
+                "Run `hermes setup` to install Vertex support."
             )
         return {
             "provider": "vertex",
@@ -1695,6 +1796,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -2067,7 +2169,11 @@ def resolve_runtime_provider(
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg,
+                creds.get("api_key", ""),
+                target_model=target_model,
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:

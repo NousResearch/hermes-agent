@@ -95,6 +95,19 @@ class GatewayAuthorizationMixin:
         transport_adapter = self._registered_transport_adapter(source)
         if transport_adapter is not None:
             return transport_adapter
+        # Relay ingress deliberately keeps the underlying platform on the
+        # source so session keys and display policy remain Slack/Discord/etc.
+        # Delivery still has to use the one live RelayAdapter that owns the
+        # authenticated connector socket. Looking up the underlying platform
+        # here silently disables streaming, typing, and tool progress when a
+        # managed gateway does not also run that platform's native adapter.
+        if getattr(source, "delivered_via_upstream_relay", False) is True:
+            # One process-level RelayAdapter owns the connector socket for all
+            # multiplexed profiles. Secondary profiles intentionally do not
+            # register their own relay adapters, so profile-aware lookup would
+            # fail and suppress streamed delivery for those profiles.
+            adapters = getattr(self, "adapters", None) or {}
+            return adapters.get(Platform.RELAY)
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
         return self._authorization_adapter(

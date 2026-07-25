@@ -1,14 +1,14 @@
 ---
-title: "Modal Serverless Gpu — Serverless GPU cloud platform for running ML workloads"
+title: "Modal Serverless Gpu — Serverless GPU cloud for ML jobs and model APIs"
 sidebar_label: "Modal Serverless Gpu"
-description: "Serverless GPU cloud platform for running ML workloads"
+description: "Serverless GPU cloud for ML jobs and model APIs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Modal Serverless Gpu
 
-Serverless GPU cloud platform for running ML workloads. Use when you need on-demand GPU access without infrastructure management, deploying ML models as APIs, or running batch jobs with automatic scaling.
+Serverless GPU cloud for ML jobs and model APIs.
 
 ## Skill metadata
 

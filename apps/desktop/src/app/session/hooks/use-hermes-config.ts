@@ -4,11 +4,9 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import {
-  $currentCwd,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   setAvailablePersonalities,
-  setCurrentCwd,
   setCurrentFastMode,
   setCurrentPersonality,
   setCurrentReasoningEffort,
@@ -43,10 +41,9 @@ function normalizeConfigEffort(value: unknown): string {
 
 interface HermesConfigOptions {
   activeSessionIdRef: MutableRefObject<string | null>
-  refreshProjectBranch: (cwd: string) => Promise<void>
 }
 
-export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
+export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
   const profileRefreshEpochRef = useRef(0)
@@ -83,16 +80,6 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
           ])
         ])
 
-        const cwd = (config.terminal?.cwd ?? '').trim()
-
-        if (cwd && cwd !== '.') {
-          // Configured terminal.cwd beats a stale remembered workspace cwd
-          // (#38855) — but never yank the workspace out from under an active
-          // session; those keep their own cwd until the user detaches.
-          setCurrentCwd(prev => (activeSessionIdRef.current ? prev : cwd))
-          void refreshProjectBranch($currentCwd.get() || cwd)
-        }
-
         const reasoning = normalizeConfigEffort(config.agent?.reasoning_effort)
         const tier = (config.agent?.service_tier ?? '').trim()
 
@@ -115,7 +102,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
         // Config is nice-to-have; chat still works without it.
       }
     },
-    [activeSessionIdRef, refreshProjectBranch]
+    [activeSessionIdRef]
   )
 
   return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }

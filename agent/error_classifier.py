@@ -413,6 +413,7 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
 _AUTH_PATTERNS = [
     "invalid api key",
     "invalid_api_key",
+    "gateway_auth_failed",
     "authentication",
     "unauthorized",
     "forbidden",

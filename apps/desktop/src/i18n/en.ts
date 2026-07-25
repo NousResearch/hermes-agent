@@ -132,6 +132,7 @@ export const en: Translations = {
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
+      gatewayAuthFailed: 'Gateway authentication failed — check your API_SERVER_KEY.',
       methodNotAllowed:
         'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
       microphonePermission: 'Microphone permission was denied.',
@@ -168,13 +169,23 @@ export const en: Translations = {
       turnDoneBody: 'The response is ready.',
       turnErrorTitle: 'Turn failed',
       backgroundDoneTitle: 'Background task finished',
-      backgroundFailedTitle: 'Background task failed'
+      backgroundFailedTitle: 'Background task failed',
+      creditsTitle: 'Credits'
     }
   },
 
   remoteDisplayBanner: {
     message: reason =>
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
+  },
+
+  billingBlock: {
+    titleNous: 'Out of Nous credits',
+    titleProvider: provider => `Out of credits — ${provider}`,
+    fallbackMessage: 'Your account is out of credits. Add credits to keep going.',
+    openBilling: 'Open billing',
+    addCredits: 'Add credits',
+    dismiss: 'Dismiss'
   },
 
   titlebar: {
@@ -283,6 +294,7 @@ export const en: Translations = {
       'composer.send': 'Send message',
       'composer.newline': 'Insert newline',
       'composer.steer': 'Steer the running turn',
+      'composer.queue': 'Queue message',
       'composer.sendQueued': 'Send next queued turn',
       'composer.mention': 'Reference files, folders, URLs',
       'composer.slash': 'Slash command palette',
@@ -368,6 +380,10 @@ export const en: Translations = {
         backgroundDone: {
           label: 'Background task finished',
           description: 'A backgrounded terminal command completed.'
+        },
+        credits: {
+          label: 'Credit alerts',
+          description: 'Credit access is paused or restored.'
         }
       },
       test: 'Send test notification',
@@ -827,6 +843,12 @@ export const en: Translations = {
       messages: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
       restored: 'Restored',
       deleteConfirm: title => `Permanently delete "${title}"? This cannot be undone.`,
+      autoArchiveTitle: 'Auto-archive stale chats',
+      autoArchiveDesc:
+        "Automatically archive chats you haven't touched in a while. Pinned chats are never archived, and nothing is deleted — archived chats just move here.",
+      autoArchiveDaysLabel: 'Archive after',
+      autoArchiveDaysUnit: 'days of inactivity',
+      autoArchiveFailed: 'Could not update auto-archive',
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
@@ -1077,6 +1099,7 @@ export const en: Translations = {
     ageSeconds: seconds => `${seconds}s ago`,
     ageMinutes: minutes => `${minutes}m ago`,
     ageHours: hours => `${hours}h ago`,
+    ageDays: days => `${days}d ago`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
     tokens: value => `${value} tok`
@@ -1399,6 +1422,72 @@ export const en: Translations = {
     platformIntro: {}
   },
 
+  webhooks: {
+    search: 'Search webhooks...',
+    loading: 'Loading webhooks...',
+    loadFailed: 'Webhooks failed to load',
+    subscriptions: (count: number) => `Subscriptions (${count})`,
+    hint: 'Subscription changes hot-reload once the receiver is running. Disabled subscriptions reject incoming events.',
+    empty: 'No webhook subscriptions yet.',
+    disabledTitle: 'Webhook receiver disabled',
+    disabledBody:
+      'Webhooks are their own gateway platform. Enable them here to accept incoming HTTP events; chat channels are only needed when a subscription delivers to Telegram, Discord, Slack, or another channel.',
+    enable: 'Enable webhooks',
+    enabling: 'Enabling...',
+    enabled: (name: string) => `Enabled: "${name}"`,
+    disabled: (name: string) => `Disabled: "${name}"`,
+    enableRow: 'Enable',
+    disableRow: 'Disable',
+    delete: 'Delete',
+    deleting: 'Deleting...',
+    deleted: 'Webhook deleted',
+    deleteTitle: 'Delete webhook',
+    deleteDescPrefix: 'This will permanently remove ',
+    deleteDescSuffix: '. This cannot be undone.',
+    deleteFailed: (name: string) => `Failed to delete "${name}"`,
+    toggleFailed: (name: string) => `Failed to update "${name}"`,
+    newSubscription: 'New subscription',
+    restarting: 'Gateway restarting...',
+    restartNeeded: 'Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.',
+    restartGateway: 'Restart gateway',
+    restartingGateway: 'Restarting...',
+    restartFailed: (detail: string) => `Gateway restart failed${detail}`,
+    enabledRestarting: 'Webhooks enabled; gateway restarting...',
+    all: '(all)',
+    deliverOnly: 'deliver only',
+    createdTitle: 'Subscription created',
+    createdSecretHint: 'Copy the secret now — it is only shown once.',
+    webhookUrl: 'Webhook URL',
+    secretOnce: 'Secret (shown once)',
+    done: 'Done',
+    fieldName: 'Name',
+    fieldNamePlaceholder: 'e.g. github-push',
+    fieldDescription: 'Description',
+    fieldDescriptionPlaceholder: 'What this webhook does (optional)',
+    fieldEvents: 'Events',
+    fieldEventsPlaceholder: 'comma-separated, leave empty for all',
+    fieldSkills: 'Skills',
+    fieldSkillsPlaceholder: 'comma-separated skill names (optional)',
+    fieldDeliver: 'Deliver to',
+    fieldDeliverOnly: 'Deliver payload only',
+    fieldPrompt: 'Prompt',
+    fieldPromptPlaceholder: 'Instructions for the agent when this webhook fires (optional)',
+    nameRequired: 'Name required',
+    create: 'Create',
+    creating: 'Creating...',
+    created: 'Created',
+    createFailed: (detail: string) => `Failed to create: ${detail}`,
+    copy: 'Copy',
+    deliverOptions: {
+      log: 'Log',
+      telegram: 'Telegram',
+      discord: 'Discord',
+      slack: 'Slack',
+      email: 'Email',
+      github_comment: 'GitHub comment'
+    }
+  },
+
   profiles: {
     close: 'Close profiles',
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
@@ -1580,6 +1669,7 @@ export const en: Translations = {
     promptPlaceholder: 'Summarize my unread Slack threads and email me the top 5...',
     frequencyLabel: 'Frequency',
     deliverLabel: 'Deliver to',
+    deliverNeedsHomeChannel: 'set a home channel first',
     modelLabel: 'Model',
     modelDefault: 'Default (global model)',
     customScheduleLabel: 'Custom schedule',
@@ -1591,7 +1681,25 @@ export const en: Translations = {
     scheduleRequired: 'Schedule is required.',
     scriptOnlyEditHint: 'Script-only job (no AI prompt). Job id:',
     saveChanges: 'Save changes',
-    createAction: 'Create cron'
+    createAction: 'Create cron',
+    tabs: {
+      jobs: 'Jobs',
+      blueprints: 'Blueprints'
+    },
+    blueprints: {
+      tab: 'Blueprints',
+      startFrom: 'Start from',
+      custom: 'Custom',
+      subtitle: 'Ready-made automations',
+      dialogDesc: 'Fill in the details and schedule it.',
+      scheduleIt: 'Schedule it',
+      scheduling: 'Scheduling...',
+      scheduled: 'Blueprint scheduled',
+      loading: 'Loading blueprints...',
+      failedLoad: 'Failed to load blueprints',
+      emptyTitle: 'No blueprints available',
+      emptyDesc: 'No automation blueprints are available on this backend.'
+    }
   },
 
   artifacts: {
@@ -1756,6 +1864,13 @@ export const en: Translations = {
       ageDay: 'd',
       ageHour: 'h',
       ageMin: 'm'
+    },
+    dateDivider: {
+      today: 'Earlier today',
+      yesterday: 'Yesterday',
+      thisWeek: 'Earlier this week',
+      lastWeek: 'Last week',
+      thisMonth: 'Earlier this month'
     }
   },
 
@@ -2024,6 +2139,40 @@ export const en: Translations = {
     viewDocs: 'View install docs',
     installTo: 'Will install to',
     retryAfterRun: 'I’ve run it -- retry',
+    setupChoiceTitle: 'Set up Hermes Desktop',
+    setupChoiceDesc:
+      'Connect this app to a Hermes gateway you already run, or install Hermes locally on this computer.',
+    connectExistingTitle: 'Connect to existing Hermes',
+    connectExistingShort: 'Connect existing',
+    connectExistingDesc: 'Use a remote backend with a session token or browser sign-in. No local install will start.',
+    installLocalTitle: 'Install Hermes locally',
+    installLocalDesc: 'Download Hermes, create its Python environment, and run the backend on this computer.',
+    localStartUnavailable: 'Local installation could not start. Restart Hermes Desktop and try again.',
+    remoteSetupTitle: 'Connect to existing Hermes',
+    remoteSetupDesc: 'Enter your gateway URL. Hermes Desktop will detect whether it needs a token or browser sign-in.',
+    remoteUrlTitle: 'Gateway URL',
+    remoteUrlDesc: 'Use the base URL of the Hermes gateway, including https:// when remote.',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: 'Detecting gateway authentication...',
+    probeError: 'Could not reach that Hermes gateway.',
+    identityProvider: 'your identity provider',
+    authTitle: 'Authentication',
+    authNeedsOauth: provider => `Sign in with ${provider} before testing this gateway.`,
+    authSignedIn: 'Browser sign-in completed.',
+    connected: 'Connected',
+    signIn: 'Sign in',
+    signInWith: provider => `Sign in with ${provider}`,
+    enterUrlFirst: 'Enter a gateway URL first.',
+    signInIncomplete: 'The sign-in window closed before authentication completed.',
+    tokenTitle: 'Session token',
+    tokenDesc: 'Paste the session token from the remote gateway .env file.',
+    pasteSessionToken: 'Paste session token',
+    incompleteSignInTest: 'Sign in before testing this OAuth-gated gateway.',
+    incompleteTokenTest: 'Enter a session token before testing this gateway.',
+    testConnection: 'Test connection',
+    testSucceeded: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` (${version})` : ''}.`,
+    applyRemote: 'Apply and reconnect',
+    backToSetup: 'Back',
     failedTitle: 'Installation failed',
     settingUpTitle: 'Setting up Hermes Agent',
     finishingTitle: 'Finishing up',
@@ -2137,7 +2286,8 @@ export const en: Translations = {
     proNeedsSubscription: 'Pro models need a paid Nous subscription.',
     free: 'Free',
     freeTier: 'Free tier',
-    priceTitle: 'Input / Output price per million tokens'
+    priceTitle: 'Input / Output price per million tokens',
+    wasPrice: 'was'
   },
 
   modelVisibility: {
@@ -2238,6 +2388,8 @@ export const en: Translations = {
       running: count => `${count} running`,
       cron: 'Cron',
       openCron: 'Open cron jobs',
+      webhooks: 'Webhooks',
+      openWebhooks: 'Open webhooks',
       starmap: 'Memory Graph',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
@@ -2418,6 +2570,7 @@ export const en: Translations = {
     closeOthers: 'Close others',
     closeToRight: 'Close to the right',
     closeAll: 'Close all',
+    newSessionTab: 'New session tab',
     split: dir => `Split ${dir}`,
     move: dir => `Move ${dir}`,
     dirUp: 'up',
@@ -2513,7 +2666,10 @@ export const en: Translations = {
       placeholder: 'Type your answer…',
       skip: 'Skip',
       skipped: 'Skipped',
-      continueLabel: 'Continue'
+      continueLabel: 'Continue',
+      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
+      lateAnswerTip: 'Draft this answer as a follow-up message',
+      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
     tool: {
       code: 'Code',

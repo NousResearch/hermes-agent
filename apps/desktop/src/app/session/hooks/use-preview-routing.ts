@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect } from 'react'
 
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
@@ -10,6 +11,7 @@ import {
   getSessionPreviewRecord,
   progressPreviewServerRestart,
   requestPreviewReload,
+  setCurrentSessionPreviewTarget,
   setPreviewTarget
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
@@ -101,6 +103,30 @@ export function usePreviewRouting({
     event => {
       baseHandleGatewayEvent(event)
 
+      if (event.type === 'preview.open') {
+        // Agent-driven open in response to an explicit user request ("show
+        // cnn.com in the preview pane"). Honor it only for the active session —
+        // a background turn must not yank the pane open (see desktop AGENTS.md:
+        // offer, don't hijack). Routes through the same normalizer as the file
+        // browser so URLs, localhost, and file paths all resolve correctly.
+        const { url, label } = asRecord(event.payload)
+        const target = typeof url === 'string' ? url.trim() : ''
+
+        if (target && (!event.session_id || event.session_id === activeSessionIdRef.current)) {
+          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
+            if (resolved) {
+              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
+              setCurrentSessionPreviewTarget(
+                trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved,
+                'tool-result'
+              )
+            }
+          })
+        }
+
+        return
+      }
+
       if (event.type === 'preview.restart.complete') {
         const { task_id, text } = asRecord(event.payload)
 
@@ -126,7 +152,7 @@ export function usePreviewRouting({
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent]
+    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

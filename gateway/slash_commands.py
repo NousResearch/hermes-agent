@@ -32,7 +32,7 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import HomeChannel, Platform, PlatformConfig
+from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -1280,6 +1280,12 @@ class GatewaySlashCommandsMixin:
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
             }
+            if event.source.delivered_via_upstream_relay is True:
+                notify_data["delivered_via_upstream_relay"] = True
+                if event.source.user_id:
+                    notify_data["user_id"] = event.source.user_id
+                if event.source.scope_id:
+                    notify_data["scope_id"] = event.source.scope_id
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
             if event.message_id:
@@ -2602,34 +2608,67 @@ class GatewaySlashCommandsMixin:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
+        if source.platform is None:
+            return t("gateway.set_home.save_failed", error="Missing logical platform")
 
-        env_key = _home_target_env_var(platform_name)
-        thread_env_key = _home_thread_env_var(platform_name)
+        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
+        if via_relay:
+            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
+            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
+            if (
+                source.platform in {None, Platform.LOCAL, Platform.RELAY}
+                or not getattr(source, "user_id", None)
+                or not callable(fronts_platform)
+                or not fronts_platform(source.platform)
+            ):
+                return t(
+                    "gateway.set_home.save_failed",
+                    error="Relay does not authenticate this logical home target",
+                )
+
         thread_id = source.thread_id
+        home = HomeChannel(
+            platform=source.platform,
+            chat_id=str(chat_id),
+            name=chat_name,
+            thread_id=str(thread_id) if thread_id else None,
+            user_id=(
+                str(source.user_id)
+                if getattr(source, "user_id", None)
+                else None
+            ),
+            scope_id=(
+                str(source.scope_id)
+                if getattr(source, "scope_id", None)
+                else None
+            ),
+        )
 
-        # Save to .env so it persists across restarts
+        # config.yaml is canonical because it can persist the authenticated
+        # logical-target provenance required by Relay after a restart.
         try:
-            from hermes_cli.config import save_env_value
-            save_env_value(env_key, str(chat_id))
-            # Keep thread/topic routing explicit and clear stale values when
-            # /sethome is run from the parent chat instead of a thread.
-            save_env_value(thread_env_key, str(thread_id or ""))
+            persist_home_channel(home, enabled_if_new=not via_relay)
         except Exception as e:
             return t("gateway.set_home.save_failed", error=e)
 
+        # Preserve legacy home env vars for existing cron/setup consumers.
+        env_key = _home_target_env_var(platform_name)
+        thread_env_key = _home_thread_env_var(platform_name)
+        try:
+            from hermes_cli.config import save_env_value
+            save_env_value(env_key, str(chat_id))
+            save_env_value(thread_env_key, str(thread_id or ""))
+        except Exception as e:
+            logger.warning("Home config saved but legacy env persistence failed: %s", e)
+
         # Keep the running gateway config in sync too. The pre-restart
-        # notification path reads self.config before the process reloads env.
-        if source.platform:
-            platform_config = self.config.platforms.setdefault(
-                source.platform,
-                PlatformConfig(enabled=True),
-            )
-            platform_config.home_channel = HomeChannel(
-                platform=source.platform,
-                chat_id=str(chat_id),
-                name=chat_name,
-                thread_id=str(thread_id) if thread_id else None,
-            )
+        # notification path reads self.config before the process reloads config.
+        platform_config = getattr(self, "config").platforms.setdefault(
+            source.platform,
+            PlatformConfig(enabled=not via_relay),
+        )
+        platform_config.home_channel = home
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
@@ -3425,6 +3464,9 @@ class GatewaySlashCommandsMixin:
             split_history_for_partial_compress,
             summarize_compress_preview,
         )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
         _raw_args = (event.get_command_args() or "").strip()
         # Strip --preview/--dry-run/--aggressive before positional parsing
         # so the flags coexist with 'here [N]' / focus-topic forms.
@@ -3553,11 +3595,31 @@ class GatewaySlashCommandsMixin:
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                    lambda: tmp_agent._compress_context(
+                        head,
+                        "",
+                        approx_tokens=approx_tokens,
+                        focus_topic=focus_topic,
+                        force=True,
+                        defer_context_engine_notification=True,
+                    )
                 )
 
-                # Re-append the verbatim tail after the compressed head,
-                # guarding the seam against illegal role adjacency.
+                # If _compress_context returned unchanged because a
+                # concurrent compression lock is held, tell the user
+                # clearly instead of showing the misleading
+                # "No changes from compression" no-op text. The wording
+                # distinguishes a confirmed holder from an unconfirmed
+                # acquisition failure (describe_compression_lock_skip).
+                # The deferred context-engine notification is discarded by
+                # the finally block below (finalize committed=False).
+                _lock_skipped = getattr(tmp_agent, "_compression_skipped_due_to_lock", None)
+                if _lock_skipped is True or isinstance(_lock_skipped, str):
+                    from agent.manual_compression_feedback import (
+                        describe_compression_lock_skip,
+                    )
+                    return describe_compression_lock_skip(_lock_skipped)
+
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
@@ -3627,6 +3689,10 @@ class GatewaySlashCommandsMixin:
                 await self.async_session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
+                finalize_context_engine_compression_notification(
+                    tmp_agent,
+                    committed=True,
+                )
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
@@ -3657,6 +3723,10 @@ class GatewaySlashCommandsMixin:
                 _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
                 _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
             finally:
+                finalize_context_engine_compression_notification(
+                    tmp_agent,
+                    committed=False,
+                )
                 # Evict cached agent so next turn rebuilds system prompt
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
@@ -4153,6 +4223,7 @@ class GatewaySlashCommandsMixin:
                     # replays the parent's exact wire bytes (warm provider
                     # prompt cache) instead of a full cold prefill.
                     api_content=extract_api_content_sidecar(msg),
+                    timestamp=msg.get("timestamp"),
                 )
             except Exception:
                 pass  # Best-effort copy
@@ -4894,7 +4965,7 @@ class GatewaySlashCommandsMixin:
         if event.message_id:
             pending["message_id"] = event.message_id
         _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 

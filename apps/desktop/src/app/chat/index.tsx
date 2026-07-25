@@ -14,18 +14,19 @@ import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
-import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -41,7 +42,7 @@ import {
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { routeSessionId } from '../routes'
+import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -254,6 +255,7 @@ export function ChatView({
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
   // from the view slice, not the global atoms (which track the primary only).
@@ -283,11 +285,18 @@ export function ChatView({
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
-  // does not wipe an in-progress draft or orphan /queue entries.
-  const queueSessionKey = useMemo(
-    () => resolveComposerSessionKey(selectedSessionId, sessions),
-    [selectedSessionId, sessions]
-  )
+  // does not wipe an in-progress draft or orphan /queue entries. For the
+  // primary view, the route is authoritative over the store selection — the
+  // latter can be momentarily null/stale mid-switch, which used to leak into
+  // the composer's scope key (#59305). A tile has no route, so it always uses
+  // its own selection directly.
+  const queueSessionKey = useMemo(() => {
+    const effectiveSelectedSessionId = isPrimary
+      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
+      : selectedSessionId
+
+    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
+  }, [isPrimary, location.pathname, selectedSessionId, sessions])
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
@@ -356,21 +365,8 @@ export function ChatView({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: ['model-options', activeSessionId || 'global'],
-    queryFn: () => {
-      if (!activeSessionId) {
-        return getGlobalModelOptions()
-      }
-
-      if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
-      }
-
-      return gateway.request<ModelOptionsResponse>('model.options', {
-        session_id: activeSessionId,
-        explicit_only: true
-      })
-    },
+    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
+    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
     enabled: gatewayOpen
   })
 

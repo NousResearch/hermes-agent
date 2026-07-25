@@ -166,7 +166,13 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(
+    monkeypatch,
+    agent_cls,
+    *,
+    cleanup_on: bool,
+    cleanup_platform: Platform = Platform.TELEGRAM,
+):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -187,7 +193,7 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     cfg = {
         "display": {
             "platforms": {
-                "telegram": {"cleanup_progress": True},
+                cleanup_platform.value: {"cleanup_progress": True},
             }
         }
     } if cleanup_on else {}
@@ -318,6 +324,45 @@ async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tm
     assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
     for entry in adapter.deleted:
         assert entry["chat_id"] == "-1001"
+
+
+@pytest.mark.asyncio
+async def test_slack_cleanup_flag_deletes_progress_bubbles(monkeypatch, tmp_path):
+    """Slack's per-platform cleanup flag uses the same post-delivery cleanup path."""
+    adapter = CleanupCaptureAdapter(Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        ProgressAgent,
+        cleanup_on=True,
+        cleanup_platform=Platform.SLACK,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="D123")
+    session_key = "agent:main:slack:dm:D123"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-slack",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    cb = adapter.pop_post_delivery_callback(session_key)
+    assert callable(cb)
+    await _fire_post_delivery_cb(cb)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+
+    assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
+    for entry in adapter.deleted:
+        assert entry["chat_id"] == "D123"
 
 
 @pytest.mark.asyncio

@@ -6,10 +6,12 @@ import type {
   AnalyticsResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
+  AutomationBlueprint,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
   ComputerUseStatus,
   ConfigSchemaResponse,
+  CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
   CronJobUpdates,
@@ -58,7 +60,11 @@ import type {
   TerminalBackendsResponse,
   ToolsetConfig,
   ToolsetInfo,
-  ToolsetModelsResponse
+  ToolsetModelsResponse,
+  WebhookCreatePayload,
+  WebhookCreateResponse,
+  WebhookEnableResponse,
+  WebhooksResponse
 } from '@/types/hermes'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
@@ -126,6 +132,8 @@ export type {
   AnalyticsTotals,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
+  AutomationBlueprint,
+  AutomationBlueprintField,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
   ComputerUseCheck,
@@ -133,6 +141,7 @@ export type {
   ComputerUseStatus,
   ConfigFieldSchema,
   ConfigSchemaResponse,
+  CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
   CronJobSchedule,
@@ -202,7 +211,12 @@ export type {
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,
-  ToolsetModelsResponse
+  ToolsetModelsResponse,
+  WebhookCreatePayload,
+  WebhookCreateResponse,
+  WebhookEnableResponse,
+  WebhookRoute,
+  WebhooksResponse
 } from '@/types/hermes'
 
 export class HermesGateway extends JsonRpcGatewayClient {
@@ -543,6 +557,19 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
     body: { archived }
+  })
+}
+
+// Mirror a sidebar pin to the backend "keep" flag so the sessions.auto_archive
+// sweep (which runs backend-side, blind to Desktop localStorage) never hides a
+// pinned chat. Best-effort: the sidebar stays localStorage-driven for its own
+// display; this only feeds the backend policy.
+export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { pinned }
   })
 }
 
@@ -1109,6 +1136,55 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   })
 }
 
+// -- Webhooks (subscription CRUD) --------------------------------------------
+// The webhook receiver is its own gateway platform; subscriptions live in a
+// shared JSON store the CLI/dashboard also drive. Enable mutates config and
+// best-effort restarts the gateway; subscription changes hot-reload.
+
+export function getWebhooks(): Promise<WebhooksResponse> {
+  return window.hermesDesktop.api<WebhooksResponse>({
+    ...profileScoped(),
+    path: '/api/webhooks'
+  })
+}
+
+export function enableWebhooks(): Promise<WebhookEnableResponse> {
+  return window.hermesDesktop.api<WebhookEnableResponse>({
+    ...profileScoped(),
+    path: '/api/webhooks/enable',
+    method: 'POST'
+  })
+}
+
+export function createWebhook(body: WebhookCreatePayload): Promise<WebhookCreateResponse> {
+  return window.hermesDesktop.api<WebhookCreateResponse>({
+    ...profileScoped(),
+    path: '/api/webhooks',
+    method: 'POST',
+    body
+  })
+}
+
+export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/webhooks/${encodeURIComponent(name)}`,
+    method: 'DELETE'
+  })
+}
+
+export function setWebhookEnabled(
+  name: string,
+  enabled: boolean
+): Promise<{ enabled: boolean; name: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ enabled: boolean; name: string; ok: boolean }>({
+    ...profileScoped(),
+    path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
+    method: 'PUT',
+    body: { enabled }
+  })
+}
+
 // Cron jobs are stored per-profile (<HERMES_HOME>/cron/jobs.json), and the
 // backend's list endpoint defaults to 'all'. Pass a concrete profile key to
 // list just that profile's jobs, or 'all' for the unified cross-profile view.
@@ -1138,6 +1214,18 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
   })
 
   return runs ?? []
+}
+
+// The single source of truth for cron delivery targets (local + configured
+// gateways). Both the manual cron editor and the blueprint dialog use this so
+// they never offer a platform that isn't connected. Mirrors the dashboard.
+export async function getCronDeliveryTargets(): Promise<CronDeliveryTarget[]> {
+  const { targets } = await window.hermesDesktop.api<{ targets: CronDeliveryTarget[] }>({
+    ...profileScoped(),
+    path: '/api/cron/delivery-targets'
+  })
+
+  return targets ?? []
 }
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
@@ -1187,6 +1275,37 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
     ...profileScoped(),
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
+  })
+}
+
+// Automation Blueprints — parameterized cron templates the backend serves from
+// cron/blueprint_catalog.py. getAutomationBlueprints returns the gallery
+// (deliver options already rewritten to this machine's configured gateways);
+// instantiateAutomationBlueprint fills the slots and creates a real cron job via
+// the same create_job path as createCronJob.
+//
+// Profile-scoping is intentionally asymmetric: the GET catalog is global (the
+// list endpoint takes no profile — only deliver options are rewritten from the
+// configured gateways), so it carries only the profileScoped() header for
+// routing. instantiate creates a real per-profile job, so it names the target
+// profile explicitly via ?profile=. This mirrors the dashboard's api.ts.
+export function getAutomationBlueprints(): Promise<{ blueprints: AutomationBlueprint[] }> {
+  return window.hermesDesktop.api<{ blueprints: AutomationBlueprint[] }>({
+    ...profileScoped(),
+    path: '/api/cron/blueprints',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function instantiateAutomationBlueprint(
+  body: { blueprint: string; values: Record<string, string> },
+  profile: string
+): Promise<CronJob> {
+  return window.hermesDesktop.api<CronJob>({
+    ...profileScoped(),
+    path: `/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`,
+    method: 'POST',
+    body
   })
 }
 

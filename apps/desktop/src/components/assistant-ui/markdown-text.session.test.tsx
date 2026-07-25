@@ -35,26 +35,26 @@ afterEach(() => {
 
 // End-to-end for the agent-authored path: a bare ref in assistant markdown has
 // to survive preprocessMarkdown -> Streamdown -> MarkdownLink and come out as
-// the session chip, not as literal text or a dead anchor.
+// an inline link titled after the session, not as literal text.
 describe('MarkdownTextContent session refs', () => {
-  it('renders an agent-written @session ref as a chip showing the session title', async () => {
+  it('renders an agent-written @session ref as a link showing the session title', async () => {
     $sessions.set([makeSession()])
 
     render(<MarkdownTextContent isRunning={false} text="Context lives in @session:work/20260101_abc123 today." />)
 
-    const chip = await screen.findByTitle('work/20260101_abc123')
+    const link = await screen.findByTitle('work/20260101_abc123')
 
-    expect(chip.dataset.directiveType).toBe('session')
-    expect(chip.textContent).toBe('Branch plan')
+    expect(link.tagName).toBe('A')
+    expect(link.textContent).toBe('Branch plan')
     expect(screen.queryByText(/@session:/)).toBeNull()
   })
 
   it('falls back to a short id when the session is unknown', async () => {
     render(<MarkdownTextContent isRunning={false} text="See @session:work/20260101_abc123 for context." />)
 
-    const chip = await screen.findByTitle('work/20260101_abc123')
+    const link = await screen.findByTitle('work/20260101_abc123')
 
-    expect(chip.textContent).toBe('20260101…')
+    expect(link.textContent).toBe('20260101…')
   })
 
   it('leaves a ref inside inline code as literal text', () => {

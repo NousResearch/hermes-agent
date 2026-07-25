@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MessagingPlatformInfo } from '@/types/hermes'
@@ -56,7 +56,7 @@ async function renderMessaging() {
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
-      <MemoryRouter>
+      <MemoryRouter useTransitions={false}>
         <MessagingView />
       </MemoryRouter>
     )

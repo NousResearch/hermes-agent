@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
@@ -37,7 +37,7 @@ function Harness({
   const item = useApprovalModeStatusbarItem(profile, requestGateway)
 
   return (
-    <MemoryRouter>
+    <MemoryRouter useTransitions={false}>
       <StatusbarControls items={[item]} />
     </MemoryRouter>
   )

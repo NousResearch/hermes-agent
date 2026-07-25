@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -51,7 +51,7 @@ function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
-    <MemoryRouter initialEntries={initialEntries}>
+    <MemoryRouter initialEntries={initialEntries} useTransitions={false}>
       <QueryClientProvider client={client}>
         <BillingSettings />
       </QueryClientProvider>

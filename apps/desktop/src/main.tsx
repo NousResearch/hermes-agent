@@ -5,7 +5,7 @@ import './store/translucency'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { HashRouter } from 'react-router-dom'
+import { HashRouter } from 'react-router'
 
 import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
@@ -35,7 +35,7 @@ if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
           <I18nProvider>
             <ThemeProvider>
               <HapticsProvider>
-                {/* useTransitions={false}: react-router v7's HashRouter wraps every
+                {/* useTransitions={false}: react-router's HashRouter wraps every
                     route state update in React.startTransition() by default. In
                     React 19's concurrent renderer, transitions are non-urgent — React
                     can yield mid-render and resume later. When the app is under load

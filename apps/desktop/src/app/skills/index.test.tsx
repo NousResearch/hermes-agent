@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
-import type * as ReactRouterDom from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
+import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
@@ -40,7 +40,7 @@ vi.mock('@/store/notifications', () => ({
 // so the deep-link target is assertable.
 const navigateSpy = vi.fn()
 
-vi.mock('react-router-dom', async importOriginal => ({
+vi.mock('react-router', async importOriginal => ({
   ...(await importOriginal<typeof ReactRouterDom>()),
   useNavigate: () => navigateSpy
 }))
@@ -65,7 +65,7 @@ async function renderSkills() {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={['/skills?tab=toolsets']} useTransitions={false}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>

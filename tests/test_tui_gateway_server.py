@@ -3313,7 +3313,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None, **_kwargs
         ):
             seen["prompt"] = prompt
             seen["history"] = conversation_history
@@ -3709,9 +3709,7 @@ class _RecordingAgent:
     def clear_interrupt(self):
         return None
 
-    def run_conversation(
-        self, prompt, conversation_history=None, stream_callback=None
-    ):
+    def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
 
@@ -3820,9 +3818,7 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
         return thread
 
     class _BlockingNotificationAgent(_RecordingAgent):
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             turns.append(prompt)
             if "proc_batch_1" in prompt:
                 nested_started.set()
@@ -6608,9 +6604,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     captured = {}
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             captured["session_key"] = get_current_session_key(default="")
             return {
                 "final_response": "ok",
@@ -6650,9 +6644,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         base_url = ""
         api_key = ""
 
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             captured["prompt"] = prompt
             return {
                 "final_response": "ok",
@@ -7521,9 +7513,7 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
     session_ref = {"s": None}
 
     class _RacyAgent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             # Simulate: something external bumped history_version
             # while we were running.
             with session_ref["s"]["history_lock"]:
@@ -7584,9 +7574,7 @@ def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
     captured: dict[str, str] = {}
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             captured["prompt"] = prompt
             return {
                 "final_response": "ok",
@@ -7628,9 +7616,7 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
     """Regression guard: the backstop does not affect the happy path."""
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             return {
                 "final_response": "reply",
                 "messages": [{"role": "assistant", "content": "reply"}],
@@ -7681,9 +7667,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     seen = {}
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             seen["prompt"] = prompt
             seen["history"] = conversation_history
             return {
@@ -9671,9 +9655,7 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
         api_key = object()
         api_mode = "codex_responses"
 
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             return {
                 "final_response": "Rome was founded in 753 BC.",
                 "messages": [
@@ -9716,9 +9698,7 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
     """maybe_auto_title must NOT be called when the agent was interrupted."""
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             return {
                 "final_response": "partial answer",
                 "interrupted": True,
@@ -9748,9 +9728,7 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     """maybe_auto_title must NOT be called when the agent returns an empty reply."""
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             return {
                 "final_response": "",
                 "messages": [],
@@ -9781,9 +9759,7 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     instead of emitting a blank message.complete turn."""
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             return {
                 "final_response": None,
                 "messages": [],
@@ -9828,9 +9804,7 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     semantics owned by downstream handlers."""
 
     class _Agent:
-        def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
-        ):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             return {
                 "final_response": None,
                 "messages": [],
@@ -9993,7 +9967,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     class _Agent:
         model = "model-live"
 
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             assert prompt == "write a long answer"
             assert conversation_history == []
             stream_callback("partial ")
@@ -11317,7 +11291,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
     emitted = []
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             turns.append(prompt)
             return {
                 "final_response": "ok",
@@ -11388,7 +11362,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     turns = []
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             turns.append(prompt)
             return {"final_response": "ok", "messages": []}
 
@@ -13229,3 +13203,185 @@ def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, con
     monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
 
     assert server._clarify_timeout_seconds() == expected
+
+
+def test_build_persist_message_with_image_refs_without_images_returns_text(monkeypatch):
+    """#70720: when no images are attached the persisted message is the raw
+    prompt — no @image directive prefix is introduced."""
+    assert server._build_persist_message_with_image_refs("what is this?", []) == "what is this?"
+    assert server._build_persist_message_with_image_refs("", []) == ""
+
+
+def test_build_persist_message_with_image_refs_appends_existing_paths(monkeypatch, tmp_path):
+    """Attached images that still exist on disk are persisted as trailing
+    ``@image:<path>`` directive lines so the desktop renders them after a
+    restart (instead of the vision-only enrichment that silently breaks)."""
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"\x89PNG")
+
+    result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
+
+    assert result == f"what is in this photo?\n@image:{img}"
+
+
+def test_build_persist_message_keeps_the_caption_on_the_first_line(tmp_path):
+    """Session previews are the first 60 characters of the first user message,
+    so a leading directive would title the session with a truncated file path
+    in the sidebar, switcher, and command palette."""
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"png")
+
+    result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
+
+    assert result.split("\n", 1)[0] == "what is in this photo?"
+
+
+def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, tmp_path):
+    """Only paths that still exist are persisted; a missing file must not
+    inject a dangling @image ref into the transcript."""
+    existing = tmp_path / "a.png"
+    existing.write_bytes(b"png")
+    missing = str(tmp_path / "gone.png")
+
+    result = server._build_persist_message_with_image_refs("compare them", [str(existing), missing])
+
+    assert result == f"compare them\n@image:{existing}"
+
+
+def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeypatch, tmp_path):
+    """A stand-alone attachment (no caption) persists as just the directive
+    line, so a bare image survives in history and is not dropped as empty."""
+    img = tmp_path / "only.png"
+    img.write_bytes(b"png")
+
+    assert server._build_persist_message_with_image_refs("", [str(img)]) == f"@image:{img}"
+
+
+def test_build_persist_message_quotes_paths_containing_spaces(tmp_path):
+    """The unquoted alternative in the directive pattern is ``\\S+``, so a path
+    with a space parses as a truncated ref with the tail left as loose text.
+    Desktop composer images live in the app's userData dir, which on macOS is
+    ``~/Library/Application Support/...`` — a space every time."""
+    img_dir = tmp_path / "Application Support" / "Hermes" / "composer-images"
+    img_dir.mkdir(parents=True)
+    img = img_dir / "cat.png"
+    img.write_bytes(b"png")
+
+    result = server._build_persist_message_with_image_refs("what is this?", [str(img)])
+
+    assert result == f"what is this?\n@image:`{img}`"
+
+
+def test_persist_user_message_mirrors_the_shape_sent_to_the_model(tmp_path):
+    """A native-vision turn sends ``content`` as a parts list, and the session
+    store ignores a plain-string override for a list payload. The override must
+    mirror the list shape (ref text + the original image parts) or it is
+    silently dropped and the attachment never reaches history."""
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"png")
+    image_part = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    native_parts = [{"type": "text", "text": "api-only text"}, image_part]
+
+    override = server._build_persist_user_message("what is this?", [str(img)], native_parts)
+
+    assert override == [{"type": "text", "text": f"what is this?\n@image:{img}"}, image_part]
+
+
+def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
+    """Text-mode (vision-preprocessed) turns send a string, so the override
+    stays a string — the shape the session store rewrites directly."""
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"png")
+
+    override = server._build_persist_user_message("what is this?", [str(img)], "enriched api-only text")
+
+    assert override == f"what is this?\n@image:{img}"
+
+
+def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):
+    """End to end through the real session-store flush: whichever image input
+    mode the turn used, the durable row carries an ``@image:`` ref the desktop
+    can render after a restart."""
+    from unittest.mock import MagicMock
+
+    from agent.image_routing import build_native_content_parts
+    from run_agent import AIAgent
+
+    img_dir = tmp_path / "Application Support" / "composer-images"
+    img_dir.mkdir(parents=True)
+    img = img_dir / "cat.png"
+    img.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+            "01f15c4890000000a49444154789c6360000002000100ffff0300000600"
+            "0557bfabd40000000049454e44ae426082"
+        )
+    )
+    native_parts, skipped = build_native_content_parts("what is in this photo?", [str(img)])
+    assert not skipped
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent.session_id = "s-1"
+    agent._last_flushed_db_idx = 0
+    agent._persist_disabled = False
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._pending_cli_user_message = None
+    agent._persist_user_message_timestamp = None
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = server._build_persist_user_message(
+        "what is in this photo?", [str(img)], native_parts
+    )
+
+    agent._flush_messages_to_session_db([{"role": "user", "content": native_parts}], [])
+
+    written = agent._session_db.append_message.call_args.kwargs["content"]
+    assert f"@image:`{img}`" in written
+    assert "what is in this photo?" in written
+    # The model keeps the pixels for the rest of the session.
+    assert any(part.get("type") == "image_url" for part in agent._persist_user_message_override)
+
+
+def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
+    """#70720: _run_prompt_submit must forward the (image-ref-aware) persisted
+    user message to run_conversation via persist_user_message, so the gateway
+    stores the UI-recognizable form instead of the vision enrichment."""
+    captured = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            captured["persist_user_message"] = _kwargs.get("persist_user_message")
+            return {
+                "final_response": "reply",
+                "messages": [{"role": "assistant", "content": "reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+        assert resp.get("result")
+
+        # Without attachments the persist form equals the raw prompt.
+        assert captured.get("persist_user_message") == "hi"
+    finally:
+        server._sessions.pop("sid", None)

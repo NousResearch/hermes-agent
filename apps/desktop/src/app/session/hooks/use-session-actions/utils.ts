@@ -1,7 +1,7 @@
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
-import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { embeddedImageUrls, textWithoutEmbeddedImages, textWithoutImageRefs } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -211,6 +211,10 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     if (nextText === previousVisibleText || nextText === previousText.trim()) {
       preserved = preserveReasoningParts(preserved, previous)
+
+      if (message.role === 'user' && preserved.attachmentRefs === undefined && previous.attachmentRefs?.length) {
+        preserved = { ...preserved, attachmentRefs: [...previous.attachmentRefs] }
+      }
     }
 
     const previousImages = embeddedImageUrls(previousText)
@@ -306,7 +310,7 @@ export function preserveLocalPendingTurnMessages(
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
-      chatMessageText(latestAuthoritativeUser).trim() === chatMessageText(message).trim()
+      textWithoutImageRefs(chatMessageText(latestAuthoritativeUser)) === textWithoutImageRefs(chatMessageText(message))
     ) {
       continue
     }
@@ -318,7 +322,7 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      if (chatMessageText(authoritative).trim() === chatMessageText(message).trim()) {
+      if (textWithoutImageRefs(chatMessageText(authoritative)) === textWithoutImageRefs(chatMessageText(message))) {
         continue
       }
     }
@@ -359,7 +363,8 @@ export function appendLiveSessionProjection(
   // Only suppress the projection when the latest authoritative user row is the
   // same turn — older identical prompts must not hide a newly accepted repeat.
   const latestUser = [...messages].reverse().find(message => message.role === 'user')
-  const inflightUserAlreadyPersisted = latestUser && chatMessageText(latestUser).trim() === inflightUser
+  const inflightUserAlreadyPersisted =
+    latestUser && textWithoutImageRefs(chatMessageText(latestUser)) === textWithoutImageRefs(inflightUser)
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
     projected.push({

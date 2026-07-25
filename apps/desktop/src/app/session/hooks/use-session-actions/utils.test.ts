@@ -565,9 +565,9 @@ describe('appendLiveSessionProjection', () => {
     const userRows = restored.filter(message => message.role === 'user')
     expect(userRows).toHaveLength(1)
     expect(userRows[0].id).toBe('stored-user')
-    const userText = userRows[0].parts
-      .map(part => ('text' in part ? part.text : ''))
-      .join('')
+
+    const userText = userRows[0].parts.map(part => ('text' in part ? part.text : '')).join('')
+
     expect(userText).toBe('current running prompt')
   })
 

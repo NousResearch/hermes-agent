@@ -81,7 +81,10 @@ describe('useMessageStream agent-init error surfacing (#63078)', () => {
 
     act(() =>
       handleEvent!({
-        payload: { message: 'agent initialization timed out after 601s — your message was not sent; retry once the session is ready' },
+        payload: {
+          message:
+            'agent initialization timed out after 601s — your message was not sent; retry once the session is ready'
+        },
         session_id: SID,
         type: 'error'
       })

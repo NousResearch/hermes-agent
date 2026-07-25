@@ -250,13 +250,7 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual([
-      'user',
-      'assistant',
-      'system',
-      'system',
-      'system'
-    ])
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system'])
     expect(messages.map(chatMessageText)).toEqual([
       'real user turn',
       'real assistant reply',

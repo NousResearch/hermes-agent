@@ -22,13 +22,14 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
@@ -342,6 +343,70 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
 
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     return None
+
+
+@contextmanager
+def _guarded_http_stream(
+    url: str,
+    *,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = 20,
+) -> Iterator[Optional[httpx.Response]]:
+    """Stream one response with bounded, policy-checked redirects."""
+    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+
+    current_url = url
+    current_params = params
+    response: Optional[httpx.Response] = None
+    stack = ExitStack()
+
+    try:
+        for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+            if not is_safe_url(current_url):
+                logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
+                response = None
+                break
+
+            blocked = check_website_access(current_url)
+            if blocked:
+                logger.info(
+                    "Blocked Skills Hub fetch for %s by rule %s",
+                    blocked["host"],
+                    blocked["rule"],
+                )
+                response = None
+                break
+
+            stack.close()
+            stack = ExitStack()
+            try:
+                client = stack.enter_context(
+                    create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+                )
+                response = stack.enter_context(
+                    client.stream("GET", current_url, params=current_params)
+                )
+            except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+                logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)
+                response = None
+                break
+
+            if response.status_code not in _REDIRECT_STATUS_CODES:
+                break
+
+            location = response.headers.get("location")
+            if not location:
+                response = None
+                break
+            current_url = urljoin(current_url, location)
+            current_params = None
+        else:
+            logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
+            response = None
+
+        yield response
+    finally:
+        stack.close()
 
 
 def _validate_bundle_rel_path(rel_path: str) -> str:
@@ -2873,14 +2938,13 @@ class ClawHubSource(SkillSource):
         for attempt in range(max_retries):
             retry_after_delay: Optional[int] = None
             try:
-                stream = httpx.stream(
-                    "GET",
+                with _guarded_http_stream(
                     f"{self.BASE_URL}/download",
                     params={"slug": slug, "version": version},
                     timeout=30,
-                    follow_redirects=True,
-                )
-                with stream as resp:
+                ) as resp:
+                    if resp is None:
+                        return files
                     if resp.status_code == 429:
                         try:
                             retry_after = int(resp.headers.get("retry-after", "5"))

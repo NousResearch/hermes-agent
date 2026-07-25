@@ -2985,6 +2985,7 @@ function preflightStateDb(hermesHome, rememberLog) {
 
   if (!fileExists(stateDbPath)) {
     rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
+
     return
   }
 
@@ -3015,23 +3016,19 @@ function preflightStateDb(hermesHome, rememberLog) {
 
       // Emergency timestamped backup, separate from the Python-level snapshot.
       const ts = new Date().toISOString().replace(/[:.]/g, '-')
-      const emergencyPath = path.join(
-        hermesHome,
-        `state.db.pre-update-emergency-${ts}.bak`
-      )
+
+      const emergencyPath = path.join(hermesHome, `state.db.pre-update-emergency-${ts}.bak`)
 
       try {
         fs.copyFileSync(stateDbPath, emergencyPath)
         const emergStat = fs.statSync(emergencyPath)
 
-        rememberLog(
-          `[updates] emergency state.db backup: ${emergencyPath} ` +
-            `(${emergStat.size} bytes)`
-        )
+        rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
 
         // Prune to the 2 most recent emergency backups.
         try {
           const homeDir = fs.readdirSync(hermesHome)
+
           const backups = homeDir
             .filter(
               f =>
@@ -3053,19 +3050,13 @@ function preflightStateDb(hermesHome, rememberLog) {
           void 0
         }
       } catch (copyErr) {
-        rememberLog(
-          `[updates] emergency state.db backup failed: ${copyErr.message}`
-        )
+        rememberLog(`[updates] emergency state.db backup failed: ${copyErr.message}`)
       }
     } else {
-      rememberLog(
-        `[updates] state.db too small (${stat.size} bytes) for a valid SQLite database`
-      )
+      rememberLog(`[updates] state.db too small (${stat.size} bytes) for a valid SQLite database`)
     }
   } catch (statErr) {
-    rememberLog(
-      `[updates] could not stat state.db before update: ${statErr.message}`
-    )
+    rememberLog(`[updates] could not stat state.db before update: ${statErr.message}`)
   }
 }
 
@@ -3083,6 +3074,7 @@ async function applyUpdatesPosixInApp(opts: any) {
 
   if (!hermes) {
     emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
+
     return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
   }
 

@@ -1324,3 +1324,200 @@ class TestWidenedPruner:
         assert not any(
             "salvage-new-work" in rec.getMessage() for rec in caplog.records
         ), "under-7d preserved work should not warn"
+
+
+class TestMergeVerdictCache:
+    """The ``git cherry`` patch-equivalence probe is memoized on disk because it
+    dominates ``hermes -w`` startup (~0.2-1.0s per worktree, re-run on every
+    launch for every tree preserved as unpushed).
+
+    The invariant that makes caching safe: the verdict is a pure function of the
+    ``(base_sha, head_sha)`` range, so a cache entry is only reused while BOTH
+    endpoints are unchanged. These tests pin that relationship rather than any
+    specific timing or cache contents.
+    """
+
+    _age = staticmethod(TestWidenedPruner._age)
+    _mk = staticmethod(TestWidenedPruner._mk)
+    _merge_upstream = staticmethod(TestWidenedPruner._merge_upstream)
+
+    def test_cache_hit_matches_uncached_verdict(self, git_repo):
+        """A cached verdict must equal what the real git call returns."""
+        import cli
+        wt, sha = self._mk(git_repo, "hermes-cachehit", commit=True)
+        self._merge_upstream(git_repo, sha)
+
+        uncached = cli._worktree_commits_all_merged_upstream(str(wt))
+        cache = {}
+        cold = cli._worktree_commits_all_merged_upstream(str(wt), cache=cache)
+        warm = cli._worktree_commits_all_merged_upstream(str(wt), cache=cache)
+
+        assert cache, "verdict should have been memoized"
+        assert uncached is cold is warm is True
+
+    def test_cache_records_negative_verdicts_too(self, git_repo):
+        import cli
+        wt, _ = self._mk(git_repo, "hermes-cacheneg", commit=True)
+        cache = {}
+        assert cli._worktree_commits_all_merged_upstream(str(wt), cache=cache) is False
+        assert cli._worktree_commits_all_merged_upstream(str(wt), cache=cache) is False
+        assert set(cache.values()) == {False}
+
+    def test_new_commit_invalidates_cached_verdict(self, git_repo):
+        """Moving HEAD must not reuse the old entry — the key includes head_sha.
+
+        This is the guard against the cache turning a 'merged, reapable' verdict
+        into a stale approval to delete a tree that has since gained real work.
+        """
+        import cli
+        wt, sha = self._mk(git_repo, "hermes-moves", commit=True)
+        self._merge_upstream(git_repo, sha)
+
+        cache = {}
+        assert cli._worktree_commits_all_merged_upstream(str(wt), cache=cache) is True
+        key_after_merge = set(cache)
+
+        # New local-only work lands in the worktree.
+        (wt / "more.txt").write_text("unmerged work\n")
+        subprocess.run(["git", "add", "more.txt"], cwd=wt, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "new work"], cwd=wt, capture_output=True)
+
+        assert cli._worktree_commits_all_merged_upstream(str(wt), cache=cache) is False
+        assert set(cache) != key_after_merge, "moved HEAD must produce a new key"
+
+    def test_cached_tree_with_new_work_is_still_preserved(self, git_repo):
+        """End-to-end: a warm cache must never let the pruner delete new work."""
+        import cli
+        wt, sha = self._mk(git_repo, "hermes-warmsafe", commit=True)
+        self._merge_upstream(git_repo, sha)
+
+        # Warm the on-disk cache with the 'fully merged' verdict.
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "merged tree should be reaped on the cold pass"
+
+        # Recreate the same-named tree, now carrying unmerged work.
+        wt2, _ = self._mk(git_repo, "hermes-warmsafe", commit=True)
+        (wt2 / "precious.txt").write_text("do not delete\n")
+        subprocess.run(["git", "add", "precious.txt"], cwd=wt2, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "precious"], cwd=wt2, capture_output=True)
+        self._age(wt2, 100)
+
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt2.exists(), "warm cache must not authorize deleting unmerged work"
+
+    def test_corrupt_cache_file_is_ignored(self, git_repo, monkeypatch, tmp_path):
+        """A garbage cache must degrade to recomputation, not crash startup."""
+        import json
+        import cli
+        bad = tmp_path / "worktree_merge_verdicts.json"
+        bad.write_text("{not json at all")
+        monkeypatch.setattr(cli, "_worktree_merge_cache_path", lambda: bad)
+        assert cli._load_worktree_merge_cache() == {}
+
+        # Non-bool verdicts must be dropped rather than fed into the decision.
+        bad.write_text(json.dumps({"version": 1, "verdicts": {"a..b:20": "yes"}}))
+        assert cli._load_worktree_merge_cache() == {}
+
+        wt, _ = self._mk(git_repo, "hermes-corrupt", commit=True)
+        cli._prune_stale_worktrees(str(git_repo))
+        assert wt.exists(), "unmerged work survives a corrupt cache"
+
+    def test_cache_is_bounded(self, monkeypatch, tmp_path):
+        """The cache file must not grow without limit across sessions."""
+        import cli
+        path = tmp_path / "verdicts.json"
+        monkeypatch.setattr(cli, "_worktree_merge_cache_path", lambda: path)
+        monkeypatch.setattr(cli, "_WORKTREE_MERGE_CACHE_MAX", 10)
+
+        cli._save_worktree_merge_cache({f"sha{i}..sha{i}:20": True for i in range(50)})
+        assert len(cli._load_worktree_merge_cache()) == 10
+
+
+class TestPruneParallelEquivalence:
+    """Classification runs on a thread pool, so verdicts must not depend on
+    concurrency: the same mixed board must produce the same survivors whether
+    the pool has 1 worker or many."""
+
+    _age = staticmethod(TestWidenedPruner._age)
+    _mk = staticmethod(TestWidenedPruner._mk)
+    _merge_upstream = staticmethod(TestWidenedPruner._merge_upstream)
+
+    def _board(self, git_repo, tag=""):
+        """A board covering every verdict branch: reapable, dirty, unpushed."""
+        names = {}
+        for i in range(3):
+            n = f"hermes-merged{tag}{i}"
+            wt, sha = self._mk(git_repo, n, commit=True)
+            self._merge_upstream(git_repo, sha)
+            names[n] = wt
+        for i in range(3):
+            n = f"hermes-unpushed{tag}{i}"
+            wt, _ = self._mk(git_repo, n, commit=True)
+            names[n] = wt
+        for i in range(2):
+            n = f"hermes-dirty{tag}{i}"
+            wt, _ = self._mk(git_repo, n, dirty=True)
+            names[n] = wt
+        n = f"hermes-fresh{tag}"
+        wt, _ = self._mk(git_repo, n, commit=True, age_h=1)
+        names[n] = wt
+        # Every tree must really exist, otherwise the survivor comparison below
+        # is vacuous (a failed `git worktree add` would look like a reap).
+        for name, p in names.items():
+            assert p.exists(), f"fixture worktree {name} was not created"
+        return names
+
+    @staticmethod
+    def _kinds(survivors):
+        """Reduce survivor names to their kind, dropping the phase tag."""
+        out = set()
+        for n in survivors:
+            for kind in ("merged", "unpushed", "dirty", "fresh"):
+                if n.startswith(f"hermes-{kind}"):
+                    out.add(kind)
+        return out
+
+    def test_single_and_multi_worker_agree(self, git_repo, monkeypatch):
+        import cli
+
+        # Phase A — force the serial path (pool sized to 1 worker).
+        board = self._board(git_repo, tag="a")
+        monkeypatch.setattr(cli.os, "cpu_count", lambda: 1)
+        cli._prune_stale_worktrees(str(git_repo))
+        serial = self._kinds({n for n, p in board.items() if p.exists()})
+
+        # Phase B — an independent board (distinct branch names so creation
+        # can't collide with phase A's leftover refs) run through a real pool.
+        try:
+            cli._worktree_merge_cache_path().unlink()
+        except Exception:
+            pass
+        board2 = self._board(git_repo, tag="b")
+        monkeypatch.setattr(cli.os, "cpu_count", lambda: 8)
+        cli._prune_stale_worktrees(str(git_repo))
+        parallel = self._kinds({n for n, p in board2.items() if p.exists()})
+
+        assert parallel == serial, (
+            f"pool width changed the outcome: serial={serial} parallel={parallel}"
+        )
+        # Sanity: the board exercised both outcomes, so the equality above is
+        # not comparing two empty (or two identical-because-nothing-ran) sets.
+        assert serial == {"dirty", "unpushed", "fresh"}, serial
+
+    def test_pool_failure_falls_back_to_serial(self, git_repo, monkeypatch):
+        """A ThreadPoolExecutor failure must not block startup."""
+        import cli
+
+        wt, sha = self._mk(git_repo, "hermes-poolfail", commit=True)
+        self._merge_upstream(git_repo, sha)
+
+        class _Boom:
+            def __init__(self, *a, **kw):
+                raise RuntimeError("cannot start thread")
+
+        monkeypatch.setattr(cli.concurrent.futures, "ThreadPoolExecutor", _Boom)
+        monkeypatch.setattr(cli.os, "cpu_count", lambda: 8)
+
+        cli._prune_stale_worktrees(str(git_repo))
+        assert not wt.exists(), "serial fallback must still reap the merged tree"
+

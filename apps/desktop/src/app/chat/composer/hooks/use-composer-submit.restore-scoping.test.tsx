@@ -24,6 +24,7 @@ function buildArgs(overrides: Partial<Parameters<typeof useComposerSubmit>[0]> =
     attachments: [],
     busy: false,
     canSteer: false,
+    compacting: false,
     clearDraft: vi.fn(),
     disabled: false,
     draftRef: { current: '' },

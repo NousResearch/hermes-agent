@@ -38,6 +38,28 @@ def _patch_supervisor(monkeypatch, supervisor):
     return registry
 
 
+def _trust_supervisor_page(monkeypatch, url, frame_id="TOP", task_id="test-task"):
+    """Record a navigation AND bind the supervisor page identity for the gate.
+
+    The eval fast path requires both: the daemon's last navigated URL and the
+    supervisor top-frame id captured at that navigation (URL equality alone
+    cannot establish page identity — two targets can show the same URL).
+    """
+    import tools.browser_tool as bt
+
+    monkeypatch.setitem(bt._last_navigated_urls, task_id, url)
+    monkeypatch.setitem(bt._page_bound_frame_ids, task_id, frame_id)
+
+
+def _snap_with_page(url, frame_id="TOP"):
+    snap = MagicMock()
+    snap.frame_tree = {
+        "top": {"frame_id": frame_id, "url": url},
+        "children": [],
+    }
+    return snap
+
+
 class TestBrowserEvalSupervisorPath:
     """The supervisor fast path replaces the agent-browser subprocess hop."""
 
@@ -45,12 +67,14 @@ class TestBrowserEvalSupervisorPath:
         import tools.browser_tool as bt
 
         sup = MagicMock()
+        sup.snapshot.return_value = _snap_with_page("https://example.com/page")
         sup.evaluate_runtime.return_value = {
             "ok": True,
             "result": 42,
             "result_type": "number",
         }
         _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         # If the subprocess path is hit we want a loud failure.
         monkeypatch.setattr(
             bt_session, "_run_browser_command",
@@ -68,12 +92,14 @@ class TestBrowserEvalSupervisorPath:
         import tools.browser_tool as bt
 
         sup = MagicMock()
+        sup.snapshot.return_value = _snap_with_page("https://example.com/page")
         sup.evaluate_runtime.return_value = {
             "ok": True,
             "result": '{"a": 1, "b": [2, 3]}',
             "result_type": "string",
         }
         _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
             bt_session, "_run_browser_command",
             lambda *a, **kw: pytest.fail("subprocess path must not run"),
@@ -111,6 +137,128 @@ class TestBrowserEvalSupervisorPath:
         # Actionable guidance instead.
         assert "primitive" in out["error"].lower()
         assert "DOM node" in out["error"] or "dom node" in out["error"].lower()
+
+
+class TestSupervisorDaemonPageSplit:
+    """The fast path is gated on the supervisor watching the daemon's page.
+
+    The supervisor owns a separate CDP connection and attaches to the first
+    page target *that connection* sees. On Browserless-style backends every
+    CDP websocket gets a private browser, so the supervisor's connection can
+    never see the page the agent-browser daemon navigated — its evals
+    "succeed" against its own about:blank and return empty/wrong results
+    (#32685 family). On plain Chrome the daemon may be driving a different
+    tab. ``_supervisor_page_matches_daemon`` requires the supervisor's top
+    frame to still be the one bound at the last navigation AND to show the
+    last navigated URL; anything less goes down the always-correct
+    subprocess path.
+    """
+
+    @staticmethod
+    def _sup_with_page(url, result="WRONG-BROWSER-RESULT", frame_id="TOP"):
+        sup = MagicMock()
+        sup.snapshot.return_value = _snap_with_page(url, frame_id=frame_id)
+        sup.evaluate_runtime.return_value = {
+            "ok": True,
+            "result": result,
+            "result_type": "string",
+        }
+        return sup
+
+    def test_split_brain_supervisor_falls_through_to_subprocess(self, monkeypatch):
+        """Supervisor stuck on about:blank while the daemon has a real page →
+        the eval must come from the subprocess path, not the supervisor."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page("about:blank", result="")
+        _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "Example Domain"}},
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["success"] is True
+        assert out["result"] == "Example Domain"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_matching_page_keeps_fast_path(self, monkeypatch):
+        """Supervisor tracking the same URL the daemon navigated → fast path."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page("https://example.com/page", result="fast")
+        _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: pytest.fail("subprocess must not run on a matching page"),
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["success"] is True
+        assert out["result"] == "fast"
+        assert out["method"] == "cdp_supervisor"
+
+    def test_fragment_only_difference_keeps_fast_path(self, monkeypatch):
+        """#fragment navigation is the same document — fast path stays."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page("https://example.com/page#section-2", result="fast")
+        _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: pytest.fail("subprocess must not run for fragment diffs"),
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["method"] == "cdp_supervisor"
+
+    def test_no_recorded_navigation_falls_back_to_subprocess(self, monkeypatch):
+        """No browser_navigate yet (e.g. /browser connect-then-eval) → no
+        page identity can be established, so the fast path is not trusted:
+        the supervisor may be attached to a page the daemon never drove."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page("about:blank", result="legacy")
+        _patch_supervisor(monkeypatch, sup)
+        bt._last_navigated_urls.pop("test-task", None)
+        bt._page_bound_frame_ids.pop("test-task", None)
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "SUBPROCESS-RESULT"}},
+        )
+
+        out = json.loads(bt._browser_eval("1 + 1"))
+        assert out["result"] == "SUBPROCESS-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_unreadable_supervisor_state_falls_through(self, monkeypatch):
+        """snapshot() blowing up must fail toward the subprocess path."""
+        import tools.browser_tool as bt
+
+        sup = MagicMock()
+        sup.snapshot.side_effect = RuntimeError("ws closed")
+        sup.evaluate_runtime.return_value = {"ok": True, "result": "wrong"}
+        _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "safe"}},
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "safe"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -3654,6 +3654,17 @@ DEFAULT_CONFIG = {
         #   false   - always keep GPU acceleration on, even over a remote display.
         # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
         "disable_gpu": "auto",
+        # Auto-continue a turn that was killed mid-run by an app/backend/machine
+        # crash: resuming that session re-submits the interrupted prompt (shown
+        # as a "resumed interrupted turn" event) if the interruption is fresh.
+        # A stale interruption just shows the recovered partial transcript.
+        "auto_continue": {
+            "enabled": True,
+            # How recent the interruption must be to auto-continue (minutes).
+            "freshness_minutes": 15,
+            # Crash-loop breaker: max automatic re-runs of one interrupted turn.
+            "max_attempts": 2,
+        },
     },
 
 

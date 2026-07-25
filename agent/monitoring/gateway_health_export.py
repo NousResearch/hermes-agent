@@ -301,8 +301,56 @@ def _read_cron_snapshot():
     return build_cron_health_snapshot()
 
 
+def _read_background_work_count() -> int:
+    """Count live background/subagent work that ``active_agents`` does NOT include.
+
+    ``hermes.gateway.active_agents`` counts foreground turns + in-flight cron
+    jobs + API runs, but deliberately excludes backgrounded ``delegate_task``
+    subagents, ``terminal(background=true)`` processes, kanban workers, and the
+    runner's own background tasks (they are tracked only for the scale-to-zero
+    suspend guard, ``_scale_to_zero_has_live_background_work``). Without this
+    metric a peer churning through delegated subagents shows ``active_agents=0``
+    on the fleet dashboard. Best-effort and content-free: a single integer,
+    no job/task identity. Returns 0 if a source can't be imported.
+    """
+    total = 0
+    try:
+        from tools.async_delegation import active_count
+
+        total += max(0, int(active_count()))
+    except Exception:
+        logger.debug("background-work async-delegation count failed", exc_info=True)
+    try:
+        from tools.process_registry import process_registry
+
+        total += max(0, int(process_registry.count_running()))
+    except Exception:
+        logger.debug("background-work process-registry count failed", exc_info=True)
+    return total
+
+
 def _read_runtime_snapshot(config: Dict[str, Any]):
     gateway_snapshot = _read_gateway_snapshot(config)
+    # Background/subagent work — a distinct metric from active_agents (which
+    # never counts it). Appended to the gateway snapshot so it rides the same
+    # base resource attributes (service.instance.id etc.).
+    try:
+        from agent.monitoring.gateway_health import GatewayMetric
+
+        base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
+        gateway_snapshot.metrics.append(
+            GatewayMetric(
+                name="hermes.gateway.background_work",
+                value=_read_background_work_count(),
+                attributes=base,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "background-work snapshot unavailable; metric not exported (error_type=%s)",
+            type(exc).__name__,
+        )
+        logger.debug("background-work snapshot traceback", exc_info=True)
     try:
         cron_snapshot = _read_cron_snapshot()
     except Exception as exc:
@@ -360,6 +408,7 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
         "hermes.gateway.busy",
         "hermes.gateway.drainable",
         "hermes.gateway.restart_requested",
+        "hermes.gateway.background_work",
         "hermes.platform.up",
         "hermes.platform.degraded",
         "hermes.cron.scheduler.heartbeat_age_seconds",

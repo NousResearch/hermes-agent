@@ -26,6 +26,17 @@ Signals carry `service.name`, version, supervision mode, and a stable one-way
 hash of the install id so an operator can distinguish instances without
 exporting account/profile identity or the raw install identifier.
 
+`hermes.gateway.active_agents` and `hermes.gateway.background_work` are
+complementary and deliberately disjoint. `active_agents` counts foreground
+message turns plus in-flight cron jobs plus API runs — the work the gateway
+drains on shutdown. `background_work` counts detached work that `active_agents`
+never includes: backgrounded `delegate_task` subagents, `terminal(background=true)`
+processes, and kanban workers. `background_work` is **task-granular** — a
+fan-out batch of N subagents counts as N, not as one dispatch unit — so it
+reflects real concurrent subagent load rather than async-pool slot usage (a
+batch occupies one slot but runs N children). Sum both for total live work per
+instance.
+
 ## Enabling
 
 ```yaml

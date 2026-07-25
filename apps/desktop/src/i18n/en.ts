@@ -1688,6 +1688,8 @@ export const en: Translations = {
     },
     blueprints: {
       tab: 'Blueprints',
+      startFrom: 'Start from',
+      custom: 'Custom',
       subtitle: 'Ready-made automations',
       dialogDesc: 'Fill in the details and schedule it.',
       scheduleIt: 'Schedule it',

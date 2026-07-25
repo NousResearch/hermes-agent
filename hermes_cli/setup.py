@@ -908,6 +908,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
             _is_remote_session,
             _save_xai_oauth_tokens,
             _xai_oauth_device_code_login,
+            unsuppress_credential_source,
         )
     except Exception as exc:
         print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
@@ -926,6 +927,9 @@ def _run_xai_oauth_login_from_setup() -> bool:
             auth_mode="oauth_device_code",
             set_active=False,
         )
+        # Mirror model/dashboard re-login: clear device_code suppression so
+        # the pool can seed from the singleton after a prior `auth remove`.
+        unsuppress_credential_source("xai-oauth", "device_code")
         return True
     except Exception as exc:
         print_warning(f"xAI Grok OAuth login failed: {exc}")

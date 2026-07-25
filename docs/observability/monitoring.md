@@ -16,7 +16,7 @@ capture is a separate plane served by the NeMo Relay integration
 
 | Signal | OTLP route | Content |
 | --- | --- | --- |
-| Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
+| Gateway gauges | `/v1/metrics` | `hermes.gateway.up/state/busy/drainable/active_agents/background_work/restart_requested`, `hermes.platform.up/degraded` with bounded `error_code` attributes |
 | Health/lifecycle events | `/v1/traces` | `gateway.lifecycle` state transitions (`starting -> running -> draining -> stopped`, `startup_failed`, exit), `gateway.health_snapshot`, platform state changes |
 | Diagnostics | `/v1/logs` | Warning/error gateway events with a constant body and bounded subsystem, severity, error class, and error code attributes; rendered log messages are never exported |
 | Cron scheduler gauges | `/v1/metrics` | Ticker heartbeat and last-success age (omitted when unavailable), a monotonic catch-up-occurrence count from the scheduler's stale-window branch, enabled/running job counts, and overdue count derived from persisted `next_run_at` plus the scheduler's existing grace rule |
@@ -179,6 +179,102 @@ python scripts/observability/gateway_health_export_probe.py \
   --log /tmp/hermes_otel_capture.jsonl --wait 8
 # exit 0 prints: {"requests": 6, "paths": ["/v1/logs", "/v1/metrics", "/v1/traces"]}
 ```
+
+## Maintaining and extending this plane
+
+This plane is a **fixed, enumerated, content-free vocabulary** by design. Adding
+a signal is not just "emit a new metric" — every new name and attribute must be
+declared in each layer that enforces the bounded vocabulary, or it is silently
+dropped downstream. Follow the checklist for the change you are making. The
+golden rule: **a new signal that is emitted but not declared in every layer
+looks like a code bug but is a vocabulary-registration bug — nothing errors, the
+signal just never arrives.**
+
+### Content-free invariant (applies to every change)
+
+Before adding anything, confirm it cannot carry content. Numbers, booleans,
+ages, durations, monotonic counts, and one-way hashes are safe. **Never** add an
+attribute that can hold a job name, prompt, output, schedule, destination, raw
+exception text, file path, profile name, account id, or free-form string. When
+you must key a record to a job/entity, hash it (`sha256(...)[:24]`, see
+`_job_key` in `agent/monitoring/cron_health.py`) — never emit the raw id. All
+string attributes that could touch user input must pass through
+`redaction.redact_for_export` and be truncated (see `_span_attrs` in
+`agent/monitoring/otlp_exporter.py`).
+
+### Adding a new gauge/metric
+
+1. Emit it in the snapshot builder (`agent/monitoring/gateway_health.py`
+   `build_gateway_health_snapshot`, `cron_health.py` `build_cron_health_snapshot`,
+   or a sibling reader wired into `_read_runtime_snapshot` in
+   `gateway_health_export.py`). Best-effort: never let a reader raise into the
+   collection loop — wrap it and log a **content-free WARNING with the exception
+   TYPE name only** (the pattern the cron and background-work readers use), so a
+   future regression is visible instead of silently dropping the signal.
+2. Register the dotted metric name in the observable-gauge `metric_names` list in
+   `gateway_health_export.py::_start_metric_provider`. **A gauge that is emitted
+   in the snapshot but not registered here is never observed.**
+3. Add the export-table row and an alert example in this file.
+4. If the deployment fronts the exporter with an OpenTelemetry Collector that
+   uses a metric-name allowlist (a `filter/...` processor with `name != "..."`
+   guards), add the new name there too — otherwise the collector drops it before
+   the backend. This is not repo code, but it is the single most common reason a
+   correctly-emitted new metric never appears; call it out in the PR so the
+   deploying operator updates their collector config.
+
+### Adding a new subsystem (a new family of signals)
+
+Mirror the cron pattern (`cron_health.py` + its wiring): put the read/projection
+logic in its own module, expose one `build_<subsystem>_health_snapshot()` that
+returns bounded `GatewayMetric`s (and events if any), and extend it into
+`_read_runtime_snapshot` with the same best-effort try/except-WARNING guard.
+Then do the "adding a metric" checklist for each new name, and the "adding an
+attribute" checklist for each new event attribute. Add a release-validation
+scenario below for the subsystem's failure mode.
+
+### Extending the error-class / status / source / state vocabularies
+
+These are the closed enums that keep the plane bounded. Extend the SET, then the
+classifier, never one without the other:
+
+- **Cron** (`agent/monitoring/cron_health.py`): `_KNOWN_STATUSES`,
+  `_KNOWN_SOURCES`, `_KNOWN_DELIVERY_OUTCOMES`, and the `classify_cron_error`
+  keyword buckets. Anything not in the set is coerced to `unknown` on the way
+  out, so a new value that is not added to the set is invisible.
+- **Gateway/platform** (`agent/monitoring/gateway_health.py`):
+  `_KNOWN_GATEWAY_STATES`, `_KNOWN_PLATFORM_STATES`, and `classify_gateway_error`.
+
+Rules: keep the vocabulary SMALL and operationally meaningful (an error class
+should map to an operator action, not to an exception subclass); a new bucket
+must match on a stable keyword, not on message text that could vary; update the
+`hermes.error_class = ...` list in this file's alert section and the enum's unit
+test so the contract is asserted, not frozen as a count.
+
+### Adding a content-free attribute to an existing event/span
+
+Add the key to the emitter's per-kind `keep_by_kind` allowlist in
+`agent/monitoring/otlp_exporter.py::_span_attrs` (unlisted keys are dropped), run
+it through redaction if it is ever string-shaped, and — as with metrics — if the
+deployment's collector has a span-attribute `keep_keys(...)` allowlist, add the
+attribute there too or it is stripped in transit.
+
+### Verify the whole chain, not just emission
+
+Emitting is necessary but not sufficient. Confirm the signal survives all the
+way to the backend, because the enums, the `metric_names` registration, the
+emitter attribute allowlist, and any collector allowlist each drop unlisted
+values with no error:
+
+```bash
+hermes monitoring status                 # posture
+python scripts/observability/gateway_health_export_probe.py \
+  --endpoint http://127.0.0.1:4318/v1/traces \
+  --log /tmp/cap.jsonl --wait 8          # drive the real exporter
+```
+
+Decode the captured OTLP payload and assert the new name/attribute is present
+AND that no content leaked. When a real collector sits in front, add its
+allowlist entries and re-verify against the backend, not just the local capture.
 
 ## Boundaries and roadmap
 

@@ -241,15 +241,28 @@ describe('toChatMessages', () => {
         content: 'opaque delegation context payload',
         display_kind: 'async_delegation_complete',
         timestamp: 5
+      },
+      {
+        role: 'user',
+        content: '[System note: Your previous turn was interrupted mid-run…]\n\noriginal prompt',
+        display_kind: 'auto_continue',
+        timestamp: 6
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system'])
+    expect(messages.map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'system',
+      'system',
+      'system'
+    ])
     expect(messages.map(chatMessageText)).toEqual([
       'real user turn',
       'real assistant reply',
       'model changed',
-      'background agent work finished'
+      'background agent work finished',
+      'resumed interrupted turn'
     ])
   })
 

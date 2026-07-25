@@ -349,9 +349,13 @@ export function appendLiveSessionProjection(
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
+  // A retained failed turn (the gateway keeps error snapshots replayable when
+  // the terminal frame may have been lost to a disconnect) — surface the
+  // failure on the projected row instead of rendering the partial as healthy.
+  const inflightError = projection.inflight?.error?.trim() ?? ''
   const queuedUser = projection.queued?.user?.trim() ?? ''
 
-  if (!inflightUser && !inflightAssistant && !inflightStreaming && !queuedUser) {
+  if (!inflightUser && !inflightAssistant && !inflightStreaming && !inflightError && !queuedUser) {
     return messages
   }
 
@@ -376,12 +380,13 @@ export function appendLiveSessionProjection(
 
   // Keep a pending assistant boundary even before the first delta when a
   // queued user turn follows it. This preserves the two distinct turns.
-  if (inflightAssistant || inflightStreaming || (inflightUser && queuedUser)) {
+  if (inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)) {
     projected.push({
       id: `assistant-stream-${sessionId}`,
       role: 'assistant',
       parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
-      pending: inflightStreaming
+      pending: inflightStreaming,
+      ...(inflightError ? { error: inflightError } : {})
     })
   }
 

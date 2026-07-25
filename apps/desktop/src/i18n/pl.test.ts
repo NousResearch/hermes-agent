@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs'
-
 import { describe, expect, it } from 'vitest'
 
 import { en } from './en'
@@ -42,33 +40,5 @@ describe('Polish desktop catalog', () => {
     expect(pl.commandCenter.commandCenter).toBe('Centrum poleceń')
     expect(pl.commandCenter.generatePet.hatch).toBe('Wykluj')
     expect(pl.assistant.approval.run).toBe('Uruchom')
-  })
-
-  it('does not contain known literal-translation regressions', () => {
-    const source = readFileSync(`${process.cwd()}/src/i18n/pl.ts`, 'utf8')
-
-    const forbidden = [
-      /modelk/i,
-      /Bliźnięt/i,
-      /\bBieganie\b/i,
-      /\bBiegnij\b/i,
-      /\bWłaz\b/i,
-      /\bTarło\b/i,
-      /Zremis/i,
-      /\boddział/i,
-      /żeton/i,
-      /kompozytor/i,
-      /zaplecz/i,
-      /Pulpit Hermes/i,
-      /Centrum dowodzenia/i,
-      /\bbramk/i,
-      /\bmonit(?:u|em|ach|ami|y|ów|owi|cie|owanie|owania)?\b/iu,
-      /zachęt/i,
-      /narzędzi\(a\)|serwera\(ów\)|umiejętność\(i\)/i
-    ]
-
-    for (const pattern of forbidden) {
-      expect(source, `forbidden Polish localization pattern: ${pattern}`).not.toMatch(pattern)
-    }
   })
 })

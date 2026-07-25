@@ -841,5 +841,25 @@ export const pl: Translations = {
       "ścieżka obszaru roboczego (opcjonalna, ustalana na podstawie przypisanego profilu, jeśli pusta)",
     logTruncated: "(pokazano ostatnie 100 KB — pełny log: ",
     logAt: ")",
+    newTaskTitle: "Nowe zadanie — {column}",
+    taskTitleLabel: "Tytuł",
+    assigneeLabel: "Przypisany profil",
+    assigneeLabelHint: "(puste = wybierze dyspozytor)",
+    skillsLabel: "Umiejętności",
+    skillsLabelHint: "(opcjonalnie, rozdzielone przecinkami)",
+    parentLabel: "Zadanie nadrzędne",
+    parentLabelHint: "(zadanie podrzędne pozostaje zablokowane do ukończenia nadrzędnego)",
+    create: "Utwórz",
+    boardSettings: "Ustawienia",
+    boardSettingsTitle:
+      "Ustawienia tablicy — nazwa, opis i domyślny katalog projektu dziedziczony przez nowe zadania",
+    boardSettingsTitleFor: "Ustawienia tablicy — {name}",
+    projectDirectoryOverrideHint:
+      "Nowe zadania dziedziczą ten katalog jako domyślny obszar roboczy; każde zadanie może go zmienić w oknie tworzenia.",
+    saving: "Zapisywanie…",
+    commentHint:
+      "Komentarze dotrą do wykonawcy przy następnym uruchomieniu lub wywołaniu kanban_show() — nie trzeba najpierw blokować zadania.",
+    commentHintTitle:
+      "Komentarze służą do rozmowy z wykonawcą zadania. Natychmiast trafiają do wątku — nie trzeba najpierw blokować zadania. Działający wykonawca odczyta wątek przy następnym kanban_show() lub ponownym uruchomieniu; blokuj zadanie tylko wtedy, gdy wykonawca ma się ZATRZYMAĆ i czekać na Twoje dane.",
   },
 };

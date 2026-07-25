@@ -1329,6 +1329,37 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         return True
 
+    async def _reset_crypto_store_if_device_changed(
+        self, crypto_store: Any, device_id: str
+    ) -> bool:
+        """Reset the local Olm account when the access token's device changed.
+
+        The crypto store is keyed by user ID, so a new access token (= new
+        device ID) would otherwise inherit the previous device's Olm account.
+        Its identity keys can never be published under the new device ID
+        (and the pickle key embeds the old device ID anyway), which leads to
+        stale-key mismatches and cross-signing signatures that the
+        homeserver refuses to replace. Returns True if the store was reset.
+        """
+        if not device_id:
+            return False
+        try:
+            stored_device_id = await crypto_store.get_device_id()
+        except Exception as exc:
+            logger.warning("Matrix: could not read stored device ID: %s", exc)
+            return False
+        if not stored_device_id or stored_device_id == device_id:
+            return False
+        logger.warning(
+            "Matrix: access token belongs to a new device (%s -> %s) — "
+            "resetting local Olm account so fresh identity keys are "
+            "generated for this device",
+            stored_device_id,
+            device_id,
+        )
+        await crypto_store.delete()
+        return True
+
     async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
         """Verify our device keys are on the homeserver after loading crypto state.
 
@@ -1608,6 +1639,9 @@ class MatrixAdapter(BasePlatformAdapter):
                     await crypto_store.open()
 
                     if client.device_id:
+                        await self._reset_crypto_store_if_device_changed(
+                            crypto_store, client.device_id
+                        )
                         await crypto_store.put_device_id(client.device_id)
 
                     crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)

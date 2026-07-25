@@ -2862,3 +2862,54 @@ class TestMatrixDispatchSyncIsolation:
 
         assert ran["ok"] is True  # the sibling handler still ran
         assert "event handler failed" in caplog.text  # failure surfaced, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# E2EE crypto store reset on device change
+# ---------------------------------------------------------------------------
+
+class TestCryptoStoreResetOnDeviceChange:
+    @pytest.mark.asyncio
+    async def test_reset_when_device_id_changed(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="OLDDEVICE")
+        store.delete = AsyncMock()
+
+        with caplog.at_level(logging.WARNING):
+            reset = await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE")
+
+        assert reset is True
+        store.delete.assert_awaited_once()
+        assert "OLDDEVICE" in caplog.text and "NEWDEVICE" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_no_reset_when_device_id_same(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="SAMEDEVICE")
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "SAMEDEVICE") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_reset_on_fresh_store(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value=None)
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "NEWDEVICE") is False
+        store.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_reset_without_device_id(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_device_id = AsyncMock(return_value="OLDDEVICE")
+        store.delete = AsyncMock()
+
+        assert await adapter._reset_crypto_store_if_device_changed(store, "") is False
+        store.delete.assert_not_awaited()

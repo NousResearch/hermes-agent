@@ -1620,7 +1620,8 @@ setup_path() {
     log_info "Setting up hermes command..."
 
     if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+        HERMES_BIN="$INSTALL_DIR/venv/bin/python"
+        HERMES_ENTRYPOINT="$INSTALL_DIR/hermes"
     else
         HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
         if [ -z "$HERMES_BIN" ]; then
@@ -1629,10 +1630,10 @@ setup_path() {
         fi
     fi
 
-    # Verify the entry point script was actually generated
-    if [ ! -x "$HERMES_BIN" ]; then
-        log_warn "hermes entry point not found at $HERMES_BIN"
-        log_info "This usually means the pip install didn't complete successfully."
+    # Verify the interpreter and the checked-in entrypoint needed by the launcher.
+    if [ ! -x "$HERMES_BIN" ] || { [ "$USE_VENV" = true ] && [ ! -f "$HERMES_ENTRYPOINT" ]; }; then
+        log_warn "Hermes launcher prerequisites not found"
+        log_info "This usually means the Python package install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
             log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
@@ -1654,12 +1655,25 @@ setup_path() {
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
     rm -f "$command_link_dir/hermes"
-    cat > "$command_link_dir/hermes" <<EOF
+    if [ "$USE_VENV" = true ]; then
+        # uv-generated console scripts resolve themselves through `realpath`,
+        # which stock macOS does not provide. Run the checked-in entrypoint
+        # with the venv interpreter instead, so the public launcher remains
+        # independent of non-standard shell utilities.
+        cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "\$@"
+EOF
+    else
+        cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
+    fi
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 

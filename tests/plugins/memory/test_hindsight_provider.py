@@ -107,6 +107,33 @@ def _provider_for_mode(tmp_path, monkeypatch, mode: str):
     return provider
 
 
+def test_newer_hindsight_client_reports_precise_version_conflict(monkeypatch):
+    import plugins.memory.hindsight as hindsight
+
+    ensure_calls = []
+    monkeypatch.setattr("importlib.metadata.version", lambda _name: "0.8.4")
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda _name: SimpleNamespace(
+            origin="/Users/example/Library/Python/3.14/site-packages/hindsight_client/__init__.py"
+        ),
+    )
+    monkeypatch.setattr(
+        "tools.lazy_deps.ensure",
+        lambda *args, **kwargs: ensure_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(ImportError) as exc_info:
+        hindsight._ensure_cloud_client_dependency()
+
+    message = str(exc_info.value)
+    assert "0.8.4" in message
+    assert "hindsight-client==0.6.1" in message
+    assert "user-site" in message
+    assert "Library/Python/3.14/site-packages" in message
+    assert ensure_calls == []
+
+
 def _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, mode: str):
     """Cloud/local-external clients must ensure lazy deps before importing."""
     import builtins
@@ -427,6 +454,7 @@ class TestConfig:
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
 
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
@@ -1922,13 +1950,13 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         return calls
 
     def test_upgrade_uses_install_specs_not_subprocess(self, tmp_path, monkeypatch):
-        from plugins.memory.hindsight import _MIN_CLIENT_VERSION
+        from plugins.memory.hindsight import _CLIENT_REQUIREMENT
         from tools.lazy_deps import InstallSpecsResult
 
         calls = self._init_with_outdated_client(
             tmp_path, monkeypatch, InstallSpecsResult(ok=True)
         )
-        assert calls == [(f"hindsight-client>={_MIN_CLIENT_VERSION}",)]
+        assert calls == [(_CLIENT_REQUIREMENT,)]
 
     def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
         self, tmp_path, monkeypatch, caplog

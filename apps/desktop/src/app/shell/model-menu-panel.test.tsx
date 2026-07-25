@@ -124,6 +124,26 @@ describe('ModelMenuPanel MoA presets', () => {
   })
 })
 
+describe('ModelMenuPanel current selection', () => {
+  it('keeps the checkmark on the live SessionView model when a stale options response disagrees', async () => {
+    $currentProvider.set('google')
+    $currentModel.set('gemini-3.1-pro')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      providers: MOCK_PROVIDERS
+    })
+
+    const { content } = renderPanel()
+
+    const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
+    const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
+
+    expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
+    expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+})
+
 describe('ModelMenuPanel provider collapse', () => {
   it('shows all provider models by default (none collapsed)', async () => {
     const { content } = renderPanel()

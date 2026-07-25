@@ -96,7 +96,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
-    !!activeSessionId,
     { model: currentModel, provider: currentProvider },
     modelOptions.data
   )

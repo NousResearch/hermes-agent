@@ -5748,6 +5748,12 @@ def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str
     an ``image_url:`` hint meant only for the model and must never be
     persisted as-is (it silently breaks image rendering after a full
     restart, and reorders image/text on live session-switch reconciliation).
+
+    The caption leads and the directives trail: session previews are the first
+    60 characters of the first user message (``list_sessions_rich``), so a
+    leading directive would label the session with a truncated file path in the
+    sidebar, switcher, and command palette. Clients lift the refs out of the
+    body by line, so their position does not affect how the turn renders.
     """
     from agent.context_references import format_reference_value
 
@@ -5755,7 +5761,7 @@ def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str
     refs = "\n".join(f"@image:{format_reference_value(p)}" for p in image_paths if Path(p).exists())
     if not refs:
         return text
-    return f"{refs}\n{text}" if text else refs
+    return f"{text}\n{refs}" if text else refs
 
 
 def _build_persist_user_message(user_text: str, image_paths: list[str], run_message: Any) -> Any:

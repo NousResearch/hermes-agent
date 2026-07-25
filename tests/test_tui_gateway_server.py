@@ -13212,8 +13212,8 @@ def test_build_persist_message_with_image_refs_without_images_returns_text(monke
     assert server._build_persist_message_with_image_refs("", []) == ""
 
 
-def test_build_persist_message_with_image_refs_prepends_existing_paths(monkeypatch, tmp_path):
-    """Attached images that still exist on disk are persisted as leading
+def test_build_persist_message_with_image_refs_appends_existing_paths(monkeypatch, tmp_path):
+    """Attached images that still exist on disk are persisted as trailing
     ``@image:<path>`` directive lines so the desktop renders them after a
     restart (instead of the vision-only enrichment that silently breaks)."""
     img = tmp_path / "cat.png"
@@ -13221,7 +13221,19 @@ def test_build_persist_message_with_image_refs_prepends_existing_paths(monkeypat
 
     result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
 
-    assert result == f"@image:{img}\nwhat is in this photo?"
+    assert result == f"what is in this photo?\n@image:{img}"
+
+
+def test_build_persist_message_keeps_the_caption_on_the_first_line(tmp_path):
+    """Session previews are the first 60 characters of the first user message,
+    so a leading directive would title the session with a truncated file path
+    in the sidebar, switcher, and command palette."""
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"png")
+
+    result = server._build_persist_message_with_image_refs("what is in this photo?", [str(img)])
+
+    assert result.split("\n", 1)[0] == "what is in this photo?"
 
 
 def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, tmp_path):
@@ -13233,7 +13245,7 @@ def test_build_persist_message_with_image_refs_skips_missing_paths(monkeypatch, 
 
     result = server._build_persist_message_with_image_refs("compare them", [str(existing), missing])
 
-    assert result == f"@image:{existing}\ncompare them"
+    assert result == f"compare them\n@image:{existing}"
 
 
 def test_build_persist_message_with_image_refs_without_text_is_refs_only(monkeypatch, tmp_path):
@@ -13257,7 +13269,7 @@ def test_build_persist_message_quotes_paths_containing_spaces(tmp_path):
 
     result = server._build_persist_message_with_image_refs("what is this?", [str(img)])
 
-    assert result == f"@image:`{img}`\nwhat is this?"
+    assert result == f"what is this?\n@image:`{img}`"
 
 
 def test_persist_user_message_mirrors_the_shape_sent_to_the_model(tmp_path):
@@ -13272,7 +13284,7 @@ def test_persist_user_message_mirrors_the_shape_sent_to_the_model(tmp_path):
 
     override = server._build_persist_user_message("what is this?", [str(img)], native_parts)
 
-    assert override == [{"type": "text", "text": f"@image:{img}\nwhat is this?"}, image_part]
+    assert override == [{"type": "text", "text": f"what is this?\n@image:{img}"}, image_part]
 
 
 def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
@@ -13283,7 +13295,7 @@ def test_persist_user_message_stays_a_string_for_text_mode(tmp_path):
 
     override = server._build_persist_user_message("what is this?", [str(img)], "enriched api-only text")
 
-    assert override == f"@image:{img}\nwhat is this?"
+    assert override == f"what is this?\n@image:{img}"
 
 
 def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):

@@ -3060,6 +3060,130 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
   })
 })
 
+describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
+  const STORED_ID = 'stored-busy-gw'
+  const RESUMED_RUNTIME_ID = 'rt-busy-gw'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not abort a send when programmatic gateway churn fires mid-submit (selection null-reset + search/hash route churn)', async () => {
+    // The busy-gateway superset of #63078: with background streaming sessions,
+    // per-minute cron sessions, or a messaging surface active, the selected
+    // stored id gets null-reset by gateway/profile reconnects and overlays
+    // park state in location.search/hash. None of that is the user changing
+    // chats — a send from a second chat must ride through it and reach
+    // prompt.submit instead of silently aborting.
+    let releaseResume: () => void = () => {}
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = `/${STORED_ID}::`
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        await new Promise<void>(resolve => {
+          releaseResume = resolve
+        })
+
+        return { session_id: RESUMED_RUNTIME_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('send from a second chat on a busy gateway')
+    await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
+
+    // Programmatic churn while resume is in flight — NOT user switches:
+    // a gateway/profile reconnect null-resets the selection...
+    selectedStoredSessionIdRef.current = null
+    // ...a background event retargets the active runtime ref (#47709 class)...
+    activeSessionIdRef.current = 'rt-some-background-session'
+    // ...and an overlay parks state in search/hash (pathname unchanged).
+    routeToken = `/${STORED_ID}:?panel=preview:#reply`
+    releaseResume()
+
+    expect(await submitting).toBe(true)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: RESUMED_RUNTIME_ID,
+      text: 'send from a second chat on a busy gateway'
+    })
+  })
+
+  it('still aborts when the user genuinely moves to a different chat mid-submit', async () => {
+    // The churn tolerance must not weaken the real guard: selection AND route
+    // moving to another actual chat is a user switch and must abort.
+    let releaseResume: () => void = () => {}
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = `/${STORED_ID}::`
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        await new Promise<void>(resolve => {
+          releaseResume = resolve
+        })
+
+        return { session_id: RESUMED_RUNTIME_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('must not land in the other chat')
+    await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
+
+    // A genuine switch: the user clicks another chat, which retargets
+    // selection and route synchronously.
+    selectedStoredSessionIdRef.current = 'stored-other-chat'
+    routeToken = '/stored-other-chat::'
+    releaseResume()
+
+    expect(await submitting).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+})
+
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()

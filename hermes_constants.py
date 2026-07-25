@@ -1220,6 +1220,48 @@ def apply_ipv4_preference(force: bool = False) -> None:
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 
+def apply_ipv6_fallback_ordering(enabled: bool = True) -> None:
+    """Monkey-patch ``socket.getaddrinfo`` to sort results IPv4-first.
+
+    Unlike :func:`apply_ipv4_preference` — which fully removes IPv6 from the
+    resolution — this keeps both IPv4 and IPv6 addresses available but reorders
+    ``getaddrinfo`` results so that A records come before AAAA records.
+
+    This is the lighter-weight fix for the "dead IPv6 route" problem (issue
+    #71215): dual-stack hosts whose providers publish AAAA records that route
+    nowhere pay a 10-30 s TCP connect timeout on every API call before falling
+    back to IPv4.  Trying IPv4 first eliminates the timeout while still allowing
+    IPv6 to be used when no A record exists.
+
+    Safe to call multiple times — only patches once.
+    Set ``network.ipv4_first: true`` in ``config.yaml`` to enable (on by default).
+    """
+    if not enabled:
+        return
+
+    import socket
+
+    # Guard against double-patching
+    if getattr(socket.getaddrinfo, "_hermes_ipv4first_patched", False):
+        return
+
+    _original_getaddrinfo = socket.getaddrinfo
+
+    def _ipv4first_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if family == 0:  # AF_UNSPEC — caller didn't request a specific family
+            results = _original_getaddrinfo(host, port, family, type, proto, flags)
+            # Sort IPv4 (AF_INET) before IPv6 (AF_INET6); leave other families
+            # (e.g. AF_UNIX) in their original order via a stable sort.
+            return sorted(
+                results,
+                key=lambda r: 0 if r[0] == socket.AF_INET else (1 if r[0] == socket.AF_INET6 else 2),
+            )
+        return _original_getaddrinfo(host, port, family, type, proto, flags)
+
+    _ipv4first_getaddrinfo._hermes_ipv4first_patched = True  # type: ignore[attr-defined]
+    socket.getaddrinfo = _ipv4first_getaddrinfo  # type: ignore[assignment]
+
+
 # ─── Streaming Response Constants ────────────────────────────────────────────
 
 # Response ID for partial stream stubs used during error recovery

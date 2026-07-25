@@ -182,6 +182,7 @@ export interface CustomEndpointUpdate {
   id?: string
   make_default?: boolean
   model: string
+  models?: string[]
   name: string
 }
 

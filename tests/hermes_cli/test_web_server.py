@@ -4664,15 +4664,15 @@ class TestWebServerEndpoints:
         assert models["acme/model-1"]["context_length"] == 200000
 
     def test_deleting_the_active_custom_endpoint_clears_its_model_mirror(self):
-        """Deleting an endpoint must not leave its key running the agent.
+        """Deleting an endpoint must not leave its credential running the agent.
 
-        ``activate`` copies the endpoint's base_url + api_key onto ``model``,
-        and ``model.api_key`` outranks the environment at client construction
-        (#62269). Without clearing that mirror the agent keeps authenticating
-        to the deleted host with the deleted key, and the key the operator
-        just removed through the dashboard stays in config.yaml.
+        ``activate`` mirrors the endpoint's base_url + credential reference
+        onto ``model``, and that mirror outranks the environment at client
+        construction (#62269). Without clearing it the agent keeps
+        authenticating to the deleted host, and the credential the operator
+        just removed through the dashboard survives the delete.
         """
-        from hermes_cli.config import load_config
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
 
         self.client.post(
             "/api/providers/custom-endpoints",
@@ -4688,8 +4688,10 @@ class TestWebServerEndpoints:
             "/api/providers/custom-endpoints/acme/activate", json={}
         ).status_code == 200
 
+        env_var = custom_endpoint_key_env("acme")
         cfg = load_config()
-        assert cfg["model"]["api_key"] == "sk-acme-secret"
+        assert cfg["model"]["key_env"] == env_var
+        assert get_env_value(env_var) == "sk-acme-secret"
 
         assert self.client.request(
             "DELETE", "/api/providers/custom-endpoints/acme"
@@ -4699,12 +4701,14 @@ class TestWebServerEndpoints:
         assert "acme" not in (cfg.get("providers") or {})
         model_cfg = cfg.get("model") or {}
         assert not model_cfg.get("api_key"), "deleted endpoint's key still in config.yaml"
+        assert not model_cfg.get("key_env"), "deleted endpoint's key ref still in config.yaml"
         assert not model_cfg.get("base_url"), "deleted endpoint's host still routed to"
         assert not model_cfg.get("provider")
+        assert not get_env_value(env_var), "deleted endpoint's key still in .env"
 
     def test_deleting_an_inactive_custom_endpoint_leaves_the_active_one_alone(self):
-        """Only the mirror of the DELETED provider is scrubbed."""
-        from hermes_cli.config import load_config
+        """Only the DELETED provider's mirror and .env slot are scrubbed."""
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
 
         for name, key in (("acme", "sk-acme"), ("other", "sk-other")):
             self.client.post(
@@ -4723,8 +4727,283 @@ class TestWebServerEndpoints:
 
         model_cfg = load_config().get("model") or {}
         assert model_cfg.get("provider") == "other"
-        assert model_cfg.get("api_key") == "sk-other"
+        assert model_cfg.get("key_env") == custom_endpoint_key_env("other")
         assert model_cfg.get("base_url") == "https://llm.other.corp/v1"
+        assert get_env_value(custom_endpoint_key_env("other")) == "sk-other"
+
+    def test_custom_endpoint_save_persists_the_whole_discovered_catalogue(self):
+        """Test discovers N models; Save must keep all N (#69988).
+
+        Every downstream picker reads ``providers.<id>.models`` straight from
+        config.yaml with no live probe, so persisting only the one hand-typed
+        model left a provider serving dozens showing a single-entry list.
+        """
+        from hermes_cli.config import load_config
+
+        discovered = ["glm-5.2", "qwen3-max", "llama-4-405b", "deepseek-v4"]
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "model": "glm-5.2",
+                "models": discovered,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert sorted(load_config()["providers"]["proxy"]["models"]) == sorted(discovered)
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
+        assert sorted(endpoint["models"]) == sorted(discovered)
+
+    def test_custom_endpoint_save_with_catalogue_keeps_known_context_lengths(self):
+        """A discovered list merges onto the entry; it doesn't reset it."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "proxy": {
+                "name": "Proxy",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "model": "a",
+                "models": {"a": {"context_length": 200000}},
+            }
+        }
+        save_config(cfg)
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "model": "a",
+                "models": ["a", "b"],
+            },
+        )
+
+        models = load_config()["providers"]["proxy"]["models"]
+        assert sorted(models) == ["a", "b"]
+        assert models["a"]["context_length"] == 200000
+
+    def test_custom_endpoint_save_keeps_the_api_key_out_of_config(self):
+        """The key belongs in .env behind key_env, never in config.yaml (#69449)."""
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "api_key": "sk-super-secret",
+                "make_default": True,
+            },
+        )
+
+        cfg = load_config()
+        entry = cfg["providers"]["proxy"]
+        env_var = custom_endpoint_key_env("proxy")
+        assert entry["key_env"] == env_var
+        assert "api_key" not in entry
+        assert "api_key" not in cfg["model"]
+        assert get_env_value(env_var) == "sk-super-secret"
+        assert "sk-super-secret" not in yaml.safe_dump(cfg)
+
+    def test_custom_endpoint_edit_without_a_key_keeps_the_stored_one(self):
+        """The panel sends no api_key on an unrelated edit (the field is blank)."""
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
+
+        common = {
+            "id": "proxy",
+            "name": "Proxy",
+            "base_url": "https://llm.example.com/v1",
+        }
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={**common, "model": "m1", "api_key": "sk-keep-me"},
+        )
+        self.client.post("/api/providers/custom-endpoints", json={**common, "model": "m2"})
+
+        entry = load_config()["providers"]["proxy"]
+        assert entry["model"] == "m2"
+        assert entry["key_env"] == custom_endpoint_key_env("proxy")
+        assert get_env_value(custom_endpoint_key_env("proxy")) == "sk-keep-me"
+
+    def test_custom_endpoint_save_migrates_a_legacy_plaintext_key(self):
+        """Entries written before #69449 get cleaned up on their next save.
+
+        Requiring the user to re-type the key to get it out of config.yaml
+        would leave the plaintext sitting there for anyone who never edits the
+        endpoint again.
+        """
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "proxy": {
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "api_key": "sk-legacy-plaintext",
+                "models": {"m": {}},
+            }
+        }
+        save_config(cfg)
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+            },
+        )
+
+        entry = load_config()["providers"]["proxy"]
+        assert "api_key" not in entry
+        assert entry["key_env"] == custom_endpoint_key_env("proxy")
+        assert get_env_value(custom_endpoint_key_env("proxy")) == "sk-legacy-plaintext"
+
+    def test_custom_endpoint_save_leaves_a_hand_written_env_ref_alone(self, monkeypatch):
+        """``api_key: ${MY_KEY}`` is already safe — don't copy it elsewhere.
+
+        load_config() expands env refs, so such an entry looks like a literal
+        secret by the time Save sees it. Migrating it would duplicate the
+        user's secret into a second env var they never asked for.
+        """
+        import yaml
+
+        from hermes_cli.config import custom_endpoint_key_env, get_config_path, get_env_value
+
+        monkeypatch.setenv("MY_PROXY_KEY", "sk-user-managed")
+        get_config_path().write_text(
+            yaml.safe_dump({
+                "providers": {
+                    "proxy": {
+                        "name": "Proxy",
+                        "base_url": "https://llm.example.com/v1",
+                        "model": "m",
+                        "api_key": "${MY_PROXY_KEY}",
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+            },
+        )
+
+        raw = yaml.safe_load(get_config_path().read_text(encoding="utf-8"))
+        assert raw["providers"]["proxy"]["api_key"] == "${MY_PROXY_KEY}"
+        assert not get_env_value(custom_endpoint_key_env("proxy"))
+
+    def test_custom_endpoint_blank_api_key_clears_the_credential(self):
+        """An explicitly emptied field means "remove the key", not "keep it"."""
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
+
+        common = {
+            "id": "proxy",
+            "name": "Proxy",
+            "base_url": "https://llm.example.com/v1",
+            "model": "m",
+        }
+        self.client.post(
+            "/api/providers/custom-endpoints", json={**common, "api_key": "sk-drop-me"}
+        )
+        self.client.post("/api/providers/custom-endpoints", json={**common, "api_key": ""})
+
+        entry = load_config()["providers"]["proxy"]
+        assert "api_key" not in entry
+        assert "key_env" not in entry
+        assert not get_env_value(custom_endpoint_key_env("proxy"))
+
+    def test_two_endpoints_on_one_host_keep_separate_credentials(self):
+        """Two local servers must not share an .env slot.
+
+        Deriving the env var from the hostname collapses ``127.0.0.1:8000``
+        and ``:8001`` onto one name, so saving the second silently overwrites
+        the first's key.
+        """
+        from hermes_cli.config import custom_endpoint_key_env, get_env_value
+
+        for port, key in ((8000, "sk-first"), (8001, "sk-second")):
+            self.client.post(
+                "/api/providers/custom-endpoints",
+                json={
+                    "id": f"local-{port}",
+                    "name": f"Local {port}",
+                    "base_url": f"http://127.0.0.1:{port}/v1",
+                    "model": "m",
+                    "api_key": key,
+                },
+            )
+
+        assert get_env_value(custom_endpoint_key_env("local-8000")) == "sk-first"
+        assert get_env_value(custom_endpoint_key_env("local-8001")) == "sk-second"
+
+    def test_custom_endpoint_response_reports_a_key_held_in_env(self):
+        """has_api_key must follow key_env, not just a plaintext api_key.
+
+        Reading only ``api_key`` made the panel report "no API key" for every
+        endpoint whose credential had been moved to .env.
+        """
+        resp = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "proxy",
+                "name": "Proxy",
+                "base_url": "https://llm.example.com/v1",
+                "model": "m",
+                "api_key": "sk-in-env",
+            },
+        )
+
+        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
+        assert endpoint["has_api_key"] is True
+        assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
+
+    def test_activating_an_endpoint_carries_its_credential_either_way(self):
+        """Activate must work for both key_env and pre-#69449 plaintext entries."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "legacy": {
+                "name": "Legacy",
+                "base_url": "https://llm.legacy.com/v1",
+                "model": "m",
+                "api_key": "sk-legacy",
+                "models": {"m": {}},
+            },
+            "modern": {
+                "name": "Modern",
+                "base_url": "https://llm.modern.com/v1",
+                "model": "m",
+                "key_env": "MODERN_API_KEY",
+                "models": {"m": {}},
+            },
+        }
+        save_config(cfg)
+
+        self.client.post("/api/providers/custom-endpoints/modern/activate", json={})
+        model_cfg = load_config()["model"]
+        assert model_cfg["key_env"] == "MODERN_API_KEY"
+        assert "api_key" not in model_cfg
+
+        self.client.post("/api/providers/custom-endpoints/legacy/activate", json={})
+        model_cfg = load_config()["model"]
+        assert model_cfg["api_key"] == "sk-legacy"
 
     def test_set_model_main_preserves_base_url_for_named_custom_provider(self):
         """Selecting a named custom endpoint from the Desktop model picker

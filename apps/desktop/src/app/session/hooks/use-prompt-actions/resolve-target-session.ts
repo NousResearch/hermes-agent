@@ -73,9 +73,9 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
   // Matches submit.ts's `routedSessionNeedsResume`.
   const routedNeedsResume = Boolean(
     routedStoredSessionId &&
-      (selectedStoredSessionId !== routedStoredSessionId ||
-        !activeRuntimeId ||
-        activeRuntimeId !== getRuntimeIdForStoredSession(routedStoredSessionId))
+    (selectedStoredSessionId !== routedStoredSessionId ||
+      !activeRuntimeId ||
+      activeRuntimeId !== getRuntimeIdForStoredSession(routedStoredSessionId))
   )
 
   // 2. Trust the live runtime unless the durable route disagrees with it.

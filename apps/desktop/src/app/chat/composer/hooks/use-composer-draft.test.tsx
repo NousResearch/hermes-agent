@@ -12,8 +12,7 @@ const mockComposerApi = { setText: vi.fn() }
 
 vi.mock('@assistant-ui/react', () => ({
   useAui: () => ({ composer: () => mockComposerApi }),
-  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) =>
-    selector({ composer: { text: '' } }),
+  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } }),
   useComposerRuntime: () => ({
     getState: () => ({ text: '' }),
     subscribe: () => () => undefined
@@ -60,11 +59,7 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     const snapshots: ComposerAttachment[][] = []
 
     const { rerender } = render(
-      <ProbeHarness
-        activeQueueSessionKey="session-A"
-        onLayoutSnapshot={s => snapshots.push(s)}
-        sessionId="session-A"
-      />
+      <ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={s => snapshots.push(s)} sessionId="session-A" />
     )
 
     // Mount loads session A's stashed attachment into the (module-level) main
@@ -98,18 +93,24 @@ describe('useComposerDraft — rehydrate diagnostic log stays redacted', () => {
 
   it('logs counts/kinds/scope on restore but never the raw url, refText, or label', () => {
     const secretUrl = 'https://secret.example.com/private-workspace-path'
+
     const attachment: ComposerAttachment = {
       id: 'url-secret',
       kind: 'url',
       label: 'do-not-leak-label',
       refText: `@url:${secretUrl}`
     }
+
     stashSessionDraft('session-secret', '', [attachment])
 
     const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
 
     render(
-      <ProbeHarness activeQueueSessionKey="session-secret" onLayoutSnapshot={() => undefined} sessionId="session-secret" />
+      <ProbeHarness
+        activeQueueSessionKey="session-secret"
+        onLayoutSnapshot={() => undefined}
+        sessionId="session-secret"
+      />
     )
 
     const rehydrateCalls = debugSpy.mock.calls.filter(call => call[0] === '[composer-rehydrate]')

@@ -75,6 +75,7 @@ test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly
     platform: 'darwin',
     pathModule: path.posix
   })
+
   assert.equal(defaulted.PYTHONUTF8, '1')
 
   const optedOut = buildDesktopBackendEnv({
@@ -83,6 +84,7 @@ test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly
     platform: 'darwin',
     pathModule: path.posix
   })
+
   assert.equal(optedOut.PYTHONUTF8, '0')
 })
 

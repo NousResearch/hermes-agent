@@ -77,6 +77,7 @@ export function useSessionStateCache({
     selectedStoredSessionIdPropRef.current = selectedStoredSessionId
     selectedStoredSessionIdRef.current = selectedStoredSessionId
   }
+
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)

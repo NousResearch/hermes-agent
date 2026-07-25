@@ -3099,3 +3099,92 @@ class TestCryptoStoreResetOnDeviceChange:
         assert "MATRIX_DEVICE_ID=DEVICE_A" in caplog.text
 
         await adapter.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Crypto store pickle-key migration
+# ---------------------------------------------------------------------------
+
+class TestCryptoPickleKeyMigration:
+    @pytest.mark.asyncio
+    async def test_account_loads_fine_no_migration(self):
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(return_value=MagicMock())
+        assert await adapter._migrate_legacy_crypto_pickle(
+            store, MagicMock(), "@bot:example.org", "@bot:example.org:DEV"
+        ) is True
+        store.put_account.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_migrates_from_default_pickle_key(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        legacy_account = MagicMock()
+        created = []
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                self.pickle_key = pickle_key
+                created.append(pickle_key)
+
+            async def get_account(self):
+                if self.pickle_key == "@bot:example.org:default":
+                    return legacy_account
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        crypto_db = MagicMock()
+        crypto_db.fetch = AsyncMock(return_value=[])
+        crypto_db.execute = AsyncMock()
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+        with patch.dict(sys.modules, {"mautrix.crypto.store.asyncpg": fake_mod}), \
+                caplog.at_level(logging.INFO):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, crypto_db, "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is True
+        store.put_account.assert_awaited_once_with(legacy_account)
+        assert "re-pickled crypto store account" in caplog.text
+        assert "@bot:example.org:default" in created
+        # session re-pickle pass must sweep all three session tables
+        queried = " ".join(str(c.args[0]) for c in crypto_db.fetch.await_args_list)
+        for table in (
+            "crypto_olm_session",
+            "crypto_megolm_inbound_session",
+            "crypto_megolm_outbound_session",
+        ):
+            assert table in queried
+
+    @pytest.mark.asyncio
+    async def test_unrecoverable_pickle_logs_error(self, caplog):
+        import logging
+        adapter = _make_adapter()
+        store = MagicMock()
+        store.get_account = AsyncMock(side_effect=RuntimeError("BAD_ACCOUNT_KEY"))
+        store.put_account = AsyncMock()
+
+        class FakePgCryptoStore:
+            def __init__(self, account_id, pickle_key, db):
+                pass
+
+            async def get_account(self):
+                raise RuntimeError("BAD_ACCOUNT_KEY")
+
+        fake_mod = types.ModuleType("mautrix.crypto.store.asyncpg")
+        fake_mod.PgCryptoStore = FakePgCryptoStore
+        with patch.dict(sys.modules, {"mautrix.crypto.store.asyncpg": fake_mod}), \
+                caplog.at_level(logging.ERROR):
+            result = await adapter._migrate_legacy_crypto_pickle(
+                store, MagicMock(), "@bot:example.org", "@bot:example.org:NEWDEV"
+            )
+
+        assert result is False
+        store.put_account.assert_not_awaited()
+        assert "cannot be unpickled" in caplog.text

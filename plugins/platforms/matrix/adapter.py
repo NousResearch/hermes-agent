@@ -1360,6 +1360,108 @@ class MatrixAdapter(BasePlatformAdapter):
         await crypto_store.delete()
         return True
 
+    async def _migrate_legacy_crypto_pickle(
+        self, crypto_store: Any, crypto_db: Any, acct_id: str, pickle_key: str
+    ) -> bool:
+        """Re-pickle the Olm account when the pickle key changed.
+
+        The pickle key embeds the *configured* device ID. If the account was
+        created before MATRIX_DEVICE_ID was set (e.g. first password login,
+        where the device ID is only known after connecting), the store was
+        pickled under ``<acct>:default``; setting MATRIX_DEVICE_ID afterwards
+        changes the key and unpickling fails with BAD_ACCOUNT_KEY — which in
+        optional-E2EE mode silently disables encryption. Try known legacy
+        keys and re-pickle under the current one. Returns False only when an
+        account exists but no key can unpickle it.
+        """
+        try:
+            await crypto_store.get_account()
+            return True
+        except Exception:
+            pass
+
+        from mautrix.crypto.store.asyncpg import PgCryptoStore
+
+        for legacy_key in (f"{acct_id}:default", acct_id):
+            if legacy_key == pickle_key:
+                continue
+            legacy_store = PgCryptoStore(
+                account_id=acct_id, pickle_key=legacy_key, db=crypto_db
+            )
+            try:
+                account = await legacy_store.get_account()
+            except Exception:
+                continue
+            if account is None:
+                continue
+            await crypto_store.put_account(account)
+            await self._repickle_crypto_sessions(
+                crypto_db, acct_id, legacy_key, pickle_key
+            )
+            logger.info(
+                "Matrix: re-pickled crypto store account and sessions under "
+                "the current pickle key (device ID was configured after the "
+                "account was created)"
+            )
+            return True
+
+        logger.error(
+            "Matrix: crypto store account exists but cannot be unpickled "
+            "with the current or any legacy pickle key. If MATRIX_DEVICE_ID "
+            "was changed manually, restore its previous value."
+        )
+        return False
+
+    async def _repickle_crypto_sessions(
+        self, crypto_db: Any, acct_id: str, legacy_key: str, pickle_key: str
+    ) -> None:
+        """Re-pickle olm/megolm session blobs alongside the account.
+
+        The account and every stored session share the pickle key; migrating
+        only the account leaves sessions unreadable (BAD_ACCOUNT_KEY on the
+        next olm decrypt), which breaks key sharing with peers.
+        """
+        import olm as olm_lib
+
+        tables = {
+            "crypto_olm_session": olm_lib.Session,
+            "crypto_megolm_inbound_session": olm_lib.InboundGroupSession,
+            "crypto_megolm_outbound_session": olm_lib.OutboundGroupSession,
+        }
+        for table, session_cls in tables.items():
+            rows = await crypto_db.fetch(
+                f"SELECT session_id, session FROM {table} WHERE account_id=$1",
+                acct_id,
+            )
+            for row in rows:
+                blob = row["session"]
+                if blob is None:
+                    continue
+                pickled = bytes(blob)
+                try:
+                    session_cls.from_pickle(pickled, pickle_key)
+                    continue  # already readable with the current key
+                except Exception:
+                    pass
+                try:
+                    session = session_cls.from_pickle(pickled, legacy_key)
+                except Exception as exc:
+                    logger.warning(
+                        "Matrix: dropping unreadable %s row %s during pickle "
+                        "key migration: %s",
+                        table,
+                        row["session_id"],
+                        exc,
+                    )
+                    continue
+                await crypto_db.execute(
+                    f"UPDATE {table} SET session=$1 "
+                    "WHERE account_id=$2 AND session_id=$3",
+                    session.pickle(pickle_key),
+                    acct_id,
+                    row["session_id"],
+                )
+
     async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
         """Verify our device keys are on the homeserver after loading crypto state.
 
@@ -1668,6 +1770,10 @@ class MatrixAdapter(BasePlatformAdapter):
                             crypto_store, client.device_id
                         )
                         await crypto_store.put_device_id(client.device_id)
+
+                    await self._migrate_legacy_crypto_pickle(
+                        crypto_store, crypto_db, _acct_id, _pickle_key
+                    )
 
                     crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
                     olm = OlmMachine(client, crypto_store, crypto_state)

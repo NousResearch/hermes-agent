@@ -1767,8 +1767,20 @@ def compress_context(
         # when it is actually silent, not merely thorough. The hook is
         # thread-local and the compress call is synchronous on this thread,
         # so it cannot leak into unrelated auxiliary calls.
+        #
+        # Fenceless callers (CLI /compress, in-loop auto-compress) install a
+        # no-op hook: nobody polls their progress, but an ACTIVE hook is what
+        # switches the summary call onto the streamed path — giving every
+        # compression path the same two guarantees: the configured timeout
+        # acts on inactivity (slow models finish), and a byte-trickling
+        # provider that keeps the connection alive forever is cut off at the
+        # streamed total ceiling (see _aux_stream_total_ceiling) instead of
+        # outliving the SDK's inactivity timeout indefinitely.
         from agent.auxiliary_client import aux_progress_hook
-        _progress_hook = commit_fence.touch_progress if commit_fence is not None else None
+        _progress_hook = (
+            commit_fence.touch_progress if commit_fence is not None
+            else (lambda: None)
+        )
         with aux_progress_hook(_progress_hook):
             compressed = compress_fn(messages, **compress_kwargs)
     except BaseException as _compress_exc:

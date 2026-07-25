@@ -6,10 +6,10 @@ from hermes_cli import web_server
 class _FakeSessionDB:
     """Fake backing the /api/sessions/search endpoint.
 
-    The endpoint surfaces direct session-id matches first, then FTS message
-    matches, deduping both by compression lineage root. This fake has no
-    compression chains (get_session returns no parent), so each session is its
-    own lineage root.
+    The endpoint surfaces direct session-id matches first, then metadata
+    (title/id) infix hits, then FTS message matches, deduping by compression
+    lineage root. This fake has no compression chains (get_session returns no
+    parent), so each session is its own lineage root.
     """
 
     closed = False
@@ -20,12 +20,19 @@ class _FakeSessionDB:
         return [
             {
                 "id": "20260603_090200_exact",
+                "title": "Exact ID Session",
                 "preview": "ID match preview",
                 "source": "cli",
                 "model": "claude",
                 "started_at": 100,
             }
         ]
+
+    def list_sessions_rich(self, **kwargs):
+        # Metadata infix path — return empty so ID + FTS paths stay primary in
+        # this fixture (title search is covered by the ID row's title field).
+        assert kwargs.get("search_query") == "20260603"
+        return []
 
     def search_messages(self, query, limit=20):
         assert query == "20260603*"
@@ -50,7 +57,17 @@ class _FakeSessionDB:
 
     def get_session(self, session_id):
         # No compression chains in this fixture — every session is its own root.
-        return {"id": session_id, "parent_session_id": None}
+        if session_id == "content_session":
+            return {
+                "id": session_id,
+                "parent_session_id": None,
+                "title": "Content Title",
+            }
+        return {
+            "id": session_id,
+            "parent_session_id": None,
+            "title": "Exact ID Session",
+        }
 
     def get_compression_tip(self, session_id):
         return session_id
@@ -72,6 +89,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "session_id": "20260603_090200_exact",
                 "lineage_root": "20260603_090200_exact",
                 "snippet": "ID match preview",
+                "title": "Exact ID Session",
+                "matched_on": "id",
                 "role": None,
                 "source": "cli",
                 "model": "claude",
@@ -81,6 +100,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "session_id": "content_session",
                 "lineage_root": "content_session",
                 "snippet": "content hit",
+                "title": "Content Title",
+                "matched_on": "message",
                 "role": "assistant",
                 "source": "desktop",
                 "model": "gpt",

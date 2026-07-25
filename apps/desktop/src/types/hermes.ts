@@ -1020,6 +1020,10 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Session title when known (id/meta hits and message hits that resolve a row). */
+  title?: string | null
+  /** Which surface produced the hit — drives the match-field chip. */
+  matched_on?: 'id' | 'title' | 'preview' | 'message' | 'meta' | null
 }
 
 export interface SessionSearchResponse {

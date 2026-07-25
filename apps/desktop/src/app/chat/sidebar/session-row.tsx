@@ -6,12 +6,14 @@ import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { HighlightMarked, HighlightText, MatchFieldChip } from '@/components/ui/search-highlight'
 import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { stripHighlightMarkers } from '@/lib/search-match'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
@@ -20,6 +22,7 @@ import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
+import { useSessionSearchMeta } from './search-meta-context'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -77,6 +80,7 @@ export function SidebarSessionRow({
   const { t } = useI18n()
   const r = t.sidebar.row
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
+  const searchMeta = useSessionSearchMeta(session.id)
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
@@ -87,6 +91,16 @@ export function SidebarSessionRow({
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const titleNode = searchMeta?.titleRanges?.length ? (
+    <HighlightText ranges={searchMeta.titleRanges} text={title} />
+  ) : searchMeta?.markedSnippet && !session.title?.trim() ? (
+    <HighlightMarked text={searchMeta.markedSnippet} />
+  ) : (
+    title
+  )
+  const rowTitleAttr = searchMeta?.tooltip
+    ? `${title} · ${searchMeta.fieldLabel}: ${stripHighlightMarkers(searchMeta.tooltip)}`
+    : title
 
   return (
     <SessionContextMenu
@@ -241,8 +255,14 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
+          <SidebarRowLabel
+            className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+            title={rowTitleAttr}
+          >
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="min-w-0 truncate">{titleNode}</span>
+              {searchMeta ? <MatchFieldChip label={searchMeta.fieldLabel} /> : null}
+            </span>
           </SidebarRowLabel>
           {showProfile && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>

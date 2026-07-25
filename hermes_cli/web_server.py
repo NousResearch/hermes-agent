@@ -5280,16 +5280,68 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # SQL-bounded, so this stays cheap even with thousands of sessions.
             for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
                 sid = row.get("id")
+                title = (row.get("title") or "").strip() or None
                 preview = (row.get("preview") or "").strip()
-                snippet = preview or f"Session ID: {sid}"
+                snippet = preview or (f"Session ID: {sid}" if sid else "")
                 add_lineage_result(
                     sid,
                     {
                         "snippet": snippet,
+                        "title": title,
+                        "matched_on": "id",
                         "role": None,
                         "source": row.get("source"),
                         "model": row.get("model"),
                         "session_started": row.get("started_at"),
+                    },
+                )
+
+            # P1 latin/title infix: session metadata (title + id substring) via
+            # list_sessions_rich.search_query — sessions table is small; avoids
+            # full messages LIKE scans while catching mid-title hits FTS prefix
+            # wildcards miss on the id path alone.
+            try:
+                meta_rows = db.list_sessions_rich(
+                    limit=max(safe_limit * 3, 30),
+                    offset=0,
+                    include_archived=True,
+                    order_by_last_active=True,
+                    search_query=q.strip(),
+                    compact_rows=True,
+                )
+            except Exception:
+                meta_rows = []
+            for row in meta_rows:
+                if len(seen) >= safe_limit:
+                    break
+                sid = row.get("id")
+                if not sid:
+                    continue
+                title = (row.get("title") or "").strip() or None
+                preview = (row.get("preview") or "").strip()
+                # Prefer title as the human surface; fall back to preview.
+                needle = q.strip().lower()
+                title_l = (title or "").lower()
+                preview_l = preview.lower()
+                if title and needle in title_l:
+                    matched_on = "title"
+                    snippet = title
+                elif preview and needle in preview_l:
+                    matched_on = "preview"
+                    snippet = preview
+                else:
+                    matched_on = "meta"
+                    snippet = title or preview or f"Session ID: {sid}"
+                add_lineage_result(
+                    sid,
+                    {
+                        "snippet": snippet,
+                        "title": title,
+                        "matched_on": matched_on,
+                        "role": None,
+                        "source": row.get("source"),
+                        "model": row.get("model"),
+                        "session_started": row.get("started_at") or row.get("last_active"),
                     },
                 )
 
@@ -5312,10 +5364,20 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             for m in matches:
                 if len(seen) >= safe_limit:
                     break
+                sid = m["session_id"]
+                title = None
+                try:
+                    sess = db.get_session(sid)
+                    if isinstance(sess, dict):
+                        title = (sess.get("title") or "").strip() or None
+                except Exception:
+                    title = None
                 add_lineage_result(
-                    m["session_id"],
+                    sid,
                     {
                         "snippet": m.get("snippet", ""),
+                        "title": title,
+                        "matched_on": "message",
                         "role": m.get("role"),
                         "source": m.get("source"),
                         "model": m.get("model"),

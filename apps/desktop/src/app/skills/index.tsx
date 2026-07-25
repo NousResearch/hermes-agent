@@ -21,9 +21,18 @@ import {
   toggleToolset
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { MatchFieldChip } from '@/components/ui/search-highlight'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { compactNumber } from '@/lib/format'
 import { queryClient, writeCache } from '@/lib/query-client'
+import {
+  bestMatch,
+  rankItems,
+  SEARCH_FIELD_LABEL_EN,
+  SEARCH_FIELD_LABEL_ZH,
+  type FieldMatch,
+  type SearchField
+} from '@/lib/search-match'
 import { normalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
@@ -127,17 +136,44 @@ function skillSubtitle(skill: SkillInfo): React.ReactNode {
   )
 }
 
-function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): SkillInfo[] {
+function fieldLabel(field: SearchField, locale: string): string {
+  return (locale.startsWith('zh') ? SEARCH_FIELD_LABEL_ZH : SEARCH_FIELD_LABEL_EN)[field]
+}
+
+type RankedSkill = { skill: SkillInfo; match?: FieldMatch }
+
+function filteredSkills(skills: SkillInfo[], query: string, desc: boolean): RankedSkill[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
 
-  return skills
-    .filter(
-      skill =>
-        !q || includesQuery(skill.name, q) || includesQuery(skill.description, q) || includesQuery(skill.category, q)
+  if (!q) {
+    return [...skills]
+      .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
+      .map(skill => ({ skill }))
+  }
+
+  const ranked = rankItems(
+    skills,
+    skill => [
+      { field: 'name', value: skill.name },
+      { field: 'description', value: skill.description },
+      { field: 'category', value: skill.category }
+    ],
+    q,
+    { fuzzy: true }
+  )
+
+  return ranked
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        sign * (usageOf(b.item) - usageOf(a.item)) ||
+        asText(a.item.name).localeCompare(asText(b.item.name))
     )
-    .sort((a, b) => sign * (usageOf(b) - usageOf(a)) || asText(a.name).localeCompare(asText(b.name)))
+    .map(hit => ({ skill: hit.item, match: bestMatch(hit.matches) }))
 }
+
+type RankedToolset = { toolset: ToolsetInfo; match?: FieldMatch }
 
 const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, number>): number =>
   toolNames(toolset).reduce((sum, name) => sum + (toolCalls[name] ?? 0), 0)
@@ -147,32 +183,41 @@ function filteredToolsets(
   query: string,
   toolCalls: Record<string, number>,
   desc: boolean
-): ToolsetInfo[] {
+): RankedToolset[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
+  const visible = toolsets.filter(toolset => isDesktopToolsetVisible(toolset.name))
 
-  return toolsets
-    .filter(toolset => {
-      if (!isDesktopToolsetVisible(toolset.name)) {
-        return false
-      }
-
-      if (!q) {
-        return true
-      }
-
-      return (
-        includesQuery(toolset.name, q) ||
-        includesQuery(toolsetDisplayLabel(toolset), q) ||
-        includesQuery(toolset.description, q) ||
-        toolNames(toolset).some(name => includesQuery(name, q))
+  if (!q) {
+    return [...visible]
+      .sort(
+        (a, b) =>
+          sign * (toolsetCalls(b, toolCalls) - toolsetCalls(a, toolCalls)) ||
+          toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b))
       )
-    })
+      .map(toolset => ({ toolset }))
+  }
+
+  const ranked = rankItems(
+    visible,
+    toolset => [
+      { field: 'name', value: toolset.name },
+      { field: 'label', value: toolsetDisplayLabel(toolset) },
+      { field: 'description', value: toolset.description },
+      { field: 'tool', value: toolNames(toolset).join(' ') }
+    ],
+    q,
+    { fuzzy: true }
+  )
+
+  return ranked
     .sort(
       (a, b) =>
-        sign * (toolsetCalls(b, toolCalls) - toolsetCalls(a, toolCalls)) ||
-        toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b))
+        b.score - a.score ||
+        sign * (toolsetCalls(b.item, toolCalls) - toolsetCalls(a.item, toolCalls)) ||
+        toolsetDisplayLabel(a.item).localeCompare(toolsetDisplayLabel(b.item))
     )
+    .map(hit => ({ toolset: hit.item, match: bestMatch(hit.matches) }))
 }
 
 const visibleToolsetCount = (toolsets: ToolsetInfo[]) => toolsets.filter(ts => isDesktopToolsetVisible(ts.name)).length
@@ -182,7 +227,7 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const gateway = useStore($gateway) as HermesGateway | null
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
@@ -319,12 +364,13 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   // Keep a valid selection: fall back to the first visible row when the
   // current selection is filtered out (or nothing is selected yet).
   const activeSkill = useMemo(
-    () => visibleSkills.find(s => s.name === selectedSkill) ?? visibleSkills[0] ?? null,
+    () => visibleSkills.find(row => row.skill.name === selectedSkill)?.skill ?? visibleSkills[0]?.skill ?? null,
     [selectedSkill, visibleSkills]
   )
 
   const activeToolset = useMemo(
-    () => visibleToolsets.find(ts => ts.name === selectedToolset) ?? visibleToolsets[0] ?? null,
+    () =>
+      visibleToolsets.find(row => row.toolset.name === selectedToolset)?.toolset ?? visibleToolsets[0]?.toolset ?? null,
     [selectedToolset, visibleToolsets]
   )
 
@@ -594,7 +640,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 />
               }
             >
-              {visibleSkills.map(skill => (
+              {visibleSkills.map(({ skill, match }) => (
                 <CapRow
                   active={activeSkill?.name === skill.name}
                   busy={bulkBusy}
@@ -603,7 +649,16 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
                   onSelect={() => setSelectedSkill(skill.name)}
                   onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                  subtitle={skillSubtitle(skill)}
+                  subtitle={
+                    match && normalize(query) ? (
+                      <>
+                        <MatchFieldChip label={fieldLabel(match.field, locale)} />
+                        <span className="truncate">{skillSubtitle(skill)}</span>
+                      </>
+                    ) : (
+                      skillSubtitle(skill)
+                    )
+                  }
                   title={skill.name}
                   toggleLabel={skill.name}
                 />
@@ -632,7 +687,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               />
             }
           >
-            {visibleToolsets.map(toolset => {
+            {visibleToolsets.map(({ toolset, match }) => {
               const label = toolsetDisplayLabel(toolset)
               const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
 
@@ -653,7 +708,16 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   }
                   onSelect={() => setSelectedToolset(toolset.name)}
                   onToggle={checked => void handleToggleToolset(toolset, checked)}
-                  subtitle={asText(toolset.description)}
+                  subtitle={
+                    match && normalize(query) ? (
+                      <>
+                        <MatchFieldChip label={fieldLabel(match.field, locale)} />
+                        <span className="truncate">{asText(toolset.description)}</span>
+                      </>
+                    ) : (
+                      asText(toolset.description)
+                    )
+                  }
                   title={label}
                   toggleLabel={t.skills.toggleToolset(label)}
                 />

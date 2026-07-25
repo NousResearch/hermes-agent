@@ -46,6 +46,7 @@ import {
   Wrench,
   Zap
 } from '@/lib/icons'
+import { scoreLabeledItem } from '@/lib/search-match'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $repoWorktrees } from '@/store/coding-status'
@@ -137,48 +138,11 @@ interface SessionEntry {
 // cmdk still auto-selects the first DOM item whenever the search changes, so
 // rendering best-match-first is what puts the highlight on the best match.
 //
-// AND semantics: every typed word must appear in the label or keywords. The
-// grade rewards matches on the visible label — exact > prefix > whole word >
-// word prefix > substring > scattered terms > keyword-only — so typing "tools"
-// selects the row that says Tools, not a row that hides it in keywords.
-const scoreItem = (item: PaletteItem, needle: string): number => {
-  const label = item.label.toLowerCase()
-  const keys = (item.keywords ?? []).join(' ').toLowerCase()
-  const terms = needle.split(/\s+/).filter(Boolean)
-
-  if (terms.some(term => !label.includes(term) && !keys.includes(term))) {
-    return 0
-  }
-
-  if (label === needle) {
-    return 1
-  }
-
-  if (label.startsWith(needle)) {
-    return 0.9
-  }
-
-  const words = label.split(/[^\p{L}\p{N}]+/u).filter(Boolean)
-
-  if (words.includes(needle)) {
-    return 0.85
-  }
-
-  if (words.some(word => word.startsWith(needle))) {
-    return 0.8
-  }
-
-  if (label.includes(needle)) {
-    return 0.7
-  }
-
-  if (terms.every(term => label.includes(term))) {
-    return 0.6
-  }
-
-  // Matched only via keywords — the weakest, generic-row signal.
-  return 0.4
-}
+// Scoring is shared with skills/session lists (`lib/search-match`): exact >
+// prefix > whole word > word prefix > substring > fuzzy > keyword-only. Query
+// supports AND (whitespace), OR / `|`, quoted phrases, and light typo tolerance.
+const scoreItem = (item: PaletteItem, needle: string): number =>
+  scoreLabeledItem(item.label, item.keywords, needle, { fuzzy: true })
 
 // Order items within each group by score, order groups by their best item, and
 // drop everything that doesn't match. Ties keep their original order (stable

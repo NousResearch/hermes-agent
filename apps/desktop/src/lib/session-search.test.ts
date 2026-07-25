@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { sessionMatchesSearch } from './session-search'
+import { rankSession, sessionMatchesSearch } from './session-search'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -68,5 +68,18 @@ describe('sessionMatchesSearch', () => {
 
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
+  })
+
+  it('supports OR alternatives and light fuzzy on long tokens', () => {
+    expect(sessionMatchesSearch(makeSession(), 'zzzz OR desktop')).toBe(true)
+    const ranked = rankSession(makeSession({ title: 'docker-compose setup' }), 'dokcer', { fuzzy: true })
+    expect(ranked).not.toBeNull()
+    expect(ranked!.matches[0].kind).toBe('fuzzy')
+  })
+
+  it('reports the best matching field', () => {
+    const ranked = rankSession(makeSession(), 'hermes-agent')
+    expect(ranked).not.toBeNull()
+    expect(ranked!.matches[0].field).toBe('cwd')
   })
 })

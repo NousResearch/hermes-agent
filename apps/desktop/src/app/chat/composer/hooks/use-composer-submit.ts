@@ -89,7 +89,11 @@ export function useComposerSubmit({
       stashAt(submittedScope, text, submittedAttachments)
     }
 
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
+    void Promise.resolve(
+      attachments
+        ? onSubmit(text, { attachments, composerScope: submittedScope })
+        : onSubmit(text, { composerScope: submittedScope })
+    )
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }

@@ -149,8 +149,37 @@ export function contextPath(path: string, cwd: string): string {
   return path.startsWith(normalizedCwd) ? path.slice(normalizedCwd.length) : path
 }
 
+// IDs are content-derived (`kind:value`), not uuids, so upsertAttachment's
+// exact-match dedupe only catches a re-attach when the raw value matches
+// byte-for-byte. Normalize the value first so a trailing slash, a `\` path
+// separator, etc. don't slip past dedupe as a "different" attachment.
+function normalizeAttachmentValue(kind: ComposerAttachment['kind'], value: string): string {
+  const trimmed = value.trim()
+
+  if (kind === 'url') {
+    try {
+      // The WHATWG URL parser only collapses an EMPTY path to '/' (bare
+      // origin) — it does not treat '/a' and '/a/' as equivalent, so strip a
+      // trailing slash ourselves once the URL is otherwise canonicalized
+      // (scheme/host case, default ports, etc.).
+      return new URL(trimmed).toString().replace(/\/+$/, '')
+    } catch {
+      return trimmed
+    }
+  }
+
+  if (kind === 'file' || kind === 'folder' || kind === 'image') {
+    const posix = trimmed.replace(/\\/g, '/')
+
+    // Don't collapse a bare root ('/' or 'C:/') down to an empty string.
+    return posix.length > 1 ? posix.replace(/\/+$/, '') : posix
+  }
+
+  return trimmed
+}
+
 export function attachmentId(kind: ComposerAttachment['kind'], value: string): string {
-  return `${kind}:${value}`
+  return `${kind}:${normalizeAttachmentValue(kind, value)}`
 }
 
 export function pathLabel(path: string): string {

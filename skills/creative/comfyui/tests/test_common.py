@@ -436,7 +436,7 @@ class TestVideoWorkflow:
 
     def test_animatediff_workflow(self, workflows_dir):
         import json
-        wf = json.loads((workflows_dir / "animatediff_video.json").read_text())
+        wf = json.loads((workflows_dir / "animatediff_video.json").read_text(encoding="utf-8"))
         assert looks_like_video_workflow(wf) is True
 
     def test_wan_workflow(self, video_workflow):

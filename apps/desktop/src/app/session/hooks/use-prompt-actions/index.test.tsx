@@ -120,7 +120,7 @@ function Harness({
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
-  createBackendSessionForSend?: () => Promise<null | string>
+  createBackendSessionForSend?: (preview?: null | string) => Promise<null | string>
 }) {
   const localActiveSessionIdRef = useRef<string | null>(
     activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
@@ -1160,6 +1160,62 @@ describe('usePromptActions submit / queue drain semantics', () => {
     ).toBe(true)
     // Offscreen queue drains must not flip the foreground composer into Thinking.
     expect($busy.get()).toBe(false)
+  })
+
+  it('a fromQueue drain with null runtime id does NOT land in the foreground session (cross-session leak guard)', async () => {
+    // The cross-session leak: a background drain fires with sessionId=null
+    // (the stored session's runtime was reaped by the gateway). Without the
+    // guard, `null ?? activeSessionIdRef.current` falls back to whichever
+    // runtime id the foreground happens to hold — landing the queued prompt
+    // in the chat the user is currently viewing, NOT the session that owns
+    // the queue entry. The drain must instead go through session.resume to
+    // rebind the correct runtime before submitting.
+    const requestGateway = vi.fn(
+      async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) =>
+        (method === 'session.resume' ? { session_id: 'rt-session-a-rebound' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={'rt-foreground'}
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={'rt-foreground'}
+      />
+    )
+
+    // Background drain: sessionId=null (binding reaped), storedSessionId
+    // points to a DIFFERENT session than the foreground.
+    const accepted = await handle!.submitText('queued for background session', {
+      fromQueue: true,
+      sessionId: null,
+      storedSessionId: 'stored-session-a'
+    })
+
+    expect(accepted).toBe(true)
+    // Must resume the correct stored session to get the right runtime id.
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored-session-a',
+      source: 'desktop'
+    })
+    // The prompt must land in the resumed session, NOT the foreground.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: 'rt-session-a-rebound',
+        text: 'queued for background session'
+      },
+      1_800_000
+    )
+    // The invariant: the foreground runtime never receives the prompt.
+    expect(
+      requestGateway.mock.calls.every(
+        ([method, params]) => method !== 'prompt.submit' || params?.session_id !== 'rt-foreground'
+      )
+    ).toBe(true)
   })
 
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
@@ -2458,6 +2514,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    setSessions(() => [])
   })
 
   it('aborts submit when the user switches sessions during session.resume (no misroute)', async () => {
@@ -2513,6 +2570,100 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       session_id: STORED_SESSION_A,
       source: 'desktop'
     })
+  })
+
+  it('does not false-positive-abort when the session has rotated via compression (lineage root vs tip)', async () => {
+    // The composer keys drafts/attachments on the DURABLE lineage root
+    // (resolveComposerSessionKey / sessionPinId — survives auto-compression
+    // tip rotation), but selectedStoredSessionIdRef tracks the CURRENT TIP.
+    // For any session that has compressed at least once, root !== tip — if
+    // composerScope is compared against the raw tip, every legitimate submit
+    // into that session would look like drift.
+    const ROOT_ID = 'stored-root-original'
+    const TIP_ID = 'stored-tip-after-compression'
+
+    setSessions(() => [sessionInfo({ id: TIP_ID, _lineage_root_id: ROOT_ID })])
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={TIP_ID}
+      />
+    )
+
+    // The composer's scope is the lineage root (what resolveComposerSessionKey
+    // actually returns for this session) — a legitimate, non-drifted submit.
+    const ok = await handle!.submitText('message into the rotated session', { composerScope: ROOT_ID })
+
+    expect(ok).toBe(true)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
+  })
+
+  it('aborts submit when the composer scope disagrees with the resolved target (#59305)', async () => {
+    // The composer (ChatBar) and the session-side refs live in separate React
+    // subtrees; each can be internally consistent yet still disagree with each
+    // other at the instant of send if the two updated on different commits.
+    // composerScope carries the composer's own snapshot of "what session was
+    // loaded" into submit.ts, which must refuse to send when it disagrees with
+    // the session the submit is actually about to target.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_A}
+      />
+    )
+
+    const ok = await handle!.submitText('typed while B was on screen', { composerScope: STORED_SESSION_B })
+
+    expect(ok).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+
+  it('submits normally when the composer scope agrees with the resolved target', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_A}
+      />
+    )
+
+    const ok = await handle!.submitText('typed while A was on screen', { composerScope: STORED_SESSION_A })
+
+    expect(ok).toBe(true)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
   })
 
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
@@ -2668,6 +2819,423 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     expect(await handle!.submitText('message that must not land in session B')).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+})
+
+describe('usePromptActions new-chat first-send delivery (#63078)', () => {
+  const NEW_RUNTIME_ID = 'rt-first-send'
+  const NEW_STORED_ID = 'stored-first-send'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $connection.set(null)
+    $composerAttachments.set([])
+  })
+
+  it('delivers the first message of a new chat through the intentional route transition (#62562)', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    // Mirror the real session creator: session.create selects the persisted
+    // row and replaces the new-chat route with the created session's URL
+    // BEFORE returning. The submit pipeline must adopt that intentional
+    // transition as its new pinned target — not mistake it for the user
+    // switching conversations and stop before prompt.submit.
+    const createBackendSessionForSend = vi.fn(async (preview?: null | string) => {
+      expect(preview).toBe('first message of a new chat')
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeToken = `/${NEW_STORED_ID}::`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('first message of a new chat')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    // The FULL RPC transcript: exactly one prompt.submit, addressed to the
+    // created runtime session, carrying the user's text — no session.resume
+    // detour and, critically, no silent drop before the submit.
+    expect(calls).toEqual([
+      {
+        method: 'prompt.submit',
+        params: { session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
+      }
+    ])
+  })
+
+  it('delivers the first prompt when React Router commits the created-session route late (#62990)', async () => {
+    // The creator requests the navigation, but React Router can still expose
+    // the OLD new-chat route to the submit continuation for a beat, committing
+    // the created session's URL only before the next await settles. Neither
+    // route snapshot (stale '/', then the late-committed session route) is a
+    // user switch — both are the pipeline's own transition and the first
+    // prompt must still reach the gateway.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let sessionCreated = false
+    let routeReadsAfterCreate = 0
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      sessionCreated = true
+
+      return NEW_RUNTIME_ID
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => {
+          if (!sessionCreated) {
+            return '/::'
+          }
+
+          routeReadsAfterCreate += 1
+
+          // React Router can still expose / to the outer submit continuation,
+          // then commit the created-session route before the next await settles.
+          return routeReadsAfterCreate === 1 ? '/::' : `/${NEW_STORED_ID}::`
+        }}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('hello')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: NEW_RUNTIME_ID,
+        text: 'hello'
+      },
+      1_800_000
+    )
+  })
+
+  it('aborts a new-session submit when sidebar navigation changes the route before its selected ref (#62562)', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    let releaseAttach: () => void = () => {}
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeToken = `/${NEW_STORED_ID}::`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+
+        return {
+          attached: true,
+          path: '/remote/work/report.txt',
+          ref_text: '@file:report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const attachment: ComposerAttachment = {
+      id: 'file:report.txt',
+      kind: 'file',
+      label: 'report.txt',
+      path: '/Users/alice/report.txt',
+      refText: '@file:`/Users/alice/report.txt`'
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('first message', { attachments: [attachment] })
+    await waitFor(() => expect(calls.some(call => call.method === 'file.attach')).toBe(true))
+
+    // selectSidebarItem calls navigate() first. The routed effect has not yet
+    // entered resumeSession(), so the selected-session ref still points at the
+    // just-created session when attachment sync settles — the route move to a
+    // DIFFERENT chat must abort on its own.
+    routeToken = '/sidebar-target::'
+    releaseAttach()
+
+    expect(await submitting).toBe(false)
+    expect(selectedStoredSessionIdRef.current).toBe(NEW_STORED_ID)
+    expect(calls.some(call => call.method === 'prompt.submit')).toBe(false)
+  })
+
+  it('still aborts when the user genuinely switches chats after create, during attachment sync (#62805)', async () => {
+    // The post-create re-baseline (adopting the created chat as the pinned
+    // target) must not mask a REAL switch later in the pipeline: the user
+    // clicks a different session after createBackendSessionForSend lands but
+    // before attachment sync settles — selection AND route both move to the
+    // other chat, and the drift check at the post-attachments boundary must
+    // abort rather than deliver the text into whichever chat won the race.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    let releaseFileAttach: () => void = () => {}
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeToken = `/${NEW_STORED_ID}::`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        // Block here so the user can switch sessions mid-sync.
+        await new Promise<void>(resolve => {
+          releaseFileAttach = resolve
+        })
+
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/test.pdf',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const attachment: ComposerAttachment = {
+      id: 'file:test',
+      kind: 'file',
+      label: 'test.pdf',
+      path: '/abs/test.pdf',
+      refText: '@file:`/abs/test.pdf`'
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('message before the switch', { attachments: [attachment] })
+    await waitFor(() => expect(calls.some(c => c.method === 'file.attach')).toBe(true))
+
+    // Simulate a user switching to a different session after the new session
+    // was created and the sync phase started.
+    selectedStoredSessionIdRef.current = 'stored-other-session'
+    routeToken = '/stored-other-session::'
+    releaseFileAttach()
+
+    expect(await submitting).toBe(false)
+    expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+})
+
+describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
+  const STORED_ID = 'stored-busy-gw'
+  const RESUMED_RUNTIME_ID = 'rt-busy-gw'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not abort a send when programmatic gateway churn fires mid-submit (selection null-reset + search/hash route churn)', async () => {
+    // The busy-gateway superset of #63078: with background streaming sessions,
+    // per-minute cron sessions, or a messaging surface active, the selected
+    // stored id gets null-reset by gateway/profile reconnects and overlays
+    // park state in location.search/hash. None of that is the user changing
+    // chats — a send from a second chat must ride through it and reach
+    // prompt.submit instead of silently aborting.
+    let releaseResume: () => void = () => {}
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = `/${STORED_ID}::`
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        await new Promise<void>(resolve => {
+          releaseResume = resolve
+        })
+
+        return { session_id: RESUMED_RUNTIME_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('send from a second chat on a busy gateway')
+    await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
+
+    // Programmatic churn while resume is in flight — NOT user switches:
+    // a gateway/profile reconnect null-resets the selection...
+    selectedStoredSessionIdRef.current = null
+    // ...a background event retargets the active runtime ref (#47709 class)...
+    activeSessionIdRef.current = 'rt-some-background-session'
+    // ...and an overlay parks state in search/hash (pathname unchanged).
+    routeToken = `/${STORED_ID}:?panel=preview:#reply`
+    releaseResume()
+
+    expect(await submitting).toBe(true)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: RESUMED_RUNTIME_ID,
+      text: 'send from a second chat on a busy gateway'
+    })
+  })
+
+  it('still aborts when the user genuinely moves to a different chat mid-submit', async () => {
+    // The churn tolerance must not weaken the real guard: selection AND route
+    // moving to another actual chat is a user switch and must abort.
+    let releaseResume: () => void = () => {}
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_ID }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = `/${STORED_ID}::`
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        await new Promise<void>(resolve => {
+          releaseResume = resolve
+        })
+
+        return { session_id: RESUMED_RUNTIME_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('must not land in the other chat')
+    await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
+
+    // A genuine switch: the user clicks another chat, which retargets
+    // selection and route synchronously.
+    selectedStoredSessionIdRef.current = 'stored-other-chat'
+    routeToken = '/stored-other-chat::'
+    releaseResume()
+
+    expect(await submitting).toBe(false)
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
   })
 })

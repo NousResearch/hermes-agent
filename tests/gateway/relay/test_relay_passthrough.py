@@ -118,7 +118,11 @@ async def test_discord_interaction_routes_through_handle_message(adapter, monkey
 
     assert len(seen) == 1
     ev = seen[0]
-    assert ev.text == "summarize"
+    # APPLICATION_COMMAND interactions are normalized to a leading-slash
+    # command (the dispatcher's contract), not the bare registered name.
+    assert ev.text == "/summarize"
+    assert ev.is_command() is True
+    assert ev.get_command() == "summarize"
     assert ev.source.chat_id == "chan-9"
     assert ev.source.scope_id == "guild-7"
     assert ev.source.user_id == "user-3"
@@ -151,6 +155,147 @@ async def test_message_component_interaction_uses_custom_id(adapter, monkeypatch
     await stub.push_passthrough(fwd)
     assert len(seen) == 1
     assert seen[0].text == "approve_btn"
+    # Component interactions stay plain text — only APPLICATION_COMMANDs are
+    # normalized to slash commands.
+    assert seen[0].is_command() is False
+
+
+@pytest.mark.asyncio
+async def test_application_command_no_options_is_slash_command(adapter, monkeypatch):
+    """/new with no options -> text '/new', dispatched as a COMMAND event."""
+    from gateway.platforms.base import MessageType
+
+    await adapter.connect()
+    stub = adapter._transport
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward(
+        {
+            "id": "i-new",
+            "type": 2,
+            "channel_id": "c3",
+            "guild_id": "g3",
+            "data": {"name": "new"},
+            "member": {"user": {"id": "u3", "username": "ben"}},
+        }
+    )
+    await stub.push_passthrough(fwd)
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.text == "/new"
+    assert ev.message_type == MessageType.COMMAND
+    # Behavior contract: the dispatcher must recognize this as command 'new'.
+    assert ev.is_command() is True
+    assert ev.get_command() == "new"
+    assert ev.get_command_args() == ""
+
+
+@pytest.mark.asyncio
+async def test_application_command_scalar_options_append_values(adapter, monkeypatch):
+    """Scalar options append their values space-separated: /model gpt-x."""
+    await adapter.connect()
+    stub = adapter._transport
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward(
+        {
+            "id": "i-model",
+            "type": 2,
+            "channel_id": "c4",
+            "guild_id": "g4",
+            "data": {
+                "name": "model",
+                "options": [{"name": "name", "type": 3, "value": "gpt-x"}],
+            },
+            "member": {"user": {"id": "u4", "username": "ben"}},
+        }
+    )
+    await stub.push_passthrough(fwd)
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.text == "/model gpt-x"
+    assert ev.is_command() is True
+    assert ev.get_command() == "model"
+    assert ev.get_command_args() == "gpt-x"
+
+
+@pytest.mark.asyncio
+async def test_application_command_subcommand_nesting_renders_names_then_values(
+    adapter, monkeypatch
+):
+    """SUB_COMMAND (type 1) appends its name, then recurses into its options."""
+    await adapter.connect()
+    stub = adapter._transport
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward(
+        {
+            "id": "i-sub",
+            "type": 2,
+            "channel_id": "c5",
+            "guild_id": "g5",
+            "data": {
+                "name": "skill",
+                "options": [
+                    {
+                        "name": "run",
+                        "type": 1,  # SUB_COMMAND
+                        "options": [{"name": "target", "type": 3, "value": "deploy"}],
+                    }
+                ],
+            },
+            "member": {"user": {"id": "u5", "username": "ben"}},
+        }
+    )
+    await stub.push_passthrough(fwd)
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.text == "/skill run deploy"
+    assert ev.is_command() is True
+    assert ev.get_command() == "skill"
+    assert ev.get_command_args() == "run deploy"
+
+
+@pytest.mark.asyncio
+async def test_ping_interaction_produces_no_command(adapter, monkeypatch):
+    """A PING (type 1) body — never normally forwarded — stays empty TEXT, not
+    a phantom command."""
+    from gateway.platforms.base import MessageType
+
+    await adapter.connect()
+    stub = adapter._transport
+    seen = []
+
+    async def fake_handle(event):
+        seen.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    fwd = _interaction_forward(
+        {
+            "id": "i-ping",
+            "type": 1,  # PING
+            "channel_id": "c6",
+            "user": {"id": "u6", "username": "ben"},
+        }
+    )
+    await stub.push_passthrough(fwd)
+    assert len(seen) == 1
+    ev = seen[0]
+    assert ev.text == ""
+    assert ev.message_type == MessageType.TEXT
+    assert ev.is_command() is False
 
 
 @pytest.mark.asyncio

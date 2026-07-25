@@ -72,6 +72,7 @@ from hermes_cli.config import (
     save_config,
     save_env_value,
     remove_env_value,
+    custom_endpoint_key_env,
     check_config_version,
     detect_install_method,
     format_docker_update_message,
@@ -1271,6 +1272,7 @@ class CustomEndpointUpdate(BaseModel):
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
+    models: Optional[List[str]] = None
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -3036,6 +3038,16 @@ async def get_ssh_ownership(request: Request):
     return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
 
 
+@app.get("/api/health")
+async def get_health():
+    """Lightweight process liveness for desktop/backend readiness probes."""
+    return {
+        "ok": True,
+        "version": __version__,
+        "auth_required": bool(getattr(app.state, "auth_required", False)),
+    }
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -3049,7 +3061,9 @@ async def get_status(profile: Optional[str] = None):
     # skills-module attributes that a concurrent request would cross-restore
     # across that await. Status only resolves get_hermes_home() at call time
     # (config/env/gateway state), which the task-local contextvar covers.
+    profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
+        profile_dir = _resolve_profile_dir(requested_profile)
         status_scope = _config_profile_scope(requested_profile)
         status_scope.__enter__()
 
@@ -3059,7 +3073,17 @@ async def get_status(profile: Optional[str] = None):
         # Try local PID check first (same-host).  If that fails and a remote
         # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
         # dashboard works when the gateway runs in a separate container.
-        gateway_pid = get_running_pid_cached()
+        #
+        # When ?profile=<name> was given, scope PID and state reads to that
+        # profile's directory — gateway identity files (PID, lock, runtime
+        # status) are written to the per-profile home, not the process-level
+        # HERMES_HOME (see issue #69143). Plain /api/status keeps the exact
+        # zero-arg call so its behavior (and cache signature) is unchanged.
+        gateway_pid = (
+            get_running_pid_cached(pid_path=profile_dir / "gateway.pid")
+            if profile_dir
+            else get_running_pid_cached()
+        )
         gateway_running = gateway_pid is not None
         remote_health_body: dict | None = None
 
@@ -3099,7 +3123,17 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        local_runtime = read_runtime_status()
+        #
+        # When ?profile=<name> was given, read from the profile's directory so
+        # the state file resolves to the per-profile gateway_state.json, not
+        # the fixed process-level HERMES_HOME (see issue #69143). Plain
+        # /api/status keeps the exact zero-arg call so existing behavior
+        # (and monkeypatched call shapes) are unchanged.
+        local_runtime = (
+            read_runtime_status(path=profile_dir / "gateway_state.json")
+            if profile_dir
+            else read_runtime_status()
+        )
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
@@ -3109,7 +3143,16 @@ async def get_status(profile: Optional[str] = None):
         # is display-only. (Running os.kill on a remote PID is both wrong and
         # trips the test live-system guard.)
         if not gateway_running and local_runtime is not None:
-            runtime_pid = get_runtime_status_running_pid(local_runtime)
+            # expected_home scopes the OS-identity check to the requested
+            # profile so a recycled PID belonging to a different profile's
+            # live gateway is not reported running for this one.
+            runtime_pid = (
+                get_runtime_status_running_pid(
+                    local_runtime, expected_home=profile_dir
+                )
+                if profile_dir
+                else get_runtime_status_running_pid(local_runtime)
+            )
             if runtime_pid is not None:
                 gateway_running = True
                 gateway_pid = runtime_pid
@@ -7552,6 +7595,38 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
+def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """Return ``(has_api_key, preview)`` for a provider or model config block.
+
+    Keys live in ``.env`` behind ``key_env``; only entries written before
+    #69449 still carry a plaintext ``api_key``. Checking both keeps the panel
+    honest either way — reading only ``api_key`` reported "no API key" for
+    every endpoint whose key had been moved to ``.env``.
+    """
+    plaintext = str(entry.get("api_key") or "").strip()
+    if plaintext:
+        return True, redact_key(plaintext)
+    key_env = str(entry.get("key_env") or "").strip()
+    if key_env:
+        return True, f"${{{key_env}}}"
+    return False, None
+
+
+def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
+    """True when this endpoint's on-disk ``api_key`` is a ``${VAR}`` template.
+
+    ``load_config()`` expands env refs, so a hand-written
+    ``api_key: ${MY_KEY}`` is indistinguishable from a literal secret by the
+    time it reaches us. Such an entry is already keeping its secret out of
+    config.yaml, so migrating it would only copy that secret into a second
+    env var the user didn't ask for.
+    """
+    providers = read_raw_config().get("providers")
+    entry = providers.get(endpoint_id) if isinstance(providers, dict) else None
+    raw_key = entry.get("api_key") if isinstance(entry, dict) else None
+    return bool(isinstance(raw_key, str) and re.search(r"\$\{[^}]+\}", raw_key))
+
+
 def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
@@ -7570,6 +7645,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             endpoint_id = str(provider_id)
             models = _models_from_custom_endpoint_entry(raw_entry)
             endpoint_model = str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else ""))
+            has_api_key, api_key_preview = _api_key_display(raw_entry)
             endpoints.append({
                 "id": endpoint_id,
                 "name": str(raw_entry.get("name") or endpoint_id),
@@ -7578,13 +7654,14 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "models": models,
                 "context_length": raw_entry.get("context_length"),
                 "discover_models": bool(raw_entry.get("discover_models", True)),
-                "has_api_key": bool(str(raw_entry.get("api_key", "") or "").strip()),
-                "api_key_preview": redact_key(str(raw_entry.get("api_key", "") or "")) if raw_entry.get("api_key") else None,
+                "has_api_key": has_api_key,
+                "api_key_preview": api_key_preview,
                 "is_current": endpoint_id == current_provider,
                 "source": "providers",
             })
 
     if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
+        has_api_key, api_key_preview = _api_key_display(model_cfg)
         endpoints.insert(0, {
             "id": "custom",
             "name": "Custom",
@@ -7593,8 +7670,8 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
             "models": [current_model] if current_model else [],
             "context_length": model_cfg.get("context_length"),
             "discover_models": True,
-            "has_api_key": bool(str(model_cfg.get("api_key", "") or "").strip()),
-            "api_key_preview": redact_key(str(model_cfg.get("api_key", "") or "")) if model_cfg.get("api_key") else None,
+            "has_api_key": has_api_key,
+            "api_key_preview": api_key_preview,
             "is_current": True,
             "source": "direct-config",
         })
@@ -7627,7 +7704,7 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
         return
     if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
         return
-    for field in ("provider", "base_url", "api_key"):
+    for field in ("provider", "base_url", "api_key", "key_env"):
         model_cfg.pop(field, None)
     cfg["model"] = model_cfg
 
@@ -7669,19 +7746,47 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         "model": model,
         "discover_models": bool(body.discover_models),
     })
-    # Same for the model map: the panel names one default model, it does not
-    # enumerate the provider's catalogue. Keep the other models (and their
-    # context lengths) and just ensure this one is present.
+    # Same for the model map: merge rather than replace, so existing models
+    # keep their context lengths. ``body.models`` is the catalogue the panel's
+    # Test button already discovered — without it only the one hand-typed
+    # model survived Save, and every picker showed a single-entry list for a
+    # provider serving dozens (#69988). A payload with no ``models`` (older
+    # UI) still just ensures the named default is present.
     existing_models = entry.get("models")
     models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
-    current_model_entry = models_map.get(model)
-    models_map[model] = dict(current_model_entry) if isinstance(current_model_entry, dict) else {}
+    for candidate in (*(body.models or ()), model):
+        model_id = str(candidate).strip()
+        if not model_id:
+            continue
+        current = models_map.get(model_id)
+        models_map[model_id] = dict(current) if isinstance(current, dict) else {}
     entry["models"] = models_map
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
-    if body.api_key is not None and body.api_key.strip():
-        entry["api_key"] = body.api_key.strip()
+
+    # API keys never belong in config.yaml (#69449). Write to .env and
+    # reference it via ``key_env`` — the same indirection built-in providers
+    # use and that runtime_provider.py already resolves at load time.
+    env_var = custom_endpoint_key_env(endpoint_id)
+    submitted_key = body.api_key.strip() if body.api_key is not None else None
+    if submitted_key:
+        save_env_value(env_var, submitted_key)
+        entry["key_env"] = env_var
+        entry.pop("api_key", None)
+    elif submitted_key is not None:
+        # Blank field means "clear the key", not "leave it alone".
+        remove_env_value(env_var)
+        entry.pop("key_env", None)
+        entry.pop("api_key", None)
+    elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
+        # No new key submitted, but this entry still carries one an earlier
+        # release wrote in plaintext. Migrate it on the next save so endpoints
+        # configured before the fix get cleaned up too, without the user
+        # having to re-enter the key.
+        save_env_value(env_var, entry["api_key"].strip())
+        entry["key_env"] = env_var
+        entry.pop("api_key", None)
 
     providers[endpoint_id] = entry
     cfg["providers"] = providers
@@ -7690,8 +7795,9 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         cfg["model"] = _apply_main_model_assignment(
             cfg.get("model", {}), endpoint_id, model, base_url
         )
-        if entry.get("api_key") and isinstance(cfg["model"], dict):
-            cfg["model"]["api_key"] = entry["api_key"]
+        if entry.get("key_env") and isinstance(cfg["model"], dict):
+            cfg["model"]["key_env"] = entry["key_env"]
+            cfg["model"].pop("api_key", None)
 
     return endpoint_id, entry
 
@@ -7742,7 +7848,10 @@ def activate_custom_endpoint(endpoint_id: str):
             raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
         model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-        if entry.get("api_key"):
+        if entry.get("key_env"):
+            model_cfg["key_env"] = entry["key_env"]
+            model_cfg.pop("api_key", None)
+        elif entry.get("api_key"):
             model_cfg["api_key"] = entry["api_key"]
         cfg["model"] = model_cfg
         save_config(cfg)
@@ -7766,6 +7875,7 @@ def delete_custom_endpoint(endpoint_id: str):
         providers.pop(provider_key, None)
         cfg["providers"] = providers
         _detach_main_model_from_provider(cfg, provider_key)
+        remove_env_value(custom_endpoint_key_env(provider_key))
         save_config(cfg)
         response = _custom_endpoint_response(cfg)
         response["ok"] = True

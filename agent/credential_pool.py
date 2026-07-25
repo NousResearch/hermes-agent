@@ -594,6 +594,14 @@ class CredentialPool:
         # Re-armed to None on every successful selection so a recover→re-exhaust
         # transition logs promptly instead of being swallowed by a stale window.
         self._last_no_entries_log_at: Optional[float] = None
+        # #70401: consecutive mark_exhausted_and_rotate() calls whose supplied
+        # credential identity matched no pool entry (OAuth wrappers whose
+        # runtime key rotates, entries pruned by another process, ...).  These
+        # rotations mark nothing exhausted, so without a cap the pool can
+        # never converge to "no available entries" and the caller's 401 retry
+        # loop runs unbounded and non-interruptible.  Reset whenever a real
+        # entry is identified or an escape path returns None.
+        self._unmatched_rotation_streak: int = 0
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -1584,7 +1592,13 @@ class CredentialPool:
 
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            entry = self._select_unlocked()
+            if entry is not None:
+                # A normal (non-recovery) selection starts a fresh episode —
+                # don't let a leftover unmatched-rotation streak from an old
+                # failure trip the #70401 bound early next time.
+                self._unmatched_rotation_streak = 0
+            return entry
 
     def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
@@ -1809,6 +1823,35 @@ class CredentialPool:
                 # (rotated away, or a wrapper whose runtime key differs).
                 # Falling through to current()/_select_unlocked() would mark an
                 # innocent healthy key exhausted for the full cooldown TTL.
+                #
+                # #70401: this branch must still be BOUNDED. With OAuth-token
+                # auth the upstream 401's key hint never matches any entry's
+                # ``runtime_api_key``, so every retry lands here, nothing is
+                # ever marked exhausted, and the pool can never reach the
+                # "no available entries" state — the caller retries the same
+                # dead token forever (~6/sec, starving the event loop so chat
+                # interrupts are never processed). The single-entry case
+                # below already escapes; multi-entry pools could still
+                # ping-pong A→B→A indefinitely without marking anything.
+                # Cap consecutive no-mark rotations at one full lap of the
+                # available entries: past that, every candidate has been
+                # handed back at least once without recovery, so stop
+                # guessing and surface the error (no cooldown is written for
+                # anybody — healthy keys stay available for the next turn).
+                self._unmatched_rotation_streak += 1
+                available_count = len(self._available_entries())
+                if self._unmatched_rotation_streak > max(available_count, 1):
+                    logger.warning(
+                        "credential pool: failed credential identity matched no "
+                        "%s entry for %d consecutive rotations (pool size %d) — "
+                        "surfacing the error instead of rotating again",
+                        self.provider,
+                        self._unmatched_rotation_streak,
+                        available_count,
+                    )
+                    self._unmatched_rotation_streak = 0
+                    self._current_id = None
+                    return None
                 logger.info(
                     "credential pool: failed credential identity matched no %s "
                     "entry; rotating without marking any credential exhausted",
@@ -1821,9 +1864,13 @@ class CredentialPool:
                     # entry reports a successful recovery without changing
                     # the credential, so the caller retries the same 401
                     # indefinitely. Let fallback/error propagation proceed.
+                    self._unmatched_rotation_streak = 0
                     self._current_id = None
                     return None
                 return next_entry
+            # A real entry was identified — any prior unmatched-rotation
+            # streak is stale (this mark WILL advance pool state).
+            self._unmatched_rotation_streak = 0
             if entry is None:
                 entry = self._current_unlocked() or self._select_unlocked()
             if entry is None:

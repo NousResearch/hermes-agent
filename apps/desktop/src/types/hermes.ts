@@ -182,6 +182,7 @@ export interface CustomEndpointUpdate {
   id?: string
   make_default?: boolean
   model: string
+  models?: string[]
   name: string
 }
 
@@ -494,7 +495,11 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?: 'async_delegation_complete' | 'hidden' | 'model_switch' | string
-  display_metadata?: TimelineDisplayMetadata
+  /**
+   * A backend older than this app can still serve this as unparsed JSON text,
+   * so readers must narrow before indexing into it.
+   */
+  display_metadata?: string | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: unknown
   timestamp?: number
@@ -509,8 +514,20 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  /** Present when the backend found a fresh crash-interrupted turn and
+   *  scheduled its automatic continuation; the turn arrives as a normal
+   *  message.start stream right after this resume. */
+  auto_continue?: {
+    attempt: number
+    interrupted_at: number
+  }
   inflight?: null | {
     assistant?: string
+    /** Retained failed turn: the error the terminal frame carried (the frame
+     *  itself may have been lost to a disconnect). */
+    error?: string
+    recoverable?: boolean
+    status?: string
     streaming?: boolean
     user?: string
   }

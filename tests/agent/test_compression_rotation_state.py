@@ -126,21 +126,35 @@ class TestOrphanRollbackOnCreateFailure:
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
 
-        # Make the CHILD create_session raise, but let the initial parent
-        # end_session/reopen work. We patch create_session to blow up.
-        real_create = db.create_session
+        # Atomic publication failure must leave the live parent and caller's
+        # original list untouched even when a plugin compressor mutates in place.
+        original = _msgs()
+
+        def _mutating_compress(live_messages, **_kwargs):
+            live_messages[:] = [
+                {"role": "user", "content": "mutated compacted snapshot"}
+            ]
+            return live_messages
+
+        agent.context_compressor.compress.side_effect = _mutating_compress
 
         def _boom(*a, **k):
-            raise RuntimeError("FOREIGN KEY constraint failed")
+            raise RuntimeError("simulated atomic publication failure")
 
-        with patch.object(db, "create_session", side_effect=_boom):
-            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        with patch.object(db, "publish_compression_child", side_effect=_boom):
+            returned, _system_prompt = agent._compress_context(
+                original, "sys", approx_tokens=120_000
+            )
 
-        # The live id must roll back to the still-indexed parent — NOT a
-        # phantom child id that has no row in state.db.
         assert agent.session_id == parent
-        assert db.get_session(parent) is not None
-        _ = real_create  # silence unused
+        assert [(m["role"], m["content"]) for m in returned] == [
+            (m["role"], m["content"]) for m in _msgs()
+        ]
+        assert returned is original
+        parent_row = db.get_session(parent)
+        assert parent_row is not None
+        assert parent_row["ended_at"] is None
+        assert db.find_live_compression_child(parent) is None
 
 
 class TestWorkspaceMetadataFollowsRotation:

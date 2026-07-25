@@ -2202,7 +2202,10 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     return str(interpreter), env_overlay
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str,
+    workdir: Optional[str] = None,
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2228,6 +2231,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        workdir: Optional absolute path to use as the script's cwd.
+            When set, the subprocess runs in this directory instead of
+            the scripts-dir parent.  The Python process cwd is NEVER
+            mutated, avoiding the global-side-effect bug where a cron
+            job's ``os.chdir()`` leaks into concurrent gateway sessions
+            (#69396).
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2298,12 +2307,17 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             }
         env = _sanitize_subprocess_env(os.environ.copy())
         env.update(env_overlay)
+        # Use the job's workdir as the subprocess cwd when configured,
+        # otherwise default to the scripts-dir parent (back-compat).
+        # NEVER mutate the Python process cwd — that would leak into
+        # concurrent gateway sessions (#69396).
+        _script_cwd = workdir or str(path.parent)
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=_script_cwd,
             env=env,
             **popen_kwargs,
         )
@@ -2337,7 +2351,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict, script_path: str, workdir: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2359,7 +2373,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2390,10 +2404,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
 
     try:
-        return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2796,25 +2810,26 @@ def run_job(
             return False, "", "", err
 
         # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # paths. For no_agent jobs this is passed as the subprocess cwd so the
+        # Python process cwd is NEVER mutated — avoiding the global-side-effect
+        # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            logger.warning(
+                "Job '%s': configured workdir %r no longer exists — running without it",
+                job_id, _job_workdir,
+            )
+            _job_workdir = None
 
         try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+            ok, output = _run_job_script_with_claim_heartbeat(
+                job, script_path, workdir=_job_workdir,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Job '%s': script execution raised unexpectedly", job_id,
+            )
+            ok, output = False, f"Script execution failed: {exc}"
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3036,6 +3051,18 @@ def run_job(
     # Cron output delivery itself reads job["origin"] directly via
     # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
     # below, so clearing HERMES_SESSION_* here does not affect delivery.
+    # Resolve workdir BEFORE set_session_vars so we can pass it as cwd=,
+    # letting set_session_vars handle the _SESSION_CWD ContextVar set/clear
+    # via its existing machinery (clear_session_vars calls clear_session_cwd
+    # internally). This avoids a separate import/set/clear dance (#69396).
+    _job_workdir = (job.get("workdir") or "").strip() or None
+    if _job_workdir and not Path(_job_workdir).is_dir():
+        logger.warning(
+            "Job '%s': configured workdir %r no longer exists — running without it",
+            job_id, _job_workdir,
+        )
+        _job_workdir = None
+
     _ctx_tokens = set_session_vars(
         platform="",
         chat_id="",
@@ -3054,6 +3081,7 @@ def run_job(
         # inline/synchronous path, so results return within the job's own turn.
         # See declare_stateless_channel(). Upstream: #53027, #63142.
         async_delivery=False,
+        cwd=_job_workdir or "",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -3063,11 +3091,10 @@ def run_job(
     for _var_name in _cron_delivery_vars:
         _VAR_MAP[_var_name].set("")
 
-    # Per-job working directory.  When set (and validated at create/update
-    # time), we point TERMINAL_CWD at it so:
-    #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
-    #     .cursorrules from the job's project dir, AND
-    #   - the terminal, file, and code-exec tools run commands from there.
+    # Per-job working directory — _SESSION_CWD was already set via
+    # set_session_vars(cwd=...) above. Here we only handle the
+    # process-global TERMINAL_CWD env var, which is serialized by
+    # _terminal_cwd_lock to avoid leaking into concurrent jobs.
     #
     # os.environ["TERMINAL_CWD"] is process-global, so this override is
     # serialized by _terminal_cwd_lock (acquired just below): a workdir job
@@ -3079,15 +3106,10 @@ def run_job(
     # file / code-exec commands in the wrong directory.  For workdir-less jobs
     # we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
-    _job_workdir = (job.get("workdir") or "").strip() or None
-    if _job_workdir and not Path(_job_workdir).is_dir():
-        # Directory was removed between create-time validation and now.  Log
-        # and drop back to old behaviour rather than crashing the job.
-        logger.warning(
-            "Job '%s': configured workdir %r no longer exists — running without it",
-            job_id, _job_workdir,
-        )
-        _job_workdir = None
+    #
+    # The critical path (resolve_context_cwd / build_context_files_prompt)
+    # checks _SESSION_CWD first, so gateway sessions with no override see
+    # their own cwd, not the cron's workdir (#69396).
 
     # Snapshot the current env value BEFORE acquiring the lock so the finally
     # below can always restore it, even if an exception fires before we set the
@@ -3716,6 +3738,8 @@ def run_job(
         else:
             _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
+        # clear_session_vars also clears _SESSION_CWD internally, so no
+        # separate clear_session_cwd() call is needed.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")

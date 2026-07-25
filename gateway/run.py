@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import faulthandler
 import inspect
 import json
 import logging
@@ -77,6 +78,10 @@ from hermes_cli.fallback_config import get_fallback_chain
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+# Telegram cold polling now proves one real getUpdates round trip before connect
+# returns. Leave enough outer budget for initialize/deleteWebhook/start_polling
+# wall deadlines plus readiness; other platforms retain the 30s isolation bound.
+_TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -2129,9 +2134,11 @@ from gateway.platforms.base import (
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    _arm_loop_floor_timer,
     arm_shutdown_watchdog,
     loop_heartbeat_forever,
     resolve_shutdown_watchdog_delay,
+    start_loop_liveness_watchdog,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -3285,13 +3292,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_ephemeral_pin: Dict[str, tuple] = {}
     _session_vc_last: Dict[str, str] = {}
     _startup_restore_in_progress: bool = False
-    # Loop-liveness heartbeat / shutdown-watchdog handles (#66892). Class-level
+    # Loop-liveness heartbeat / watchdog handles (#66892, #69089). Class-level
     # defaults so partial construction in tests doesn't blow up on access; the
     # real values are set in __init__ / start() / stop().
     _loop_heartbeat_task: Optional["asyncio.Task"] = None
+    _loop_floor_timer_handle: Optional[Any] = None
+    _loop_liveness_watchdog: Optional[Any] = None
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
     _platform_lock_takeover_on_start: bool = False
+    _reconnect_watcher_task: Optional["asyncio.Task"] = None
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -3619,18 +3629,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)
 
-        # Opportunistic shadow-repo cleanup — deletes orphan/stale
-        # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via
-        # checkpoints.auto_prune, idempotent via .last_prune marker.
+        # Opportunistic shadow-repo cleanup — deletes stale checkpoint repos
+        # under ~/.hermes/checkpoints/.  Opt-in via checkpoints.auto_prune,
+        # idempotent via .last_prune marker.
         try:
             from hermes_cli.config import load_config as _load_full_config
             _ckpt_cfg = (_load_full_config().get("checkpoints") or {})
             if _ckpt_cfg.get("auto_prune", False):
                 from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+                # delete_orphans is intentionally never honoured here: a
+                # missing workdir at startup is ambiguous (deleted project
+                # vs. an unmounted external volume / network share / VPN
+                # not yet up) and this sweep runs unattended. Orphan cleanup
+                # is only ever done via the explicit `hermes checkpoints
+                # prune` command, which the user has to invoke.
                 maybe_auto_prune_checkpoints(
                     retention_days=int(_ckpt_cfg.get("retention_days", 7)),
                     min_interval_hours=int(_ckpt_cfg.get("min_interval_hours", 24)),
-                    delete_orphans=bool(_ckpt_cfg.get("delete_orphans", True)),
+                    delete_orphans=False,
                     max_total_size_mb=int(_ckpt_cfg.get("max_total_size_mb", 500)),
                 )
         except Exception as exc:
@@ -3665,6 +3681,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # updated_at to distinguish "process alive" from "loop frozen".
         self._gateway_started_at: float = time.time()
         self._loop_heartbeat_task: Optional[asyncio.Task] = None
+        self._loop_floor_timer_handle = None
+        self._loop_liveness_watchdog = None
 
         # scale-to-zero (Phase 0, F13): gateway-scoped "last inbound seen" clock.
         # There is no such clock today (only a per-agent _last_activity_ts), so the
@@ -3778,7 +3796,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
-            data = json.loads(self._VOICE_MODE_PATH.read_text())
+            data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return {}
 
@@ -3806,7 +3824,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
             self._VOICE_MODE_PATH.write_text(
-                json.dumps(self._voice_mode, indent=2)
+                json.dumps(self._voice_mode, indent=2), encoding="utf-8"
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
@@ -4012,7 +4030,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return max(0.0, timeout)
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
 
-    def _platform_connect_timeout_secs(self) -> float:
+    def _platform_connect_timeout_secs(self, platform=None) -> float:
         """Return the per-platform connect timeout used during startup/retry."""
         raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
         if raw:
@@ -4025,6 +4043,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             else:
                 return max(0.0, timeout)
+        if platform == Platform.TELEGRAM:
+            return _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
     async def _connect_adapter_with_timeout(
@@ -4038,17 +4058,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         (preserve the queue so messages sent during the outage are delivered
         rather than silently dropped — #46621).
         """
-        timeout = self._platform_connect_timeout_secs()
+        timeout = self._platform_connect_timeout_secs(platform)
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
+        # Use the detach-on-timeout pattern instead of plain asyncio.wait_for:
+        # asyncio.wait_for cancels the overdue task but then waits for it to
+        # exit. An adapter connect() that catches CancelledError can therefore
+        # block recovery forever (the watcher never reaches the next retry).
+        # Keep ownership of the old task through its done callback, but
+        # release the runner at the deadline (#70344).
+        task = asyncio.ensure_future(
+            adapter.connect(is_reconnect=is_reconnect)
+        )
         try:
-            return await asyncio.wait_for(
-                adapter.connect(is_reconnect=is_reconnect), timeout=timeout
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"{platform.value} connect timed out after {timeout:g}s"
-            ) from exc
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(consume_detached_task_result)
+            raise
+        if task in done:
+            result = await task
+            return bool(result)
+        task.cancel()
+        task.add_done_callback(consume_detached_task_result)
+        raise TimeoutError(
+            f"{platform.value} connect timed out after {timeout:g}s"
+        )
 
     async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
         """Connect one cold-start adapter with tightly scoped replace intent.
@@ -4725,6 +4760,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "%s queued for background reconnection",
                     adapter.platform.value,
                 )
+                # Ensure the reconnect watcher is alive — if it died (e.g. from
+                # exhausting its restart budget), respawn it so queued platforms
+                # are not permanently stranded (#70344).
+                self._ensure_reconnect_watcher_running()
 
         if not self.adapters and not self._failed_platforms:
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
@@ -6956,7 +6995,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         path = _hermes_home / self._STUCK_LOOP_FILE
         try:
-            counts = json.loads(path.read_text()) if path.exists() else {}
+            counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         except Exception:
             counts = {}
 
@@ -6986,7 +7025,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         try:
-            counts = json.loads(path.read_text())
+            counts = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return 0
 
@@ -7032,7 +7071,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not path.exists():
             return
         try:
-            counts = json.loads(path.read_text())
+            counts = json.loads(path.read_text(encoding="utf-8"))
             if session_key in counts:
                 del counts[session_key]
                 if counts:
@@ -7729,6 +7768,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return True
 
+    def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Arm the selector floor and out-of-loop watchdog before adapters.
+
+        Disabled entirely with ``gateway.loop_watchdog: false`` in config.yaml
+        (no env override — config-only knob, #69089).
+        """
+        config = getattr(self, "config", None)
+        if config is not None and not getattr(config, "loop_watchdog", True):
+            return
+        if getattr(self, "_loop_floor_timer_handle", None) is None:
+            try:
+                self._loop_floor_timer_handle = _arm_loop_floor_timer(loop)
+            except Exception:
+                logger.debug("Failed to arm gateway loop floor timer", exc_info=True)
+
+        watchdog = getattr(self, "_loop_liveness_watchdog", None)
+        if watchdog is None or not watchdog.is_alive():
+            try:
+                self._loop_liveness_watchdog = start_loop_liveness_watchdog(loop)
+            except Exception:
+                logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
+
+    def _stop_loop_liveness_guards(self) -> None:
+        """Disarm lifetime liveness guards before shutdown can load the loop."""
+        watchdog = getattr(self, "_loop_liveness_watchdog", None)
+        self._loop_liveness_watchdog = None
+        if watchdog is not None:
+            try:
+                watchdog.stop()
+            except Exception:
+                logger.debug("Failed to stop gateway loop liveness watchdog", exc_info=True)
+
+        floor_timer = getattr(self, "_loop_floor_timer_handle", None)
+        self._loop_floor_timer_handle = None
+        if floor_timer is not None:
+            try:
+                floor_timer.cancel()
+            except Exception:
+                logger.debug("Failed to cancel gateway loop floor timer", exc_info=True)
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -7736,10 +7815,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+        # Enable faulthandler at gateway start so that SIGUSR2 (or an
+        # internal watchdog) can dump all thread and task stacks to stderr
+        # for post-mortem diagnosis of event-loop freezes (#70344).
+        faulthandler.enable()
+        # Also dump stacks to a rotating file for off-line analysis when
+        # the gateway is running under a service manager that doesn't
+        # capture stderr.
+        # faulthandler.register() and SIGUSR2 are POSIX-only; skip the
+        # signal-triggered file dump on Windows (faulthandler.enable()
+        # above still covers fatal-error dumps there).
+        _sigusr2 = getattr(signal, "SIGUSR2", None)
+        if _sigusr2 is not None and hasattr(faulthandler, "register"):
+            try:
+                _log_dir = getattr(self.config, "log_dir", None) or os.path.join(
+                    os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
+                    "logs",
+                )
+                _faulthandler_path = os.path.join(_log_dir, "gateway_faulthandler.log")
+                os.makedirs(_log_dir, exist_ok=True)
+                _fh = open(_faulthandler_path, "a", encoding="utf-8")
+                faulthandler.register(
+                    _sigusr2,
+                    file=_fh,
+                    all_threads=True,
+                    chain=True,
+                )
+            except Exception:
+                logger.debug("Could not set up faulthandler file logging", exc_info=True)
+
         try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._gateway_loop = None
+        if self._gateway_loop is not None:
+            self._start_loop_liveness_guards(self._gateway_loop)
         logger.info("Session storage: %s", self.config.sessions_dir)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
@@ -8251,7 +8361,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if connected_count == 0:
-            if startup_nonretryable_errors:
+            if startup_nonretryable_errors and not startup_retryable_errors:
                 reason = "; ".join(startup_nonretryable_errors)
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
@@ -8263,6 +8373,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._request_clean_exit(reason)
                 self._startup_restore_in_progress = False
                 return True
+            if startup_nonretryable_errors:
+                # Mixed failure mode (NS-609): some platforms are fatally
+                # misconfigured (e.g. WhatsApp enabled but never paired) while
+                # others hit merely transient errors (e.g. Telegram TimedOut
+                # during polling startup).  Exiting with
+                # GATEWAY_FATAL_CONFIG_EXIT_CODE here is wrong in both
+                # supervision worlds: under supervisors that honor the
+                # exit-78 contract (systemd RestartPreventExitStatus, s6
+                # finish→125 since #51228) the gateway goes PERMANENTLY down
+                # over a network blip; under anything else it crash-loops.
+                # Either way the retryable platforms never get their retry.
+                # Log the fatal side loudly, then fall through to the
+                # degraded/retry path below: the reconnect watcher recovers
+                # the retryable platforms; the non-retryable ones remain
+                # fatal-parked and visible in runtime status.
+                logger.error(
+                    "%d platform(s) fatally misconfigured and parked: %s. "
+                    "Staying alive so retryable platforms can recover.",
+                    len(startup_nonretryable_errors),
+                    "; ".join(startup_nonretryable_errors),
+                )
             if enabled_platform_count > 0:
                 if startup_retryable_errors:
                     # All enabled platforms hit retryable failures (network
@@ -8455,7 +8586,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        self._spawn_supervised(self._platform_reconnect_watcher, "platform_reconnect_watcher")
+        # Track the reconnect watcher task so _ensure_reconnect_watcher_running
+        # can detect if it dies and respawn it (#70344).
+        self._reconnect_watcher_task = asyncio.create_task(
+            self._platform_reconnect_watcher()
+        )
+        self._background_tasks.add(self._reconnect_watcher_task)
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
@@ -9011,6 +9147,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # self state, so inheriting the mixin keeps every self._kanban_* call site
     # working unchanged while lifting ~1,000 LOC out of this file.
 
+    def _ensure_reconnect_watcher_running(self) -> None:
+        """Ensure the platform reconnect watcher background task is alive.
+
+        If the tracked reconnect watcher task has died (e.g. from exhausting
+        its restart budget, or a terminal exception that _spawn_supervised
+        could not recover), respawns it so platforms queued for reconnection
+        are not permanently stranded. Called after queueing a retryable fatal
+        error in _handle_adapter_fatal_error (#70344).
+        """
+        if not getattr(self, "_running", False):
+            return
+        task = getattr(self, "_reconnect_watcher_task", None)
+        if task is not None and not task.done():
+            return  # already alive
+        logger.warning(
+            "Reconnect watcher task is dead (done=%s) — respawning",
+            task.done() if task is not None else "N/A",
+        )
+        self._reconnect_watcher_task = asyncio.create_task(
+            self._platform_reconnect_watcher()
+        )
+        if getattr(self, "_background_tasks", None) is not None:
+            self._background_tasks.add(self._reconnect_watcher_task)
+
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.
 
@@ -9277,6 +9437,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         service_restart: bool = False,
     ) -> None:
         """Stop the gateway and disconnect all adapters."""
+        # getattr-guard: shutdown-path tests build bare runners via
+        # object.__new__ that lack the liveness-guard machinery.
+        _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)
+        if callable(_stop_guards):
+            _stop_guards()
         if restart:
             self._restart_requested = True
             self._restart_detached = detached_restart
@@ -10774,7 +10939,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 prompt_path = _hermes_home / ".update_prompt.json"
                 try:
                     tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text(response_text)
+                    tmp.write_text(response_text, encoding="utf-8")
                     tmp.replace(response_path)
                     prompt_path.unlink(missing_ok=True)
                 except OSError as e:
@@ -10794,7 +10959,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 prompt_path = _hermes_home / ".update_prompt.json"
                 try:
                     tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text("")
+                    tmp.write_text("", encoding="utf-8")
                     tmp.replace(response_path)
                     prompt_path.unlink(missing_ok=True)
                     logger.info(
@@ -14743,7 +14908,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._booted_from_restart = False
                     return True
                 return False
-            data = json.loads(marker_path.read_text())
+            data = json.loads(marker_path.read_text(encoding="utf-8"))
         except Exception:
             return False
 
@@ -16697,7 +16862,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for path in (claimed_path, pending_path):
             if path.exists():
                 try:
-                    pending = json.loads(path.read_text())
+                    pending = json.loads(path.read_text(encoding="utf-8"))
                     platform_str = pending.get("platform")
                     chat_id = pending.get("chat_id")
                     chat_type = pending.get("chat_type")
@@ -16736,7 +16901,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 await asyncio.sleep(poll_interval)
             if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
-                exit_code_path.write_text("124")
+                exit_code_path.write_text("124", encoding="utf-8")
                 await self._send_update_notification()
             return
 
@@ -16778,7 +16943,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Read any remaining output
                 if output_path.exists():
                     try:
-                        content = output_path.read_text()
+                        content = output_path.read_text(encoding="utf-8")
                         if len(content) > bytes_sent:
                             buffer += content[bytes_sent:]
                             bytes_sent = len(content)
@@ -16788,7 +16953,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 # Send final status
                 try:
-                    exit_code_raw = exit_code_path.read_text().strip() or "1"
+                    exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
                         await adapter.send(
@@ -16817,7 +16982,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check for new output
             if output_path.exists():
                 try:
-                    content = output_path.read_text()
+                    content = output_path.read_text(encoding="utf-8")
                     if len(content) > bytes_sent:
                         buffer += content[bytes_sent:]
                         bytes_sent = len(content)
@@ -16835,7 +17000,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (prompt_path.exists() and session_key
                     and not self._update_prompt_pending.get(session_key)):
                 try:
-                    prompt_data = json.loads(prompt_path.read_text())
+                    prompt_data = json.loads(prompt_path.read_text(encoding="utf-8"))
                     prompt_text = prompt_data.get("prompt", "")
                     default = prompt_data.get("default", "")
                     if prompt_text:
@@ -16883,7 +17048,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Timeout
         if not exit_code_path.exists():
             logger.warning("Update watcher timed out after %.0fs", timeout)
-            exit_code_path.write_text("124")
+            exit_code_path.write_text("124", encoding="utf-8")
             await _flush_buffer()
             try:
                 await adapter.send(
@@ -16929,7 +17094,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif not claimed_path.exists():
                 return True
 
-            pending = json.loads(claimed_path.read_text())
+            pending = json.loads(claimed_path.read_text(encoding="utf-8"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             chat_type = pending.get("chat_type")
@@ -16943,13 +17108,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 claimed_path.replace(pending_path)
                 return False
 
-            exit_code_raw = exit_code_path.read_text().strip() or "1"
+            exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
             exit_code = int(exit_code_raw)
 
             # Read the captured update output
             output = ""
             if output_path.exists():
-                output = output_path.read_text()
+                output = output_path.read_text(encoding="utf-8")
 
             # Resolve adapter
             platform = Platform(platform_str)
@@ -17024,7 +17189,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
         try:
-            data = json.loads(notify_path.read_text())
+            data = json.loads(notify_path.read_text(encoding="utf-8"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")

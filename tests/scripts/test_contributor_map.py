@@ -114,6 +114,15 @@ def test_add_rejects_invalid_email_and_login(emails_dir):
     )
 
 
+def test_add_accepts_legacy_consecutive_hyphen_login(emails_dir):
+    # Legacy GitHub accounts with consecutive hyphens are real (Roger--Han);
+    # current signup rules forbid them but existing logins remain valid.
+    assert add_contributor("roger.hanhong@gmail.com", "Roger--Han") == 0
+    assert (emails_dir / "roger.hanhong@gmail.com").read_text(
+        encoding="utf-8"
+    ).strip().endswith("Roger--Han")
+
+
 def test_add_strips_at_prefix(emails_dir):
     assert add_contributor("z@z.com", "@zeta") == 0
     assert read_mapping_file(emails_dir / "z@z.com") == "zeta"

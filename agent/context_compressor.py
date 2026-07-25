@@ -90,9 +90,6 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
-HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
-HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
-HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
 
 
 SUMMARY_PREFIX = (
@@ -107,9 +104,7 @@ SUMMARY_PREFIX = (
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -219,8 +214,45 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # stale directive it carried (e.g. "resume exactly from Active Task") survives
 # embedded in the body and keeps hijacking replies. Keep newest-first; entries
 # are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+# NEVER mutate or reorder an existing entry — each one is the exact wire text a
+# shipped build persisted, so editing it silently un-normalizes every summary
+# written by that build generation; prepend only. tests/agent/
+# test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Jul 2026 (#65848 class): identical to the current prefix except it
+    # Pre-#69619: identical to the current prefix except the stale-item
+    # discard clause named all four historical headings (the three
+    # section headers removed by #69619 were still in the template).
+    # Summaries persisted by builds immediately before #69619 carry this
+    # exact text and must remain detectable/strippable on resume.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' / '## Historical In-Progress State' / "
+    "'## Historical Pending User Asks' / "
+    "'## Historical Remaining Work' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it
     # lacked the explicit "tools remain fully active" clause — the strong
     # REFERENCE ONLY framing bled into general tool-use suppression
     # (observed: 7 consecutive narration-only turns immediately after a
@@ -236,9 +268,9 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'## Historical Task Snapshot' / '## Historical In-Progress State' / "
+    "'## Historical Pending User Asks' / "
+    "'## Historical Remaining Work' entirely — do not 'wrap up' or "
     "'finish' work described there unless the latest message explicitly "
     "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
@@ -1213,6 +1245,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._anti_thrash_recovery_deadline = 0.0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1350,6 +1383,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._anti_thrash_recovery_deadline = 0.0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1376,6 +1410,7 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self._ineffective_compression_count = 0
+        self._anti_thrash_recovery_deadline = 0.0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
@@ -1747,6 +1782,15 @@ class ContextCompressor(ContextEngine):
     # rationale as the gpt-5.5/Codex 85% autoraise.
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
+    # Anti-thrash recovery window (#14694): once the ineffective/fallback
+    # breaker trips, automatic compaction stays blocked for this long, then
+    # ONE probe attempt is allowed (counters drop to 1 strike, so another
+    # ineffective pass re-trips immediately). Long enough that a genuinely
+    # incompressible session isn't compacting in a loop; short enough that a
+    # session which has since grown real compressible material recovers well
+    # before it rides into the provider's hard context limit.
+    _ANTI_THRASH_RECOVERY_SECONDS = 300.0
+
     @staticmethod
     def _coerce_max_tokens(value: Any) -> int | None:
         """Normalize a max_tokens value to a positive int or None.
@@ -2016,6 +2060,12 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Monotonic deadline after which a tripped anti-thrash guard grants
+        # one probation probe (#14694). 0.0 = clock not armed. Armed lazily on
+        # the first blocked evaluation; deliberately NOT durable, so a process
+        # restart with a persisted tripped counter (#69872) waits a full fresh
+        # window before probing (#54923: restart must never disarm a guard).
+        self._anti_thrash_recovery_deadline: float = 0.0
         # Consecutive completed deterministic-fallback boundaries. Unlike the
         # real-usage effectiveness counter, ordinary fitting responses must not
         # reset this breaker; only a healthy completed summary does.
@@ -2306,21 +2356,66 @@ class ContextCompressor(ContextEngine):
                     _cooldown_remaining,
                 )
             return True
-        # Anti-thrashing: back off if recent compressions were ineffective
+        # Anti-thrashing: back off if recent compressions were ineffective.
+        # The back-off must not be permanent (#14694): the tripped state was
+        # judged against the transcript as it existed THEN (e.g. a middle
+        # region too small to matter), but the conversation keeps growing and
+        # can accumulate plenty of compressible material later. Without a
+        # recovery path the session never auto-compacts again and rides into
+        # the provider's hard context limit. Recovery is a probation probe:
+        # after _ANTI_THRASH_RECOVERY_SECONDS of continuous block, allow ONE
+        # attempt by dropping the tripped counter(s) to 1 strike (persisted,
+        # so sibling agents on the same session row unblock too). If the probe
+        # is ineffective again the very next verdict re-trips the guard, so
+        # the worst case in the truly-incompressible state is one compaction
+        # attempt per recovery window — bounded, not thrash.
+        #
+        # The clock is armed lazily on the first BLOCKED evaluation rather
+        # than persisted at trip time: a fresh process that loads a durable
+        # tripped counter (#69872) therefore starts a full window blocked,
+        # preserving the restart-must-not-disarm contract (#54923).
         if (
             self._ineffective_compression_count >= 2
             or self._fallback_compression_streak >= 2
         ):
+            _now = time.monotonic()
+            if self._anti_thrash_recovery_deadline <= 0.0:
+                self._anti_thrash_recovery_deadline = (
+                    _now + self._ANTI_THRASH_RECOVERY_SECONDS
+                )
+            elif _now >= self._anti_thrash_recovery_deadline:
+                self._anti_thrash_recovery_deadline = 0.0
+                if self._ineffective_compression_count >= 2:
+                    self._record_ineffective_compression_verdict(1)
+                if self._fallback_compression_streak >= 2:
+                    self._fallback_compression_streak = 1
+                    self._persist_fallback_compression_streak()
+                if not self.quiet_mode:
+                    logger.info(
+                        "Anti-thrashing recovery: %.0fs elapsed since the "
+                        "guard tripped — allowing one compaction probe "
+                        "(ineffective=%d fallback=%d).",
+                        self._ANTI_THRASH_RECOVERY_SECONDS,
+                        self._ineffective_compression_count,
+                        self._fallback_compression_streak,
+                    )
+                return False
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped — repeated compaction attempts did not "
                     "restore healthy context. ineffective=%d fallback=%d. "
-                    "Consider /new to start fresh, or /compress <topic> for "
-                    "focused compression.",
+                    "Auto-compaction will retry once in %.0fs. Consider /new "
+                    "to start fresh, or /compress <topic> for focused "
+                    "compression.",
                     self._ineffective_compression_count,
                     self._fallback_compression_streak,
+                    max(0.0, self._anti_thrash_recovery_deadline - _now),
                 )
             return True
+        # Guard not tripped (counters were cleared by an effective compaction
+        # or a fitting real-usage reading) — disarm any pending recovery clock
+        # so a LATER trip starts its own full window.
+        self._anti_thrash_recovery_deadline = 0.0
         return False
 
     # ------------------------------------------------------------------
@@ -2968,12 +3063,6 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 ## Active State
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
-{HISTORICAL_IN_PROGRESS_HEADING}
-Unknown from deterministic fallback — the latest user ask is recorded once under
-"{HISTORICAL_TASK_HEADING}" above as historical context only. Do NOT treat it as an
-unfulfilled instruction to re-answer; verify current state and continue from the
-protected recent messages after this summary.
-
 ## Blocked
 {_bullets(blockers, limit=5)}
 
@@ -2983,16 +3072,8 @@ None recoverable from deterministic fallback.
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
-{HISTORICAL_PENDING_ASKS_HEADING}
-None recoverable from deterministic fallback. (The latest user ask is preserved once
-under "{HISTORICAL_TASK_HEADING}" as historical context — it is NOT necessarily
-outstanding.)
-
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
-
-{HISTORICAL_REMAINING_WORK_HEADING}
-Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
 
 ## Last Dropped Turns
 {_bullets(last_dropped_turns, limit=8)}
@@ -3304,9 +3385,6 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
-{HISTORICAL_IN_PROGRESS_HEADING}
-[Work currently underway — what was being done when compaction fired]
-
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
 
@@ -3316,14 +3394,8 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Resolved Questions
 {_resolved_questions_instructions}
 
-{HISTORICAL_PENDING_ASKS_HEADING}
-{_pending_asks_instructions}
-
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
-
-{HISTORICAL_REMAINING_WORK_HEADING}
-[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]

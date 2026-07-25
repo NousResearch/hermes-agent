@@ -382,6 +382,53 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+# Per-session variables that the gateway bridges freshly onto every command's
+# process environment (via tools/environments/local._inject_session_context_env,
+# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
+# the shared bash session snapshot: a single long-lived backend serves many
+# concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
+# collapse the terminal to one "default" environment), so ``export -p`` dumping
+# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
+# session ``source`` that stale value and see a FOREIGN session's identity —
+# overriding the correct per-command Popen env (issue: cross-session
+# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
+# snapshot is safe because they are re-injected on every command; a snapshot
+# should only carry the user's own shell state (PATH, functions, exports they
+# set), not Hermes' per-turn session identity.
+#
+# Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
+# with one of these prefixes.
+_SNAPSHOT_EXCLUDED_ENV_REGEX = (
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_)"
+)
+
+
+def _export_dump_excluding_session_vars(tmp_path: str) -> str:
+    """Return a shell snippet that dumps ``export -p`` to *tmp_path* minus the
+    per-session bridged vars (see ``_SNAPSHOT_EXCLUDED_ENV_REGEX``).
+
+    ``export -p`` emits one ``declare -x NAME="value"`` line per exported var.
+    We drop the HERMES_SESSION_* / UI / CRON_AUTO_DELIVER lines so they never
+    persist across sessions in the shared snapshot. ``grep -vE`` returns exit 1
+    when it filters everything, so ``|| true`` keeps the pipeline's success
+    contract intact for the callers that chain on it.
+
+    The pipeline MUST be wrapped in a brace group with the redirection applied
+    to the group, not to the last pipeline segment. *tmp_path* typically embeds
+    ``$BASHPID`` for concurrency-safe temp names; a redirection attached
+    directly to ``grep`` is expanded inside grep's own pipeline subshell, where
+    ``$BASHPID`` resolves to the grep subshell's PID — while the caller's
+    follow-up ``mv $tmp`` expands in the parent shell to a DIFFERENT PID. The
+    dump then lands in an orphaned temp file and the snapshot silently never
+    updates (all exported-env persistence breaks). The brace-group redirect is
+    expanded in the current shell, keeping both expansions consistent.
+    """
+    return (
+        f"{{ export -p | grep -vE '{_SNAPSHOT_EXCLUDED_ENV_REGEX}' || true; }} "
+        f"> {tmp_path}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -498,7 +545,7 @@ class BaseEnvironment(ABC):
         _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"{_export_dump_excluding_session_vars(_snap_tmp)}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -642,9 +689,15 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
+        # NOTE: the redirection must be attached to a brace group, not to the
+        # grep pipeline segment — ``_snap_tmp`` embeds ``$BASHPID``, and a
+        # redirect on grep is expanded inside grep's pipeline subshell (a
+        # different PID than the parent shell that expands the ``mv`` operand),
+        # silently orphaning the dump. See _export_dump_excluding_session_vars.
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp)} "
+                f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

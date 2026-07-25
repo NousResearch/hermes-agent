@@ -312,7 +312,7 @@ def sha256_file(path: Path) -> str:
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def normalize_text(text: str) -> str:
@@ -349,7 +349,12 @@ def resolve_secret_input(value: Any, env: Optional[Dict[str, str]] = None) -> Op
 def load_yaml_file(path: Path) -> Dict[str, Any]:
     if yaml is None or not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        # errors="replace" means read_text() cannot raise UnicodeDecodeError;
+        # OSError covers races like the file disappearing or being unreadable.
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace"))
+    except (yaml.YAMLError, OSError):
+        return {}
     return data if isinstance(data, dict) else {}
 
 
@@ -367,7 +372,13 @@ def parse_env_file(path: Path) -> Dict[str, str]:
     if not path.exists():
         return {}
     data: Dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        # errors="replace" means read_text() cannot raise UnicodeDecodeError;
+        # OSError covers races like the file disappearing or being unreadable.
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for raw_line in lines:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -1208,9 +1219,12 @@ class Migrator:
             return
 
         try:
-            data = json.loads(source.read_text(encoding="utf-8"))
+            data = json.loads(source.read_text(encoding="utf-8", errors="replace"))
         except json.JSONDecodeError as exc:
             self.record("command-allowlist", source, destination, "error", f"Invalid JSON: {exc}")
+            return
+        except OSError as exc:
+            self.record("command-allowlist", source, destination, "error", f"Could not read file: {exc}")
             return
 
         patterns: List[str] = []
@@ -1262,9 +1276,11 @@ class Migrator:
             config_path = self.source_root / name
             if config_path.exists():
                 try:
-                    data = json.loads(config_path.read_text(encoding="utf-8"))
+                    # errors="replace" means read_text() cannot raise
+                    # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                    data = json.loads(config_path.read_text(encoding="utf-8", errors="replace"))
                     return data if isinstance(data, dict) else {}
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, OSError):
                     continue
         return {}
 
@@ -1343,9 +1359,11 @@ class Migrator:
         allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
         if allowlist_path.exists():
             try:
-                allow_data = json.loads(allowlist_path.read_text(encoding="utf-8"))
+                allow_data = json.loads(allowlist_path.read_text(encoding="utf-8", errors="replace"))
             except json.JSONDecodeError:
                 self.record("messaging-settings", allowlist_path, self.target_root / ".env", "error", "Invalid JSON in Telegram allowlist file")
+            except OSError as exc:
+                self.record("messaging-settings", allowlist_path, self.target_root / ".env", "error", f"Could not read Telegram allowlist file: {exc}")
             else:
                 allow_from = allow_data.get("allowFrom", [])
                 if isinstance(allow_from, list):
@@ -1617,7 +1635,7 @@ class Migrator:
         auth_profiles_path = self.source_root / "agents" / "main" / "agent" / "auth-profiles.json"
         if auth_profiles_path.exists():
             try:
-                profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8"))
+                profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8", errors="replace"))
                 if isinstance(profiles, dict):
                     # auth-profiles.json wraps profiles in a "profiles" key
                     profile_entries = profiles.get("profiles", profiles) if isinstance(profiles.get("profiles"), dict) else profiles
@@ -1901,7 +1919,12 @@ class Migrator:
 
         all_incoming: List[str] = []
         for md_file in md_files:
-            entries = extract_markdown_entries(read_text(md_file))
+            try:
+                # read_text() uses errors="replace" so it cannot raise
+                # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                entries = extract_markdown_entries(read_text(md_file))
+            except OSError:
+                continue
             all_incoming.extend(entries)
 
         if not all_incoming:

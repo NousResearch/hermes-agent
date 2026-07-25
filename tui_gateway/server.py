@@ -29,6 +29,11 @@ from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
+from tui_gateway.turn_marker import (
+    clear_turn_marker,
+    read_turn_marker,
+    record_turn_start,
+)
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -1670,6 +1675,124 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+# The deferred prompt path waits in short slices so a cancel is honored
+# promptly and a slow build can be reported to the client exactly once.
+_AGENT_BUILD_WAIT_SLICE = 5.0
+_AGENT_BUILD_SLOW_NOTICE_AFTER = 30.0
+_AGENT_BUILD_SLOW_NOTICE_KEY = "agent-build-slow"
+
+
+def _agent_build_wait_cap() -> float:
+    """Upper bound (seconds) a submitted prompt waits for the deferred agent
+    build before failing permanently. ``agent.build_wait_timeout`` in
+    config.yaml overrides the 600s default (raise it for deployments with
+    many slow/unreachable MCP servers or high-latency provider metadata)."""
+    try:
+        agent_cfg = _load_cfg().get("agent") or {}
+        raw = agent_cfg.get("build_wait_timeout")
+        if raw is not None:
+            value = float(raw)
+            if value > 0:
+                return value
+    except Exception:
+        pass
+    return 600.0
+
+
+def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
+    """Patient variant of ``_wait_agent`` for the deferred prompt.submit path.
+
+    The flat 30s ``_wait_agent`` ceiling was a message-eating cliff (#63078):
+    ``prompt.submit`` has already returned ``{"status": "streaming"}``, the
+    user's first message IS the turn in flight, and the deferred agent build
+    (MCP discovery with per-server retry backoff, synchronous model-metadata
+    HTTP, skills scanning) routinely outlives 30 seconds on cold starts. On
+    timeout the old path emitted an error EVENT and returned without ever
+    calling ``_run_prompt_submit`` — the first message was permanently
+    discarded while the build finished successfully in the background, leaving
+    the blank first session.
+
+    This wait instead:
+      - keeps the pending prompt attached to this (already off-RPC) thread and
+        delivers it the moment the still-running build completes;
+      - waits in short slices so a cancel (session.interrupt / session churn)
+        is honored promptly instead of after the full timeout;
+      - tells the client once, via a keyed notice, when the build outlives
+        ``_AGENT_BUILD_SLOW_NOTICE_AFTER`` — the wait is patient but never
+        silent;
+      - fails permanently only when the build itself fails: the build thread
+        died without signalling ready, or the bounded cap
+        (``agent.build_wait_timeout``, default 600s — no infinite waits)
+        expired on a genuinely hung build.
+
+    Returns ``None`` on success OR when the turn was cancelled mid-wait (the
+    caller's cancel branch owns that messaging), an ``_err`` dict otherwise.
+    """
+    ready = session.get("agent_ready")
+    if ready is None:
+        return None
+    start = time.monotonic()
+    cap = _agent_build_wait_cap()
+    notified_slow = False
+    while not ready.wait(timeout=_AGENT_BUILD_WAIT_SLICE):
+        with session["history_lock"]:
+            cancelled = session.get("_turn_cancel_requested") or not session.get(
+                "running"
+            )
+        if cancelled:
+            # The caller's cancel/not-running branch emits the user-visible
+            # event for this — bail without an error of our own.
+            return None
+        waited = time.monotonic() - start
+        if waited >= cap:
+            return _err(
+                rid,
+                5032,
+                f"agent initialization timed out after {int(waited)}s — "
+                "your message was not sent; retry once the session is ready",
+            )
+        build_thread = session.get("_agent_build_thread")
+        if (
+            build_thread is not None
+            and not build_thread.is_alive()
+            and not ready.is_set()
+        ):
+            # _build's ``finally`` guarantees ready.set(); a dead thread with
+            # ready still unset means the build died hard (interpreter-level
+            # kill) — don't wait on a corpse for the rest of the cap.
+            return _err(
+                rid,
+                5032,
+                session.get("agent_error")
+                or "agent initialization failed before completing",
+            )
+        if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
+            # One keyed, replace-in-place notice: the desktop shows it as a
+            # toast, the TUI in its status bar. Without this the extended wait
+            # would be exactly the silent hang this function exists to fix.
+            notified_slow = True
+            _emit(
+                "notification.show",
+                sid,
+                {
+                    "text": (
+                        "Still starting the agent (tool discovery / model "
+                        "setup) — your message will be sent as soon as it's "
+                        "ready."
+                    ),
+                    "level": "info",
+                    "kind": "agent",
+                    "ttl_ms": None,
+                    "key": _AGENT_BUILD_SLOW_NOTICE_KEY,
+                    "id": _AGENT_BUILD_SLOW_NOTICE_KEY,
+                },
+            )
+    if notified_slow:
+        _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
+    err = session.get("agent_error")
+    return _err(rid, 5032, err) if err else None
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -1763,15 +1886,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
 
-            try:
-                worker = _SlashWorker(
-                    key,
-                    getattr(agent, "model", _resolve_model()),
-                    profile_home=current.get("profile_home"),
-                )
-                _attach_worker(sid, current, worker)
-            except Exception:
-                pass
+            # No eager slash-worker pre-warm: slash.exec spawns one on demand
+            # (its error path already relies on that respawn to recover from a
+            # dead worker). Each worker child runs its own MCP discovery
+            # (#61891), so pre-warming one per session forks the full stdio
+            # MCP fleet — ~20 OS processes per retained session on a config
+            # with a few stdio servers — even for sessions that never run a
+            # worker-routed command. Sessions held by a live transport are
+            # never reaped, so with the desktop app open for days those
+            # fleets accumulate until the OS refuses new process spawns.
 
             try:
                 from tools.approval import (
@@ -1846,7 +1969,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     pass
             ready.set()
 
-    threading.Thread(target=_build, daemon=True).start()
+    build_thread = threading.Thread(target=_build, daemon=True)
+    # Handle for _wait_agent_for_prompt: a dead build thread with agent_ready
+    # still unset means the build died hard — waiters must not sit out the
+    # full cap on a corpse.
+    session["_agent_build_thread"] = build_thread
+    build_thread.start()
 
 
 def _sess_nowait(params, rid):
@@ -2445,13 +2573,27 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        # Derive the live conversation id so terminal/execute_code subprocesses
+        # can read HERMES_SESSION_ID. Without this, set_session_vars leaves the
+        # session-id contextvar as "" (explicitly empty), and the subprocess-env
+        # bridge treats that as authoritative — NOT falling back to os.environ —
+        # so every command in a dashboard/TUI/web session saw an empty
+        # HERMES_SESSION_ID even though agent_init set it via
+        # set_current_session_id(). Prefer the agent's durable session_id, then
+        # fall back to the session_key (matching the id derivation used at
+        # session-finalize), so an identified session is never left blank.
+        session_id = session_key
         with _sessions_lock:
             for sess in list(_sessions.values()):
                 if sess.get("session_key") == session_key:
                     source = _session_source(sess)
+                    session_id = (
+                        getattr(sess.get("agent"), "session_id", None) or session_key
+                    )
                     break
         return set_session_vars(
             session_key=session_key,
+            session_id=session_id,
             source=source,
             cwd=resolved,
             ui_session_id=ui_session_id,
@@ -3393,11 +3535,16 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
 
 def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
-    if worker:
-        try:
-            worker.close()
-        except Exception:
-            pass
+    # A session that never spawned a worker has nothing stale to replace —
+    # the next slash.exec builds one with the current session key/model.
+    # Spawning here would fork the per-worker stdio MCP fleet for sessions
+    # that never use worker-routed commands.
+    if worker is None:
+        return
+    try:
+        worker.close()
+    except Exception:
+        pass
     try:
         new_worker = _SlashWorker(
             session["session_key"],
@@ -5631,19 +5778,10 @@ def _init_session(
             except Exception:
                 pass
     _register_session_cwd(_sessions[sid])
-    try:
-        _attach_worker(
-            sid,
-            _sessions[sid],
-            _SlashWorker(
-                key,
-                getattr(agent, "model", _resolve_model()),
-                profile_home=_sessions[sid].get("profile_home"),
-            ),
-        )
-    except Exception:
-        # Defer hard-failure to slash.exec; chat still works without slash worker.
-        _sessions[sid]["slash_worker"] = None
+    # No eager slash-worker pre-warm — the session dict already carries
+    # slash_worker=None and slash.exec builds one on demand. See the
+    # deferred-build path in _start_agent_build for the full rationale
+    # (per-worker MCP fleets accumulating across retained sessions).
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 
@@ -5741,6 +5879,49 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     if prefix:
         return f"{prefix}\n\n{text}" if text else prefix
     return text or "What do you see in this image?"
+
+
+def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str]) -> str:
+    """Build the clean, UI-recognizable version of the user's message for
+    persisting to session history. Uses ``@image:<path>`` directives — the
+    format the desktop client (directive-text.tsx / HERMES_DIRECTIVE_RE)
+    actually parses and renders as an image — unlike
+    ``_enrich_with_attached_images``, which embeds a vision description and
+    an ``image_url:`` hint meant only for the model and must never be
+    persisted as-is (it silently breaks image rendering after a full
+    restart, and reorders image/text on live session-switch reconciliation).
+
+    The caption leads and the directives trail: session previews are the first
+    60 characters of the first user message (``list_sessions_rich``), so a
+    leading directive would label the session with a truncated file path in the
+    sidebar, switcher, and command palette. Clients lift the refs out of the
+    body by line, so their position does not affect how the turn renders.
+    """
+    from agent.context_references import format_reference_value
+
+    text = user_text or ""
+    refs = "\n".join(f"@image:{format_reference_value(p)}" for p in image_paths if Path(p).exists())
+    if not refs:
+        return text
+    return f"{text}\n{refs}" if text else refs
+
+
+def _build_persist_user_message(user_text: str, image_paths: list[str], run_message: Any) -> Any:
+    """Shape the persisted user turn to match what was sent to the model.
+
+    Native-vision turns send ``content`` as a parts list, and
+    ``_flush_messages_to_session_db`` deliberately ignores a plain-string
+    override for a list payload (a text override must not erase a turn's
+    image/audio summary). So mirror the shape: replace only the text part with
+    the ``@image:`` ref form and keep the image parts, so the model still has
+    the pixels for the rest of the session. Any API-only text part (the
+    barge-in note) is dropped along the way, which is the point of the override.
+    """
+    persist_text = _build_persist_message_with_image_refs(user_text, image_paths)
+    if not isinstance(run_message, list):
+        return persist_text
+    image_parts = [p for p in run_message if not (isinstance(p, dict) and p.get("type") == "text")]
+    return [{"type": "text", "text": persist_text}, *image_parts]
 
 
 def _content_display_text(content: Any) -> str:
@@ -6075,6 +6256,189 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _fail_inflight_turn(session: dict, error: Any) -> None:
+    """Mark the in-flight turn terminal-error but keep it replayable.
+
+    Normal completion clears ``inflight_turn`` because the response is now in
+    canonical history. Failures are different: the terminal frame can be lost
+    on a WS disconnect, and the failed turn may never have been committed.
+    Retaining a compact error snapshot lets ``session.resume`` replay the
+    user's prompt, any partial assistant text, and the error itself instead of
+    leaving the client stranded on a spinner or hydrating from stale DB state.
+    The snapshot lives until the next turn starts (``_start_inflight_turn``
+    overwrites it) or the session closes.
+
+    Caller must hold ``session["history_lock"]``.
+    """
+    message = str(error) if not isinstance(error, BaseException) else (str(error) or type(error).__name__)
+    now = time.time()
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        turn = {"assistant": "", "user": "", "started_at": now}
+    turn["assistant"] = str(turn.get("assistant") or "")
+    turn["user"] = str(turn.get("user") or "")
+    turn["error"] = message or "turn failed"
+    turn["status"] = "error"
+    turn["recoverable"] = True
+    turn["streaming"] = False
+    turn["updated_at"] = now
+    session["inflight_turn"] = turn
+
+
+# ── Auto-continue: resume a turn killed by a process/machine death ────
+#
+# A turn that concludes — success, handled error, interrupt — clears its
+# durable marker (see tui_gateway/turn_marker.py) in _run_prompt_submit's
+# finally. Only a process death leaves the marker behind, so a marker found
+# at session.resume time is positive proof the turn never finished AND the
+# client never saw a terminal frame. If the interruption is fresh, re-submit
+# the interrupted prompt automatically (the messaging gateway has done this
+# for restart-interrupted sessions since #27856); if it's stale, clear the
+# marker and let the recovered partial transcript speak for itself — the
+# user can ask to continue manually.
+
+_AUTO_CONTINUE_ENABLED_DEFAULT = True
+_AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT = 15
+_AUTO_CONTINUE_MAX_ATTEMPTS_DEFAULT = 2
+
+
+def _auto_continue_config() -> tuple[bool, float, int]:
+    """(enabled, freshness window in seconds, max attempts) from config.yaml."""
+    desktop = _load_cfg().get("desktop")
+    cfg = desktop.get("auto_continue") if isinstance(desktop, dict) else None
+    if not isinstance(cfg, dict):
+        cfg = {}
+    try:
+        minutes = float(cfg.get("freshness_minutes", _AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT))
+    except (TypeError, ValueError):
+        minutes = float(_AUTO_CONTINUE_FRESHNESS_MINUTES_DEFAULT)
+    return (
+        is_truthy_value(cfg.get("enabled"), default=_AUTO_CONTINUE_ENABLED_DEFAULT),
+        max(0.0, minutes) * 60.0,
+        _coerce_int_config_value(
+            cfg.get("max_attempts"), _AUTO_CONTINUE_MAX_ATTEMPTS_DEFAULT, min_value=0
+        ),
+    )
+
+
+def _session_home(session: dict) -> Path:
+    """The HERMES_HOME the session's durable state lives in (profile-aware)."""
+    profile_home = session.get("profile_home")
+    return Path(profile_home) if profile_home else Path(_hermes_home)
+
+
+def _retire_turn_marker(session: dict, *keys: str) -> None:
+    """Drop the crash marker for a turn whose outcome is about to reach the client.
+
+    Called immediately before the terminal frame rather than at the end of the
+    turn thread: post-turn work (titles, memory sync, goal hooks) runs for a
+    second or more after the client has its answer, and quitting inside that
+    window would leave a marker that looks like a crash — re-running a finished
+    turn on the next launch. Extra ``keys`` cover a session_key that
+    compression rotated mid-turn.
+    """
+    home = _session_home(session)
+    for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
+        if key:
+            clear_turn_marker(home, key)
+
+
+def _auto_continue_note(prompt: str) -> str:
+    # Same opening as the messaging gateway's recovery notes so transcript
+    # tooling recognizes both. The original prompt is embedded because a hard
+    # crash persists nothing of the interrupted turn to the session DB — this
+    # note is the only copy the model will see.
+    return (
+        "[System note: Your previous turn was interrupted mid-run — the app or "
+        "its backend process stopped before the turn could finish. Some of the "
+        "work may already be complete; check the current state before redoing "
+        "anything, then finish the task. The interrupted request was:]\n\n"
+        f"{prompt}"
+    )
+
+
+def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
+    """Kick off a continuation turn for a crash-interrupted session.
+
+    Called from session.resume's cold paths after the live record is
+    registered. Returns a small descriptor for the resume payload when a
+    continuation was scheduled, else None. The turn itself runs on a
+    background thread after the (deferred) agent build finishes, through the
+    same _run_prompt_submit machinery as every other synthesized turn — so
+    the client that just resumed streams it live.
+    """
+    home = _session_home(session)
+    marker = read_turn_marker(home, session_key)
+    if marker is None:
+        return None
+    enabled, freshness_secs, max_attempts = _auto_continue_config()
+    age = time.time() - marker["started_at"]
+    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
+        # Stale, disabled, or crash-looping: stop trying. The journal/partial
+        # transcript still shows what happened; a manual message continues it.
+        clear_turn_marker(home, session_key)
+        return None
+    if session.get("_auto_continue_scheduled"):
+        return None
+    session["_auto_continue_scheduled"] = True
+    attempt = marker["attempts"] + 1
+    text = _auto_continue_note(marker["prompt"])
+
+    def kickoff() -> None:
+        rid = f"__auto_continue__{int(time.time() * 1000)}"
+        try:
+            _start_agent_build(sid, session)
+            err = _wait_agent(session, rid, timeout=120.0)
+        except Exception:
+            logger.warning("auto-continue agent build failed for %s", sid, exc_info=True)
+            err = {"error": {"message": "agent build failed"}}
+        if err:
+            # Leave the marker: the next resume retries (bounded by attempts).
+            session["_auto_continue_scheduled"] = False
+            return
+        with session["history_lock"]:
+            if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
+                # A real user prompt beat us to it — their turn wins, and its
+                # own conclusion clears the marker.
+                session["_auto_continue_scheduled"] = False
+                return
+            session["running"] = True
+            session["last_active"] = time.time()
+            # Hand this turn its own marker inputs (read back by
+            # _run_prompt_submit): count the attempt so a crash during the
+            # continuation trips the breaker, and re-record the ORIGINAL
+            # prompt so a second crash doesn't nest note inside note. Set
+            # here, not at schedule time, so a bail above leaves nothing
+            # behind for a racing user turn to inherit.
+            session["_auto_continue_attempt"] = attempt
+            session["_auto_continue_prompt"] = marker["prompt"]
+        try:
+            _emit(
+                "status.update",
+                sid,
+                {"kind": "process", "text": "Resuming interrupted turn…"},
+            )
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+        except Exception as exc:
+            print(
+                f"[tui_gateway] auto-continue dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+    threading.Thread(target=kickoff, daemon=True).start()
+    logger.info(
+        "auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)",
+        session_key,
+        attempt,
+        age,
+    )
+    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -6239,13 +6603,58 @@ def _inflight_snapshot(session: dict) -> dict | None:
     user = str(turn.get("user") or "").strip()
     assistant = str(turn.get("assistant") or "")
     streaming = bool(turn.get("streaming"))
-    if not user and not assistant and not streaming:
+    error = str(turn.get("error") or "").strip()
+    if not user and not assistant and not streaming and not error:
         return None
-    return {
+    snapshot = {
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
     }
+    if error:
+        # Retained failed turn (see _fail_inflight_turn): carry the error
+        # semantics so a resuming client can rebuild the failed-turn bubble
+        # instead of rendering the partial text as a healthy reply.
+        snapshot["error"] = error
+        snapshot["status"] = str(turn.get("status") or "error")
+        snapshot["recoverable"] = bool(turn.get("recoverable"))
+    return snapshot
+
+
+def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
+    """Close a failed turn with a terminal ``message.complete`` frame.
+
+    Emits the same ``status: "error"`` frame shape the returned-error path in
+    ``_run_prompt_submit`` already produces (so TUI/desktop handling is
+    uniform), and retains the failed turn via ``_fail_inflight_turn`` so a
+    client that missed this frame (disconnect window) can recover it from
+    ``session.resume``'s ``inflight`` payload.
+    """
+    with session["history_lock"]:
+        _fail_inflight_turn(session, error)
+        turn = session.get("inflight_turn") or {}
+        message = str(turn.get("error") or "turn failed")
+        partial = str(turn.get("assistant") or "")
+        cols = int(session.get("cols", 80))
+    text = partial or f"Error: {message}"
+    agent = session.get("agent")
+    payload = {
+        "text": text,
+        "usage": _get_usage(agent) if agent is not None else {},
+        "status": "error",
+        "error": message,
+        "recoverable": True,
+    }
+    if partial:
+        payload["partial"] = True
+    try:
+        rendered = render_message(text, cols)
+    except Exception:
+        rendered = ""
+    if rendered:
+        payload["rendered"] = rendered
+    _retire_turn_marker(session)
+    _emit("message.complete", sid, payload)
 
 
 def _queued_prompt_snapshot(session: dict) -> dict | None:
@@ -6914,28 +7323,29 @@ def _(rid, params: dict) -> dict:
 
         _schedule_agent_build(sid)
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+        auto_continue = _maybe_schedule_auto_continue(sid, record, target)
 
         messages = _history_to_messages(display_history)
-        return _ok(
-            rid,
-            {
-                "session_id": sid,
-                "resumed": target,
-                "message_count": len(messages),
-                "messages": messages,
-                "info": _lazy_resume_info(
-                    cwd,
-                    model=model_override.get("model") or "",
-                    provider=overrides.get("provider_override") or "",
-                    profile=profile,
-                ),
-                "inflight": None,
-                "running": False,
-                "session_key": target,
-                "started_at": record["created_at"],
-                "status": "idle",
-            },
-        )
+        payload = {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _lazy_resume_info(
+                cwd,
+                model=model_override.get("model") or "",
+                provider=overrides.get("provider_override") or "",
+                profile=profile,
+            ),
+            "inflight": None,
+            "running": False,
+            "session_key": target,
+            "started_at": record["created_at"],
+            "status": "idle",
+        }
+        if auto_continue is not None:
+            payload["auto_continue"] = auto_continue
+        return _ok(rid, payload)
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
     # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -7054,21 +7464,24 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
-    return _ok(
-        rid,
-        {
-            "session_id": sid,
-            "resumed": target,
-            "message_count": len(messages),
-            "messages": messages,
-            "info": _session_info(agent, session),
-            "inflight": None,
-            "running": False,
-            "session_key": target,
-            "started_at": float(session.get("created_at") or time.time()),
-            "status": "idle",
-        },
+    auto_continue = (
+        _maybe_schedule_auto_continue(sid, session, target) if session else None
     )
+    payload = {
+        "session_id": sid,
+        "resumed": target,
+        "message_count": len(messages),
+        "messages": messages,
+        "info": _session_info(agent, session),
+        "inflight": None,
+        "running": False,
+        "session_key": target,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": "idle",
+    }
+    if auto_continue is not None:
+        payload["auto_continue"] = auto_continue
+    return _ok(rid, payload)
 
 
 @method("session.cwd.set")
@@ -10309,25 +10722,45 @@ def _(rid, params: dict) -> dict:
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
-        err = _wait_agent(session, rid)
+        # Patient wait (#63078): the user's message is already the accepted
+        # in-flight turn, so a slow deferred build must not eat it. The wait
+        # delivers the prompt when the still-running build completes, honors a
+        # cancel promptly, notices the user once past the slow threshold, and
+        # only errors when the build itself fails or the bounded cap expires.
+        err = _wait_agent_for_prompt(session, rid, sid)
         if err:
-            _emit(
-                "error",
+            # Terminal frame + retained snapshot (not a bare "error" event +
+            # cleared inflight): if the client is disconnected right now, the
+            # retained snapshot is the only way resume can show this failure.
+            _emit_terminal_turn_error(
                 sid,
-                {
-                    "message": (err.get("error") or {}).get(
-                        "message", "agent initialization failed"
-                    )
-                },
+                session,
+                (err.get("error") or {}).get("message", "agent initialization failed"),
             )
             with session["history_lock"]:
                 session["running"] = False
-                _clear_inflight_turn(session)
+                session["last_active"] = time.time()
+            _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
+                # Surface the cancellation to the client. Without this emit the
+                # turn vanishes silently — the Desktop sees `prompt.submit`
+                # return `{"status": "streaming"}` but never receives a
+                # `message.start` or `error` event, so the composer shows no
+                # feedback (issue #63078 server-side half). Match the
+                # `_wait_agent` error branch above: emit, then bail.
+                _emit(
+                    "error",
+                    sid,
+                    {
+                        "message": "Turn cancelled before the agent was ready"
+                        if session.get("_turn_cancel_requested")
+                        else "Session no longer running before the agent was ready"
+                    },
+                )
                 return
         _run_prompt_submit(rid, sid, session, text)
 
@@ -10823,7 +11256,10 @@ def _run_prompt_submit(
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
-        if not isinstance(session.get("inflight_turn"), dict):
+        inflight = session.get("inflight_turn")
+        # A retained failed turn (see _fail_inflight_turn) is a stale leftover
+        # by the time a new turn starts — replace it, never append onto it.
+        if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(session, text)
     agent = session["agent"]
     if hasattr(agent, "clear_interrupt"):
@@ -10840,6 +11276,21 @@ def _run_prompt_submit(
         goal_followup = None  # set by the post-turn goal hook below
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         one_turn_restore = session.pop("one_turn_model_restore", None)
+        # True once a failed turn's snapshot was retained for resume replay —
+        # tells the finally below to skip the normal inflight clear.
+        turn_error_retained = False
+        # Durable crash marker: written before the turn runs, retired the
+        # moment its outcome reaches the client (see _retire_turn_marker).
+        # Any concluded turn — success, handled error, interrupt — retires
+        # it, so a marker that survives means the process died mid-turn;
+        # session.resume auto-continues from it. Compression can rotate
+        # session_key mid-turn, so remember the key we wrote under.
+        marker_home = _session_home(session)
+        marker_key = str(session.get("session_key") or "")
+        marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
+        marker_text = session.pop("_auto_continue_prompt", None) or text
+        if isinstance(marker_text, str) and marker_text.strip():
+            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -11011,6 +11462,9 @@ def _run_prompt_submit(
             run_kwargs = {
                 "conversation_history": list(history),
                 "stream_callback": _stream,
+                "persist_user_message": (
+                    _build_persist_user_message(prompt, images, run_message) if images else prompt
+                ),
             }
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
@@ -11163,7 +11617,24 @@ def _run_prompt_submit(
             if rendered:
                 payload["rendered"] = rendered
             with session["history_lock"]:
-                _clear_inflight_turn(session)
+                if status == "error":
+                    # Returned-error result (provider 4xx, budget, etc.): retain
+                    # the failed turn for resume replay instead of clearing it.
+                    # If this terminal frame is lost to a disconnect, resume's
+                    # inflight payload is the only carrier of the failure.
+                    _fail_inflight_turn(
+                        session,
+                        result.get("error") if isinstance(result, dict) else raw,
+                    )
+                    turn_error_retained = True
+                else:
+                    _clear_inflight_turn(session)
+            if status == "error":
+                payload["error"] = str(
+                    (result.get("error") if isinstance(result, dict) else "") or raw
+                )
+                payload["recoverable"] = True
+            _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -11325,7 +11796,20 @@ def _run_prompt_submit(
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
-            _emit("error", sid, {"message": str(e)})
+            try:
+                # Close the turn with the same terminal error frame shape as
+                # the returned-error path (uniform client handling), retaining
+                # the failed turn for resume replay.
+                _emit_terminal_turn_error(sid, session, e)
+                turn_error_retained = True
+            except Exception as emit_exc:
+                print(
+                    f"[gateway-turn] terminal error emit failed: "
+                    f"{type(emit_exc).__name__}: {emit_exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _emit("error", sid, {"message": str(e)})
         finally:
             if tts_queue is not None:
                 tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
@@ -11351,7 +11835,12 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
-                _clear_inflight_turn(session)
+                if not turn_error_retained:
+                    _clear_inflight_turn(session)
+            # Backstop for turns that never reached a terminal frame (the
+            # frame paths retire the marker as they emit).
+            _retire_turn_marker(session, marker_key)
+            session.pop("_auto_continue_scheduled", None)
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
@@ -16078,15 +16567,26 @@ def _(rid, params: dict) -> dict:
 
     worker = session.get("slash_worker")
     if not worker:
-        try:
-            worker = _SlashWorker(
-                session["session_key"],
-                getattr(session.get("agent"), "model", _resolve_model()),
-                profile_home=session.get("profile_home"),
-            )
-            _attach_worker(params.get("session_id", ""), session, worker)
-        except Exception as e:
-            return _err(rid, 5030, f"slash worker start failed: {e}")
+        # On-demand spawn is now the ONLY spawn path for a fresh session
+        # (eager pre-warm removed), and slash.exec handlers run on the RPC
+        # thread pool — two concurrent slash commands on the same session
+        # could both observe slash_worker=None and each fork a full
+        # MCP-fleet worker (the loser of the _attach_worker race would leak
+        # unclosed). Serialize first-use spawn per session.
+        with _sessions_lock:
+            spawn_lock = session.setdefault("_slash_spawn_lock", threading.Lock())
+        with spawn_lock:
+            worker = session.get("slash_worker")
+            if not worker:
+                try:
+                    worker = _SlashWorker(
+                        session["session_key"],
+                        getattr(session.get("agent"), "model", _resolve_model()),
+                        profile_home=session.get("profile_home"),
+                    )
+                    _attach_worker(params.get("session_id", ""), session, worker)
+                except Exception as e:
+                    return _err(rid, 5030, f"slash worker start failed: {e}")
 
     try:
         output = worker.run(cmd)

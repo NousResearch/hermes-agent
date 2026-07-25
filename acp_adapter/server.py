@@ -85,6 +85,110 @@ from tools.approval import (
 
 logger = logging.getLogger(__name__)
 
+
+def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Return ``(slug, label, [(model_id, description), ...])`` for named endpoints.
+
+    Covers both the v12 ``providers:`` mapping and the legacy
+    ``custom_providers:`` list.  These endpoints never appear in canonical
+    provider enumeration, so without this the ACP model selector hides every
+    named endpoint that the TUI ``/model`` picker already renders (#47039
+    implemented named-endpoint rows for the TUI surface only).
+
+    Model lists come from the entry's declared models (``default_model`` +
+    ``models``), refreshed from the endpoint's live ``/models`` listing when a
+    credential is available and ``discover_models`` is not disabled.  Declared
+    models are kept even when live discovery fails — some OpenAI-compatible
+    endpoints (e.g. Bedrock Mantle Responses) expose no ``/models`` route at
+    all yet serve the declared models fine.
+
+    Slugs use the ``custom:<name>`` shape that ``parse_model_input`` and
+    ``resolve_runtime_provider`` already resolve, so encoded choice ids
+    (``custom:<name>:<model>``) round-trip through ``set_session_model``
+    unchanged.
+    """
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            is_provider_enabled,
+            load_config,
+        )
+        from hermes_cli.models import fetch_api_models
+    except ImportError:
+        return []
+
+    try:
+        cfg = load_config()
+        entries = get_compatible_custom_providers(cfg)
+    except Exception:
+        logger.debug("Could not load named custom providers", exc_info=True)
+        return []
+
+    # ``get_compatible_custom_providers`` drops the ``enabled`` flag during
+    # normalization, so collect explicitly disabled provider keys from the
+    # raw config and skip their entries below.
+    disabled_keys: set[str] = set()
+    raw_providers = cfg.get("providers") if isinstance(cfg, dict) else None
+    if isinstance(raw_providers, dict):
+        for raw_key, raw_entry in raw_providers.items():
+            if isinstance(raw_entry, dict) and not is_provider_enabled(raw_entry):
+                disabled_keys.add(str(raw_key).strip().lower())
+
+    catalogs: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        if provider_key.lower() in disabled_keys:
+            continue
+        name = str(entry.get("name", "") or "").strip()
+        base_url = str(entry.get("base_url", "") or "").strip()
+        if not name or not base_url:
+            continue
+        slug_source = provider_key or name
+        slug = "custom:" + slug_source.strip().lower().replace(" ", "-")
+
+        api_key = str(entry.get("api_key", "") or "").strip()
+        if not api_key:
+            key_env = str(entry.get("key_env", "") or "").strip()
+            api_key = os.environ.get(key_env, "").strip() if key_env else ""
+
+        declared: list[str] = []
+        default_model = str(entry.get("model", "") or "").strip()
+        if default_model:
+            declared.append(default_model)
+        models_cfg = entry.get("models")
+        if isinstance(models_cfg, dict):
+            for mid in models_cfg:
+                mid = str(mid or "").strip()
+                if mid and mid not in declared:
+                    declared.append(mid)
+
+        if not api_key and not declared:
+            # No credential to discover with and nothing declared:
+            # not addressable from the selector.
+            continue
+
+        model_ids = list(declared)
+        discover = entry.get("discover_models", True)
+        if isinstance(discover, str):
+            discover = discover.lower() not in {"false", "no", "0"}
+        if discover and api_key:
+            try:
+                live = fetch_api_models(
+                    api_key, base_url, api_mode=entry.get("api_mode")
+                )
+            except Exception:
+                live = None
+            if live:
+                model_ids = declared + [m for m in live if m not in declared]
+
+        if not model_ids:
+            continue
+        catalogs.append((slug, name, [(mid, "") for mid in model_ids]))
+
+    return catalogs
+
 try:
     from hermes_cli import __version__ as HERMES_VERSION
 except Exception:
@@ -97,6 +201,13 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 # does not expose a client-side limit, so this is a fixed cap that clients
 # paginate against using `cursor` / `next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
+# Per-provider cap for the ACP model selector. ACP clients (Zed, Buzz) render
+# the whole `availableModels` array in one dropdown, so an unbounded
+# cross-provider catalog degrades the picker. Mirrors the cap the MoA picker
+# already uses (`hermes_cli/moa_cmd.py`). This bounds each provider's row, not
+# the total; aggregator providers stay intentionally uncapped inside the shared
+# inventory, and the current model is always kept via the fallback insert below.
+ACP_MAX_MODELS_PER_PROVIDER = 200
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
@@ -585,46 +696,108 @@ class HermesACPAgent(acp.Agent):
         return f"{raw_provider}:{raw_model}"
 
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
-        """Return the ACP model selector payload for editors like Zed."""
+        """Return authenticated providers and their models for ACP clients.
+
+        The shared Hermes inventory is also used by ``hermes model``, the TUI,
+        and the dashboard. Keeping ACP on that substrate prevents its selector
+        from silently collapsing to the current provider's curated list.
+        """
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
 
         try:
-            from hermes_cli.models import curated_models_for_provider, normalize_provider, provider_label
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+            from hermes_cli.models import normalize_provider, provider_label
 
             normalized_provider = normalize_provider(provider)
-            provider_name = provider_label(normalized_provider)
+            context = load_picker_context().with_overrides(
+                current_provider=normalized_provider,
+                current_model=model,
+                current_base_url=str(getattr(state.agent, "base_url", "") or ""),
+            )
+            payload = build_models_payload(
+                context,
+                explicit_only=True,
+                include_unconfigured=False,
+                picker_hints=False,
+                canonical_order=True,
+                pricing=False,
+                capabilities=False,
+                refresh=False,
+                probe_custom_providers=False,
+                probe_current_custom_provider=False,
+                max_models=ACP_MAX_MODELS_PER_PROVIDER,
+            )
+
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
-
-            for model_id, description in curated_models_for_provider(normalized_provider):
-                rendered_model = str(model_id or "").strip()
-                if not rendered_model:
+            for row in payload.get("providers") or []:
+                row_provider = normalize_provider(str(row.get("slug") or "").strip())
+                if not row_provider:
                     continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
-                if choice_id in seen_ids:
-                    continue
-                desc_parts = [f"Provider: {provider_name}"]
-                if description:
-                    desc_parts.append(str(description).strip())
-                if rendered_model == model:
-                    desc_parts.append("current")
-                available_models.append(
-                    ModelInfo(
-                        model_id=choice_id,
-                        name=rendered_model,
-                        description=" • ".join(part for part in desc_parts if part),
-                    )
+                provider_name = str(row.get("name") or "").strip() or provider_label(
+                    row_provider
                 )
-                seen_ids.add(choice_id)
+                for model_entry in row.get("models") or []:
+                    if isinstance(model_entry, dict):
+                        rendered_model = str(
+                            model_entry.get("id")
+                            or model_entry.get("model")
+                            or model_entry.get("name")
+                            or ""
+                        ).strip()
+                    else:
+                        rendered_model = str(model_entry or "").strip()
+                    if not rendered_model:
+                        continue
+                    choice_id = self._encode_model_choice(row_provider, rendered_model)
+                    if choice_id in seen_ids:
+                        continue
+                    is_current = (
+                        row_provider == normalized_provider and rendered_model == model
+                    )
+                    description = f"Provider: {provider_name}"
+                    if is_current:
+                        description += " • current"
+                    available_models.append(
+                        ModelInfo(
+                            model_id=choice_id,
+                            name=f"{provider_name} · {rendered_model}",
+                            description=description,
+                        )
+                    )
+                    seen_ids.add(choice_id)
+
+            # Named user-defined endpoints (providers: / custom_providers:)
+            # are invisible to canonical provider enumeration — append them
+            # so editor clients can select them like the TUI /model picker.
+            for named_slug, named_label, named_catalog in _named_custom_provider_catalogs():
+                for named_model, named_desc in named_catalog:
+                    named_choice = self._encode_model_choice(named_slug, named_model)
+                    if not named_choice or named_choice in seen_ids:
+                        continue
+                    named_parts = [f"Provider: {named_label}"]
+                    if named_desc:
+                        named_parts.append(str(named_desc).strip())
+                    if named_slug == normalized_provider and named_model == model:
+                        named_parts.append("current")
+                    available_models.append(
+                        ModelInfo(
+                            model_id=named_choice,
+                            name=named_model,
+                            description=" • ".join(part for part in named_parts if part),
+                        )
+                    )
+                    seen_ids.add(named_choice)
 
             current_model_id = self._encode_model_choice(normalized_provider, model)
             if current_model_id and current_model_id not in seen_ids:
+                provider_name = provider_label(normalized_provider)
                 available_models.insert(
                     0,
                     ModelInfo(
                         model_id=current_model_id,
-                        name=model,
+                        name=f"{provider_name} · {model}",
                         description=f"Provider: {provider_name} • current",
                     ),
                 )

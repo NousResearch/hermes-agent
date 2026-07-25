@@ -404,6 +404,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     return () => void (cancelled = true)
   }, [state.mode])
 
+  // eslint-disable-next-line no-restricted-syntax -- monotonic request-sequence counters, not an atom mirror
   useEffect(() => {
     contextSeq.current += 1
     sshTestSeq.current += 1

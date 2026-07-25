@@ -162,6 +162,24 @@ describe('toChatMessages', () => {
     expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
   })
 
+  it('renders a native-vision turn as caption plus thumbnail, not raw placeholder text', () => {
+    // How a turn sent to a natively-vision-capable model comes back out of the
+    // session store: a backtick-quoted ref (the path has spaces) and the
+    // `[screenshot]` stand-in left by flattening the parts list.
+    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: `${ref}\nwhat is in this photo?\n[screenshot]`,
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
+  })
+
   it('leaves a plain user prompt without attachment refs untouched', () => {
     const [message] = toChatMessages([
       {

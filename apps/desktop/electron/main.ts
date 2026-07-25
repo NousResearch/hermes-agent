@@ -4815,12 +4815,21 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token, signal?) {
+async function waitForHermes(baseUrl, token, signal?, authMode = 'token') {
+  const fetchAuthenticatedJson =
+    authMode === 'oauth'
+      ? (url, options) =>
+          fetchJsonViaOauthSession(url, {
+            timeoutMs: options?.timeoutMs
+          })
+      : undefined
+
   return waitForHermesReady(baseUrl, {
     token,
     signal,
     fetchPublicJson,
-    fetchJson
+    fetchJson,
+    fetchAuthenticatedJson
   })
 }
 
@@ -7736,7 +7745,7 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
+    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
 
     return {
       ...remote,
@@ -7954,7 +7963,7 @@ async function startHermes() {
   const connectionPromise = (async () => {
     const connectRemote = async remote => {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+      await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',

@@ -13,6 +13,7 @@ type FetchJson = (url: string, token?: string | null, options?: { timeoutMs?: nu
 export interface HermesReadyOptions {
   fetchPublicJson: FetchPublicJson
   fetchJson: FetchJson
+  fetchAuthenticatedJson?: FetchPublicJson
   token?: string | null
   signal?: AbortSignal
   timeoutMs?: number
@@ -59,6 +60,7 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
 
   const base = baseUrl.replace(/\/+$/, '')
   const deadline = now() + timeoutMs
+  const fetchHealthJson = options.fetchAuthenticatedJson ?? options.fetchPublicJson
   let lastError: unknown = null
   let useStatusFallback = false
 
@@ -69,9 +71,13 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
 
     try {
       if (useStatusFallback) {
-        await options.fetchJson(`${base}/api/status`, options.token)
+        if (options.fetchAuthenticatedJson) {
+          await options.fetchAuthenticatedJson(`${base}/api/status`)
+        } else {
+          await options.fetchJson(`${base}/api/status`, options.token)
+        }
       } else {
-        await options.fetchPublicJson(`${base}/api/health`, { timeoutMs: healthProbeTimeoutMs })
+        await fetchHealthJson(`${base}/api/health`, { timeoutMs: healthProbeTimeoutMs })
       }
 
       return

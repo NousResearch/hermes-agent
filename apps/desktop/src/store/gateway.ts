@@ -56,6 +56,7 @@ interface GatewayRegistryState {
   activeKey: string
   secondaries: Map<string, Secondary>
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
+  $gatewayConnectionEpochs: ReturnType<typeof atom<Record<string, number>>>
 }
 
 const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
@@ -70,7 +71,11 @@ function createRegistryState(): GatewayRegistryState {
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
-    $gateway: atom<HermesGateway | null>(null)
+    $gateway: atom<HermesGateway | null>(null),
+    // Monotonic connection generation per profile. Unlike $gatewayState, this
+    // cannot collapse a real closed -> connecting -> open cycle into the same
+    // final "open" value before React renders.
+    $gatewayConnectionEpochs: atom<Record<string, number>>({})
   }
 }
 
@@ -85,6 +90,8 @@ function gatewayState(): GatewayRegistryState {
   if (import.meta.hot) {
     const store = globalThis as unknown as { [STATE_KEY]?: GatewayRegistryState }
     store[STATE_KEY] ??= createRegistryState()
+    // Shape migration for a live dev realm created before this field existed.
+    store[STATE_KEY].$gatewayConnectionEpochs ??= atom<Record<string, number>>({})
 
     return store[STATE_KEY]
   }
@@ -98,6 +105,7 @@ const g = gatewayState()
 // reload of this module hands back the SAME atom subscribers are already wired
 // to. (A fresh `atom()` per reload would orphan existing subscriptions.)
 export const $gateway = g.$gateway
+export const $gatewayConnectionEpochs = g.$gatewayConnectionEpochs
 
 export function configureGatewayRegistry(cfg: RegistryConfig): void {
   g.config = cfg
@@ -136,7 +144,17 @@ export function activeGateway(): HermesGateway | null {
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
 function reportGatewayState(profile: string, state: ConnectionState): void {
-  if (normKey(profile) === g.activeKey) {
+  const key = normKey(profile)
+
+  if (state === 'open') {
+    const epochs = g.$gatewayConnectionEpochs.get()
+    g.$gatewayConnectionEpochs.set({
+      ...epochs,
+      [key]: (epochs[key] ?? 0) + 1
+    })
+  }
+
+  if (key === g.activeKey) {
     setGatewayState(state)
   }
 }

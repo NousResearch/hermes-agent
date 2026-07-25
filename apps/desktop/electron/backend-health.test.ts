@@ -52,6 +52,38 @@ test('falls back to /api/status only for old backends without /api/health', asyn
   ])
 })
 
+test('uses the authenticated session for OAuth-gated health and legacy status probes', async () => {
+  const calls: string[][] = []
+
+  await waitForHermesReady('https://gateway.example.com', {
+    fetchPublicJson: async url => {
+      calls.push(['public', url])
+      throw new Error('public probe should not be called')
+    },
+    fetchJson: async url => {
+      calls.push(['token', url])
+      throw new Error('token probe should not be called')
+    },
+    fetchAuthenticatedJson: async url => {
+      calls.push(['authenticated', url])
+
+      if (url.endsWith('/api/health')) {
+        throw new Error('404: {"detail":"Not Found"}')
+      }
+
+      return { version: 'old-oauth-gated' }
+    },
+    sleep: async () => {},
+    timeoutMs: 100,
+    pollMs: 1
+  })
+
+  assert.deepEqual(calls, [
+    ['authenticated', 'https://gateway.example.com/api/health'],
+    ['authenticated', 'https://gateway.example.com/api/status']
+  ])
+})
+
 test('does not fall back to heavyweight /api/status for transient health failures', async () => {
   const calls: string[][] = []
   let currentTime = 0

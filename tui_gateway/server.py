@@ -5739,6 +5739,23 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     return text or "What do you see in this image?"
 
 
+def _build_persist_message_with_image_refs(user_text: str, image_paths: list[str]) -> str:
+    """Build the clean, UI-recognizable version of the user's message for
+    persisting to session history. Uses ``@image:<path>`` directives — the
+    format the desktop client (directive-text.tsx / HERMES_DIRECTIVE_RE)
+    actually parses and renders as an image — unlike
+    ``_enrich_with_attached_images``, which embeds a vision description and
+    an ``image_url:`` hint meant only for the model and must never be
+    persisted as-is (it silently breaks image rendering after a full
+    restart, and reorders image/text on live session-switch reconciliation).
+    """
+    text = user_text or ""
+    refs = "\n".join(f"@image:{p}" for p in image_paths if Path(p).exists())
+    if not refs:
+        return text
+    return f"{refs}\n{text}" if text else refs
+
+
 def _content_display_text(content: Any) -> str:
     if content is None:
         return ""
@@ -10997,6 +11014,11 @@ def _run_prompt_submit(
             run_kwargs = {
                 "conversation_history": list(history),
                 "stream_callback": _stream,
+                "persist_user_message": (
+                    _build_persist_message_with_image_refs(prompt, images)
+                    if images
+                    else prompt
+                ),
             }
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:

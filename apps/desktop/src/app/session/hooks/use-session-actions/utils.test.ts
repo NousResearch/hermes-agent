@@ -440,9 +440,91 @@ describe('preserveLocalPendingTurnMessages', () => {
       'user-optimistic'
     ])
   })
+
+  // #70720: the gateway persists an attached image as a leading `@image:<path>`
+  // directive line, while the local optimistic composer keeps it as separate
+  // `attachmentRefs`. A naive text compare (chatMessageText a === b) therefore
+  // always mismatched whenever an image was attached and re-appended the
+  // optimistic row as a distinct, duplicate user bubble. Both sides must now
+  // reduce to the same visible text via textWithoutImageRefs.
+  it('does not duplicate the optimistic image turn when the persisted turn carries @image refs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'what is in this photo?', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@image:/tmp/cat.png\nwhat is in this photo?')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic image turn when the persisted text differs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'a different caption', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      })
+    ]
+
+    // Persisted turn has a different caption — the optimistic row is still
+    // uncommitted and must survive (image-aware compare must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@image:/tmp/cat.png\nwhat is in this photo?')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored',
+      'user-optimistic'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {
+  it('does not duplicate the inflight user when the persisted turn carries @image refs', () => {
+    // By the time a stored transcript reaches appendLiveSessionProjection it
+    // has already been run through toChatMessages, so the @image directive has
+    // been lifted into attachmentRefs and the visible text is the bare caption.
+    const stored = [
+      msg('stored-user', 'user', 'current running prompt', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      }),
+      msg('stored-assistant', 'assistant', 'earlier answer')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    // The persisted user already carries the same visible text (the attachment
+    // lives in attachmentRefs on both sides), so the inflight *user* projection
+    // must be suppressed — exactly one user row, no duplicated bubble stacked
+    // on top of the persisted one. The live assistant tail is still projected.
+    const userRows = restored.filter(message => message.role === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(userRows[0].id).toBe('stored-user')
+    const userText = userRows[0].parts
+      .map(part => ('text' in part ? part.text : ''))
+      .join('')
+    expect(userText).toBe('current running prompt')
+  })
+
   it('restores the running turn and accepted queued prompt after a renderer restart', () => {
     const stored = [msg('stored-user', 'user', 'earlier'), msg('stored-assistant', 'assistant', 'earlier answer')]
 

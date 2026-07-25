@@ -160,3 +160,40 @@ export function embeddedImageUrls(text: string): string[] {
 export function textWithoutEmbeddedImages(text: string): string {
   return extractEmbeddedImages(text).cleanedText
 }
+
+// The gateway persists attached images as `@image:<path>` directive lines
+// (see tui_gateway/server.py's persist-time rewrite), prepended before the
+// user's own text. The composer's own optimistic/local turn never carries
+// this prefix — it keeps the attachment as separate `attachmentRefs`
+// metadata, not inline text. Comparing raw chatMessageText between the
+// optimistic turn and the authoritative (persisted) turn therefore always
+// mismatches whenever an image was attached, which defeats the "is this the
+// same turn" checks in preserveLocalPendingTurnMessages / appendLiveSessionProjection
+// and re-appends the optimistic row as if it were a distinct, unconfirmed
+// turn — a duplicated user bubble. Strip the directive line(s) before any
+// such equality comparison so both sides reduce to the same visible text.
+const IMAGE_REF_LINE_RE = /^@image:[^\n]*\n?/gm
+
+export function textWithoutImageRefs(text: string): string {
+  return text.replace(IMAGE_REF_LINE_RE, '').trim()
+}
+
+// Same directive lines as textWithoutImageRefs, but keeps them instead of
+// discarding — used when converting persisted server messages into
+// ChatMessage/ThreadMessageLike shape, where `@image:<path>` refs need to
+// move from inline text into the `attachmentRefs` metadata field (mirroring
+// how the local optimistic composer represents attachments) rather than stay
+// embedded in the bubble's clamped text body, where a large inline thumbnail
+// pushes the caption text out of the clamp's visible area.
+export function extractImageRefs(text: string): { cleanedText: string; refs: string[] } {
+  const refs: string[] = []
+  const cleanedText = text
+    .replace(IMAGE_REF_LINE_RE, match => {
+      refs.push(match.trim())
+
+      return ''
+    })
+    .trim()
+
+  return { cleanedText, refs }
+}

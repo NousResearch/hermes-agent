@@ -415,7 +415,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         try {
           const uploaded = await uploadComposerAttachment(
             { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
-            { remote, requestGateway, sessionId }
+            { backendCwd: cwd, remote, requestGateway, sessionId }
           )
 
           const ref = attachmentDisplayText(uploaded)

@@ -309,6 +309,63 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
 
+def test_supervisor_snapshot_exposes_page_target_id(chrome_cdp, supervisor_registry):
+    """The attached page's target id is discoverable via the public snapshot.
+
+    This is the supervisor-backed target-discovery path for
+    ``browser_cdp(target_id=...)`` session reuse: agents read
+    ``page_target_id`` from ``browser_snapshot`` output (which embeds
+    ``SupervisorSnapshot.to_dict()``) instead of poking supervisor
+    internals.
+    """
+    cdp_url, _port = chrome_cdp
+    sv = supervisor_registry.get_or_start(
+        task_id="target-discovery-test", cdp_url=cdp_url
+    )
+    snap = sv.snapshot()
+    assert snap.active
+    assert snap.page_target_id, "snapshot must expose the attached page target id"
+    assert snap.to_dict().get("page_target_id") == snap.page_target_id
+    # The discovered id resolves to the live page session.
+    assert sv.resolve_target_session(snap.page_target_id)
+
+
+def test_browser_cdp_target_id_routes_via_supervisor(
+    chrome_cdp, supervisor_registry, monkeypatch
+):
+    """browser_cdp(target_id=...) reuses the live supervisor session.
+
+    Discovers the target purely through the public snapshot path — no
+    private supervisor attributes. The ``session_id`` field in the payload
+    is the regression signal: the stateless attach path never reports one,
+    so this test fails without supervisor routing.
+    """
+    cdp_url, _port = chrome_cdp
+    from tools import browser_cdp_tool as cdp_tool
+
+    monkeypatch.setattr(cdp_tool, "_resolve_cdp_endpoint", lambda: cdp_url)
+
+    sv = supervisor_registry.get_or_start(task_id="target-id-test", cdp_url=cdp_url)
+    snap = sv.snapshot()
+    assert snap.active
+    target_id = snap.page_target_id
+    assert target_id
+
+    result = cdp_tool.browser_cdp(
+        method="Runtime.evaluate",
+        params={"expression": "1 + 2", "returnByValue": True},
+        target_id=target_id,
+        task_id="target-id-test",
+    )
+    r = json.loads(result)
+    assert r.get("success") is True, f"expected success, got: {r}"
+    assert r.get("target_id") == target_id
+    assert r.get("session_id"), "supervisor route must report the reused session id"
+    assert r.get("session_id") == sv.resolve_target_session(target_id)
+    value = r.get("result", {}).get("result", {}).get("value")
+    assert value == 3, f"expected 3, got {value!r}"
+
+
 def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     """Document that real-OOPIF E2E was manually verified — see PR #14540.
 

@@ -1152,6 +1152,25 @@ def _extract_first_int(payload: Dict[str, Any], keys: tuple[str, ...]) -> Option
     return None
 
 
+def _extract_flat_context_length(payload: Dict[str, Any]) -> Optional[int]:
+    """Read a context WINDOW from the top level of a model-describe payload.
+
+    Same key vocabulary as :func:`_extract_context_length` (the module's single
+    source of truth for what counts as a context window), but WITHOUT the
+    nested-dict walk — for callers that hold a specific model object and must
+    not pick up a same-named key from an unrelated nested section.
+
+    Critically, ``max_tokens`` is NOT in ``_CONTEXT_LENGTH_KEYS``: it lives in
+    ``_MAX_COMPLETION_KEYS`` because on an OpenAI-compatible ``/v1/models``
+    passthrough it is the max *output* tokens, not the context window.
+    """
+    for key in _CONTEXT_LENGTH_KEYS:
+        coerced = _coerce_reasonable_int(payload.get(key))
+        if coerced is not None:
+            return coerced
+    return None
+
+
 def _extract_context_length(payload: Dict[str, Any]) -> Optional[int]:
     return _extract_first_int(payload, _CONTEXT_LENGTH_KEYS)
 
@@ -1164,7 +1183,7 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
     """Extract a context *window* from a ``/v1/models`` model object.
 
     Prefers input-window keys (``max_model_len``, ``max_input_tokens``,
-    ``context_length``, …) via :func:`_extract_context_length`. Falls back to
+    ``context_length``, …) via :func:`_extract_flat_context_length`. Falls back to
     ``max_tokens`` only when no input-window field is present.
 
     Anthropic (and Anthropic-compatible proxies such as local reverse
@@ -1176,7 +1195,7 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
     """
     if not isinstance(payload, dict):
         return None
-    ctx = _extract_context_length(payload)
+    ctx = _extract_flat_context_length(payload)
     if ctx is not None:
         return ctx
     # Last resort for OpenAI-compat servers that only report max_tokens as
@@ -2341,8 +2360,15 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict):
-                    # Prefer max_model_len / max_input_tokens / context_length
-                    # over max_tokens (Anthropic max_tokens = max OUTPUT).
+                    # Context-WINDOW keys only (canonical _CONTEXT_LENGTH_KEYS
+                    # vocabulary). `max_tokens` is the max *output* tokens on
+                    # OpenAI-compatible passthroughs (LiteLLM, Anthropic-compat
+                    # shims, cloud proxies) — e.g. 393216 for a 1M-context
+                    # model — so reading it ahead of real window keys collapses
+                    # the window to the output cap and poisons the context
+                    # cache. It is consulted only as an explicit last resort
+                    # inside _context_length_from_model_payload, for servers
+                    # that report nothing else.
                     ctx = _context_length_from_model_payload(data)
                     if ctx is not None:
                         return ctx
@@ -2380,10 +2406,11 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                         if isinstance(val, (int, float)) and val:
                             return int(val)
                     # Canonical context-WINDOW keys (via _CONTEXT_LENGTH_KEYS)
-                    # with max_tokens demoted to an explicit last resort — see
-                    # _context_length_from_model_payload for why max_tokens
-                    # must never win over a real window key (it is the max
-                    # OUTPUT cap on Anthropic/OpenAI-compatible passthroughs).
+                    # with max_tokens demoted to an explicit last resort —
+                    # sibling of the /v1/models/{id} path above; see that
+                    # comment for why max_tokens must never win over a real
+                    # window key (it is the max OUTPUT cap on
+                    # Anthropic/OpenAI-compatible passthroughs).
                     for source in sources:
                         ctx = _context_length_from_model_payload(source)
                         if ctx is not None:

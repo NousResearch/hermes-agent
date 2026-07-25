@@ -3959,6 +3959,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # and the continuation prompt still reads as an interrupted turn.
             if not _partial_text:
                 _partial_text = "[response interrupted]"
+                logger.warning(
+                    "Empty partial-stream stub (0 chars recovered, no tool "
+                    "call) — substituting placeholder content so the assistant "
+                    "message is not persisted empty (would otherwise 400 every "
+                    "later request with 'messages must have non-empty content' "
+                    "/ INVALID_REQUEST_BODY). error=%s",
+                    result["error"],
+                )
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,

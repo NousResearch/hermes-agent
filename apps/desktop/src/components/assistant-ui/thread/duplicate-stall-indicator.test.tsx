@@ -112,7 +112,8 @@ function Harness({ messages, isRunning = false }: { messages: ThreadMessage[]; i
   // isn't already a running assistant (e.g. the "trailing user prompt" /
   // "trailing system row" cases below). That is the real production flow —
   // exercised explicitly by the isRunning:true regression below to prove the
-  // gate skips that placeholder rather than latching onto it.
+  // gate treats that placeholder as the tail (it renders its own loading row
+  // since b5d82319d), silencing the real bubble's stall row.
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages,
     isRunning,
@@ -211,11 +212,13 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
 
   // Production flow (isRunning: true): a trailing queued user prompt makes the
   // runtime auto-append an empty optimistic assistant placeholder AFTER the
-  // real running bubble. The placeholder is the true last assistant-role
-  // message but renders null (isPlaceholder). The gate must skip it and keep
-  // the indicator on the real running bubble — without the skip this renders
-  // ZERO indicators. This is the case the isRunning:false tests above cannot
-  // reach.
+  // real running bubble. Since b5d82319d that placeholder renders
+  // ResponseLoadingIndicator (it used to render null), and during compaction
+  // that row carries the same label as the stall indicator. The gate must
+  // treat the placeholder as the tail so the real running bubble stays
+  // silent — otherwise both rows render and the duplicate this component
+  // exists to prevent (#68634) comes back split across two components.
+  // Exactly ONE status row, whichever component it comes from.
   it('still renders the indicator when the runtime appends an optimistic placeholder (isRunning:true)', () => {
     render(
       <Harness
@@ -234,5 +237,34 @@ describe('StreamStallIndicator tail gating (#68634)', () => {
 
     const indicators = screen.getAllByRole('status', { name: 'Summarizing thread' })
     expect(indicators.length).toBe(1)
+    // Ownership, not just count: the surviving row is the placeholder's
+    // loading row, and the real bubble's stall row stayed silent.
+    expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
+    expect(document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
+  })
+
+  // Same shape without compaction: the placeholder's loading row uses the
+  // plain loading label, and the real bubble's stall row must stay silent on
+  // this timeout path too.
+  it('keeps a single status row for the placeholder outside compaction (isRunning:true)', () => {
+    setSessionCompacting(sessionId, false)
+
+    render(
+      <Harness
+        isRunning
+        messages={[
+          userMessage('user-1', 'Summarize this thread for me'),
+          runningAssistantMessage('assistant-1', 'Working on it'),
+          userMessage('user-2', 'hola?')
+        ]}
+      />
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(5_000)
+    })
+
+    expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
+    expect(document.querySelectorAll('[data-slot="aui_stream-stall"]').length).toBe(0)
   })
 })

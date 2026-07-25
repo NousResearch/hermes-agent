@@ -194,6 +194,7 @@ export const StreamStallIndicator: FC = () => {
 
     return `${s.message.content.length}:${textLength}`
   })
+
   // Every running assistant bubble mounts this component (see
   // assistant-message.tsx), so a reconnect + queued prompt can leave two
   // bubbles simultaneously `running` and each render its own "Summarizing
@@ -210,26 +211,25 @@ export const StreamStallIndicator: FC = () => {
   // tail to find the last assistant-role message and compare ids — still a
   // single boolean return, so the leaf-only re-render behavior holds.
   //
-  // Skip the ephemeral optimistic placeholder the external-store runtime
-  // appends when the tail repo message is user/system while the run is busy
+  // The ephemeral optimistic placeholder the external-store runtime appends
+  // when the tail repo message is user/system while the run is busy
   // (incremental-external-store-runtime.ts adds `{role:'assistant', content:
-  // [], metadata:{isOptimistic:true}, status:'running'}`). It is the last
-  // assistant-role message but renders `null` — `assistant-message.tsx`
-  // suppresses it with the exact same predicate (`status.type === 'running'
-  // && content.length === 0`, its `isPlaceholder`). Without this skip the
-  // reverse scan matches that invisible bubble, the real running bubble
-  // fails the id compare, and every indicator disappears. Mirroring the
-  // isPlaceholder predicate keeps this gate consistent with what actually
-  // renders.
+  // [], metadata:{isOptimistic:true}, status:'running'}`) COUNTS as the tail
+  // here, deliberately. Since b5d82319d that placeholder is no longer
+  // suppressed: `assistant-message.tsx` renders `ResponseLoadingIndicator`
+  // for it (`isPlaceholder ? <ResponseLoadingIndicator /> : isRunning &&
+  // <StreamStallIndicator />`), and during compaction both indicators carry
+  // the same label. Treating the placeholder as the tail makes the real
+  // running bubble fail the id compare below, so exactly one status row
+  // renders — the placeholder's. An earlier revision of this gate skipped
+  // the placeholder because it rendered `null` back then; keeping that skip
+  // now would re-create the duplicate row this component exists to prevent
+  // (#68634), just split across two indicator components.
   const isLastAssistantMessage = useAuiState(s => {
     const { messages } = s.thread
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]
-
-      if (message.status?.type === 'running' && message.content.length === 0) {
-        continue
-      }
 
       if (message.role === 'assistant') {
         return message.id === s.message.id

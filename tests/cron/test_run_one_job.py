@@ -25,8 +25,8 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
 
-    def fake_save(jid, out):
-        calls.append(("save", jid))
+    def fake_save(jid, out, response):
+        calls.append(("save", jid, response))
         return f"/tmp/{jid}.txt"
 
     def fake_deliver(job, content, adapters=None, loop=None):
@@ -276,7 +276,9 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         return (True, "out", "final", None)
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(
+        s, "save_job_output", lambda jid, out, response: f"/tmp/{jid}.txt"
+    )
     monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
@@ -292,5 +294,31 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after run_one_job returned (no leak).
     assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_persists_exact_response_frame(monkeypatch):
+    saves = []
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None, extra_prompt=None: (
+            True,
+            "human-readable markdown",
+            "lead\n## Response\ntail",
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        s,
+        "save_job_output",
+        lambda jid, out, response: saves.append((jid, out, response)) or "/tmp/out.md",
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_args, **_kwargs: None)
+
+    assert s.run_one_job({"id": "j-frame", "name": "framed"}) is True
+    assert saves == [
+        ("j-frame", "human-readable markdown", "lead\n## Response\ntail")
+    ]
 
 

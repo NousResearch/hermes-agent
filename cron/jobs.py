@@ -3476,6 +3476,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 # accumulated one file per run forever and could fill the disk (#52383). Keep the
 # most recent N files per job; a non-positive value disables pruning (opt-out).
 _CRON_OUTPUT_DEFAULT_KEEP = 50
+_CRON_ORPHAN_SIDECAR_GRACE_SECONDS = 3600
 
 
 def _cron_output_keep() -> int:
@@ -3498,6 +3499,23 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     drop. A non-positive *keep* disables pruning. Pruning failures are swallowed
     so they can never break output saving.
     """
+    # A crash after the sidecar prepare but before Markdown commit can leave an
+    # orphan. Ignore fresh files to avoid racing a concurrent writer; old
+    # sidecars without their commit-marker Markdown are safe to reclaim.
+    cutoff = time.time() - _CRON_ORPHAN_SIDECAR_GRACE_SECONDS
+    try:
+        sidecars = list(job_output_dir.glob("*.response.json"))
+    except OSError:
+        sidecars = []
+    for sidecar in sidecars:
+        stem = sidecar.name[: -len(".response.json")]
+        committed_output = sidecar.with_name(f"{stem}.md")
+        try:
+            if not committed_output.exists() and sidecar.stat().st_mtime < cutoff:
+                sidecar.unlink()
+        except OSError as exc:
+            logger.debug("Failed to prune orphan cron response sidecar %s: %s", sidecar.name, exc)
+
     if keep <= 0:
         return 0
     try:
@@ -3515,33 +3533,107 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
             deleted += 1
         except OSError as exc:
             logger.debug("Failed to prune cron output %s: %s", stale.name, exc)
+            continue
+        try:
+            _response_sidecar_path(stale).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("Failed to prune cron response sidecar %s: %s", stale.name, exc)
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
-    ensure_dirs()
-    job_output_dir = _job_output_dir(job_id)
-    job_output_dir.mkdir(parents=True, exist_ok=True)
-    _secure_dir(job_output_dir)
+_CRON_RESPONSE_SIDECAR_FORMAT = "hermes-cron-response"
+_CRON_RESPONSE_SIDECAR_VERSION = 1
+_STRUCTURED_OUTPUT_SUFFIX = ".run.md"
 
-    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = job_output_dir / f"{timestamp}.md"
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
+def _response_sidecar_path(output_file: Path) -> Path:
+    return output_file.with_suffix(".response.json")
+
+
+def is_structured_job_output(output_file: Path) -> bool:
+    """Return whether *output_file* requires a valid exact-response sidecar."""
+    return output_file.name.endswith(_STRUCTURED_OUTPUT_SUFFIX)
+
+
+def read_job_output_response(output_file: Path) -> tuple[bool, Optional[str]]:
+    """Read an exact response from a saved output's structured sidecar.
+
+    The boolean distinguishes a valid sidecar containing an empty response
+    from a missing/invalid sidecar, for which callers may use legacy parsing.
+    """
+    sidecar = _response_sidecar_path(output_file)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(output)
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, None
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read cron response sidecar %s: %s", sidecar, exc)
+        return False, None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format") != _CRON_RESPONSE_SIDECAR_FORMAT
+        or payload.get("version") != _CRON_RESPONSE_SIDECAR_VERSION
+        or not isinstance(payload.get("response"), str)
+    ):
+        logger.warning("Ignoring invalid cron response sidecar schema: %s", sidecar)
+        return False, None
+    return True, payload["response"]
+
+
+def _atomic_write_output_file(path: Path, content: str, prefix: str) -> None:
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=prefix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, output_file)
-        _secure_file(output_file)
+        atomic_replace(tmp_path, path)
+        _secure_file(path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
+
+
+def save_job_output_response(output_file: Path, response: str) -> Path:
+    """Atomically save the exact final response beside a Markdown run output."""
+    sidecar = _response_sidecar_path(output_file)
+    sidecar_payload = json.dumps(
+        {
+            "format": _CRON_RESPONSE_SIDECAR_FORMAT,
+            "version": _CRON_RESPONSE_SIDECAR_VERSION,
+            "response": response,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    _atomic_write_output_file(sidecar, sidecar_payload, ".response_")
+    return sidecar
+
+
+def save_job_output(job_id: str, output: str, response: Optional[str] = None):
+    """Save the compatible Markdown output and an optional exact-response sidecar."""
+    ensure_dirs()
+    job_output_dir = _job_output_dir(job_id)
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(job_output_dir)
+
+    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    run_id = f"{timestamp}-{uuid.uuid4().hex[:12]}"
+    suffix = _STRUCTURED_OUTPUT_SUFFIX if response is not None else ".md"
+    output_file = job_output_dir / f"{run_id}{suffix}"
+
+    # For structured runs the sidecar is prepared first and the Markdown is
+    # the commit marker. Readers ignore structured Markdown without a valid
+    # sidecar, so no observable state can fall back to ambiguous heading
+    # parsing. Immutable run IDs prevent cross-run pairing.
+    if response is not None:
+        save_job_output_response(output_file, response)
+    _atomic_write_output_file(output_file, output, ".output_")
 
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())

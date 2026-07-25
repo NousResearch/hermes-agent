@@ -1017,6 +1017,49 @@ class TestSaveJobOutput:
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
+    def test_concurrent_structured_runs_never_collide_or_cross_pair(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import cron.jobs as jobs_mod
+
+        frozen = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(jobs_mod, "_hermes_now", lambda: frozen)
+        responses = [f"response {i}\n## Response\n```\nbody {i}\n```" for i in range(8)]
+
+        def save(i):
+            return save_job_output(
+                "test123", f"markdown {i}", response=responses[i]
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outputs = list(pool.map(save, range(8)))
+
+        assert len(set(outputs)) == 8
+        assert all(path.name.endswith(".run.md") for path in outputs)
+        for i, output in enumerate(outputs):
+            assert output.read_text(encoding="utf-8") == f"markdown {i}"
+            assert jobs_mod.read_job_output_response(output) == (True, responses[i])
+
+    def test_reclaims_only_old_uncommitted_sidecars(self, tmp_cron_dir):
+        import os
+        import time
+
+        output_dir = tmp_cron_dir / "cron" / "output" / "test123"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        old_orphan = output_dir / "old.run.response.json"
+        fresh_orphan = output_dir / "fresh.run.response.json"
+        old_orphan.write_text("{}", encoding="utf-8")
+        fresh_orphan.write_text("{}", encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(old_orphan, (old, old))
+
+        save_job_output("test123", "current", response="current")
+
+        assert not old_orphan.exists()
+        assert fresh_orphan.exists()
+
 
 class TestCronOutputRetention:
     """Per-run cron output must self-prune so long deploys don't fill the disk (#52383)."""

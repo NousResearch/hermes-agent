@@ -15,7 +15,7 @@ import {
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
-import { sessionRefFallbackLabel } from '@/lib/session-link-title'
+import { sessionRefFallbackLabel } from '@/lib/session-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 

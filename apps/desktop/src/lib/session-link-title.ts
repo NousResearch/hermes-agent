@@ -9,45 +9,13 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { getSession } from '@/hermes'
+import { parseSessionRefValue, sessionRefCacheKey, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { $sessions, sessionMatchesStoredId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 const titleCache = new Map<string, string>()
 const titleInflight = new Map<string, Promise<string>>()
 const titleSubs = new Map<string, Set<(value: string) => void>>()
-
-/** Session ids never contain a slash, so a slash unambiguously means
- *  `<profile>/<id>` — mirrors the same split in `tools/session_search_tool.py`. */
-export function parseSessionRefValue(value: string): { profile?: string; sessionId: string } {
-  const trimmed = value.trim()
-  const slash = trimmed.indexOf('/')
-
-  if (slash === -1) {
-    return { sessionId: trimmed }
-  }
-
-  const profile = trimmed.slice(0, slash).trim()
-  const sessionId = trimmed.slice(slash + 1).trim()
-
-  return sessionId ? { profile: profile || undefined, sessionId } : { sessionId: trimmed }
-}
-
-export function sessionRefCacheKey(value: string): string {
-  const { profile, sessionId } = parseSessionRefValue(value)
-
-  return sessionId ? `${profile ?? ''}/${sessionId}` : ''
-}
-
-/** Chip label before (or without) a resolved title — a short, still-identifying id. */
-export function sessionRefFallbackLabel(value: string): string {
-  const { sessionId } = parseSessionRefValue(value)
-
-  if (!sessionId) {
-    return value
-  }
-
-  return sessionId.length > 10 ? `${sessionId.slice(0, 8)}…` : sessionId
-}
 
 /** Deliberately not `sessionTitle()` from chat-runtime: its "Untitled session"
  *  fallback is a worse chip label than the short id, so an untitled row

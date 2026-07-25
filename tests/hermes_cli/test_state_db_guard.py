@@ -66,13 +66,62 @@ def test_header_ok_but_garbage_body_fails_pragma(tmp_path):
 
 def test_oversized_db_skips_pragma_but_still_checks_header(valid_db):
     res = verify_sqlite_integrity(valid_db, max_bytes=1)
-    # Header intact → size-only pass; pragma skipped.
+    # Header intact + schema probe passes → pass without the full pragma.
     assert res["valid"] is True
+    assert "skipped PRAGMA integrity_check" in res["message"]
     size = valid_db.stat().st_size
     valid_db.write_bytes(b"\x00" * size)
     res = verify_sqlite_integrity(valid_db, max_bytes=1)
     # Zeroed header must still fail even when pragma is skipped for size.
     assert res["valid"] is False
+
+
+def test_default_max_bytes_bounds_the_pragma_by_size():
+    """The default must NOT be size-unbounded.
+
+    ``PRAGMA integrity_check`` walks every page in the file, so an unbounded
+    default made `hermes update` peg a CPU for minutes on a multi-GB
+    state.db with no output (read as a hang). Callers that omit max_bytes
+    must inherit a finite ceiling.
+    """
+    import inspect
+
+    from hermes_cli.backup import DEFAULT_INTEGRITY_CHECK_MAX_BYTES
+
+    default = inspect.signature(verify_sqlite_integrity).parameters["max_bytes"].default
+    assert default == DEFAULT_INTEGRITY_CHECK_MAX_BYTES
+    assert default > 0, "size-unbounded integrity_check is never a safe default"
+
+
+def test_oversized_db_probe_catches_malformed_schema(tmp_path):
+    """Skipping the pragma must not mean skipping corruption detection.
+
+    A file with a valid header whose schema cannot be parsed has to fail
+    the oversized path via the cheap structural probe.
+    """
+    path = tmp_path / "state.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE t (a INTEGER)")
+    conn.commit()
+    conn.close()
+
+    raw = bytearray(path.read_bytes())
+    # Corrupt the schema b-tree page (page 2 onward) while leaving the
+    # 16-byte header magic intact, so only the probe can catch it.
+    for i in range(100, min(len(raw), 4096)):
+        raw[i] = 0xFF
+    path.write_bytes(bytes(raw))
+
+    res = verify_sqlite_integrity(path, max_bytes=1)
+    assert res["valid"] is False
+    assert "probe" in res["message"]
+
+
+def test_max_bytes_zero_forces_full_check(valid_db):
+    """``max_bytes=0`` remains the explicit opt-in for a full scan."""
+    res = verify_sqlite_integrity(valid_db, max_bytes=0)
+    assert res["valid"] is True
+    assert "integrity check passed" in res["message"]
 
 
 def test_copy_db_and_verify_roundtrip(valid_db, tmp_path):

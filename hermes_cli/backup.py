@@ -289,29 +289,44 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
 
 _SQLITE_HEADER = b"SQLite format 3\0"
 
+# Default ceiling above which ``PRAGMA integrity_check`` is skipped in favour
+# of the (O(1)) header + structural probe. ``integrity_check`` walks every
+# b-tree page in the file, so its cost scales with database size: on a 30 GB
+# state.db it runs for many minutes of pegged CPU with no output, which reads
+# to the user as a hung `hermes update` (#70553 follow-up). Sessions databases
+# in the tens of GB are normal for heavy users, so the size-unbounded check is
+# never an acceptable default on the update path.
+DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
+
 
 def verify_sqlite_integrity(
     path: Path,
     *,
     check_header: bool = True,
     run_pragma: bool = True,
-    max_bytes: int = 0,
+    max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES,
 ) -> dict:
     """Verify that a SQLite database at *path* is intact.
 
     Checks, in order:
       1. File exists and has an expected minimum size.
       2. SQLite header magic bytes are present.
-      3. A read-only ``PRAGMA integrity_check`` execution passes.
+      3. For files at or under ``max_bytes``, a read-only
+         ``PRAGMA integrity_check``. For larger files, a cheap structural
+         probe (schema read) instead — see ``max_bytes``.
 
     Args:
         path: Path to the database file.
         check_header: When true (default), verify the SQLite header magic.
         run_pragma: When true (default), run ``PRAGMA integrity_check`` via
             a read-only connection and verify the result is ``"ok"``.
-        max_bytes: When > 0, the file must be at most this many bytes.
-            Useful to catch a multi-GB DB before running ``PRAGMA integrity_check``
-            on it (which reads the whole file into the pager).
+        max_bytes: Size ceiling for the full ``PRAGMA integrity_check``.
+            Files larger than this fall back to the header check plus a
+            cheap structural probe, because ``integrity_check`` pages
+            through the ENTIRE file — minutes of silent pegged CPU on a
+            multi-GB database. Defaults to
+            :data:`DEFAULT_INTEGRITY_CHECK_MAX_BYTES` (2 GiB); pass ``0``
+            to force the full check regardless of size.
 
     Returns:
         A dict with keys:
@@ -354,14 +369,38 @@ def verify_sqlite_integrity(
             return result
 
     if oversized:
-        # Too large to page through PRAGMA integrity_check; the header check
-        # above (which catches the #68474 zeroed signature) is the gate.
-        result["valid"] = True
-        result["message"] = (
-            f"size {st.st_size:,} bytes exceeds max_bytes {max_bytes:,}; "
-            "skipped PRAGMA integrity_check (header check passed)"
-        )
+        # Too large to page through PRAGMA integrity_check (which is O(file
+        # size) and would peg a CPU for minutes on a multi-GB state.db).
+        # Fall back to a cheap O(1) structural probe: the header check above
+        # catches the #68474 zeroed signature, and opening the DB read-only
+        # plus reading sqlite_master + the page geometry catches the
+        # malformed-schema and truncated-header-page classes. Both are
+        # constant-time — they parse the schema, they do not walk the data.
         run_pragma = False
+        probe = None
+        try:
+            probe = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+            probe.execute("PRAGMA schema_version").fetchone()
+            probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            result["valid"] = True
+            result["message"] = (
+                f"size {st.st_size:,} bytes exceeds max_bytes {max_bytes:,}; "
+                "skipped PRAGMA integrity_check (header + schema probe passed)"
+            )
+        except sqlite3.DatabaseError as exc:
+            result["valid"] = False
+            result["message"] = f"schema probe failed: {exc}"
+            return result
+        except Exception as exc:
+            result["valid"] = False
+            result["message"] = f"schema probe error: {exc}"
+            return result
+        finally:
+            if probe is not None:
+                try:
+                    probe.close()
+                except Exception:
+                    pass
 
     if run_pragma:
         conn = None
@@ -399,11 +438,14 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
     """Like :func:`_safe_copy_db` but verifies the destination after copy.
 
     Returns True only when the copy succeeded AND the destination is valid
-    SQLite (header + integrity check).
+    SQLite (header + integrity check). Verification honours the default
+    size ceiling — a multi-GB destination gets the header + schema probe
+    rather than a full ``PRAGMA integrity_check`` that would page through
+    the whole file.
     """
     if not _safe_copy_db(src, dst):
         return False
-    integrity = verify_sqlite_integrity(dst, run_pragma=True, max_bytes=0)
+    integrity = verify_sqlite_integrity(dst, run_pragma=True)
     if not integrity.get("valid"):
         try:
             dst.unlink(missing_ok=True)

@@ -11726,7 +11726,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _state_path,
                     check_header=True,
                     run_pragma=True,
-                    max_bytes=0,
                 )
                 if _state_ok.get("valid"):
                     logger.debug(

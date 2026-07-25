@@ -569,8 +569,26 @@ class CLICommandsMixin:
 
         pcfg = gw_config.platforms.get(platform)
         if not pcfg or not pcfg.enabled:
-            _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
-            return True
+            # Relay aliasing: a relay-fronted gateway has no per-platform
+            # config block for the logical platform ("discord" etc.) — only a
+            # RELAY entry — yet /handoff discord is deliverable when the relay
+            # fronts it. The fronted set is deploy config
+            # (GATEWAY_RELAY_PLATFORMS), readable here without the live
+            # adapter; the gateway watcher re-checks against the authenticated
+            # transport (resolve_delivery_transport) before dispatch, so this
+            # is a UX pre-check, not the security gate.
+            relay_fronts = False
+            try:
+                from gateway.relay import relay_platform_identities
+                relay_cfg = gw_config.platforms.get(Platform.RELAY)
+                if relay_cfg and relay_cfg.enabled:
+                    fronted = {p for p, _ in relay_platform_identities()}
+                    relay_fronts = platform_name in fronted
+            except Exception:
+                relay_fronts = False
+            if not relay_fronts:
+                _cprint(f"  Platform '{platform_name}' is not configured/enabled in the gateway.")
+                return True
 
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:

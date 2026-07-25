@@ -8793,12 +8793,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except (ValueError, KeyError):
             raise RuntimeError(f"unknown platform '{platform_name}'")
 
-        # Adapter must be live
-        adapter = self.adapters.get(platform)
-        if not adapter:
+        # Adapter must be live. A relay-fronted gateway registers ONE adapter
+        # under Platform.RELAY that fronts N logical platforms — so a literal
+        # adapters.get(discord) misses even though "discord" is deliverable.
+        # resolve_delivery_transport is the shared alias-aware resolver (native
+        # adapter wins; relay eligible only when its authenticated transport
+        # advertises it fronts the logical platform).
+        transport = resolve_delivery_transport(platform, self.config, self.adapters)
+        if not transport:
             raise RuntimeError(
                 f"platform '{platform_name}' is not active in this gateway"
             )
+        adapter = transport.adapter
 
         # Home channel must be configured
         home = self.config.get_home_channel(platform)
@@ -8938,15 +8944,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Send the agent's reply to the destination. Route to the new
         # thread if we created one; otherwise the configured home channel
-        # (which may itself carry a thread_id).
+        # (which may itself carry a thread_id). Send through the resolved
+        # transport (not adapter.send directly) so a relay-fronted logical
+        # platform is stamped on the outbound frame (send_for_platform).
         send_metadata: Dict[str, Any] = {}
         if effective_thread_id:
             send_metadata["thread_id"] = effective_thread_id
         try:
-            result = await adapter.send(
-                chat_id=str(home.chat_id),
-                content=response_text,
-                metadata=send_metadata or None,
+            result = await transport.send(
+                platform,
+                str(home.chat_id),
+                response_text,
+                send_metadata or None,
             )
         except Exception as exc:
             raise RuntimeError(f"adapter.send failed: {exc}") from exc

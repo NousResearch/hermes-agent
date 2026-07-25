@@ -256,6 +256,44 @@ def relay_wake_url() -> Optional[str]:
     return value.rstrip("/") or None
 
 
+def relay_display_name() -> Optional[str]:
+    """The human-facing agent display name, forwarded at provision (Phase 1 parity).
+
+    The PRIMARY source for the connector's multi-agent reply-attribution prefix
+    (gateway-gateway #171): in a multi-agent scope the shared bot prepends
+    ``**<displayName>:** `` to this instance's replies. Gateway-asserted but
+    safely scoped exactly like ``relay_instance_id()`` / ``relay_wake_url()`` —
+    the tenant stays token-verified, so a dishonest gateway can only label its
+    OWN instance. Absent -> the connector stores null and attribution falls
+    back to the instance's linked-owner identity, else skips the prefix.
+
+    Env first (Docker/NAS stamps ``GATEWAY_RELAY_DISPLAY_NAME``), then the
+    skin's branded agent name (``get_branding("agent_name")`` — the same value
+    the CLI banner shows), so a self-hosted rename via skin config propagates
+    on the next boot's re-provision (the connector rotates on change, same as
+    a wake-url move).
+    """
+    value = os.environ.get("GATEWAY_RELAY_DISPLAY_NAME", "").strip()
+    if not value:
+        try:
+            from hermes_cli.skin_engine import get_active_skin  # late import: boot-safe
+
+            value = str(
+                get_active_skin().get_branding("agent_name", "") or ""
+            ).strip()
+        except Exception:  # noqa: BLE001 - branding absence must never crash boot
+            value = ""
+        # The stock brand name is IDENTICAL on every default install, so in a
+        # multi-agent scope it would prefix every reply "**Hermes Agent:**" —
+        # shadowing the connector's linked-owner fallback, which actually
+        # disambiguates. Only a deliberately customized name is forwarded.
+        if value == "Hermes Agent":
+            value = ""
+    # Mirror the connector's ingest sanitization (trim + 64-char cap) so what
+    # we send is what gets stored.
+    return value[:64] or None
+
+
 def _provision_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/provision`` POST URL."""
     raw = relay_dial_url.rstrip("/")
@@ -384,6 +422,7 @@ def _post_provision(
     route_keys: list[str],
     instance_id: Optional[str] = None,
     wake_url: Optional[str] = None,
+    display_name: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the connector's ``/relay/provision`` and return the JSON body.
@@ -413,6 +452,11 @@ def _post_provision(
     # stores null and simply can't wake this instance (buffering still works).
     if wake_url:
         body["wakeUrl"] = wake_url
+    # Same for the display name (Phase 1 parity, gg#171): omit when absent so
+    # the connector stores null and attribution falls back to the linked-owner
+    # identity.
+    if display_name:
+        body["displayName"] = display_name
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         provision_url,
@@ -591,6 +635,7 @@ def self_provision_relay() -> bool:
     route_keys = relay_route_keys()
     instance_id = relay_instance_id()
     wake_url = relay_wake_url()
+    display_name = relay_display_name()
 
     # Phase 1.5 (D-Q1.5c): provision EACH fronted platform under the SAME
     # gatewayId + the SAME (platform-less) per-gateway secret. The connector's
@@ -615,6 +660,7 @@ def self_provision_relay() -> bool:
                 route_keys=route_keys,
                 instance_id=instance_id,
                 wake_url=wake_url,
+                display_name=display_name,
             )
         except RuntimeError as exc:
             logger.warning(

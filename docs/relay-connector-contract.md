@@ -52,6 +52,7 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `platform_hint` | string | no | System-prompt platform hint. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
 | `supports_context` | bool | no | Whether the connector can supply surrounding channel/group **context** for an addressed turn on this platform (Model A on-demand history fetch — Discord/Slack/Matrix; Model B passive buffer — Telegram/Signal/WhatsApp). Default false ⇒ no `context` is attached to inbound events. See §3. |
+| `supported_ops` | string[] | no | Op-level capability discovery: the outbound op names the connector's sender for this platform actually implements (e.g. `["send", "edit", "typing", "follow_up", "get_chat_info"]`). Absent/empty ⇒ the connector predates the field and the gateway assumes the legacy op set (`send`/`edit`/`typing`/`follow_up`); a NEW op is used only when explicitly advertised. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
 runtime-only fields (`len_unit`, `supports_*`, `markdown_dialect`) come from the

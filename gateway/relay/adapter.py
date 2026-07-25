@@ -721,7 +721,12 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # Proxied to the connector (it owns the platform connection / cache).
-        if self._transport is None:
+        # Gated on op-level capability discovery: a connector that doesn't
+        # advertise get_chat_info in supported_ops (including every legacy
+        # connector, where supported_ops is empty and the LEGACY_OPS set
+        # applies) would only return "unsupported op", so skip the round trip
+        # and answer with the same local fallback the error path produced.
+        if self._transport is None or not self.descriptor.supports_op("get_chat_info"):
             return {"name": chat_id, "type": "dm"}
         return await self._transport.get_chat_info(chat_id)
 

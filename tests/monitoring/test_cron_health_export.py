@@ -190,10 +190,60 @@ def test_gateway_export_includes_cron_metrics_and_only_accepted_event_planes(mon
 
     snapshot = gateway_health_export._read_runtime_snapshot({})
 
-    assert [metric.name for metric in snapshot.metrics] == ["hermes.cron.jobs.enabled"]
+    names = [metric.name for metric in snapshot.metrics]
+    # Cron metrics are folded into the gateway snapshot...
+    assert "hermes.cron.jobs.enabled" in names
+    # ...and the background/subagent-work gauge is appended (distinct from
+    # active_agents). Assert the relationship, not a frozen exact list.
+    assert "hermes.gateway.background_work" in names
     assert gateway_health_export._gateway_health_event({"event": "cron_execution"}) is True
     assert gateway_health_export._gateway_health_event({"event": "gateway_health"}) is True
     assert gateway_health_export._gateway_health_event({"event": "run"}) is False
+
+
+def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
+    """Every gauge emitted in the runtime snapshot must also be registered in the
+    observable-gauge metric_names list, or the OTLP exporter never observes it.
+
+    This asserts the vocabulary-registration invariant documented in
+    docs/observability/monitoring.md: an emitted-but-unregistered gauge is
+    silently dropped. Regression guard for background_work / cron additions.
+    """
+    import inspect
+    from agent.monitoring import gateway_health_export
+
+    # Build a representative snapshot (gateway + cron + background_work) without
+    # a live gateway by stubbing the gateway snapshot to the real metric names.
+    class _M:
+        def __init__(self, name):
+            self.name = name
+            self.value = 0
+            self.attributes = {}
+
+    gateway_snapshot = type("S", (), {"metrics": [
+        _M("hermes.gateway.up"), _M("hermes.gateway.active_agents"),
+        _M("hermes.gateway.busy"), _M("hermes.gateway.drainable"),
+        _M("hermes.gateway.restart_requested"),
+        _M("hermes.platform.up"), _M("hermes.platform.degraded"),
+    ]})()
+    cron_snapshot = type("S", (), {"metrics": [
+        _M("hermes.cron.scheduler.heartbeat_age_seconds"),
+        _M("hermes.cron.scheduler.last_success_age_seconds"),
+        _M("hermes.cron.scheduler.catch_up_occurrences"),
+        _M("hermes.cron.jobs.enabled"), _M("hermes.cron.jobs.running"),
+        _M("hermes.cron.jobs.overdue"),
+    ]})()
+    monkeypatch.setattr(gateway_health_export, "_read_gateway_snapshot", lambda config: gateway_snapshot)
+    monkeypatch.setattr(gateway_health_export, "_read_cron_snapshot", lambda: cron_snapshot)
+
+    snapshot_names = {m.name for m in gateway_health_export._read_runtime_snapshot({}).metrics}
+
+    # Extract the registered metric_names list literal from _start_metric_provider.
+    src = inspect.getsource(gateway_health_export._start_metric_provider)
+    registered = {n for n in snapshot_names if f'"{n}"' in src}
+
+    missing = snapshot_names - registered
+    assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"
 
 
 def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():

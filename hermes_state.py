@@ -5983,6 +5983,29 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _decode_display_metadata(raw: Any) -> Optional[Dict[str, Any]]:
+        """Decode a ``display_metadata`` column into the dict every reader expects.
+
+        Every message read path must go through this. Returning the raw TEXT
+        instead reaches the desktop as a string, where ``'task_count' in meta``
+        throws and fails the whole resume. Some rows are double-encoded, so
+        unwrap a second layer when we find one.
+        """
+        if raw is None:
+            return None
+        try:
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(meta, str):
+                meta = json.loads(meta)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Ignoring invalid display metadata on message row")
+            return None
+        if not isinstance(meta, dict):
+            logger.warning("Ignoring non-object display metadata on message row")
+            return None
+        return meta
+
     def append_message(
         self,
         session_id: str,
@@ -6476,6 +6499,8 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
                     msg["tool_calls"] = []
+            if msg.get("display_metadata") is not None:
+                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
         return result
 
@@ -6545,6 +6570,8 @@ class SessionDB:
                         "Failed to deserialize tool_calls in get_messages_around, falling back to []"
                     )
                     msg["tool_calls"] = []
+            if msg.get("display_metadata") is not None:
+                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
 
         # before_rows includes the anchor itself; subtract 1 for the count of
@@ -6667,6 +6694,8 @@ class SessionDB:
                         "Failed to deserialize tool_calls in get_anchored_view, falling back to []"
                     )
                     msg["tool_calls"] = []
+            if msg.get("display_metadata") is not None:
+                msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             return msg
 
         return {
@@ -6865,10 +6894,9 @@ class SessionDB:
             if row["display_kind"]:
                 msg["display_kind"] = row["display_kind"]
             if row["display_metadata"]:
-                try:
-                    msg["display_metadata"] = json.loads(row["display_metadata"])
-                except (TypeError, json.JSONDecodeError):
-                    logger.warning("Ignoring invalid display metadata on message row")
+                decoded = self._decode_display_metadata(row["display_metadata"])
+                if decoded is not None:
+                    msg["display_metadata"] = decoded
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

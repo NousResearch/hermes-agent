@@ -102,6 +102,12 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete with status "error" — `text` is streamed partial output
+  // (keep it visible), not the error string.
+  partial?: boolean
+  // message.complete with status "error" — the failed turn was retained
+  // backend-side and will replay through session.resume's inflight payload.
+  recoverable?: boolean
   // Structured billing wall forwarded on message.complete when a turn fails
   // with FailoverReason.billing (shape mirrors @hermes/shared BillingBlock).
   billing?: BillingBlock
@@ -337,6 +343,10 @@ function timelineTaskCount(metadata: SessionMessage['display_metadata']): number
 function timelineDisplayContent(message: SessionMessage, content: string): string {
   if (message.display_kind === 'model_switch') {
     return 'model changed'
+  }
+
+  if (message.display_kind === 'auto_continue') {
+    return 'resumed interrupted turn'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
@@ -938,7 +948,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     )
 
     const displayRole =
-      message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
+      message.display_kind === 'model_switch' ||
+      message.display_kind === 'async_delegation_complete' ||
+      message.display_kind === 'auto_continue'
         ? 'system'
         : message.role
 

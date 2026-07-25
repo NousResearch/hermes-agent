@@ -367,6 +367,7 @@ export function appendLiveSessionProjection(
   // Only suppress the projection when the latest authoritative user row is the
   // same turn — older identical prompts must not hide a newly accepted repeat.
   const latestUser = [...messages].reverse().find(message => message.role === 'user')
+
   const inflightUserAlreadyPersisted =
     latestUser && textWithoutImageRefs(chatMessageText(latestUser)) === textWithoutImageRefs(inflightUser)
 

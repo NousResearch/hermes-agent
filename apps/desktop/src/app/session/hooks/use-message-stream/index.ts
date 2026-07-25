@@ -437,12 +437,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (
-      sessionId: string,
-      text: string,
-      responsePreviewed?: boolean,
-      failure?: { error: string; partial: boolean }
-    ) => {
+    (sessionId: string, text: string, responsePreviewed?: boolean, failure?: { error: string; partial: boolean }) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {

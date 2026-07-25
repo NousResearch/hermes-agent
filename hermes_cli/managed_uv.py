@@ -19,6 +19,7 @@ releases it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -364,26 +365,88 @@ def _runtime_request(info: SQLiteRuntimeInfo) -> str:
     return ".".join(str(part) for part in info.python_version[:2])
 
 
-def _install_safe_python_generation(
+# Cap on how many newer patches we'll try, newest-first, before giving up.
+# Bounded because each attempt is a real download+install+probe+delete cycle;
+# in practice the fix is almost always in the very next patch or two.
+_MAX_PATCH_RETRIES = 5
+
+
+def _list_available_patches(
+    uv_bin: str, minor: str, *, cwd: Path, env: dict
+) -> list[tuple[int, int, int]]:
+    """Return known patch versions for ``minor`` (e.g. "3.11"), newest first.
+
+    Queries ``uv python list --all-versions`` rather than trusting the bare
+    minor-line request to resolve to the newest patch (issue #71250: on some
+    hosts/uv versions, the resolved candidate for a bare "3.11" request can
+    be an older cached/indexed patch that still links a vulnerable SQLite,
+    even when a newer non-vulnerable patch is available). Returns [] on any
+    failure (network, parse) -- callers fall back to the original bare-minor
+    request in that case, preserving prior behavior.
+    """
+    try:
+        result = subprocess.run(
+            [
+                uv_bin, "python", "list", minor,
+                "--all-versions", "--only-downloads",
+                "--output-format", "json", "--no-config",
+            ],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        entries = json.loads(result.stdout)
+        versions: list[tuple[int, int, int]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            # Only default/cpython builds -- skip pypy/graalpy/freethreaded
+            # variants, which aren't what this repair path wants.
+            if entry.get("implementation") not in (None, "cpython"):
+                continue
+            if entry.get("variant") not in (None, "default"):
+                continue
+            parts = entry.get("version_parts") or {}
+            try:
+                versions.append(
+                    (int(parts["major"]), int(parts["minor"]), int(parts["patch"]))
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        # Deduplicate (list --all-versions can repeat a version across
+        # platforms/arches if filtering above didn't fully narrow it) and
+        # sort newest-first.
+        return sorted(set(versions), reverse=True)
+    except Exception:
+        return []
+
+
+def _attempt_install_generation(
     uv_bin: str,
+    request: str,
     *,
     project_root: Path,
+    python_root: Path,
     current: SQLiteRuntimeInfo,
 ) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
-    runtime_root = project_root / _RUNTIME_DIR_NAME
-    python_root = managed_python_install_dir(project_root)
+    """One install+probe attempt for a specific version request (bare minor
+    like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
+    own generation directory so a rejected candidate's files are fully
+    cleaned up before the next attempt, matching --reinstall semantics.
+    Returns None (and cleans up) on any failure, including a vulnerable
+    or off-line candidate.
+    """
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     generation = python_root / f"generation-{token}"
     generation.mkdir(parents=True, exist_ok=False)
-    for path in (runtime_root, python_root, generation):
-        _make_world_traversable(path)
+    _make_world_traversable(generation)
 
-    env = managed_python_env(
-        project_root,
-        install_dir=generation,
-    )
-    request = _runtime_request(current)
-    print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    env = managed_python_env(project_root, install_dir=generation)
     install = subprocess.run(
         [
             uv_bin,
@@ -403,7 +466,8 @@ def _install_safe_python_generation(
     )
     if install.returncode != 0:
         logger.warning(
-            "private Python install failed (rc=%d): %s",
+            "private Python install failed for %s (rc=%d): %s",
+            request,
             install.returncode,
             (install.stderr or install.stdout or "").strip(),
         )
@@ -427,7 +491,8 @@ def _install_safe_python_generation(
     )
     if found.returncode != 0 or not found.stdout.strip():
         logger.warning(
-            "private Python lookup failed (rc=%d): %s",
+            "private Python lookup failed for %s (rc=%d): %s",
+            request,
             found.returncode,
             (found.stderr or "").strip(),
         )
@@ -466,6 +531,57 @@ def _install_safe_python_generation(
         _remove_tree(generation, boundary=python_root)
         return None
     return generation, python, candidate
+
+
+def _install_safe_python_generation(
+    uv_bin: str,
+    *,
+    project_root: Path,
+    current: SQLiteRuntimeInfo,
+) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
+    runtime_root = project_root / _RUNTIME_DIR_NAME
+    python_root = managed_python_install_dir(project_root)
+    _make_world_traversable(runtime_root)
+    _make_world_traversable(python_root)
+
+    request = _runtime_request(current)
+    print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    result = _attempt_install_generation(
+        uv_bin, request, project_root=project_root,
+        python_root=python_root, current=current,
+    )
+    if result is not None:
+        return result
+
+    # The bare minor-line request resolved to a still-vulnerable (or
+    # otherwise rejected) candidate. Rather than giving up immediately,
+    # query which patches on this minor line uv actually knows about and
+    # retry with explicit newer versions, newest-first -- this handles the
+    # case where the default resolution for a bare request picks an older
+    # cached/indexed patch even though a newer, non-vulnerable one is
+    # available (issue #71250).
+    env_for_list = managed_python_env(project_root, install_dir=python_root)
+    patches = _list_available_patches(
+        uv_bin, request, cwd=project_root, env=env_for_list
+    )
+    tried_versions = {current.python_version[:3]}
+    attempts = 0
+    for version_tuple in patches:
+        if attempts >= _MAX_PATCH_RETRIES:
+            break
+        if version_tuple in tried_versions:
+            continue
+        tried_versions.add(version_tuple)
+        explicit_request = ".".join(str(p) for p in version_tuple)
+        print(f"  → Retrying with explicit patch {explicit_request}...")
+        attempts += 1
+        result = _attempt_install_generation(
+            uv_bin, explicit_request, project_root=project_root,
+            python_root=python_root, current=current,
+        )
+        if result is not None:
+            return result
+    return None
 
 
 def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo | None]:

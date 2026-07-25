@@ -108,7 +108,7 @@ import time
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Coroutine, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import tool_error
@@ -5882,12 +5882,52 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
 
     return registered_names
 
+
+def _sanitized_connect_timeout(config: dict) -> float:
+    """Return a server's ``connect_timeout`` as a finite, positive float.
+
+    YAML admits ``.nan``/``.inf``, which ``float()`` accepts silently — a
+    ``try/except (TypeError, ValueError)`` guard alone does not reject them.
+    A non-finite value poisons both the inner ``asyncio.wait_for`` (a ``nan``
+    deadline never elapses) and any outer bound derived from it. Fall back to
+    the default whenever the configured value isn't a usable finite positive.
+    """
+    try:
+        timeout = float(config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT))
+    except (TypeError, ValueError):
+        return float(_DEFAULT_CONNECT_TIMEOUT)
+
+    if not math.isfinite(timeout) or timeout <= 0:
+        return float(_DEFAULT_CONNECT_TIMEOUT)
+
+    return timeout
+
+
+def _outer_discovery_timeout(connect_timeouts: Iterable[float]) -> float:
+    """Outer bound for a parallel discovery/probe gather.
+
+    The enclosing bound must not undercut any individual server's own
+    ``connect_timeout`` budget, or a server configured above the floor is
+    cancelled by the outer cap before its inner ``wait_for`` elapses and is
+    silently dropped from the results. Add 10s of headroom over the largest
+    per-server budget so the inner ``wait_for`` is always the one that fires,
+    keeping 120s as a floor for the common many-small-servers case.
+
+    Callers pass already-sanitized values (see ``_sanitized_connect_timeout``)
+    so the bound can never come out non-finite, which would defeat the timeout
+    entirely.
+    """
+    timeouts = list(connect_timeouts)
+
+    return max(120.0, max(timeouts) + 10.0) if timeouts else 120.0
+
+
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
 
     Returns list of registered tool names.
     """
-    connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+    connect_timeout = _sanitized_connect_timeout(config)
     # List-based claim (not a ``nonlocal`` rebind): the claim callback runs
     # inside ``_connect_server`` while this frame is suspended, and appending
     # keeps type narrowing intact for the module's other ``server`` locals.
@@ -6053,9 +6093,15 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                     _server_connect_errors.pop(name, None)
                     _clear_connect_failure(name)
 
-    # Per-server timeouts are handled inside _discover_and_register_server.
-    # The outer timeout is generous: 120s total for parallel discovery.
-    #
+    # Per-server timeouts are handled inside _discover_and_register_server,
+    # which sanitizes each server's connect_timeout the same way. Scale the
+    # enclosing bound off those same sanitized values so a server configured
+    # above the 120s floor isn't cancelled by the outer cap before its own
+    # connect budget elapses (which silently dropped it from discovery).
+    outer_timeout = _outer_discovery_timeout(
+        _sanitized_connect_timeout(cfg) for cfg in new_servers.values()
+    )
+
     # Temporarily clear the interrupt flag on the current thread so that MCP
     # discovery is never cancelled by a stale interrupt from a prior agent
     # session (executor threads get reused and may carry old interrupt state).
@@ -6064,7 +6110,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _run_on_mcp_loop(_discover_all, timeout=120)
+        _run_on_mcp_loop(_discover_all, timeout=outer_timeout)
     except (TimeoutError, InterruptedError) as _e:
         # When the outer timeout fires or the user interrupts,
         # _discover_all's gather may not have finished, leaving
@@ -6324,22 +6370,12 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     result: Dict[str, List[tuple]] = {}
     probed_servers: List[MCPServerTask] = []
 
-    # Sanitize each server's connect_timeout to a finite, positive float ONCE.
-    # YAML admits ``.nan``/``.inf``, which ``float()`` accepts silently — an
-    # earlier ``except (TypeError, ValueError)`` guard does not reject them.
-    # A non-finite value would poison both the inner ``wait_for`` (a ``nan``
-    # deadline never elapses) and ``max(connect_timeouts)`` below (making the
-    # outer probe bound non-finite, so it never times out). Fall back to the
-    # default whenever the configured value isn't a usable finite positive.
-    connect_timeouts: Dict[str, float] = {}
-    for name, cfg in enabled.items():
-        try:
-            ct = float(cfg.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT))
-        except (TypeError, ValueError):
-            ct = float(_DEFAULT_CONNECT_TIMEOUT)
-        if not math.isfinite(ct) or ct <= 0:
-            ct = float(_DEFAULT_CONNECT_TIMEOUT)
-        connect_timeouts[name] = ct
+    # Sanitize each server's connect_timeout to a finite, positive float ONCE,
+    # then reuse those values for both the inner ``wait_for`` budgets and the
+    # outer probe bound below.
+    connect_timeouts: Dict[str, float] = {
+        name: _sanitized_connect_timeout(cfg) for name, cfg in enabled.items()
+    }
 
     async def _probe_all():
         names = list(enabled.keys())
@@ -6367,14 +6403,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
             return_exceptions=True,
         )
 
-    # The outer probe bound must not undercut any server's own connect_timeout
-    # budget, or a server with connect_timeout > 120 is cancelled by the outer
-    # cap before its inner wait_for elapses and is silently dropped from the
-    # result. Mirror _probe_single_server's `connect_timeout + 10`, keeping 120s
-    # as a floor for the common many-small-servers case. Reuse the sanitized
-    # per-server values so a non-finite/non-numeric connect_timeout can't make
-    # the outer bound non-finite (which would defeat the timeout entirely).
-    outer_timeout = max(120.0, max(connect_timeouts.values()) + 10.0)
+    outer_timeout = _outer_discovery_timeout(connect_timeouts.values())
 
     try:
         _run_on_mcp_loop(_probe_all, timeout=outer_timeout)

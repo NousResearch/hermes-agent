@@ -1,4 +1,11 @@
-"""Tests for probe_mcp_server_tools() in tools.mcp_tool."""
+"""Tests for the parallel-discovery outer-timeout policy in tools.mcp_tool.
+
+Covers ``probe_mcp_server_tools()`` and the sibling site in
+``register_mcp_servers()``: both gather per-server connects in parallel under
+an enclosing ``_run_on_mcp_loop`` bound, and both must scale that bound off the
+largest *sanitized* ``connect_timeout`` so a slow-but-legitimately-configured
+server is not cancelled before its own budget elapses.
+"""
 
 import asyncio
 from types import SimpleNamespace
@@ -224,3 +231,136 @@ class TestProbeMcpServerTools:
         assert "github" in result
         assert "disabled_one" not in result
         assert "disabled_one" not in connect_calls
+
+
+class TestRegisterMcpServersOuterTimeout:
+    """``register_mcp_servers`` runs the same parallel-discovery shape as the
+    probe, so it needs the same largest-configured-timeout outer bound.
+
+    Its inner per-server budget lives in ``_discover_and_register_server``,
+    which honors each server's ``connect_timeout``; the enclosing
+    ``_run_on_mcp_loop`` call was hard-capped at 120s, so a server configured
+    above that floor was cancelled by the outer cap before its own connect
+    budget elapsed and was silently dropped from discovery.
+    """
+
+    @staticmethod
+    def _register(config, captured):
+        """Drive ``register_mcp_servers`` with the real ``_discover_all``
+        coroutine, recording the outer timeout it was handed."""
+        import tools.mcp_tool as mcp
+
+        async def fake_discover(name, cfg):
+            return [f"mcp__{name}__tool_a"]
+
+        def run_coro(coro_or_factory, timeout=120):
+            captured["timeout"] = timeout
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_discover), \
+             patch("tools.mcp_tool._ensure_mcp_loop"), \
+             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=run_coro), \
+             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+            mcp.register_mcp_servers(config)
+
+    def test_outer_timeout_respects_large_connect_timeout(self):
+        """A server with ``connect_timeout`` above the 120s floor drives the bound."""
+        captured = {}
+        self._register({"slow": {"command": "npx", "connect_timeout": 300}}, captured)
+
+        assert captured.get("timeout") == max(120.0, 300.0 + 10.0)
+
+    def test_outer_timeout_keeps_120s_floor_for_small_timeouts(self):
+        """Many small servers keep the generous 120s floor — the bound only grows."""
+        captured = {}
+        self._register(
+            {
+                "a": {"command": "npx", "connect_timeout": 5},
+                "b": {"command": "npx", "connect_timeout": 10},
+            },
+            captured,
+        )
+
+        assert captured.get("timeout") == 120.0
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            float("nan"),   # YAML `.nan` -> Python float nan
+            float("inf"),   # YAML `.inf` -> Python float inf
+            float("-inf"),  # YAML `-.inf`
+            0,              # non-positive
+            -5,             # negative
+            "not-a-number",  # unparseable
+        ],
+        ids=["nan", "inf", "-inf", "zero", "negative", "unparseable"],
+    )
+    def test_outer_timeout_finite_for_bad_connect_timeout(self, bad_value):
+        """A poisoned ``connect_timeout`` must not make the outer bound
+        non-finite (``nan``/``inf`` deadlines never trip ``_run_on_mcp_loop``'s
+        ``remaining <= 0`` branch, so discovery would never time out).
+
+        A valid 300s peer is co-configured so the sanitized bound is a
+        distinguishable 310: an ``inf`` member would otherwise return ``inf``
+        from ``max()`` and a ``nan`` member would collapse it to the floor.
+        """
+        import math as _math
+
+        captured = {}
+        self._register(
+            {
+                "poisoned": {"command": "npx", "connect_timeout": bad_value},
+                "slow": {"command": "npx", "connect_timeout": 300},
+            },
+            captured,
+        )
+
+        outer = captured.get("timeout")
+        assert outer is not None
+        assert _math.isfinite(outer), f"outer_timeout was non-finite: {outer!r}"
+        assert outer == max(120.0, 300.0 + 10.0)
+
+class TestSanitizedConnectTimeout:
+    """``_sanitized_connect_timeout`` is the single source both the inner
+    ``asyncio.wait_for`` budgets and the outer bound read, so the two can never
+    disagree about what a server's connect budget is."""
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            0,
+            -5,
+            "not-a-number",
+            None,
+            [30],
+        ],
+        ids=["nan", "inf", "-inf", "zero", "negative", "unparseable", "none", "list"],
+    )
+    def test_unusable_values_fall_back_to_the_default(self, bad_value):
+        import tools.mcp_tool as mcp
+
+        assert mcp._sanitized_connect_timeout({"connect_timeout": bad_value}) == float(
+            mcp._DEFAULT_CONNECT_TIMEOUT
+        )
+
+    def test_missing_value_uses_the_default(self):
+        import tools.mcp_tool as mcp
+
+        assert mcp._sanitized_connect_timeout({}) == float(mcp._DEFAULT_CONNECT_TIMEOUT)
+
+    @pytest.mark.parametrize("good_value", [1, 5, 30.5, 300, "45"])
+    def test_usable_values_pass_through_as_floats(self, good_value):
+        import tools.mcp_tool as mcp
+
+        result = mcp._sanitized_connect_timeout({"connect_timeout": good_value})
+        assert result == float(good_value)
+        assert isinstance(result, float)

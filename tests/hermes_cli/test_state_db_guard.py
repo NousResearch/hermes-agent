@@ -61,6 +61,39 @@ def test_oversized_db_probe_catches_malformed_schema(tmp_path):
 
 
 
+def test_copy_db_and_verify_honours_the_copy_failure_itself(valid_db, tmp_path, monkeypatch):
+    """Contract test: a failed-copy result must decide on its own.
+
+    ``_safe_copy_db`` returns ``(ok, reason)`` and ``if not <2-tuple>`` is always
+    False, so a bare truthiness check on it stops rejecting failed copies. The
+    other cases here don't notice: a real failing copy usually leaves no usable
+    destination, so the integrity gate below returns False second-hand.
+
+    The stub leaves a valid destination in place so only the ``(ok, reason)``
+    contract can reject the operation. It does not reproduce the real helper's
+    usual side effect — that one best-effort removes the destination after a
+    failed copy, though the removal is allowed to fail and be swallowed.
+    """
+    import shutil
+
+    from hermes_cli import backup as bk
+
+    dst = tmp_path / "snapshot" / "state.db"
+    dst.parent.mkdir()
+    shutil.copy2(valid_db, dst)  # a stale but perfectly valid earlier backup
+    assert verify_sqlite_integrity(dst)["valid"] is True  # premise of the test
+
+    def _fails_without_touching_dst(src, dest):
+        return False, "unable to open database file"
+
+    monkeypatch.setattr(bk, "_safe_copy_db", _fails_without_touching_dst)
+
+    assert bk.copy_db_and_verify(valid_db, dst) is False
+    # Still valid, which is the evidence: we returned at the copy gate instead
+    # of falling through to the integrity branch (that one unlinks).
+    assert verify_sqlite_integrity(dst)["valid"] is True
+
+
 def test_restore_flow_end_to_end(valid_db, tmp_path):
     """Simulate the #68474 recovery path: live db zeroed, snapshot valid →
     restore snapshot over live file → verify restored copy."""

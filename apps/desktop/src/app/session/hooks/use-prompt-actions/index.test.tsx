@@ -120,7 +120,7 @@ function Harness({
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
-  createBackendSessionForSend?: () => Promise<null | string>
+  createBackendSessionForSend?: (preview?: null | string) => Promise<null | string>
 }) {
   const localActiveSessionIdRef = useRef<string | null>(
     activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
@@ -2764,6 +2764,155 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 
     expect(await handle!.submitText('message that must not land in session B')).toBe(false)
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(false)
+  })
+})
+
+describe('usePromptActions new-chat first-send delivery (#63078)', () => {
+  const NEW_RUNTIME_ID = 'rt-first-send'
+  const NEW_STORED_ID = 'stored-first-send'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $connection.set(null)
+    $composerAttachments.set([])
+  })
+
+  it('delivers the first message of a new chat through the intentional route transition (#62562)', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    // Mirror the real session creator: session.create selects the persisted
+    // row and replaces the new-chat route with the created session's URL
+    // BEFORE returning. The submit pipeline must adopt that intentional
+    // transition as its new pinned target — not mistake it for the user
+    // switching conversations and stop before prompt.submit.
+    const createBackendSessionForSend = vi.fn(async (preview?: null | string) => {
+      expect(preview).toBe('first message of a new chat')
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeToken = `/${NEW_STORED_ID}::`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(await handle!.submitText('first message of a new chat')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    // The FULL RPC transcript: exactly one prompt.submit, addressed to the
+    // created runtime session, carrying the user's text — no session.resume
+    // detour and, critically, no silent drop before the submit.
+    expect(calls).toEqual([
+      {
+        method: 'prompt.submit',
+        params: { session_id: NEW_RUNTIME_ID, text: 'first message of a new chat' }
+      }
+    ])
+  })
+
+  it('aborts a new-session submit when sidebar navigation changes the route before its selected ref (#62562)', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/::'
+
+    let releaseAttach: () => void = () => {}
+
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+      routeToken = `/${NEW_STORED_ID}::`
+
+      return NEW_RUNTIME_ID
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        await new Promise<void>(resolve => {
+          releaseAttach = resolve
+        })
+
+        return {
+          attached: true,
+          path: '/remote/work/report.txt',
+          ref_text: '@file:report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const attachment: ComposerAttachment = {
+      id: 'file:report.txt',
+      kind: 'file',
+      label: 'report.txt',
+      path: '/Users/alice/report.txt',
+      refText: '@file:`/Users/alice/report.txt`'
+    }
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const submitting = handle!.submitText('first message', { attachments: [attachment] })
+    await waitFor(() => expect(calls.some(call => call.method === 'file.attach')).toBe(true))
+
+    // selectSidebarItem calls navigate() first. The routed effect has not yet
+    // entered resumeSession(), so the selected-session ref still points at the
+    // just-created session when attachment sync settles — the route move to a
+    // DIFFERENT chat must abort on its own.
+    routeToken = '/sidebar-target::'
+    releaseAttach()
+
+    expect(await submitting).toBe(false)
+    expect(selectedStoredSessionIdRef.current).toBe(NEW_STORED_ID)
+    expect(calls.some(call => call.method === 'prompt.submit')).toBe(false)
   })
 })
 

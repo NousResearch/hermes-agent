@@ -2385,3 +2385,35 @@ class TestProviderEnabledRuntimeGate:
             assert "disabled" not in str(e).lower()
         except Exception:
             pass  # any non-ValueError is fine; we only gate the disabled path
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_CONFIG must not carry a duplicate "kanban" key
+# ---------------------------------------------------------------------------
+
+def test_default_config_kanban_block_not_dropped_by_duplicate_key():
+    """DEFAULT_CONFIG previously declared ``"kanban"`` twice, so Python kept
+    only the second literal and silently dropped the first — losing the
+    ``auto_subscribe_on_create`` default. Both sets of defaults must survive.
+    """
+    kanban = DEFAULT_CONFIG["kanban"]
+    # From the first (dropped) block:
+    assert kanban.get("auto_subscribe_on_create") is True
+    # From the second block:
+    assert "dispatch_in_gateway" in kanban
+    assert "auto_decompose" in kanban
+
+
+def test_default_config_has_no_duplicate_top_level_keys():
+    """Guard against any duplicate key silently shadowing a default."""
+    import ast
+    import hermes_cli.config as cfg_mod
+
+    src = open(cfg_mod.__file__, encoding="utf-8").read()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+            if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
+                dupes = {k for k in keys if keys.count(k) > 1}
+                assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"

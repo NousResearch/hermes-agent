@@ -821,6 +821,16 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moaTitle: 'Mixture of Agents',
+      moaDesc:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+      moaPresetPlaceholder: 'Preset',
+      moaEnabled: 'Enabled',
+      moaSetDefault: 'Set default',
+      moaDelete: 'Delete',
+      moaNewPresetPlaceholder: 'new preset',
+      moaAddPreset: 'Add preset',
+      moaDefault: 'Default:',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },

@@ -772,6 +772,15 @@ export const ar = defineLocale({
       change: 'تغيير',
       autoUseMain: 'تلقائي · استخدام النموذج الرئيسي',
       providerDefault: '(افتراضي المزوّد)',
+      moaTitle: 'خليط الوكلاء',
+      moaDesc: 'اضبط إعدادات مسماة تظهر كنماذج ضمن مزوّد خليط الوكلاء. المُجمِّع هو النموذج الفعّال.',
+      moaPresetPlaceholder: 'إعداد مسبق',
+      moaEnabled: 'مُفعّل',
+      moaSetDefault: 'تعيين الافتراضي',
+      moaDelete: 'حذف',
+      moaNewPresetPlaceholder: 'إعداد جديد',
+      moaAddPreset: 'إضافة إعداد',
+      moaDefault: 'الافتراضي:',
       tasks: {
         vision: {
           label: 'الرؤية',

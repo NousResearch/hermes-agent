@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". Mi adeguerò in base alla tua correzione."
     subagent_working_head: "⏳ Subagente al lavoro"
     compressing_head: "⏳ Compressione del contesto"
+    state_unavailable_head: "⚠️ Stato della sessione non disponibile"
+    state_unavailable_tail: " — il tuo messaggio è in coda finché l'attività corrente non termina (usa /stop per annullare tutto)."
     queued_head: "⏳ In coda per il prossimo turno"
     queued_tail: ". Risponderò appena l'attività corrente sarà terminata."
     interrupting_head: "⚡ Interruzione dell'attività corrente"

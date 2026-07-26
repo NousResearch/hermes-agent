@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". 수정 사항에 맞춰 조정할게요."
     subagent_working_head: "⏳ 서브에이전트 작업 중"
     compressing_head: "⏳ 컨텍스트 압축 중"
+    state_unavailable_head: "⚠️ 세션 상태를 확인할 수 없음"
+    state_unavailable_tail: " — 현재 작업이 끝날 때까지 메시지를 대기열에 넣었어요 (모두 취소하려면 /stop을 사용하세요)."
     queued_head: "⏳ 다음 턴 대기열에 추가됨"
     queued_tail: ". 현재 작업이 끝나면 응답할게요."
     interrupting_head: "⚡ 현재 작업 중단 중"

@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". Ich passe mich anhand Ihrer Korrektur an."
     subagent_working_head: "⏳ Subagent arbeitet"
     compressing_head: "⏳ Kontext wird komprimiert"
+    state_unavailable_head: "⚠️ Sitzungsstatus nicht verfügbar"
+    state_unavailable_tail: " — Ihre Nachricht ist eingereiht, bis die aktuelle Aufgabe abgeschlossen ist (mit /stop alles abbrechen)."
     queued_head: "⏳ Für den nächsten Zug eingereiht"
     queued_tail: ". Ich antworte, sobald die aktuelle Aufgabe abgeschlossen ist."
     interrupting_head: "⚡ Aktuelle Aufgabe wird unterbrochen"

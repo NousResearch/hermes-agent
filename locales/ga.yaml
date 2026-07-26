@@ -718,6 +718,8 @@ gateway:
     redirected_tail: ". Déanfaidh mé coigeartú de réir do cheartúcháin."
     subagent_working_head: "⏳ Fo-ghníomhaire ag obair"
     compressing_head: "⏳ Ag dlúthú an chomhthéacs"
+    state_unavailable_head: "⚠️ Níl staid an tseisiúin ar fáil"
+    state_unavailable_tail: " — tá do theachtaireacht i scuaine go dtí go gcríochnóidh an tasc reatha (úsáid /stop chun gach rud a chealú)."
     queued_head: "⏳ I scuaine don chéad seal eile"
     queued_tail: ". Freagróidh mé nuair a chríochnóidh an tasc reatha."
     interrupting_head: "⚡ Ag cur isteach ar an tasc reatha"

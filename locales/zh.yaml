@@ -718,6 +718,8 @@ gateway:
     redirected_tail: "。我会根据你的修正进行调整。"
     subagent_working_head: "⏳ 子代理正在工作"
     compressing_head: "⏳ 正在压缩上下文"
+    state_unavailable_head: "⚠️ 会话状态不可用"
+    state_unavailable_tail: " ——你的消息已排队，将在当前任务完成后处理（用 /stop 可取消全部）。"
     queued_head: "⏳ 已排队至下一回合"
     queued_tail: "。当前任务完成后我会回复。"
     interrupting_head: "⚡ 正在中断当前任务"

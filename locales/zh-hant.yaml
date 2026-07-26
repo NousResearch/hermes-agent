@@ -718,6 +718,8 @@ gateway:
     redirected_tail: "。我會依你的修正調整。"
     subagent_working_head: "⏳ 子代理工作中"
     compressing_head: "⏳ 正在壓縮上下文"
+    state_unavailable_head: "⚠️ 工作階段狀態無法取得"
+    state_unavailable_tail: " — 你的訊息已排入佇列，待目前任務完成後處理（使用 /stop 可全部取消）。"
     queued_head: "⏳ 已排入下一輪佇列"
     queued_tail: "。目前任務完成後我會回覆。"
     interrupting_head: "⚡ 正在中斷目前任務"

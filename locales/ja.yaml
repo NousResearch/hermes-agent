@@ -718,6 +718,8 @@ gateway:
     redirected_tail: "。ご指摘に沿って調整します。"
     subagent_working_head: "⏳ サブエージェントが作業中"
     compressing_head: "⏳ コンテキストを圧縮中"
+    state_unavailable_head: "⚠️ セッション状態を取得できません"
+    state_unavailable_tail: " — 現在のタスクが完了するまでメッセージをキューしました (/stop ですべてキャンセルできます)。"
     queued_head: "⏳ 次のターンにキューしました"
     queued_tail: "。現在のタスクが完了したら応答します。"
     interrupting_head: "⚡ 現在のタスクを中断中"

@@ -792,12 +792,18 @@ class GatewayTurnMixin:
                     )
                     _needs_compress = False
 
-        if _needs_compress and await self._session_has_compression_in_flight(session_key):
+        _compression_state = (
+            await self._session_has_compression_in_flight(session_key) if _needs_compress else False
+        )
+        if _compression_state is not False:
             # A prior compression still holds the durable lock (e.g. a shielded worker left by /stop):
-            # another attempt would wait up to 600s behind a commit the fence will refuse.
+            # another attempt would wait up to 600s behind a commit the fence will refuse. An
+            # unreadable lock state (None) skips too — starting a compression blind could fork
+            # siblings off a parent another worker is rotating.
             logger.info(
-                "Session hygiene: skipping compression for %s; "
-                "another compression is already in flight", session_entry.session_id,
+                "Session hygiene: skipping compression for %s; %s", session_entry.session_id,
+                "another compression is already in flight" if _compression_state
+                else "compression state is unavailable",
             )
             _needs_compress = False
 

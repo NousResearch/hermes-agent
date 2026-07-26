@@ -839,6 +839,8 @@ gateway:
     redirected_tail: ". Je m'ajusterai en tenant compte de votre correction."
     subagent_working_head: "⏳ Sous-agent au travail"
     compressing_head: "⏳ Compression du contexte"
+    state_unavailable_head: "⚠️ État de la session indisponible"
+    state_unavailable_tail: " — votre message est mis en file jusqu'à la fin de la tâche en cours (utilisez /stop pour tout annuler)."
     queued_head: "⏳ Mis en file pour le prochain tour"
     queued_tail: ". Je répondrai dès que la tâche en cours sera terminée."
     interrupting_head: "⚡ Interruption de la tâche en cours"

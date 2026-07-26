@@ -454,6 +454,18 @@ export const setCurrentReasoningEffort = (next: Updater<string>) => {
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
 }
 
+// Hermes' built-in effort when neither the surface nor the profile config
+// specifies one (see VALID_REASONING_EFFORTS / parse_reasoning_effort).
+export const DEFAULT_REASONING_EFFORT = 'medium'
+
+// The profile's `agent.reasoning_effort`, mirrored from config so surfaces that
+// need to render or apply "the default" resolve the user's configured level
+// instead of assuming DEFAULT_REASONING_EFFORT. Empty until config loads, and
+// re-seeded on every profile switch by useHermesConfig.
+export const $defaultReasoningEffort = atom('')
+
+export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultReasoningEffort, next)
+
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {

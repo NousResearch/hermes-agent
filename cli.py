@@ -7028,6 +7028,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         app = getattr(self, "_app", None)
 
+        # `!<command>` shell mode, checked before slash dispatch — matches the
+        # Enter path in the input loop so an editor-saved bang command runs
+        # locally instead of being sent to the agent.
+        try:
+            if self.handle_bang_shell(text):
+                self._reset_input_buffer(buffer)
+                if app is not None:
+                    app.invalidate()
+                return
+        except Exception as exc:
+            _cprint(f"  {_DIM}Shell command failed: {exc}{_RST}")
+            self._reset_input_buffer(buffer)
+            if app is not None:
+                app.invalidate()
+            return
+
         # Slash commands: dispatch directly, same as the Enter handler's
         # _looks_like_slash_command branch.
         if _looks_like_slash_command(text):
@@ -9587,6 +9603,64 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _console_print(self, *args, **kwargs):
         """Print through the active command-safe console."""
         self._output_console().print(*args, **kwargs)
+
+    def handle_bang_shell(self, text: str) -> bool:
+        """Run a ``!<command>`` submission. Returns True when it was handled.
+
+        Dispatched from the input loop BEFORE slash-command routing and before
+        anything is queued for the agent, so a bang command never becomes a
+        turn: no user message, no assistant message, no tool result touches
+        ``self.conversation_history``. That is what makes ``!`` free — zero
+        tokens, and role alternation / prompt caching are untouched by
+        construction. The invariant is covered by
+        tests/cli/test_bang_shell_mode.py.
+
+        Returns False when the text is not a bang command or when bang mode is
+        disabled for this context (gateway/cron), letting the caller fall
+        through to normal routing.
+        """
+        from hermes_cli.bang_shell import (
+            USAGE_HINT,
+            bang_shell_enabled,
+            check_bang_approval,
+            is_bang_command,
+            parse_bang_command,
+            resolve_bang_cwd,
+            run_bang_command,
+        )
+
+        if not is_bang_command(text):
+            return False
+        if not bang_shell_enabled():
+            # Gateway / cron / API contexts: no composer, no human at a
+            # keyboard, and those users already have their own shells. Let the
+            # text route normally rather than becoming remote execution.
+            return False
+
+        command = parse_bang_command(text)
+        if not command:
+            # Bare `!` — show what the feature does instead of running an
+            # empty shell or sending "!" to the model.
+            self._console_print(f"[dim]{USAGE_HINT}[/]")
+            return True
+
+        approval = check_bang_approval(command)
+        if not approval.get("approved"):
+            message = approval.get("message") or (
+                f"Command denied: {approval.get('description', 'flagged as dangerous')}"
+            )
+            self._console_print(f"[bold red]{_escape(str(message))}[/]")
+            return True
+
+        cwd = resolve_bang_cwd(getattr(self, "session_id", None))
+        exit_code = run_bang_command(
+            command,
+            cwd=cwd,
+            writer=lambda line: self._console_print(_rich_text_from_ansi(line)),
+        )
+        if exit_code:
+            self._console_print(f"[dim]! exited {exit_code}[/]")
+        return True
 
     @staticmethod
     def _resolve_personality_prompt(value) -> str:
@@ -15131,7 +15205,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and _looks_like_slash_command(text)):
+                # A bang command is treated like a slash command while the
+                # agent is busy: it must never be routed into steer/redirect
+                # (which would inject `!git status` into the model's context as
+                # a prompt). It queues and runs locally once the loop drains.
+                _is_local_dispatch = bool(text) and (
+                    _looks_like_slash_command(text) or text.strip().startswith("!")
+                )
+                if self._agent_running and not _is_local_dispatch:
                     _effective_mode = self.busy_input_mode
                     redirected = False
                     if _effective_mode == "steer":
@@ -17129,6 +17210,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         and self._pending_resume_sessions
                         and isinstance(user_input, str)
                         and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
+
+                    # `!<command>` shell mode — run it here and loop back to
+                    # idle. Checked BEFORE slash routing and before the chat
+                    # path so nothing enters conversation history and no model
+                    # turn is spent. See handle_bang_shell().
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and self.handle_bang_shell(user_input)
                     ):
                         continue
 

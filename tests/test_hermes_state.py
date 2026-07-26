@@ -1093,6 +1093,25 @@ class TestDeleteAndExport:
         assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
         assert db.get_session("too-many-messages") is None
 
+    def test_delete_session_cleans_up_topics(self, db):
+        """Deleting a session also removes its session_topics rows."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_topic("s1", "Topic A", summary="First topic")
+        db.create_topic("s1", "Topic B", summary="Second topic")
+
+        # Verify topics exist before deletion
+        topics = db.get_topics("s1")
+        assert len(topics) == 2
+
+        assert db.delete_session("s1") is True
+        assert db.get_session("s1") is None
+
+        # Verify session_topics rows are gone
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_topics WHERE session_id = 's1'"
+        ).fetchone()[0]
+        assert count == 0
+
 
 # =========================================================================
 # Prune
@@ -1156,6 +1175,35 @@ class TestPruneSessions:
 
 
 
+
+    def test_prune_sessions_cleans_up_topics(self, db):
+        """prune_sessions also removes session_topics rows for pruned sessions."""
+        old_ts = time.time() - 200 * 86400
+        db.create_session(session_id="old", source="cli")
+        db.end_session("old", end_reason="done")
+        db.create_topic("old", "Obsolete topic")
+        db.create_topic("old", "Another old topic")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (old_ts, "old")
+        )
+        db._conn.commit()
+
+        # Recent session with topics — should survive
+        db.create_session(session_id="recent", source="cli")
+        db.create_topic("recent", "Current topic")
+
+        pruned = db.prune_sessions(older_than_days=90)
+        assert pruned == 1
+        assert db.get_session("old") is None
+
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_topics WHERE session_id = 'old'"
+        ).fetchone()[0]
+        assert count == 0
+
+        # Recent session topics untouched
+        topics = db.get_topics("recent")
+        assert len(topics) == 1
 
 
 class TestPruneSessionFilters:
@@ -1417,6 +1465,28 @@ class TestBulkDeleteSessions:
         assert not (tmp_path / "s1.jsonl").exists()
         assert not (tmp_path / "s2.json").exists()
 
+    def test_bulk_delete_cleans_up_topics(self, db, tmp_path):
+        """Bulk-deleting sessions also removes their session_topics rows."""
+        db.create_session(session_id="a", source="cli")
+        db.create_session(session_id="b", source="cli")
+        db.create_session(session_id="c", source="cli")
+        db.create_topic("a", "Topic A1")
+        db.create_topic("a", "Topic A2")
+        db.create_topic("b", "Topic B1")
+
+        deleted = db.delete_sessions(["a", "b"])
+        assert deleted == 2
+
+        # Session 'c' survivors and its topics untouched
+        assert db.get_session("c") is not None
+
+        # All topics for deleted sessions are gone
+        for sid in ("a", "b"):
+            count = db._conn.execute(
+                "SELECT COUNT(*) FROM session_topics WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+            assert count == 0, f"session_topics not cleaned up for {sid}"
+
 
 class TestDeleteEmptySessions:
     """``delete_empty_sessions`` sweeps every ended, non-archived session
@@ -1481,6 +1551,45 @@ class TestDeleteEmptySessions:
         assert deleted == 1
         assert not dump.exists()
         assert not transcript.exists()
+
+    def test_delete_empty_sessions_cleans_up_topics(self, db):
+        """delete_empty_sessions also removes session_topics rows."""
+        db.create_session(session_id="empty1", source="cli")
+        db.end_session("empty1", end_reason="done")
+        db.create_topic("empty1", "Orphan topic")
+
+        db.create_session(session_id="hasmsg", source="cli")
+        db.append_message("hasmsg", role="user", content="Hi")
+        db.end_session("hasmsg", end_reason="done")
+
+        deleted = db.delete_empty_sessions()
+        assert deleted == 1
+        assert db.get_session("empty1") is None
+
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_topics WHERE session_id = 'empty1'"
+        ).fetchone()[0]
+        assert count == 0
+
+    def test_prune_ghost_sessions_cleans_up_topics(self, db):
+        """prune_empty_ghost_sessions also removes session_topics rows."""
+        old_ts = time.time() - 2 * 86400  # >24h ago
+        db.create_session(session_id="ghost", source="tui")
+        db.end_session("ghost", end_reason="done")
+        db.create_topic("ghost", "TUI ghost topic")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (old_ts, "ghost")
+        )
+        db._conn.commit()
+
+        pruned = db.prune_empty_ghost_sessions()
+        assert pruned == 1
+        assert db.get_session("ghost") is None
+
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_topics WHERE session_id = 'ghost'"
+        ).fetchone()[0]
+        assert count == 0
 
 
 # =========================================================================

@@ -79,6 +79,20 @@ class TestDeleteSessionIfEmpty:
         assert (sessions_dir / "busy.json").exists()
 
 
+    def test_deletes_topics_with_empty_session(self, db):
+        """delete_session_if_empty also cleans up session_topics rows."""
+        db.create_session(session_id="ghost", source="cli", model="test")
+        db.create_topic("ghost", "Abandoned topic")
+        db.end_session("ghost", "cli_close")
+
+        assert db.delete_session_if_empty("ghost") is True
+        assert db.get_session("ghost") is None
+
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_topics WHERE session_id = 'ghost'"
+        ).fetchone()[0]
+        assert count == 0
+
 
 class TestCLIDiscardSessionIfEmpty:
     """Wiring tests for HermesCLI._discard_session_if_empty."""

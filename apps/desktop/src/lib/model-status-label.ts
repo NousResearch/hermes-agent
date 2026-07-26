@@ -99,10 +99,12 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
+/** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `defaultEffort` is the profile's configured level, used when the surface has
+ *  no explicit effort so the label never advertises a default the agent won't use. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
   const name = displayModelName(model)
 
@@ -118,9 +120,9 @@ export function formatModelStatusLabel(
     parts.push('Fast')
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  // Always surface the effort so the current reasoning level is visible at a
+  // glance, not just when non-default.
+  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || 'medium'))
 
   return `${name} · ${parts.join(' ')}`
 }

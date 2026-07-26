@@ -1764,6 +1764,9 @@ class AIAgent:
         if not db or not sid:
             return
         try:
+            # Archive current active topic first
+            if self._active_topic_id is not None:
+                db.set_active_topic(sid, 0)
             topic_id = db.create_topic(sid, name)
             self._active_topic_id = topic_id
             self._invalidate_system_prompt()

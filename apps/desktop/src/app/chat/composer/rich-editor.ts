@@ -332,6 +332,106 @@ export function placeCaretEnd(element: HTMLElement) {
   selection?.addRange(range)
 }
 
+/** The caret's offset in `composerPlainText` coordinates, so it can be restored
+ *  after the editor is re-rendered from text (undo/redo). A chip counts as its
+ *  whole `@kind:value` text — the same units the snapshot measures. */
+export function caretOffsetInEditor(editor: HTMLElement): number {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!range || !editor.contains(range.commonAncestorContainer)) {
+    return composerPlainText(editor).length
+  }
+
+  const before = range.cloneRange()
+  before.selectNodeContents(editor)
+  before.setEnd(range.startContainer, range.startOffset)
+
+  // The scratch container must carry the editor's slot marker: composerPlainText
+  // appends a trailing "\n" to any other block element, which would inflate
+  // every offset by one and land the restored caret a character late.
+  const container = document.createElement('div')
+  container.dataset.slot = RICH_INPUT_SLOT
+  container.append(before.cloneContents())
+
+  return composerPlainText(container).length
+}
+
+/** Place the caret `offset` characters into the editor, in the same
+ *  `composerPlainText` coordinates `caretOffsetInEditor` reports. Lands after a
+ *  chip it would otherwise split, since a chip is a single atomic unit. */
+export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
+  const selection = window.getSelection()
+
+  if (!selection) {
+    return
+  }
+
+  let remaining = offset
+
+  const walk = (node: Node): Range | null => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const length = (child.textContent || '').length
+
+        if (remaining <= length) {
+          const range = document.createRange()
+          range.setStart(child, remaining)
+          range.collapse(true)
+
+          return range
+        }
+
+        remaining -= length
+
+        continue
+      }
+
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        continue
+      }
+
+      const el = child as HTMLElement
+
+      // Chips and <br> are atomic: consume their serialized length whole.
+      if (el.dataset.refText || el.tagName === 'BR') {
+        const length = el.dataset.refText ? el.dataset.refText.length : 1
+
+        if (remaining < length) {
+          const range = document.createRange()
+          range.setStartBefore(el)
+          range.collapse(true)
+
+          return range
+        }
+
+        remaining -= length
+
+        continue
+      }
+
+      const hit = walk(el)
+
+      if (hit) {
+        return hit
+      }
+    }
+
+    return null
+  }
+
+  const range = walk(editor)
+
+  if (range) {
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    return
+  }
+
+  placeCaretEnd(editor)
+}
+
 /** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
 function isBlankNode(node: ChildNode | null): boolean {
   if (!node) {

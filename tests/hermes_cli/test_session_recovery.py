@@ -375,6 +375,82 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
     assert not errors, errors[0]
 
 
+def test_partial_recovery_keeps_messages_when_sessions_are_unsalvageable(
+    tmp_path: Path,
+) -> None:
+    """Salvaged messages must survive even when NO session row is recoverable.
+
+    Reported July 2026: a user's recovery copied 20,817 of 20,824 messages,
+    then orphan cleanup deleted every one of them because the sessions b-tree
+    was damaged worse than the messages b-tree. The output had 0 sessions and
+    0 messages — the salvage worked and then threw the result away, which is
+    the exact opposite of what --allow-partial is for.
+
+    Messages must be retained under reconstructed placeholder sessions, and
+    the placeholder-ness must be reported as loss rather than passed off as a
+    clean recovery.
+    """
+    source = tmp_path / "sessions-destroyed.db"
+    output = tmp_path / "sessions-destroyed-recovered.db"
+
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("doomed-session", "cli", cwd="/tmp/doomed")
+        for index in range(120):
+            db.append_message("doomed-session", "user", f"irreplaceable {index}")
+    finally:
+        db.close()
+
+    # sessions unrecoverable, messages intact — the reported shape.
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("DELETE FROM sessions")
+    finally:
+        conn.close()
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=16,
+        allow_partial=True,
+    )
+
+    cleanup = report["orphan_cleanup"]
+    assert cleanup["messages_removed"] == 0, (
+        "salvaged messages were deleted for lack of a session row"
+    )
+    assert cleanup["sessions_reconstructed"] >= 1
+    assert cleanup["messages_retained"] == 120
+
+    with sqlite3.connect(str(output)) as verify:
+        sessions = verify.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        messages = verify.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        placeholder_source = verify.execute(
+            "SELECT source FROM sessions LIMIT 1"
+        ).fetchone()[0]
+    assert messages == 120, f"expected all 120 messages retained, got {messages}"
+    assert sessions >= 1
+
+    # A fabricated session must be identifiable as such.
+    assert placeholder_source == "recovered"
+
+    # Retaining the data is still a lossy outcome and must say so.
+    assert report["verification"]["loss_detected"] is True
+    assert report["partial"] is True
+    assert report["complete"] is False
+    assert any(
+        "reconstructed as placeholders" in warning
+        for warning in report["verification"]["warnings"]
+    ), report["verification"]["warnings"]
+
+    # The output must remain structurally sound.
+    assert report["verification"]["integrity_check"] == ["ok"]
+    assert report["verification"]["foreign_key_check"] == []
+    assert report["verified"] is True
+    assert report["installed"] is False
+
+
 def test_partial_recovery_reports_damaged_state_meta_as_loss(
     tmp_path: Path,
 ) -> None:

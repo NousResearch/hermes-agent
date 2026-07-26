@@ -4738,33 +4738,44 @@ class TestMatrixImageOnlyMediaNormalization:
 
 
     @pytest.mark.asyncio
-    async def test_inbound_oversized_media_is_rejected(self):
-        captured_event = None
-
-        async def capture(msg_event):
-            nonlocal captured_event
-            captured_event = msg_event
-
+    @pytest.mark.parametrize("msgtype, body, filename, media_url, expected_text", [
+        ("m.image", "caption.png", "huge.png", "url", "caption.png\n[matrix image attachment too large: huge.png]"),
+        ("m.file", "report.pdf", "report.pdf", "url", "[matrix file attachment too large: report.pdf]"),
+        ("m.video", "clip.mp4", "", "url", "[matrix video attachment too large: clip.mp4]"),
+        ("m.audio", "meeting notes", "recording.ogg", "file", "meeting notes\n[matrix audio attachment too large: recording.ogg]"),
+    ])
+    async def test_inbound_oversized_media_surfaces_context_without_download(
+        self, msgtype, body, filename, media_url, expected_text,
+    ):
         self.adapter._max_media_bytes = 10
-        self.adapter.handle_message = capture
+        self.adapter.handle_message = AsyncMock()
+
+        source_content = {
+            "msgtype": msgtype,
+            "body": body,
+            "info": {"mimetype": "application/octet-stream", "size": 11},
+        }
+        if filename:
+            source_content["filename"] = filename
+        if media_url == "url":
+            source_content["url"] = "mxc://example/oversized"
+        else:
+            source_content["file"] = {"url": "mxc://example/oversized"}
 
         await self.adapter._handle_media_message(
             room_id="!room:example.org",
             sender="@alice:example.org",
             event_id="$image-big",
             event_ts=0.0,
-            source_content={
-                "msgtype": "m.image",
-                "body": "caption.png",
-                "filename": "huge.png",
-                "url": "mxc://example/huge.png",
-                "info": {"mimetype": "image/png", "size": 11},
-            },
+            source_content=source_content,
             relates_to={},
-            msgtype="m.image",
+            msgtype=msgtype,
         )
 
-        assert captured_event is None
+        (event,) = [call.args[0] for call in self.adapter.handle_message.await_args_list]
+        assert (event.text, event.message_type, event.media_urls, event.media_types) == (
+            expected_text, MessageType.TEXT, [], [],
+        )
         self.adapter._client.download_media.assert_not_called()
 
 

@@ -541,7 +541,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 }
 
-function MdInline({ t, text }: { t: Theme; text: string }) {
+// `color` anchors the prose runs to a palette tone. Block callers that
+// already wrap MdInline in a colored <Text> (headings, quotes, footnotes)
+// leave it unset and inherit that parent; body-prose callers pass
+// `t.color.text` so plain words are themed instead of falling through to
+// the terminal's default foreground. Without it a single line mixes
+// themed spans (code, links, math) with unthemed prose — and because an
+// inline token can match mid-word, so can a single word.
+function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }) {
   const parts: ReactNode[] = []
 
   let last = 0
@@ -652,7 +659,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return <Text wrap="wrap-trim">{parts.length ? parts : text}</Text>
+  return (
+    <Text {...(color ? { color } : {})} wrap="wrap-trim">
+      {parts.length ? parts : text}
+    </Text>
+  )
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies
@@ -883,7 +894,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         if (closeIdx < 0) {
           start('paragraph')
-          nodes.push(<MdInline key={key} t={t} text={line} />)
+          nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
           i++
 
           continue
@@ -1000,7 +1011,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           nodes.push(
             <Text key={`${key}-def-${i}`} wrap="wrap-trim">
               <Text color={t.color.muted}> · </Text>
-              <MdInline t={t} text={def} />
+              <MdInline color={t.color.text} t={t} text={def} />
             </Text>
           )
           i++
@@ -1021,7 +1032,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{marker} </Text>
-              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
+              <MdInline color={t.color.text} t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
           </Box>
         )
@@ -1038,7 +1049,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{numbered[2]}. </Text>
-              <MdInline t={t} text={numbered[3]!} />
+              <MdInline color={t.color.text} t={t} text={numbered[3]!} />
             </Text>
           </Box>
         )
@@ -1143,7 +1154,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       }
 
       start('paragraph')
-      nodes.push(<MdInline key={key} t={t} text={line} />)
+      nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
       i++
     }
 

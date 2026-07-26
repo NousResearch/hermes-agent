@@ -343,7 +343,7 @@ export function useComposerDraft({
   // window (e.g. a fast session switch immediately followed by Enter) would
   // ship A's attachments into B's turn (#59305). useLayoutEffect closes the
   // window by running before paint.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+
   useLayoutEffect(() => {
     // A pending debounce timer from the outgoing session is now stale — its
     // scope was correct when scheduled, but the authoritative stash below

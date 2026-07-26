@@ -1478,7 +1478,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Images (embed inline)
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
     # Video (embed inline where supported)
-    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)

@@ -1532,8 +1532,8 @@ DEFAULT_CONFIG = {
                                       # turns are soft-archived under the same id
                                       # (active=0, compacted=1) — still searchable via
                                       # session_search and recoverable, not deleted.
-                                      # Default False during rollout; will flip on
-                                      # after live validation.
+                                      # Default True since 2107b86024; set False to
+                                      # restore the legacy rotating-compaction path.
         "model_thresholds": {},       # Per-model threshold overrides. Keys are
                                       # substring-matched against the model name
                                       # (longest match wins); values replace the

@@ -13,6 +13,7 @@ export type {
   BillingErrorPayload,
   BillingMonthlyCap,
   BillingMutationResponse,
+  BillingPaymentMethod,
   BillingRefusalCode,
   BillingStateResponse,
   ChargeFailureReason,

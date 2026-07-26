@@ -423,6 +423,38 @@ def _parse_topic(content: str) -> tuple[str, Optional[str]]:
     return content.strip(), None
 
 
+class _TopicDriftTracker:
+    """Hysteresis for topic switching — prevents oscillation on brief digressions.
+
+    Requires ``threshold`` consecutive signals for the same new topic before
+    confirming a genuine shift.  A single stray TOPIC doesn't switch.
+    """
+
+    __slots__ = ("_pending_name", "_pending_count", "_threshold")
+
+    def __init__(self, threshold: int = 2):
+        self._pending_name: Optional[str] = None
+        self._pending_count: int = 0
+        self._threshold: int = threshold
+
+    def feed(self, name: str) -> Optional[str]:
+        """Return the topic name to switch to, or ``None`` to stay."""
+        if self._pending_name is not None and name == self._pending_name:
+            self._pending_count += 1
+            if self._pending_count >= self._threshold:
+                self._pending_name = None
+                self._pending_count = 0
+                return name
+        else:
+            self._pending_name = name
+            self._pending_count = 1
+        return None
+
+    def reset(self) -> None:
+        self._pending_name = None
+        self._pending_count = 0
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -802,6 +834,7 @@ class AIAgent:
 
         # Topic segmentation state
         self._active_topic_id: Optional[int] = None
+        self._topic_drift: _TopicDriftTracker = _TopicDriftTracker()
 
         # Copilot x-initiator: True for the first API call of a user turn,
         # False for tool-loop follow-ups (#3040).
@@ -1721,31 +1754,41 @@ class AIAgent:
     def _process_topic_signals(self, content: str) -> str:
         """Parse TOPIC: <name> from assistant content.
 
-        Matches name against existing topics: switch if match, create if new.
-        Returns cleaned content.
+        Uses hysteresis: a new topic name must appear in two consecutive
+        responses before switching.  Matches name against existing topics
+        (fuzzy): switch if match, create if new.  Returns cleaned content.
         """
         cleaned, name = _parse_topic(content)
         if not name:
             return cleaned
 
-        # Check if name matches an existing topic
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
-        if db and sid:
-            try:
-                existing = db.get_topics(sid)
-                name_lower = name.lower()
-                for t in existing:
-                    t_lower = t["title"].lower()
-                    # Exact match or one contains the other
-                    if t_lower == name_lower or t_lower in name_lower or name_lower in t_lower:
-                        if t["id"] != self._active_topic_id:
-                            self._switch_to_topic(t["id"])
-                        return cleaned
-                # No match: create new topic
-                self._create_topic_from_shift(name)
-            except Exception:
-                pass
+        if not db or not sid:
+            return cleaned
+
+        # Feed the drift tracker — only act when hysteresis confirms the shift
+        drift = getattr(self, "_topic_drift", None)
+        confirmed = name  # no tracker? fall back to immediate switch
+        if drift is not None and hasattr(drift, "feed"):
+            confirmed = drift.feed(name)
+        if confirmed is None:
+            return cleaned  # not enough signal yet
+
+        try:
+            existing = db.get_topics(sid)
+            name_lower = confirmed.lower()
+            for t in existing:
+                t_lower = t["title"].lower()
+                # Exact match or one contains the other
+                if t_lower == name_lower or t_lower in name_lower or name_lower in t_lower:
+                    if t["id"] != self._active_topic_id:
+                        self._switch_to_topic(t["id"])
+                    return cleaned
+            # No match: create new topic
+            self._create_topic_from_shift(confirmed)
+        except Exception:
+            pass
 
         return cleaned
 

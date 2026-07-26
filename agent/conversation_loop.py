@@ -2161,7 +2161,10 @@ def run_conversation(
                         api_msg["content"] += (
                             "\n\n(Append: TOPIC: <general-subject>."
                             " Use short names like 'git', 'cooking', 'docker'."
-                            " Same subject = same name.)"
+                            " For brief asides or one-off questions, stay on"
+                            " the current topic. Only introduce a new name"
+                            " when the conversation shifts to a sustained"
+                            " new subject. Same subject = same name.)"
                         )
             elif (
                 isinstance(_api_content, str)

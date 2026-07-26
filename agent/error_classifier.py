@@ -603,7 +603,7 @@ def classify_api_error(
     # inside {"error": {"message": "Provider returned error", "metadata":
     # {"raw": "<actual error JSON>"}}} and the real error message (e.g.
     # "context length exceeded") is only in the inner JSON.
-    _raw_msg = str(error).lower()
+    _raw_msg = _extract_error_text(error).lower()
     _body_msg = ""
     _metadata_msg = ""
     if isinstance(body, dict):
@@ -1544,6 +1544,70 @@ def _classify_by_message(
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
+
+_ERROR_TEXT_ATTRS = (
+    "message",
+    "error",
+    "error_message",
+    "errorMessage",
+    "raw_error",
+    "rawError",
+)
+
+
+def _extract_error_text(error: Exception) -> str:
+    """Collect text from a bounded graph of SDK error wrappers."""
+    pending: list[Any] = [error]
+    seen_objects: set[int] = set()
+    seen_text: set[str] = set()
+    parts: list[str] = []
+
+    while pending and len(seen_objects) < 8:
+        current = pending.pop(0)
+        if isinstance(current, str):
+            text = current.strip()
+            if text and text not in seen_text:
+                seen_text.add(text)
+                parts.append(text)
+            continue
+
+        object_id = id(current)
+        if object_id in seen_objects:
+            continue
+        seen_objects.add(object_id)
+
+        try:
+            text = str(current).strip()
+        except Exception:
+            text = ""
+        if text and text not in seen_text:
+            seen_text.add(text)
+            parts.append(text)
+
+        for attr in _ERROR_TEXT_ATTRS:
+            try:
+                value = getattr(current, attr, None)
+            except Exception:
+                continue
+            if isinstance(value, (str, BaseException)):
+                pending.append(value)
+
+        try:
+            cause = getattr(current, "__cause__", None)
+        except Exception:
+            cause = None
+        if isinstance(cause, BaseException):
+            pending.append(cause)
+        elif not getattr(current, "__suppress_context__", False):
+            try:
+                context = getattr(current, "__context__", None)
+            except Exception:
+                context = None
+            if isinstance(context, BaseException):
+                pending.append(context)
+
+    return " ".join(parts)
+
 
 def _extract_status_code(error: Exception) -> Optional[int]:
     """Walk the error and its cause chain to find an HTTP status code."""

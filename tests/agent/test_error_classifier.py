@@ -811,6 +811,75 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.thinking_signature
         assert result.retryable is True
 
+    def test_anthropic_thinking_signature_from_wrapped_cause(self):
+        inner = Exception("thinking block has invalid signature")
+        outer = MockAPIError("Provider request failed", status_code=400)
+        outer.__cause__ = inner
+
+        result = classify_api_error(outer, provider="anthropic")
+
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_anthropic_thinking_signature_from_named_error_carrier(self):
+        e = MockAPIError("Provider request failed", status_code=400)
+        e.error_message = "thinking block has invalid signature"
+
+        result = classify_api_error(e, provider="anthropic")
+
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_anthropic_thinking_signature_at_end_of_long_error(self):
+        e = MockAPIError(
+            ("x" * 8192) + " thinking block has invalid signature",
+            status_code=400,
+        )
+
+        result = classify_api_error(e, provider="anthropic")
+
+        assert result.reason == FailoverReason.thinking_signature
+
+    def test_anthropic_thinking_signature_in_middle_of_long_error(self):
+        e = MockAPIError(
+            ("x" * 5000)
+            + " thinking block has invalid signature "
+            + ("x" * 5000),
+            status_code=400,
+        )
+
+        result = classify_api_error(e, provider="anthropic")
+
+        assert result.reason == FailoverReason.thinking_signature
+
+    def test_error_text_extraction_is_cycle_safe(self):
+        inner = Exception("thinking block has invalid signature")
+        outer = MockAPIError("Provider request failed", status_code=400)
+        outer.__cause__ = inner
+        inner.__cause__ = outer
+
+        result = classify_api_error(outer, provider="anthropic")
+
+        assert result.reason == FailoverReason.thinking_signature
+
+    def test_suppressed_exception_context_is_not_scanned(self):
+        hidden = Exception("thinking block has invalid signature")
+        outer = MockAPIError("Bad request", status_code=400)
+        outer.__context__ = hidden
+        outer.__suppress_context__ = True
+
+        result = classify_api_error(outer, provider="anthropic")
+
+        assert result.reason == FailoverReason.format_error
+
+    def test_unrelated_payload_text_is_not_scanned(self):
+        e = MockAPIError("Bad request", status_code=400)
+        e.payload = {"assistant_text": "thinking block has invalid signature"}
+
+        result = classify_api_error(e, provider="anthropic")
+
+        assert result.reason == FailoverReason.format_error
+
     def test_non_anthropic_400_with_signature_not_classified_as_thinking(self):
         """400 with 'signature' but from non-Anthropic → format error."""
         e = MockAPIError("invalid signature", status_code=400)
@@ -2169,4 +2238,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

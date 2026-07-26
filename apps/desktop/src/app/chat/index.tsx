@@ -470,6 +470,7 @@ export function ChatView({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
     >

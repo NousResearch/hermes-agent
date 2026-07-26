@@ -2492,6 +2492,158 @@ class CLICommandsMixin:
         # right after process_command() returns (see cli.py main loop).
         self._pending_agent_seed = composed
 
+    def _handle_focus_command(self, cmd_original: str) -> None:
+        """Toggle or inspect focus view — the reduced-output display mode.
+
+        Usage:
+            /focus            → toggle
+            /focus on|off     → explicit
+            /focus status     → show current state
+
+        Focus view is a DISPLAY-ONLY mode.  It composes with the existing
+        ``/verbose`` tool-progress machinery rather than adding a second
+        suppression mechanism: turning it on snaps ``tool_progress_mode`` to
+        ``"off"`` (the same value ``/verbose off`` uses, honoured by
+        ``agent/tool_executor.py`` and ``_on_tool_progress``) after stashing
+        whatever mode the user had, and turning it off restores that mode
+        verbatim.  On top of that it adds the two things ``/verbose off``
+        lacks: a per-turn hidden-line count with a recovery hint, and a
+        persistent ``focus`` segment in the status bar.
+
+        Nothing here touches conversation history, the system prompt, or any
+        request payload — the model sees an identical turn either way.
+        """
+        from cli import _cprint, save_config_value
+        from hermes_cli.colors import Colors as _Colors
+        from hermes_cli.focus_view import (
+            FOCUS_CONFIG_KEY,
+            FOCUS_TOOL_PROGRESS_MODE,
+            format_focus_status,
+            format_focus_toggle_message,
+            normalize_tool_progress_mode,
+            resolve_focus_arg,
+        )
+
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip()
+        except Exception:
+            arg = ""
+
+        current = bool(getattr(self, "_focus_view_enabled", False))
+        action, target = resolve_focus_arg(arg, current)
+
+        if action == "usage":
+            _cprint("  Usage: /focus [on|off|status]")
+            return
+
+        # The mode /focus off will restore. While focus is ON the live
+        # tool_progress_mode is "off", so the pre-focus mode is the stash.
+        restore_mode = normalize_tool_progress_mode(
+            getattr(self, "_focus_saved_tool_progress", None)
+            if current
+            else getattr(self, "tool_progress_mode", "all")
+        )
+
+        if action == "status":
+            body = format_focus_status(current, restore_mode)
+            head, _, tail = body.partition("\n")
+            label, _, rest = head.partition(":")
+            state_color = _Colors.GREEN if current else _Colors.DIM
+            _cprint(
+                f"  {_Colors.BOLD}{label}:{_Colors.RESET}"
+                f"{state_color}{rest}{_Colors.RESET}"
+                + (f"\n{_Colors.DIM}  {tail.strip()}{_Colors.RESET}" if tail else "")
+            )
+            return
+
+        if target == current:
+            # Idempotent explicit set — report without rewriting config.
+            _cprint(f"  {format_focus_toggle_message(current, restore_mode)}")
+            return
+
+        if target:
+            # Stash the user's configured mode, then reuse the EXISTING
+            # suppression path by snapping to "off".
+            self._focus_saved_tool_progress = restore_mode
+            self._set_tool_progress_mode(FOCUS_TOOL_PROGRESS_MODE)
+        else:
+            self._set_tool_progress_mode(restore_mode)
+            self._focus_saved_tool_progress = None
+
+        self._focus_view_enabled = bool(target)
+        self._focus_hidden_lines = 0
+        save_config_value(FOCUS_CONFIG_KEY, bool(target))
+
+        state = (
+            f"{_Colors.GREEN}enabled{_Colors.RESET}" if target
+            else f"{_Colors.DIM}disabled{_Colors.RESET}"
+        )
+        message = format_focus_toggle_message(bool(target), restore_mode)
+        # Re-colour just the enabled/disabled word so the line matches siblings.
+        for word in ("enabled", "disabled"):
+            if word in message:
+                message = message.replace(word, state, 1)
+                break
+        _cprint(f"  {message}")
+
+    def _set_tool_progress_mode(self, mode: str) -> None:
+        """Set the live tool-progress mode on both the CLI and the agent.
+
+        Extracted so ``/focus`` and ``/verbose`` share one write path — the
+        agent copy is what ``agent/tool_executor.py`` gates on, and forgetting
+        it means the new mode only takes effect after an agent rebuild.
+        """
+        from hermes_cli.focus_view import normalize_tool_progress_mode
+
+        normalized = normalize_tool_progress_mode(mode)
+        self.tool_progress_mode = normalized
+        agent = getattr(self, "agent", None)
+        if agent is not None:
+            try:
+                agent.tool_progress_mode = normalized
+            except Exception:
+                pass
+
+    def _note_focus_hidden_line(self, function_name: str) -> None:
+        """Count one tool line that focus view is suppressing this turn.
+
+        Counted against the mode the user had BEFORE focus snapped things to
+        "off", so a user who already ran ``/verbose off`` is never told that
+        focus hid lines it did not hide.
+        """
+        if not getattr(self, "_focus_view_enabled", False):
+            return
+        from hermes_cli.focus_view import would_display_tool_line
+
+        saved = getattr(self, "_focus_saved_tool_progress", None)
+        last = getattr(self, "_focus_last_counted_tool", None)
+        if not would_display_tool_line(saved, function_name, last):
+            return
+        self._focus_last_counted_tool = function_name
+        self._focus_hidden_lines = int(getattr(self, "_focus_hidden_lines", 0)) + 1
+
+    def _emit_focus_recovery_line(self) -> None:
+        """Print the dim post-turn recovery line and reset the counter."""
+        count = int(getattr(self, "_focus_hidden_lines", 0) or 0)
+        self._focus_hidden_lines = 0
+        self._focus_last_counted_tool = None
+        if not getattr(self, "_focus_view_enabled", False):
+            return
+        from hermes_cli.focus_view import format_hidden_line
+
+        line = format_hidden_line(count)
+        if not line:
+            return
+        try:
+            from cli import _DIM, _RST, _cprint
+
+            _cprint(f"  {_DIM}{line}{_RST}")
+        except Exception:
+            pass
+
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
 

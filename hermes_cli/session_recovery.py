@@ -237,6 +237,27 @@ def _disk_space_preflight(
 
 
 def _copy_source_bundle(source: Path, snapshot_dir: Path) -> tuple[Path, list[str]]:
+    """Copy the source DB bundle aside so SQLite never opens the original.
+
+    Refuses when a connection to *source* is live in this process. Copying a
+    database file is an ``open()``/``close()`` on it, and ``close()`` cancels
+    every POSIX advisory lock the process holds on that file -- including a
+    running VACUUM's EXCLUSIVE lock (see ``hermes_cli.sqlite_safe_read``).
+    Recovery normally runs as its own short-lived CLI process against an
+    offline/quarantined file, so this should never fire; the check keeps this
+    path consistent with ``hermes_state._backup_db_file``, which refuses the
+    same situation, rather than leaving two policies for one hazard.
+    """
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    if has_live_connection(source):
+        raise SessionRecoverySafetyError(
+            f"Refusing to snapshot {source}: a connection to it is still open "
+            "in this process, and copying the file would cancel that "
+            "connection's POSIX locks. Close all database handles (stop the "
+            "gateway/dashboard) and re-run."
+        )
+
     snapshot_source = snapshot_dir / source.name
     copied: list[str] = []
     for suffix in _SIDECAR_SUFFIXES:

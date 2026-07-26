@@ -4669,11 +4669,19 @@ def test_write_txn_healthy_commit_no_exception(tmp_path):
 
 
 def test_write_txn_raises_on_truncated_file(tmp_path):
-    """A mocked smaller file size triggers the torn-extend check."""
+    """A mocked smaller file size triggers the torn-extend check.
+
+    The check now reads the header side via ``PRAGMA page_count`` over the
+    existing connection instead of ``open()``-ing the database file (an
+    open/close would cancel this process's POSIX locks). The on-disk side is
+    still ``stat()``, so that is what this test fakes. The invariant only
+    applies under a rollback journal — in WAL a committed page may still be
+    in the -wal file, so the main file legitimately lags.
+    """
     from hermes_cli.kanban_db import connect, write_txn
     db = tmp_path / "test.db"
     conn = connect(db_path=db)
-    # Get actual page size so we can fake a smaller file
+    conn.execute("PRAGMA journal_mode=DELETE")
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     original_getsize = os.path.getsize
 
@@ -4683,7 +4691,9 @@ def test_write_txn_raises_on_truncated_file(tmp_path):
         return max(0, real_size - page_size)
 
     with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
-        with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+        with unittest.mock.patch(
+            "hermes_cli.sqlite_safe_read.os.path.getsize", side_effect=fake_getsize
+        ):
             with write_txn(conn) as c:
                 c.execute(
                     "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
@@ -4728,31 +4738,39 @@ def test_connect_sets_wal_autocheckpoint_100(tmp_path):
 
 
 def test_write_txn_check_reads_correct_header_fields(tmp_path):
-    """Synthetic DB file with mismatched header page_count triggers the check."""
+    """A genuinely truncated DB is never reported as passing the invariant.
+
+    The check no longer opens the database file to read header bytes (that
+    open/close would cancel this process's POSIX advisory locks — the
+    corruption route in sqlite.org/howtocorrupt.html §2.2). It asks SQLite for
+    ``page_count`` instead. On a truncated file SQLite refuses that pragma, so
+    the helper reports "not healthy" rather than a page-count mismatch; either
+    way the file must never come back clean.
+    """
     import struct
-    from hermes_cli.kanban_db import connect, _check_file_length_invariant
+    from hermes_cli.kanban_db import connect
+    from hermes_cli.sqlite_safe_read import file_length_matches_header
+
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)
+    conn.execute("PRAGMA journal_mode=DELETE")
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     conn.close()
-    # Now corrupt the file: claim N pages but truncate to N-1 pages
+
     with open(db, "rb") as f:
         data = bytearray(f.read())
-    # Read current page_count from header bytes 28-31
     real_page_count = struct.unpack(">I", data[28:32])[0]
     if real_page_count < 2:
-        # Need at least 2 pages to fake a truncation
         pytest.skip("DB too small for synthetic truncation test")
-    # Truncate to N-1 pages
     truncated = bytes(data[: (real_page_count - 1) * page_size])
     with open(db, "wb") as f:
         f.write(truncated)
-    # Now open and check — should raise
-    # We can't use connect() because _validate_sqlite_header may block; use a raw connection
+
     raw_conn = sqlite3.connect(str(db), isolation_level=None)
-    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
-        _check_file_length_invariant(raw_conn)
-    raw_conn.close()
+    try:
+        assert file_length_matches_header(raw_conn) is not True
+    finally:
+        raw_conn.close()
 
 
 # ---------------------------------------------------------------------------

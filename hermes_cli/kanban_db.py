@@ -1377,6 +1377,15 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     # the PRAGMA explicitly so it is observable and survives future wrapper
     # changes. Parameter binding is not supported for PRAGMA assignments.
     conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    # Register the live connection so byte-level probes of this file are
+    # refused while it is open (see hermes_cli.sqlite_safe_read): an
+    # open()/close() would cancel this process's POSIX locks on the DB.
+    try:
+        from hermes_cli.sqlite_safe_read import track_connection
+
+        track_connection(path)
+    except Exception:
+        pass
     return conn
 
 
@@ -1628,10 +1637,14 @@ def _validate_sqlite_header(path: Path) -> None:
         return
     if stat.st_size == 0:
         return
-    try:
-        with path.open("rb") as handle:
-            head = handle.read(64)
-    except OSError:
+    # Byte-level probe, so it must run BEFORE any connection to this path
+    # exists (connect() calls it under the init lock, ahead of _sqlite_connect).
+    # read_header_bytes_preopen refuses once a connection is live, because the
+    # close() would cancel this process's POSIX locks on the file.
+    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+
+    head = read_header_bytes_preopen(path, length=64)
+    if head is None:
         return
     if head.startswith(_SQLITE_HEADER):
         return
@@ -1736,6 +1749,21 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
+    # This reads the whole DB file to fingerprint it. That is a close()-on-a-
+    # database-file hazard (it cancels this process's POSIX advisory locks --
+    # see hermes_cli.sqlite_safe_read), so it must only run once the board has
+    # been taken out of service: every caller reaches here on the corrupt/
+    # quarantine path, after the probe connection has been closed. If you add
+    # a caller, make sure no connection to this path is still open.
+    from hermes_cli.sqlite_safe_read import has_live_connection
+
+    if has_live_connection(resolved):
+        _log.warning(
+            "quarantining %s while a connection to it is still open in this "
+            "process; close it first -- fingerprinting the file cancels the "
+            "process's POSIX locks on it",
+            resolved,
+        )
     digest = hashlib.sha256()
     try:
         with resolved.open("rb") as handle:
@@ -2619,42 +2647,40 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
 
 
 def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
-    """Read the SQLite header page_count and compare against actual file size.
+    """Compare SQLite's own page accounting against the file size on disk.
 
     Raises sqlite3.DatabaseError if the file is shorter than the header claims
     (torn-extend corruption).
+
+    Both sides are read WITHOUT opening the database file. The header side
+    comes from ``PRAGMA page_count`` over the existing connection; the on-disk
+    side from ``stat()``. An earlier version read the header field with a bare
+    ``open(path,"rb")`` -- but ``close()`` cancels every POSIX advisory lock
+    this process holds on the file, so that probe silently dropped the locks
+    of concurrent writers (and of a running VACUUM) and let other processes
+    write into a database a writer still believed it owned. That is the
+    documented corruption route in sqlite.org/howtocorrupt.html section 2.2.
     """
+    from hermes_cli.sqlite_safe_read import file_length_matches_header
+
+    # In WAL mode a just-committed page can still live in the -wal file, so
+    # the main file legitimately lags its page count. Only enforce the
+    # invariant under a rollback journal, where every committed page must
+    # already be in the main file.
     try:
-        row = conn.execute("PRAGMA database_list").fetchone()
-        if row is None:
-            return
-        path_str = row[2]  # column 2 is the file path; empty for in-memory DBs
-        if not path_str:
-            return  # in-memory or unnamed DB; skip
-        path = path_str
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        file_size = os.path.getsize(path)
-        with open(path, "rb") as f:
-            f.seek(28)
-            header_bytes = f.read(4)
-        if len(header_bytes) < 4:
-            return  # can't read header; skip
-        header_page_count = int.from_bytes(header_bytes, "big")
-        if header_page_count == 0:
-            return  # new/empty DB; skip
-        actual_pages = file_size // page_size
-        if actual_pages < header_page_count:
-            raise sqlite3.DatabaseError(
-                f"torn-extend detected: page count mismatch on {path}: "
-                f"header claims {header_page_count} pages, "
-                f"file has {actual_pages} pages "
-                f"(missing {header_page_count - actual_pages} pages, "
-                f"file_size={file_size}, page_size={page_size})"
-            )
-    except sqlite3.DatabaseError:
-        raise
-    except Exception:
-        pass  # I/O errors during check are non-fatal; let normal ops continue
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        journal_mode = str(row[0]).lower() if row and row[0] is not None else ""
+    except sqlite3.Error:
+        return
+    if journal_mode == "wal":
+        return
+
+    ok = file_length_matches_header(conn)
+    if ok is False:
+        raise sqlite3.DatabaseError(
+            "torn-extend detected: the database file is shorter than its "
+            "header page count claims"
+        )
 
 
 # SQLite's own busy_timeout uses a near-deterministic backoff, so concurrent

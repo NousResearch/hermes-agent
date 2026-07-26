@@ -3168,6 +3168,65 @@ def test_live_visible_history_keeps_candidate_and_new_flushed_turn_real_db(tmp_p
     ]
 
 
+def test_live_session_payload_reads_profile_db_not_launch_db(monkeypatch, tmp_path):
+    """Warm/live reuse for a non-launch profile session must open that
+    profile's state.db, not the process launch DB.
+
+    App-global remote mode stores verification candidates in the resumed
+    profile's DB. ``_live_session_payload`` previously hard-coded
+    ``_get_db()`` (launch), so the display projection missed those rows and
+    fell back to collapsed in-memory model history — while eager
+    ``session.resume`` against the same profile still showed them.
+    """
+    from hermes_state import SessionDB
+
+    launch_home = tmp_path / "launch"
+    profile_home = tmp_path / "profile"
+    launch_home.mkdir()
+    profile_home.mkdir()
+
+    launch_db = SessionDB(db_path=launch_home / "state.db")
+    profile_db = SessionDB(db_path=profile_home / "state.db")
+    profile_db.create_session("s-profile", source="tui")
+    profile_db.append_message("s-profile", role="user", content="do the thing")
+    profile_db.append_message(
+        "s-profile",
+        role="assistant",
+        content="long substantive answer",
+        finish_reason="verification_required",
+    )
+    profile_db.append_message(
+        "s-profile",
+        role="assistant",
+        content="terse verified reply",
+        finish_reason="stop",
+    )
+    model_history, display_history = profile_db.get_resume_conversations("s-profile")
+    assert not any("long substantive" in (m.get("content") or "") for m in model_history)
+    assert any("long substantive" in (m.get("content") or "") for m in display_history)
+
+    session = {
+        "session_key": "s-profile",
+        "profile_home": str(profile_home),
+        "agent": None,
+        "history": list(model_history),
+        "display_history_prefix": [],
+        "history_lock": threading.Lock(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "running": False,
+    }
+    # Launch DB has no row for this session — the pre-fix path would miss
+    # candidates and fall back to collapsed in-memory history.
+    monkeypatch.setattr(server, "_get_db", lambda: launch_db)
+
+    payload = server._live_session_payload("live1", session, touch=False)
+    texts = [m.get("text") for m in payload.get("messages") or []]
+
+    assert "long substantive answer" in texts
+    assert texts == [m.get("text") for m in server._history_to_messages(display_history)]
+
+
 def test_lazy_child_watch_resume_serves_candidate_inclusive_display(monkeypatch, tmp_path):
     """The delegated-child watch-window cold resume (lazy=True) must serve the
     verbatim display projection so a persisted verification candidate is not

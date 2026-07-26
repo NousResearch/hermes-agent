@@ -8508,13 +8508,18 @@ def _live_session_payload(
         queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
     # Prefer the persisted display lineage (candidate-inclusive) so this payload
-    # matches the eager session.resume + REST transcript; the DB has its own
-    # lock, so read it outside the session history lock.
-    history = (
-        in_memory_history
-        if omit_messages
-        else _live_visible_history(session, _get_db(), in_memory_history)
-    )
+    # matches the eager session.resume + REST transcript. Use the session's
+    # profile-aware DB (not launch ``_get_db()``): app-global remote profile
+    # sessions store candidates in ``profile_home``/state.db, and reading the
+    # launch DB here falls back to collapsed in-memory history and drops them.
+    # The DB has its own lock, so read it outside the session history lock.
+    # ``omit_messages`` skips the DB read entirely (callers only need counts /
+    # status); keep that fast path from main.
+    if omit_messages:
+        history = in_memory_history
+    else:
+        with _session_db(session) as db:
+            history = _live_visible_history(session, db, in_memory_history)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),

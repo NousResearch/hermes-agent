@@ -1033,6 +1033,12 @@ let remoteReauthFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
 let bootstrapAbortController = null
+// Explicit "the user asked for a repair" flag. Repair used to signal intent by
+// deleting the bootstrap marker, which stranded healthy installs whose only
+// problem was a transient backend error (#72166). Intent now lives here, so
+// repair can force the installer without destroying provenance about how the
+// install was created. Cleared once the reinstall is under way.
+let bootstrapRepairRequested = false
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -3697,7 +3703,7 @@ function resolveHermesBackend(backendArgs) {
   //    bootstrap when the runtime itself is unusable.
   const activeRuntime = activeRuntimeState()
 
-  if (activeRuntime.shouldUseActiveRuntime) {
+  if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
     if (!activeRuntime.hasValidMarker) {
       rememberLog(
         `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
@@ -3705,6 +3711,10 @@ function resolveHermesBackend(backendArgs) {
     }
 
     return createActiveBackend(backendArgs)
+  }
+
+  if (bootstrapRepairRequested) {
+    rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
@@ -3879,6 +3889,10 @@ async function ensureRuntime(backend) {
     }
 
     bootstrapAbortController = new AbortController()
+
+    // The repair request has been honoured by reaching the installer; clear it
+    // so a later boot isn't forced through bootstrap again.
+    bootstrapRepairRequested = false
 
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
@@ -9101,20 +9115,17 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:repair', async () => {
-  // Forceful repair: drop the bootstrap-complete marker so the next
-  // startHermes() re-runs the full installer (refreshing a broken/partial
-  // venv), and clear any latched failure + live connection. The renderer
-  // reloads afterwards to re-drive the boot flow from scratch.
-  rememberLog('[bootstrap] repair requested by renderer; clearing marker + latched failure')
+  // Forceful repair: force the next startHermes() through the full installer
+  // (refreshing a broken/partial venv) and clear any latched failure + live
+  // connection. The renderer reloads afterwards to re-drive the boot flow.
+  //
+  // We do NOT delete the bootstrap marker here. Repair is also reachable from
+  // transient backend errors on a perfectly healthy install, and deleting the
+  // marker in that case stranded the app in first-run setup with no way back
+  // (#72166). The explicit flag carries the intent instead.
+  rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
 
-  try {
-    if (fileExists(BOOTSTRAP_COMPLETE_MARKER)) {
-      fs.rmSync(BOOTSTRAP_COMPLETE_MARKER, { force: true })
-    }
-  } catch (error) {
-    rememberLog(`[bootstrap] failed to remove marker during repair: ${error.message}`)
-  }
-
+  bootstrapRepairRequested = true
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null

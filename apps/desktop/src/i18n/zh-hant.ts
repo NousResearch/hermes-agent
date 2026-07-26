@@ -2519,6 +2519,7 @@ export const zhHant = defineLocale({
         execute_code: { done: '已執行程式碼', pending: '正在撰寫腳本', pendingAction: '正在撰寫腳本' },
         image_generate: { done: '已生成圖片', pending: '正在生成圖片', pendingAction: '正在生成' },
         list_files: { done: '已列出檔案', pending: '正在列出檔案', pendingAction: '正在列出' },
+        memory: { done: '已儲存至記憶', pending: '正在儲存至記憶', pendingAction: '正在儲存' },
         patch: { done: '已修補檔案', pending: '正在修補檔案', pendingAction: '正在修補' },
         read_file: { done: '已讀取檔案', pending: '正在讀取檔案', pendingAction: '正在讀取' },
         search_files: { done: '已搜尋檔案', pending: '正在搜尋檔案', pendingAction: '正在搜尋' },

@@ -43,6 +43,35 @@ class TestProviderPrecedence:
         _config(monkeypatch, {"provider": "zai", "default": "glm-4.6"})
         assert resolve_provider("auto") == "zai"
 
+    def test_config_provider_alias_is_normalized(self, monkeypatch):
+        """config.yaml model.provider accepts the same aliases as explicit input."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _config(monkeypatch, {"provider": " GO "})
+        assert resolve_provider("auto") == "opencode-go"
+
+    def test_config_read_failure_is_warning(self, monkeypatch, caplog):
+        """A config read failure must be visible without debug logging enabled."""
+        import logging
+
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: (_ for _ in ()).throw(OSError("unreadable config")),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+            try:
+                resolve_provider("auto")
+            except AuthError:
+                pass
+
+        assert any(
+            "Could not read config.yaml model.provider" in record.message
+            for record in caplog.records
+        )
+
     def test_env_key_beats_stale_oauth(self, monkeypatch):
         """An exported provider API key wins over a logged-in OAuth active_provider."""
         _clear_provider_env(monkeypatch)

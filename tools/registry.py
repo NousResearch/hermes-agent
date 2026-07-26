@@ -55,7 +55,7 @@ def _bound_json_error_result(result: str) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _normalize_tool_schema_keys(name: str, schema: dict) -> dict:
+def _normalize_tool_schema_keys(schema: dict) -> tuple[dict, bool]:
     """Adopt a tool's ``input_schema`` as ``parameters`` when only the former is set.
 
     The OpenAI tool format — and therefore everything downstream of the
@@ -70,27 +70,20 @@ def _normalize_tool_schema_keys(name: str, schema: dict) -> dict:
     error anywhere.
 
     When a schema carries ``input_schema`` but no ``parameters``, alias it and
-    warn so the mistake is visible and fixable. A schema that already has
-    ``parameters`` is left untouched (it wins over any stray ``input_schema``).
+    report that normalization occurred so the registry can warn once. A schema
+    that already has ``parameters`` is left untouched (it wins over any stray
+    ``input_schema``).
     """
     if (
         isinstance(schema, dict)
         and "parameters" not in schema
         and isinstance(schema.get("input_schema"), dict)
     ):
-        logger.warning(
-            "Tool %r declares its JSON Schema under 'input_schema'; the tool "
-            "registry and OpenAI tool format read it from 'parameters'. "
-            "Aliasing it automatically, but rename the key to 'parameters' in "
-            "the tool's schema — otherwise a tool that gets this wrong is "
-            "exposed to the model with no parameters and called with no "
-            "arguments, silently.",
-            name,
-        )
         params = schema["input_schema"]
         schema = {k: v for k, v in schema.items() if k != "input_schema"}
         schema["parameters"] = params
-    return schema
+        return schema, True
+    return schema, False
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -422,6 +415,7 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        self._warned_input_schema_aliases: Set[str] = set()
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -651,7 +645,7 @@ class ToolRegistry:
         if not isinstance(schema, dict):
             raise ValueError(
                 f"Tool {name!r}: schema must be a dict, got {type(schema).__name__}")
-        schema = _normalize_tool_schema_keys(name, schema)
+        schema, aliased_input_schema = _normalize_tool_schema_keys(schema)
         params = schema.get("parameters")
         if params is not None and not isinstance(params, dict):
             raise ValueError(
@@ -663,6 +657,17 @@ class ToolRegistry:
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
         with self._lock:
+            if aliased_input_schema and name not in self._warned_input_schema_aliases:
+                self._warned_input_schema_aliases.add(name)
+                logger.warning(
+                    "Tool %r declares its JSON Schema under 'input_schema'; the tool "
+                    "registry and OpenAI tool format read it from 'parameters'. "
+                    "Aliasing it automatically, but rename the key to 'parameters' in "
+                    "the tool's schema — otherwise a tool that gets this wrong is "
+                    "exposed to the model with no parameters and called with no "
+                    "arguments, silently.",
+                    name,
+                )
             target = self._slot(scope, create=True)
             existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
             plugin_override_denied = (

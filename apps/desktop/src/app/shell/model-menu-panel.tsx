@@ -20,12 +20,8 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ChevronDown, ChevronRight } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import {
-  currentPickerSelection,
-  displayModelName,
-  modelDisplayParts,
-  reasoningEffortLabel
-} from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
@@ -39,6 +35,7 @@ import {
   setModelVisibilityOpen
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { $defaultReasoningEffort } from '@/store/session'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -84,6 +81,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
   const modelPresets = useStore($modelPresets)
+  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const visibleModels = useStore($visibleModels)
   const collapsedProviders = useStore($collapsedProviders)
 
@@ -96,7 +94,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
-    !!activeSessionId,
     { model: currentModel, provider: currentProvider },
     modelOptions.data
   )
@@ -181,7 +178,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       {
@@ -300,7 +297,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
                     const meta = [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
+                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
                     ]
                       .filter(Boolean)
                       .join(' ')

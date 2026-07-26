@@ -222,6 +222,19 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    # Vertex authenticates via OAuth2 (service-account JSON / ADC), not a
+    # static API key or models.dev entry — resolved specially by
+    # agent/vertex_adapter.py, like bedrock's aws_sdk. Without an overlay
+    # entry get_provider("vertex") returns None, which makes
+    # _preserve_provider_with_base_url() in agent/auxiliary_client.py treat
+    # a Vertex MoA slot's resolved (base_url, api_key) pair as an unknown
+    # custom endpoint instead of "vertex" — losing the provider identity
+    # that _refresh_provider_credentials() needs to re-mint an expired
+    # OAuth2 token on a 401.
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+    ),
 }
 
 
@@ -390,6 +403,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "vertex": "Google Vertex AI",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

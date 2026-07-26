@@ -1,7 +1,7 @@
 ---
 name: optimizing-attention-flash
-description: Optimizes transformer attention with Flash Attention for 2-4x speedup and 10-20x memory reduction. Use when training/running transformers with long sequences (>512 tokens), encountering GPU memory issues with attention, or need faster inference. Supports PyTorch native SDPA, flash-attn library, H100 FP8, and sliding window attention.
-version: 1.0.0
+description: Speed up long-sequence transformer training and inference.
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [flash-attn, torch, transformers]
@@ -82,13 +82,12 @@ import torch.nn.functional as F
 out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
 ```
 
-Force Flash Attention backend:
+Force Flash Attention backend (`torch.backends.cuda.sdp_kernel` is deprecated; use
+`torch.nn.attention.sdpa_kernel` with `SDPBackend`):
 ```python
-with torch.backends.cuda.sdp_kernel(
-    enable_flash=True,
-    enable_math=False,
-    enable_mem_efficient=False
-):
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
     out = F.scaled_dot_product_attention(q, k, v)
 ```
 
@@ -101,7 +100,8 @@ def test_attention(use_flash):
     q, k, v = [torch.randn(2, 8, 2048, 64, device='cuda', dtype=torch.float16) for _ in range(3)]
 
     if use_flash:
-        with torch.backends.cuda.sdp_kernel(enable_flash=True):
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             return F.scaled_dot_product_attention(q, k, v)
     else:
         attn = (q @ k.transpose(-2, -1) / 8.0).softmax(dim=-1)
@@ -230,14 +230,19 @@ print(f"Memory allocated: {torch.cuda.max_memory_allocated()/1e9:.2f}GB")
 
 ### Workflow 3: H100 FP8 optimization (FlashAttention-3)
 
-For maximum performance on H100 GPUs.
+For maximum performance on Hopper GPUs (H100).
+
+> **Important:** The pip package `flash-attn` (2.8.x) ships **FlashAttention-2 only** — it does
+> **not** contain FA3 or FP8 H100 kernels, and `flash_attn_func` does **not** auto-use FP8.
+> FlashAttention-3 is a separate **beta** build compiled from source from the repo's `hopper/`
+> directory, exposed via the `flash_attn_interface` module. FA3 supports FP16/BF16 forward+backward
+> and **FP8 forward only**.
 
 ```
 FP8 Setup:
-- [ ] Step 1: Verify H100 GPU available
-- [ ] Step 2: Install flash-attn with FP8 support
-- [ ] Step 3: Convert inputs to FP8
-- [ ] Step 4: Run with FP8 attention
+- [ ] Step 1: Verify Hopper (H100) GPU available
+- [ ] Step 2: Build & install FlashAttention-3 from source (hopper/)
+- [ ] Step 3: Use the FA3 interface (FP8 forward)
 ```
 
 **Step 1: Verify H100 GPU**
@@ -247,36 +252,38 @@ nvidia-smi --query-gpu=name --format=csv
 # Should show "H100" or "H800"
 ```
 
-**Step 2: Install flash-attn with FP8 support**
+**Step 2: Build & install FlashAttention-3 from source**
+
+FA3 is NOT included in `pip install flash-attn`. Build it from the `hopper/` subdirectory:
 
 ```bash
-pip install flash-attn --no-build-isolation
-# FP8 support included for H100
+git clone https://github.com/Dao-AILab/flash-attention.git
+cd flash-attention/hopper
+python setup.py install
+# (compilation is heavy and requires a CUDA toolchain + Hopper GPU)
 ```
 
-**Step 3: Convert inputs to FP8**
+**Step 3: Use the FA3 interface (FP8 forward)**
+
+FA3 exposes its own module `flash_attn_interface` (distinct from the FA2 `flash_attn`).
+FP8 is a **forward-only** path and expects `float8_e4m3fn` inputs:
 
 ```python
 import torch
+from flash_attn_interface import flash_attn_func  # FA3 (hopper build), not `flash_attn`
 
+# q, k, v: [batch, seqlen, nheads, headdim]
 q = torch.randn(2, 4096, 32, 64, device='cuda', dtype=torch.float16)
 k = torch.randn(2, 4096, 32, 64, device='cuda', dtype=torch.float16)
 v = torch.randn(2, 4096, 32, 64, device='cuda', dtype=torch.float16)
 
-# Convert to float8_e4m3 (FP8)
+# FP8 forward (inference / forward-only): cast to float8_e4m3fn
 q_fp8 = q.to(torch.float8_e4m3fn)
 k_fp8 = k.to(torch.float8_e4m3fn)
 v_fp8 = v.to(torch.float8_e4m3fn)
-```
 
-**Step 4: Run with FP8 attention**
-
-```python
-from flash_attn import flash_attn_func
-
-# FlashAttention-3 automatically uses FP8 kernels on H100
-out = flash_attn_func(q_fp8, k_fp8, v_fp8)
-# Result: ~1.2 PFLOPS, 1.5-2x faster than FP16
+out = flash_attn_func(q_fp8, k_fp8, v_fp8, causal=True)
+# FP16/BF16 forward+backward is also supported by the FA3 interface.
 ```
 
 ## When to use vs alternatives

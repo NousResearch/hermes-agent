@@ -30,6 +30,7 @@ import { cn } from '@/lib/utils'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
+import { hiddenPaneProps, PaneVisibleContext } from '../../pane-visibility'
 import type { DropPosition, GroupNode, RootEdge } from '../model'
 import { adjacentGroup } from '../model'
 import {
@@ -520,7 +521,9 @@ export function TreeGroup({
       {/* Body: the zone's pane content — every kept (ever-active) pane stays
           mounted in an absolute layer; only the active one is visible.
           `visibility` (not display) keeps the hidden pane's layout box, so
-          scroll positions and measurements survive the round-trip. */}
+          scroll positions and measurements survive the round-trip — which also
+          makes a hidden layer's rect identical to the visible one's, hence the
+          marker document-wide lookups filter on (see pane-visibility.ts). */}
       {!node.minimized && (
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {isEmpty ? (
@@ -538,9 +541,14 @@ export function TreeGroup({
                   aria-hidden={!isActive || undefined}
                   className={cn('absolute inset-0 overflow-auto', !isActive && 'pointer-events-none invisible')}
                   key={paneId}
+                  {...hiddenPaneProps(!isActive)}
                 >
                   {pane?.render ? (
-                    <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                    // Visibility flows to the pane so a kept-alive chat surface
+                    // can gate its hot (per-token) subscriptions while hidden.
+                    <PaneVisibleContext.Provider value={isActive}>
+                      <ContribBoundary id={pane.id}>{pane.render()}</ContribBoundary>
+                    </PaneVisibleContext.Provider>
                   ) : (
                     isActive && (
                       <div className="p-3 font-mono text-[11px] text-(--ui-text-quaternary)">

@@ -22,7 +22,12 @@ import {
   setupMockBackend,
   waitForAppReady,
 } from './fixtures'
-import { SIDEBAR_CROSS_TEXTS, restartMockServer } from './mock-server'
+import {
+  type BackgroundReleaseHandle,
+  createBackgroundReleaseHandle,
+  restartMockServer,
+  SIDEBAR_CROSS_TEXTS,
+} from './mock-server'
 
 /** Finished-unread dot aria-label. */
 const UNREAD_DOT_LABEL = 'Finished — unread'
@@ -34,7 +39,7 @@ function sessionRow(page: import('@playwright/test').Page, text: string) {
   return page.locator('[data-slot="sidebar"] button').filter({ hasText: text }).first()
 }
 
-/** Common setup: start a turn with a sleep 5 bg process + subagent, wait for
+/** Common setup: start a turn with a held bg process + subagent, wait for
  *  the turn to complete, then switch to a new session so the first session is
  *  no longer $selectedStoredSessionId (required before opening a tile). */
 async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
@@ -67,7 +72,9 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
     { timeout: 90_000 },
   )
 
-  // The background dot should still be visible (sleep 5 hasn't finished).
+  // The background dot must still be visible: the turn is done but the
+  // process is held open by the sentinel, so this is a stable state rather
+  // than a window we have to catch in time.
   const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
   expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
 
@@ -77,8 +84,12 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
   await page.waitForTimeout(2000)
 }
 
-/** Wait for the background process to finish (sleep 5 + auto-dismiss). */
-async function waitForBgProcessToFinish(page: import('@playwright/test').Page) {
+/** Release the held background process, then wait for its dot to clear. */
+async function waitForBgProcessToFinish(
+  page: import('@playwright/test').Page,
+  release?: BackgroundReleaseHandle,
+) {
+  release?.release()
   await expect
     .poll(
       () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
@@ -95,15 +106,20 @@ test.describe('sidebar states — tab (hidden) unread is correct', () => {
   test.describe.configure({ mode: 'serial' })
 
   let fixture: MockBackendFixture
+  const bgRelease = createBackgroundReleaseHandle()
 
   test.beforeAll(async () => {
     restartMockServer()
-    fixture = await setupMockBackend()
+    fixture = await setupMockBackend({
+      mockServer: { backgroundReleasePath: bgRelease.path },
+    })
     await waitForAppReady(fixture, 120_000)
   })
 
   test.afterAll(async () => {
+    bgRelease.release()
     await fixture?.cleanup()
+    bgRelease.cleanup()
   })
 
   test('session opened as a tab (not visible) correctly gets unread dot', async () => {
@@ -123,12 +139,21 @@ test.describe('sidebar states — tab (hidden) unread is correct', () => {
     // Evidence: the tab is open but the session is not visible on screen.
     await page.screenshot({ path: 'test-results/tile-bug-tab-opened.png' })
 
-    await waitForBgProcessToFinish(page)
+    await waitForBgProcessToFinish(page, bgRelease)
 
     // A tab that's not the active tab IS hidden — the unread dot is correct.
     // The user is NOT looking at it, so marking it "unread" is right.
-    const unreadCount = await page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count()
-    expect(unreadCount, 'hidden tab should be marked unread').toBeGreaterThan(0)
+    //
+    // Poll rather than sampling once: "finished-unread" is an event-driven
+    // transition that lands slightly after the running dot clears, and with a
+    // released (rather than slowly-expiring) process there is no incidental
+    // slack between the two. Same reasoning as the cross-session spec.
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'hidden tab should be marked unread' },
+      )
+      .toBeGreaterThan(0)
 
     await page.screenshot({ path: 'test-results/tile-bug-tab-unread-correct.png' })
   })
@@ -142,15 +167,20 @@ test.describe.skip('sidebar states — split (visible) unread bug (RED)', () => 
   test.describe.configure({ mode: 'serial' })
 
   let fixture: MockBackendFixture
+  const bgRelease = createBackgroundReleaseHandle()
 
   test.beforeAll(async () => {
     restartMockServer()
-    fixture = await setupMockBackend()
+    fixture = await setupMockBackend({
+      mockServer: { backgroundReleasePath: bgRelease.path },
+    })
     await waitForAppReady(fixture, 120_000)
   })
 
   test.afterAll(async () => {
+    bgRelease.release()
     await fixture?.cleanup()
+    bgRelease.cleanup()
   })
 
   test('session visible in a split tile does NOT get unread dot when it finishes', async () => {
@@ -196,7 +226,7 @@ test.describe.skip('sidebar states — split (visible) unread bug (RED)', () => 
     // Evidence: the split tile is now open side-by-side — both sessions visible.
     await page.screenshot({ path: 'test-results/tile-bug-split-opened.png' })
 
-    await waitForBgProcessToFinish(page)
+    await waitForBgProcessToFinish(page, bgRelease)
 
     // THE BUG: the session visible in the split tile should NOT have the green
     // "finished unread" dot — the user is looking right at it. This assertion

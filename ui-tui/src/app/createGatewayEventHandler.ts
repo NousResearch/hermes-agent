@@ -1005,6 +1005,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // through the normal message stream. No committed transcript entry.
         return
 
+      case 'moa.progress':
+        // Live fan-out progress — one activity line, replaced in place as each
+        // reference completes ("MoA: refs 2/3"), so the user sees movement
+        // during the (potentially long) reference phase without transcript spam.
+        if (typeof ev.payload?.refs_done === 'number' && typeof ev.payload?.refs_total === 'number') {
+          turnController.pushActivity(`MoA: refs ${ev.payload.refs_done}/${ev.payload.refs_total}`, 'info', 'MoA')
+        }
+
+        return
+
+      case 'moa.phase':
+        // Phase transition — currently only phase="aggregator" (fan-out done,
+        // aggregator acting). Swap the progress line for aggregator copy.
+        if (ev.payload?.phase === 'aggregator') {
+          turnController.pushActivity('MoA: aggregating…', 'info', 'MoA')
+        }
+
+        return
+
       case 'tool.progress':
         if (ev.payload?.preview && ev.payload.name) {
           turnController.recordToolProgress(ev.payload.name, ev.payload.preview)

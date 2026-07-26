@@ -84,6 +84,7 @@ export function ConfigSettings({
   // Background refetches thereafter must not clobber in-progress edits.
   const configSeeded = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (loadedConfig && !configSeeded.current) {
       configSeeded.current = true
@@ -126,6 +127,7 @@ export function ConfigSettings({
     return () => void (cancelled = true)
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- autosave bookkeeping refs, not an atom mirror
   useEffect(() => {
     if (!config || saveVersion === 0) {
       return

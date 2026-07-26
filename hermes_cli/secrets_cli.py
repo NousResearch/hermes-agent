@@ -562,7 +562,7 @@ def _bws_version(binary: Path) -> str:
         res = subprocess.run(
             [str(binary), "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=5,
         )
         if res.returncode == 0:
@@ -618,7 +618,7 @@ def _list_projects(
             [str(binary), "project", "list", "--output", "json"],
             env=env,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

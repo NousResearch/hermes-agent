@@ -45,6 +45,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from agent.skill_utils import (
+    extract_skill_description,
+    is_skill_description_truncated_for_prompt,
+    parse_frontmatter as _parse_frontmatter,
+    SKILL_PROMPT_DESC_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -374,25 +380,46 @@ def _background_review_write_guard(
                     f"skill '{name}'."
                 ),
             }
-        # Manually authored skills (created_by != "agent") are off-limits
-        # to autonomous curation. This prevents the LLM consolidation pass
-        # from archiving skills the user placed manually (e.g. via URL
-        # install or direct SKILL.md authoring), which lack the
-        # `created_by: "agent"` marker.
+        # Skills that are not curator-managed are off-limits to autonomous
+        # curation. This prevents the LLM consolidation pass from mutating
+        # skills the user owns (manually authored, URL-installed, or created by
+        # a foreground `skill_manage(create)` at the user's request), which lack
+        # the `created_by: "agent"` marker.
+        #
+        # A MISSING record and an explicit `created_by: null` must resolve
+        # IDENTICALLY (issue #67140). Keying on `isinstance(usage_rec, dict)`
+        # made the policy depend on the guard's own side effect: a local skill
+        # with no telemetry record passed, the successful write called
+        # bump_patch() which created a `created_by: null` record, and the very
+        # same write was refused from then on. "Allowed exactly once" is not a
+        # policy — it is a race with our own bookkeeping. Fail closed for both
+        # shapes; `hermes curator adopt <name>` is the supported way in.
         usage_data = skill_usage.load_usage()
         usage_rec = usage_data.get(name)
-        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
+        if not skill_usage._is_curator_managed_record(usage_rec):
+            if isinstance(usage_rec, dict):
+                _detail = f"created_by={usage_rec.get('created_by')!r}"
+            else:
+                _detail = "no usage record"
             return {
                 "success": False,
                 "error": (
                     f"Refusing background curator {action} for skill "
-                    f"'{name}': the skill records show it is not agent-created "
-                    f"(created_by={usage_rec.get('created_by')!r}). Manually authored "
-                    f"skills are off-limits to autonomous curation."
+                    f"'{name}': the skill is not curator-managed ({_detail}). "
+                    "User-owned skills are off-limits to autonomous curation. "
+                    f"Run `hermes curator adopt {name}` to opt it in."
                 ),
             }
     except Exception:
-        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
+        logger.warning("owned skill guard lookup failed for %s", name, exc_info=True)
+        return {
+            "success": False,
+            "error": (
+                f"Refusing background curator {action} for skill '{name}': "
+                "agent ownership could not be verified because the provenance "
+                "record is unavailable or unreadable."
+            ),
+        }
     return None
 
 
@@ -538,10 +565,16 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return None
 
 
-def _validate_frontmatter(content: str) -> Optional[str]:
+def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
     Returns error message or None if valid.
+
+    When ``new_skill`` is True (create path only), the description must also
+    fit the 60-char system-prompt budget (SKILL_PROMPT_DESC_LIMIT) so newly
+    authored skills never lose routing signal to index truncation. Edit and
+    patch paths deliberately skip this so existing over-limit skills remain
+    maintainable while their descriptions are cleaned up.
     """
     if not content.strip():
         return "Content cannot be empty."
@@ -570,8 +603,17 @@ def _validate_frontmatter(content: str) -> Optional[str]:
         return "Frontmatter must include 'name' field."
     if "description" not in parsed:
         return "Frontmatter must include 'description' field."
-    if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
+    desc = str(parsed["description"])
+    if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
+    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
+        return (
+            f"Description is {len(desc.strip())} chars — new skills must fit the "
+            f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, "
+            f"trigger first, ends with a period). The skill index truncates "
+            f"longer descriptions to {SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', "
+            f"destroying the routing signal. Move detail into the skill body."
+        )
 
     body = content[end_match.end() + 3:].strip()
     if not body:
@@ -810,6 +852,18 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
+
+def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> None:
+    """Append a system_prompt_preview field when the description will be truncated."""
+    fm, _ = _parse_frontmatter(content)
+    if is_skill_description_truncated_for_prompt(fm):
+        result["system_prompt_preview"] = (
+            f"System prompt will show: \"{extract_skill_description(fm)}\" — "
+            f"keep the trigger self-contained in the first "
+            f"{SKILL_PROMPT_DESC_LIMIT - 3} chars."
+        )
+
+
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
@@ -822,7 +876,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return {"success": False, "error": err}
 
     # Validate content
-    err = _validate_frontmatter(content)
+    err = _validate_frontmatter(content, new_skill=True)
     if err:
         return {"success": False, "error": err}
 
@@ -875,6 +929,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
+    _add_description_prompt_preview(result, content)
     return result
 
 
@@ -923,12 +978,14 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+    _add_description_prompt_preview(result, content)
+    return result
 
 
 def _patch_skill(
@@ -1469,6 +1526,10 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "Description: long descriptions are truncated to the first 57 chars "
+        "plus '...' in the system prompt skill index; longer text is visible "
+        "via skills_list/skill_view. Keep the trigger self-contained in that "
+        "first 57-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "

@@ -255,6 +255,73 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_start_rejects_conflicting_route_and_request_provider(self):
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "model_routes": {
+                        "alias": {
+                            "model": "route/model",
+                            "provider": "openrouter",
+                        }
+                    }
+                },
+            )
+        )
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "model": "alias",
+                        "provider": "minimax",
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert "provider" in data["error"]["message"].lower()
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+        mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        model_options = {"reasoning_effort": "medium", "service_tier": "priority"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "model": "MiniMax-M3",
+                        "provider": "minimax",
+                        "model_options": model_options,
+                    },
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["requested_model"] == "MiniMax-M3"
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["model_options"] == model_options
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
@@ -881,3 +948,38 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+class TestRunsProviderAuthFailure:
+    @pytest.mark.asyncio
+    async def test_status_reports_provider_auth_failure_distinctly(self, adapter):
+        """/v1/runs builds its own agent via _create_agent() and does not
+        route through _run_agent(), so the controlled "Provider
+        authentication failed" message added there does not cover this
+        endpoint. _handle_runs()'s own _ProviderAuthResolutionError branch
+        must give the same distinguished message instead of the generic
+        except-Exception "run failed" text."""
+        from gateway.platforms.api_server import _ProviderAuthResolutionError
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_create.side_effect = _ProviderAuthResolutionError(
+                    "No credentials found for provider 'nous'"
+                )
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "failed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "failed"
+                assert status["error"] == "⚠️ Provider authentication failed: No credentials found for provider 'nous'"
+                assert status["last_event"] == "run.failed"

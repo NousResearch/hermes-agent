@@ -782,6 +782,10 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        # Lossy UTF-8 decode — locale-mismatched bytes from the TTS command
+        # must not raise in the reader threads on non-UTF-8 Windows (#45099).
+        "encoding": "utf-8",
+        "errors": "replace",
         "env": delegated_child_subprocess_env(),
     }
     if os.name == "nt":
@@ -2015,7 +2019,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         "--device", device,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.strip()
         # Filter out the "OK:" line from stderr
@@ -2097,7 +2101,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
         result = subprocess.run(
             [_sys.executable, "-m", "piper.download_voices", voice,
              "--download-dir", str(download_dir)],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300,
             stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:

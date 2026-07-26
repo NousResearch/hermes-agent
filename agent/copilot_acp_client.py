@@ -512,7 +512,7 @@ class CopilotACPClient:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 bufsize=1,
                 cwd=self._acp_cwd,
                 env=_build_subprocess_env(),
@@ -708,7 +708,7 @@ class CopilotACPClient:
                 if block_error:
                     raise PermissionError(block_error)
                 try:
-                    content = path.read_text()
+                    content = path.read_text(encoding="utf-8")
                 except FileNotFoundError:
                     content = ""
                 line = params.get("line")
@@ -736,7 +736,7 @@ class CopilotACPClient:
                 if denied:
                     raise PermissionError(denied)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(params.get("content") or ""))
+                path.write_text(str(params.get("content") or ""), encoding="utf-8")
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

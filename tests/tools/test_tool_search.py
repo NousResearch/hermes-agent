@@ -44,7 +44,7 @@ class TestConfigParsing:
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
-        assert cfg.threshold_pct == 10.0
+        assert cfg.threshold_pct == 5.0
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -149,24 +149,29 @@ class TestThresholdGate:
         cfg = ToolSearchConfig.from_raw({"enabled": "on"})
         assert should_activate(cfg, deferrable_tokens=100, context_length=200_000)
 
-    def test_auto_below_threshold_does_not_activate(self):
+    def test_auto_activates_with_any_deferrable(self):
+        """Tiered disclosure: ANY deferrable tool activates the bridge —
+        the threshold now bounds the listing, not activation."""
         from tools.tool_search import ToolSearchConfig, should_activate
         cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
-        # 5% of 200K = below 10% threshold
-        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=200_000)
-
-    def test_auto_at_or_above_threshold_activates(self):
-        from tools.tool_search import ToolSearchConfig, should_activate
-        cfg = ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10})
-        assert should_activate(cfg, deferrable_tokens=20_000, context_length=200_000)
+        assert should_activate(cfg, deferrable_tokens=100, context_length=200_000)
         assert should_activate(cfg, deferrable_tokens=50_000, context_length=200_000)
+        # unknown context length: still activates
+        assert should_activate(cfg, deferrable_tokens=100, context_length=0)
 
-    def test_auto_without_context_length_uses_20k_cutoff(self):
-        """Fallback cutoff used when the active model is unknown."""
-        from tools.tool_search import ToolSearchConfig, should_activate
-        cfg = ToolSearchConfig.from_raw({"enabled": "auto"})
-        assert not should_activate(cfg, deferrable_tokens=10_000, context_length=0)
-        assert should_activate(cfg, deferrable_tokens=25_000, context_length=0)
+    def test_listing_budget_min_of_pct_and_cap(self):
+        from tools.tool_search import ToolSearchConfig, listing_token_budget
+        cfg = ToolSearchConfig.from_raw(
+            {"threshold_pct": 5, "listing_max_tokens": 8000})
+        # 5% of 200K = 10K > cap 8K → cap wins
+        assert listing_token_budget(cfg, 200_000) == 8000
+        # 5% of 50K = 2.5K < cap 8K → pct leg wins
+        assert listing_token_budget(cfg, 50_000) == 2500
+        # unknown context → 10K fallback for the pct leg, still capped
+        assert listing_token_budget(cfg, 0) == 8000
+        assert listing_token_budget(cfg, None) == 8000
+        # default threshold is 5%
+        assert ToolSearchConfig.from_raw(None).threshold_pct == 5.0
 
     def test_token_estimate_proportional_to_schema_size(self):
         from tools.tool_search import estimate_tokens_from_schemas
@@ -250,20 +255,107 @@ class TestAssembly:
         assert not result.activated
         assert {t["function"]["name"] for t in result.tool_defs} == {"terminal", "read_file"}
 
-    def test_below_threshold_returns_unchanged(self):
-        """Tiny deferrable surface: don't bother."""
+    @staticmethod
+    def _register_mcp(name):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema=_td(name, "Deferred capability description.")["function"],
+            toolset="mcp-tiertest",
+        )
+
+    def test_small_deferrable_surface_defers_with_full_listing(self):
+        """Tiered disclosure: even a tiny MCP/plugin surface defers (tier 1),
+        with the full name+description listing embedded."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig
-        # _td renders to ~80 chars / 20 tokens. 3 of them = ~60 tokens.
-        # 10% of 200K = 20K. Way below.
-        defs = [_td("unknown_tool_a"), _td("unknown_tool_b"), _td("unknown_tool_c")]
+        for n in ("tier_small_a", "tier_small_b", "tier_small_c"):
+            self._register_mcp(n)
+        defs = [_td("terminal", "Run shell")] + [
+            _td(n, "Deferred capability description.")
+            for n in ("tier_small_a", "tier_small_b", "tier_small_c")]
         result = assemble_tool_defs(
             defs,
             context_length=200_000,
             config=ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10}),
         )
-        assert not result.activated
+        assert result.activated
+        assert result.tier == 1
+        assert result.listing_form == "full"
         names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
-        assert "tool_search" not in names
+        assert "tool_search" in names
+        assert "terminal" in names  # core stays eager
+        search = next(t for t in result.tool_defs
+                      if t["function"]["name"] == "tool_search")
+        assert "tier_small_a" in search["function"]["description"]
+
+    def test_oversized_catalog_degrades_to_server_summary_tier2(self):
+        """When even the names-only listing exceeds the budget, tier 2:
+        bare bridge + one-line-per-server summary (no per-tool names)."""
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        names = [f"tier2_very_long_tool_name_number_{i:04d}_extra" for i in range(400)]
+        for n in names:
+            self._register_mcp(n)
+        defs = [_td(n, "A description that will not matter at this size.")
+                for n in names]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw(
+                {"enabled": "auto", "threshold_pct": 10, "listing_max_tokens": 200}),
+        )
+        assert result.activated
+        assert result.tier == 2
+        assert result.listing_form == "groups"
+        search = next(t for t in result.tool_defs
+                      if t["function"]["name"] == "tool_search")
+        desc = search["function"]["description"]
+        # No individual tool names...
+        assert "tier2_very_long_tool_name_number_0000" not in desc
+        # ...but the server (toolset) is named with its tool count, and the
+        # model is told to search rather than substitute/deny.
+        assert "tiertest" in desc
+        assert "(400 tools" in desc
+        assert "search here FIRST" in desc
+
+    def test_mixed_catalog_small_server_keeps_listing(self):
+        """Per-server degradation: an oversized server collapses to a
+        summary line while a small co-attached server keeps per-tool names
+        (the Cloudflare+Linear shape)."""
+        from tools.tool_search import build_catalog_listing_with_form
+        from tools.registry import registry
+        import json as _json
+
+        def _h(args, task_id=None, **kw):
+            return _json.dumps({"ok": True})
+
+        big = [f"bigsrv_tool_{i:04d}_with_a_long_name" for i in range(300)]
+        small = ["smallsrv_create_item", "smallsrv_list_items"]
+        for n in big:
+            registry.register(name=n, handler=_h,
+                              schema=_td(n, "Big server tool.")["function"],
+                              toolset="mcp-bigsrv")
+        for n in small:
+            registry.register(name=n, handler=_h,
+                              schema=_td(n, "Small server tool.")["function"],
+                              toolset="mcp-smallsrv")
+        defs = ([_td(n, "Big server tool.") for n in big]
+                + [_td(n, "Small server tool.") for n in small])
+        # Budget fits the small server's lines + big server's summary,
+        # but not the big server's 300 names.
+        text, form = build_catalog_listing_with_form(defs, max_tokens=300)
+        assert form == "mixed"
+        assert text is not None
+        assert "smallsrv_create_item" in text          # small server listed
+        assert "bigsrv_tool_0000" not in text          # big server names dropped
+        assert "bigsrv (300 tools" in text             # ...but summarized
+        # deterministic (cache safety)
+        text2, _ = build_catalog_listing_with_form(list(reversed(defs)), max_tokens=300)
+        assert text == text2
 
     def test_idempotent_when_bridge_already_present(self):
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
@@ -536,3 +628,114 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+
+# ---------------------------------------------------------------------------
+# Catalog listing (skills-style progressive disclosure)
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogListing:
+    def test_config_defaults(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(None)
+        assert cfg.listing == "auto"
+        assert cfg.listing_max_tokens == 20000
+        # legacy bool shapes keep defaults too
+        assert ToolSearchConfig.from_raw(True).listing == "auto"
+
+    def test_config_listing_off_and_clamp(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"listing": "off", "listing_max_tokens": 999999})
+        assert cfg.listing == "off"
+        assert cfg.listing_max_tokens == 60000
+        cfg2 = ToolSearchConfig.from_raw({"listing": "garbage", "listing_max_tokens": -5})
+        assert cfg2.listing == "auto"
+        assert cfg2.listing_max_tokens == 200
+
+    def test_short_desc_first_sentence_and_clip(self):
+        from tools.tool_search import _short_desc
+        assert _short_desc("Open an issue. Second sentence dropped.") == "Open an issue."
+        long = "word " * 40
+        s = _short_desc(long)
+        assert len(s) <= 61  # 60 + ellipsis char
+        assert s.endswith("…")
+        assert _short_desc("") == ""
+
+    def test_listing_grouped_and_deterministic(self):
+        from tools.tool_search import build_catalog_listing
+        defs = [
+            _td("zeta_tool", "Does zeta."),
+            _td("alpha_tool", "Does alpha."),
+        ]
+        a = build_catalog_listing(defs)
+        b = build_catalog_listing(list(reversed(defs)))
+        assert a == b  # byte-stable regardless of input order (cache safety)
+        assert a.index("alpha_tool") < a.index("zeta_tool")
+
+    def test_listing_budget_falls_back_to_names_then_none(self):
+        from tools.tool_search import build_catalog_listing
+        defs = [_td(f"tool_{i:03d}", "A tool that does something moderately verbose.")
+                for i in range(50)]
+        full = build_catalog_listing(defs, max_tokens=20000)
+        assert full is not None and "- tool_000:" in full
+        names_only = build_catalog_listing(defs, max_tokens=300)
+        assert names_only is not None
+        assert "- tool_000:" not in names_only  # descriptions dropped
+        assert "tool_000" in names_only
+        assert build_catalog_listing(defs, max_tokens=200) is None or "tool_000" in build_catalog_listing(defs, max_tokens=200)
+
+    def test_bridge_embeds_listing(self):
+        from tools.tool_search import bridge_tool_schemas
+        bridges = bridge_tool_schemas(5, listing="github tools (2):\n- a: x\n- b: y")
+        search = next(b for b in bridges if b["function"]["name"] == "tool_search")
+        assert "github tools (2)" in search["function"]["description"]
+        assert "do NOT claim it is unavailable" in search["function"]["description"]
+        # other bridges unchanged
+        bare = bridge_tool_schemas(5)
+        assert bare[1] == bridges[1] and bare[2] == bridges[2]
+
+    @staticmethod
+    def _register(name):
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name=name,
+            handler=_handler,
+            schema=_td(name, "Deferred capability description.")["function"],
+            toolset="mcp-listingtest",
+        )
+
+    def test_assembly_embeds_listing_when_active(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        for i in range(30):
+            self._register(f"mcp_x_{i}")
+        defs = [_td("terminal", "Run shell")] + [
+            _td(f"mcp_x_{i}", "Deferred capability description.",
+                {"a": {"type": "string", "description": "x" * 200}})
+            for i in range(30)
+        ]
+        result = assemble_tool_defs(
+            defs, context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert result.activated
+        search = next(t for t in result.tool_defs if t["function"]["name"] == "tool_search")
+        assert "mcp_x_0" in search["function"]["description"]
+        assert "listingtest tools (30):" in search["function"]["description"]
+
+    def test_assembly_listing_off_keeps_legacy_description(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        for i in range(30):
+            self._register(f"mcp_x_{i}")
+        defs = [_td(f"mcp_x_{i}", "Deferred.") for i in range(30)]
+        result = assemble_tool_defs(
+            defs, context_length=1000,
+            config=ToolSearchConfig.from_raw({"enabled": "on", "listing": "off"}),
+        )
+        assert result.activated
+        search = next(t for t in result.tool_defs if t["function"]["name"] == "tool_search")
+        assert "mcp_x_0" not in search["function"]["description"]

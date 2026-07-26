@@ -88,6 +88,9 @@ export interface SelectionApi {
 
 export interface CompletionItem {
   display: string
+  /** Completion class from the gateway; `skill` is the only kind offered for
+   *  an inline `/skill` reference typed mid-message. */
+  kind?: string
   meta?: string
   text: string
 }

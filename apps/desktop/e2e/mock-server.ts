@@ -14,8 +14,11 @@
  * prove the full boot → gateway → inference → renderer chain works.
  */
 
+import fs from 'node:fs'
 import http from 'node:http'
 import type { ServerResponse } from 'node:http'
+import os from 'node:os'
+import nodePath from 'node:path'
 
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
@@ -27,6 +30,14 @@ export interface MockServerOptions {
 holdFirstCompletionContaining?: string
 /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
 verificationWritePath?: string
+/**
+ * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
+ *
+ * Without it that process is a bare `sleep 5`, which races the agent turn and
+ * the 4s auto-dismiss linger — see `createBackgroundReleaseHandle`. Pass a
+ * handle's `path` to let the test decide when the process exits.
+ */
+backgroundReleasePath?: string
 }
 
 export interface MockServer {
@@ -167,37 +178,68 @@ const SIDEBAR_SCRIPT: ScriptedTurn[] = [
 
 // ─── Sidebar cross-session script ──────────────────────────────────────
 //
-// E2E_SIDEBAR_CROSS trigger uses a longer background process (sleep 5) so
-// the "background running" dot is visible long enough for the test to:
+// E2E_SIDEBAR_CROSS starts a long background process plus a subagent so the
+// tests can:
 //   1. See the background dot while the subagent runs.
 //   2. Open a different session and see session A's dot transition to
 //      "finished unread" when the background process completes.
+//
+// The background process must outlive the agent turn — the whole point is a
+// dot that is still "running" after the final answer lands. A fixed `sleep`
+// cannot guarantee that: on a loaded CI runner the turn (two model round
+// trips + a real subagent delegation) can take longer than the sleep, the
+// process exits early, the 4s success linger elapses, and the dot is gone
+// before the test looks. That is a wall-clock race between three independent
+// timers, and it made this the flakiest spec in the suite.
+//
+// When `backgroundReleasePath` is set the process instead blocks until the
+// test creates that sentinel file, so the test — not the clock — decides when
+// the dot clears. `sleep 5` remains the fallback for callers that don't pass
+// a handle.
+function sidebarCrossBgCommand(releasePath?: string): string {
+  if (!releasePath) {
+    return 'echo "long bg output" && sleep 5 && echo "finished"'
+  }
+  // Bounded wait (60s): if a test forgets to release (or crashes mid-way),
+  // the process still exits instead of hanging the worker until the suite
+  // times out.
+  const quoted = JSON.stringify(releasePath)
+  return [
+    'echo "long bg output"',
+    `for _ in $(seq 1 600); do [ -e ${quoted} ] && break; sleep 0.1; done`,
+    'echo "finished"',
+  ].join(' && ')
+}
 
-const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = [
-  {
-    text: 'Starting a long background task and delegating work.',
-    toolCalls: [
-      {
-        name: 'terminal',
-        args: {
-          command: 'echo "long bg output" && sleep 5 && echo "finished"',
-          background: true,
-          notify_on_complete: true,
+function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
+  return [
+    {
+      text: 'Starting a long background task and delegating work.',
+      toolCalls: [
+        {
+          name: 'terminal',
+          args: {
+            command: sidebarCrossBgCommand(releasePath),
+            background: true,
+            notify_on_complete: true,
+          },
         },
-      },
-      {
-        name: 'delegate_task',
-        args: {
-          goal: 'Analyze cross-session state',
-          context: 'Testing that the background dot updates across sessions.',
+        {
+          name: 'delegate_task',
+          args: {
+            goal: 'Analyze cross-session state',
+            context: 'Testing that the background dot updates across sessions.',
+          },
         },
-      },
-    ],
-  },
-  {
-    text: 'Both tasks are running in the background now.',
-  },
-]
+      ],
+    },
+    {
+      text: 'Both tasks are running in the background now.',
+    },
+  ]
+}
+
+const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = sidebarCrossScript()
 
 const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   {
@@ -423,7 +465,8 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           }
 
           if (isSidebarCrossTrigger) {
-            const turn = SIDEBAR_CROSS_SCRIPT[_sidebarCrossIndex] ?? SIDEBAR_CROSS_SCRIPT[SIDEBAR_CROSS_SCRIPT.length - 1]
+            const script = sidebarCrossScript(options.backgroundReleasePath)
+            const turn = script[_sidebarCrossIndex] ?? script[script.length - 1]
             _sidebarCrossIndex++
 
             if (stream) {
@@ -722,6 +765,65 @@ export function restartMockServer(): void {
   resetScriptIndex()
 }
 
+/** Test-controlled lifetime for the E2E_SIDEBAR_CROSS background process. */
+export interface BackgroundReleaseHandle {
+  /** Sentinel path — pass as `backgroundReleasePath` to `startMockServer`. */
+  path: string
+  /** End the background process now (creates the sentinel). */
+  release: () => void
+  /** Remove the sentinel if it still exists. Safe to call twice. */
+  cleanup: () => void
+}
+
+/**
+ * Create a sentinel that keeps the E2E_SIDEBAR_CROSS background process alive
+ * until the test explicitly releases it.
+ *
+ * The cross-session sidebar tests need a background process that is still
+ * RUNNING after the agent turn finishes — that is the state under test (a
+ * session whose turn is done but whose background work is not). With a fixed
+ * `sleep`, three independent clocks race: the sleep, the agent turn (two model
+ * round trips plus a real subagent delegation), and the 4s success linger
+ * before a finished task auto-dismisses. When a loaded CI runner makes the
+ * turn slower than the sleep, the process is already gone and the assertion
+ * samples an empty sidebar. Observed on CI 2026-07-26 across two unrelated
+ * PRs: the "should appear" poll needed 7.5s to see the dot, by which point
+ * `sleep 5` had exited.
+ *
+ * With a sentinel there is one clock and the test owns it:
+ *
+ * ```ts
+ * const release = createBackgroundReleaseHandle()
+ * const mock = await startMockServer({ backgroundReleasePath: release.path })
+ * // ... assert the dot is visible; it cannot vanish on its own ...
+ * release.release()   // now, and only now, the process exits
+ * ```
+ */
+export function createBackgroundReleaseHandle(): BackgroundReleaseHandle {
+  const path = nodePath.join(
+    os.tmpdir(),
+    `hermes-e2e-bg-release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  )
+  return {
+    path,
+    release: () => {
+      try {
+        fs.writeFileSync(path, 'release')
+      } catch {
+        // The process also has a bounded fallback wait; a failed write must
+        // not crash the test before its real assertions run.
+      }
+    },
+    cleanup: () => {
+      try {
+        fs.rmSync(path, { force: true })
+      } catch {
+        // Best-effort — the sentinel lives in the OS temp dir.
+      }
+    },
+  }
+}
+
 /**
  * The interim script's text constants, exported for test assertions.
  * Each entry is the visible text of one turn. Turns with empty text
@@ -756,8 +858,12 @@ export const SIDEBAR_CROSS_TEXTS = {
   interimText: SIDEBAR_CROSS_SCRIPT[0].text,
   /** The final answer text. */
   finalText: SIDEBAR_CROSS_SCRIPT[SIDEBAR_CROSS_SCRIPT.length - 1].text,
-  /** The longer background process command (sleep 5). */
-  bgCommand: 'echo "long bg output" && sleep 5 && echo "finished"',
+  /**
+   * The default (unheld) background process command. Tests that pass a
+   * `backgroundReleasePath` get a sentinel-waiting command instead — see
+   * `createBackgroundReleaseHandle`.
+   */
+  bgCommand: sidebarCrossBgCommand(),
   /** The subagent's goal. */
   subagentGoal: 'Analyze cross-session state',
 } as const

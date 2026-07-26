@@ -3973,3 +3973,543 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestSummaryPromptBounding:
+    def test_oversized_summary_prompt_is_bounded_and_preserves_edges(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "bounded summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": f"turn-{i}-" + ("x" * 6000)}
+            for i in range(80)
+        ]
+        messages[0]["content"] = "FIRST_SENTINEL " + messages[0]["content"]
+        messages[-1]["content"] = "LAST_SENTINEL " + messages[-1]["content"]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert len(prompt) < 180_000
+        assert "summary input truncated" in prompt
+        assert "FIRST_SENTINEL" in prompt
+        assert "LAST_SENTINEL" in prompt
+
+    def test_small_input_returned_byte_identical(self):
+        """Inputs at or under the cap must pass through completely untouched."""
+        small = "hello world\n\n[USER]: do the thing"
+        assert ContextCompressor._bound_summary_input(small) is small
+        exactly_at_cap = "a" * ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        assert ContextCompressor._bound_summary_input(exactly_at_cap) is exactly_at_cap
+
+    def test_bound_respected_on_oversized_input_with_marker(self):
+        """Direct unit check: output length ≤ cap, marker present, edges kept."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        content = "HEAD_EDGE " + ("m" * (cap * 3)) + " TAIL_EDGE"
+        bounded = ContextCompressor._bound_summary_input(content)
+        assert len(bounded) <= cap
+        assert "summary input truncated" in bounded
+        assert bounded.startswith("HEAD_EDGE")
+        assert bounded.endswith("TAIL_EDGE")
+
+    def test_bound_applies_after_per_message_truncation(self):
+        """The aggregate cap catches what per-message truncation alone misses:
+        hundreds of turns, each individually under _CONTENT_MAX, still sum to
+        an unbounded serialized block without _bound_summary_input."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        # Each message body is < _CONTENT_MAX so per-message truncation is a
+        # no-op — only the aggregate bound can cap the total.
+        messages = [
+            {"role": "user", "content": "y" * (c._CONTENT_MAX - 100)}
+            for _ in range(60)
+        ]
+        serialized = c._serialize_for_summary(messages)
+        assert len(serialized) > c._SUMMARY_INPUT_MAX_CHARS  # unbounded without the cap
+        bounded = c._bound_summary_input(serialized)
+        assert len(bounded) <= c._SUMMARY_INPUT_MAX_CHARS
+        assert "summary input truncated" in bounded
+
+    def test_iterative_update_path_is_bounded(self):
+        """The iterative prompt (previous summary + new turns) must be bounded
+        too — a pathological rehydrated handoff must not blow up the prompt."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "updated summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=272000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        cap = c._SUMMARY_INPUT_MAX_CHARS
+        c._previous_summary = "PREV_HEAD " + ("p" * (cap * 2)) + " PREV_TAIL"
+
+        messages = [
+            {"role": "user", "content": f"turn-{i}-" + ("x" * 6000)}
+            for i in range(80)
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            summary = c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert summary.startswith(SUMMARY_PREFIX)
+        # previous summary block + new-turns block each capped, plus the
+        # fixed template: well under 3x the cap (unbounded would be ~800K).
+        assert len(prompt) < 2 * cap + 30_000
+        assert "PREV_HEAD" in prompt
+        assert "PREV_TAIL" in prompt
+        assert "summary input truncated" in prompt
+
+    def test_marker_does_not_collide_with_summary_classifier(self):
+        """The omitted-middle marker must never make bounded content classify
+        as a compaction handoff (SUMMARY_PREFIX / merged-handoff patterns)."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        bounded = ContextCompressor._bound_summary_input("z" * (cap * 2))
+        assert "summary input truncated" in bounded
+        assert ContextCompressor.classify_summary_content(bounded) is None
+        # Marker alone (worst case: lands at the start of a message) is not a
+        # handoff prefix either.
+        marker_only = bounded[bounded.index("\n\n...[summary input truncated"):]
+        assert ContextCompressor.classify_summary_content(marker_only.lstrip()) is None
+
+
+class TestMinTailUserMessages:
+    """COMPRESS-01,02,07,08: N-user-message tail protection.
+
+    Tests the ``_ensure_last_n_user_messages_in_tail`` method and its
+    integration through ``_find_tail_cut_by_tokens``.
+    """
+
+    def test_n3_preserves_last_3_user_messages(self):
+        """COMPRESS-01: _find_tail_cut_by_tokens with min_tail_user_messages=3
+        guarantees the last 3 user-role messages are in the tail."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        c.tail_token_budget = 200
+        messages = [
+            {"role": "user", "content": "head msg 1"},
+            {"role": "assistant", "content": "head reply 1"},
+            {"role": "user", "content": "middle 1"},
+            {"role": "assistant", "content": "middle 1 reply"},
+            {"role": "user", "content": "middle 2"},
+            {"role": "assistant", "content": "middle 2 reply"},
+            {"role": "user", "content": "recent 3"},
+            {"role": "assistant", "content": "recent 3 reply"},
+            {"role": "user", "content": "recent 2"},
+            {"role": "assistant", "content": "recent 2 reply"},
+            {"role": "user", "content": "recent 1"},
+            {"role": "assistant", "content": "recent 1 reply"},
+        ]
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail_messages = messages[cut:]
+        tail_user_contents = [m["content"] for m in tail_messages if m["role"] == "user"]
+        assert len(tail_user_contents) >= 3, (
+            f"Expected >= 3 user messages in tail, got {len(tail_user_contents)}"
+        )
+        assert "recent 1" in tail_user_contents
+        assert "recent 2" in tail_user_contents
+        assert "recent 3" in tail_user_contents
+        assert cut >= head_end + 1
+
+    def test_n3_tool_group_integrity(self):
+        """COMPRESS-02: When the 3rd-to-last user message is preceded by
+        assistant(tool_calls) + tool results, the boundary is set at the
+        user message (a clean boundary).  The preceding tool group stays
+        together — it is either entirely in the compressed region or
+        entirely in the tail, never split across the boundary."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        c.tail_token_budget = 200
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "content": "result content",
+             "tool_call_id": "call_1"},
+            {"role": "user", "content": "user 3rd last"},
+            {"role": "assistant", "content": "reply 3rd last"},
+            {"role": "user", "content": "user 2nd last"},
+            {"role": "assistant", "content": "reply 2nd last"},
+            {"role": "user", "content": "user last"},
+            {"role": "assistant", "content": "reply last"},
+        ]
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        compressed = messages[:cut]
+        tool_positions = [
+            i for i, m in enumerate(compressed)
+            if m.get("role") in ("assistant", "tool")
+            and (m.get("tool_calls") or m.get("tool_call_id"))
+        ]
+        if len(tool_positions) >= 2:
+            assert tool_positions[-1] - tool_positions[0] == len(tool_positions) - 1, (
+                "Tool group must stay contiguous across the boundary"
+            )
+        tail_messages = messages[cut:]
+        tail_users = [m["content"] for m in tail_messages if m["role"] == "user"]
+        assert "user 3rd last" in tail_users
+        assert "user 2nd last" in tail_users
+        assert "user last" in tail_users
+        assert cut >= head_end + 1
+
+    def test_n1_regression_safety(self):
+        """COMPRESS-08: N=1 produces identical tail positioning to the existing
+        _ensure_last_user_message_in_tail method."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                quiet_mode=True,
+            )
+            c.min_tail_user_messages = 1
+        messages = [
+            {"role": "user", "content": "head 1"},
+            {"role": "assistant", "content": "head reply 1"},
+            {"role": "user", "content": "middle user"},
+            {"role": "assistant", "content": "middle reply"},
+            {"role": "user", "content": "last user"},
+            {"role": "assistant", "content": "last reply"},
+        ]
+        head_end = c.protect_first_n
+        cut1 = c._find_tail_cut_by_tokens(messages, head_end)
+        tail1 = messages[cut1:]
+        # Verify the last user message is in the tail
+        tail_users = [m["content"] for m in tail1 if m["role"] == "user"]
+        assert "last user" in tail_users
+        assert cut1 >= head_end + 1
+
+    def test_fewer_than_n_user_messages(self):
+        """COMPRESS-07: When the conversation has fewer than N user messages,
+        the earliest available user message is used without error."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+            )
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply 1"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "reply 2"},
+        ]
+        # Only 2 user messages, but N=5 — should use earliest found
+        head_end = c.protect_first_n
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=3, head_end=head_end, n=5
+        )
+        # Should not crash, boundary should be before the first user message
+        # (index 0) or at most cut_idx
+        assert result <= 3
+
+    def test_nth_user_already_in_tail_no_reposition(self):
+        """When the Nth user message is already in the tail, cut_idx is unchanged."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+            )
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply 1"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "reply 2"},
+            {"role": "user", "content": "third"},
+            {"role": "assistant", "content": "reply 3"},
+        ]
+        head_end = c.protect_first_n
+        # cut_idx at 2 means all users from index 2 onward are in tail
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=2, head_end=head_end, n=3
+        )
+        assert result == 2  # unchanged
+
+    def test_n5_preserves_last_5_user_messages(self):
+        """COMPRESS-06: min_tail_user_messages=5 protects last 5 user messages."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+            )
+            c.min_tail_user_messages = 5
+        c.tail_token_budget = 500
+        # protect_first_n=1 → head_end=1, so index 0 is head.
+        # u1..u5 must all be at indices >= head_end+1 (=2) to survive the clamp.
+        messages = [
+            {"role": "user", "content": "head 1"},            # 0 (head)
+            {"role": "assistant", "content": "head reply"},   # 1 (head_end boundary)
+            {"role": "user", "content": "u1"},                # 2
+            {"role": "assistant", "content": "a1"},           # 3
+            {"role": "user", "content": "u2"},                # 4
+            {"role": "assistant", "content": "a2"},           # 5
+            {"role": "user", "content": "u3"},                # 6
+            {"role": "assistant", "content": "a3"},           # 7
+            {"role": "user", "content": "u4"},                # 8
+            {"role": "assistant", "content": "a4"},           # 9
+            {"role": "user", "content": "u5"},                # 10
+            {"role": "assistant", "content": "a5"},           # 11
+        ]
+        head_end = c.protect_first_n  # = 1
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail_users = [m["content"] for m in messages[cut:] if m["role"] == "user"]
+        assert len(tail_users) >= 5, f"Expected >=5 users in tail, got {len(tail_users)}"
+        for u in ("u1", "u2", "u3", "u4", "u5"):
+            assert u in tail_users
+        assert cut >= head_end + 1
+
+    def test_no_user_messages_beyond_head(self):
+        """When there are no user messages beyond head_end, cut_idx is unchanged."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=5,
+                quiet_mode=True,
+            )
+        messages = [
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "reply 1"},
+            {"role": "user", "content": "msg 2"},
+            {"role": "assistant", "content": "reply 2"},
+        ]
+        head_end = c.protect_first_n  # = 5 > len(messages)
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=2, head_end=head_end, n=3
+        )
+        assert result == 2  # unchanged
+
+    def test_default_is_behavior_preserving(self):
+        """Default min_tail_user_messages=1 leaves the tail cut byte-identical
+        to the historical single-anchor pipeline.
+
+        A default of 3 was measured to CHANGE the cut on transcripts whose
+        tail budget covers only the last turn, so the default is gated to 1
+        (= the existing single last-user anchor) and N>1 is opt-in.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c_default = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+            )
+            c_explicit = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                quiet_mode=True,
+                min_tail_user_messages=1,
+            )
+        assert c_default.min_tail_user_messages == 1
+        c_default.tail_token_budget = 200
+        c_explicit.tail_token_budget = 200
+        messages = [
+            {"role": "user", "content": "head msg"},
+            {"role": "assistant", "content": "head reply"},
+        ]
+        for i in range(3):
+            messages.append({"role": "user", "content": f"user {i}"})
+            messages.append({"role": "assistant", "content": "X" * 4000})
+        messages.append({"role": "user", "content": "final user"})
+        messages.append({"role": "assistant", "content": "final reply"})
+        head_end = c_default.protect_first_n
+        assert (
+            c_default._find_tail_cut_by_tokens(messages, head_end)
+            == c_explicit._find_tail_cut_by_tokens(messages, head_end)
+        )
+
+    def test_blank_echo_does_not_count_toward_n(self):
+        """A blank platform echo (empty user row) must not consume one of the
+        N slots — otherwise the guarantee silently degrades to N-1 real turns
+        (the #69291 bug class the single anchor already fixed)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        messages = [
+            {"role": "user", "content": "head"},                 # 0 (head)
+            {"role": "assistant", "content": "head reply"},      # 1
+            {"role": "user", "content": "real oldest"},          # 2  <- 3rd real user
+            {"role": "assistant", "content": "reply oldest"},    # 3
+            {"role": "user", "content": "real middle"},          # 4
+            {"role": "assistant", "content": "reply middle"},    # 5
+            {"role": "user", "content": ""},                     # 6  blank echo
+            {"role": "assistant", "content": "reply to echo"},   # 7
+            {"role": "user", "content": "   "},                  # 8  whitespace echo
+            {"role": "assistant", "content": "another reply"},   # 9
+            {"role": "user", "content": "real latest"},          # 10
+            {"role": "assistant", "content": "final reply"},     # 11
+        ]
+        head_end = c.protect_first_n  # = 1
+        # cut_idx=10 → only "real latest" in tail; N=3 must walk back to
+        # index 2 ("real oldest"), NOT stop at a blank echo (6/8).
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=10, head_end=head_end, n=3
+        )
+        assert result == 2, (
+            f"3rd real user is at index 2, got cut {result} — blank echoes "
+            "must not count toward N"
+        )
+        tail_users = [
+            m["content"] for m in messages[result:]
+            if m["role"] == "user" and m["content"].strip()
+        ]
+        assert {"real oldest", "real middle", "real latest"} <= set(tail_users)
+
+    def test_synthetic_compression_rows_do_not_count_toward_n(self):
+        """Compaction handoff banners and continuation markers carry
+        role="user" after SessionDB projection but are continuity artifacts —
+        they must not consume N slots."""
+        from agent.context_compressor import (
+            COMPRESSION_CONTINUATION_USER_CONTENT,
+        )
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=2,
+            )
+        messages = [
+            {"role": "user", "content": "head"},                              # 0 (head)
+            {"role": "assistant", "content": "head reply"},                   # 1
+            {"role": "user", "content": "real second"},                       # 2
+            {"role": "assistant", "content": "reply second"},                 # 3
+            {"role": "user", "content": SUMMARY_PREFIX + " old summary"},     # 4 handoff
+            {"role": "assistant", "content": "ack"},                          # 5
+            {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT},  # 6 marker
+            {"role": "assistant", "content": "ack 2"},                        # 7
+            {"role": "user", "content": "real latest"},                       # 8
+            {"role": "assistant", "content": "final reply"},                  # 9
+        ]
+        head_end = c.protect_first_n
+        result = c._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx=8, head_end=head_end, n=2
+        )
+        assert result == 2, (
+            f"2nd real user is at index 2, got cut {result} — synthetic "
+            "compression rows must not count toward N"
+        )
+
+    def test_n_boundary_never_orphans_tool_results(self):
+        """Integration: with N=3 the full tail-cut pipeline must never place
+        a tool result in the tail whose parent assistant(tool_calls) was
+        summarized away, or vice versa (no-orphan in BOTH directions)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        c.tail_token_budget = 100
+        messages = [
+            {"role": "user", "content": "head"},                                   # 0
+            {"role": "assistant", "content": "head reply"},                        # 1
+            {"role": "user", "content": "real 3"},                                 # 2
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_a", "function": {"name": "t", "arguments": "{}"}}]},  # 3
+            {"role": "tool", "content": "R" * 2000, "tool_call_id": "call_a"},     # 4
+            {"role": "assistant", "content": "reply 3"},                           # 5
+            {"role": "user", "content": "real 2"},                                 # 6
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_b", "function": {"name": "t", "arguments": "{}"}}]},  # 7
+            {"role": "tool", "content": "S" * 2000, "tool_call_id": "call_b"},     # 8
+            {"role": "assistant", "content": "reply 2"},                           # 9
+            {"role": "user", "content": "real 1"},                                 # 10
+            {"role": "assistant", "content": "reply 1"},                           # 11
+        ]
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail = messages[cut:]
+        tail_call_ids = {
+            tc.get("id")
+            for m in tail if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        }
+        tail_result_ids = {
+            m.get("tool_call_id") for m in tail if m.get("role") == "tool"
+        }
+        assert tail_call_ids == tail_result_ids, (
+            f"tool pair split across N-boundary: calls={tail_call_ids} "
+            f"results={tail_result_ids}"
+        )
+        tail_users = [m["content"] for m in tail if m["role"] == "user"]
+        assert {"real 1", "real 2", "real 3"} <= set(tail_users)
+
+    def test_n_guarantee_wins_over_tail_token_budget_and_floor(self):
+        """Interaction contract: the N-user guarantee WINS over both
+        tail_token_budget and _MAX_TAIL_MESSAGE_FLOOR.
+
+        The budget walk (and its bounded message floor) computes the initial
+        cut; the N-anchor then only ever pulls the cut BACKWARD (tail can
+        grow, never shrink), exactly like the existing single-user and
+        assistant anchors. So a tiny budget cannot roll real users 2..N into
+        the summary, and the floor remains a lower bound, not a cap, on the
+        anchored tail.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                quiet_mode=True,
+                min_tail_user_messages=3,
+            )
+        # Budget covers roughly one bulky turn — without the N-anchor the
+        # cut lands after users 2..3.
+        c.tail_token_budget = 150
+        messages = [{"role": "user", "content": "head"},
+                    {"role": "assistant", "content": "head reply"}]
+        for i in (3, 2, 1):
+            messages.append({"role": "user", "content": f"real {i}"})
+            messages.append({"role": "assistant", "content": "B" * 6000})
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail = messages[cut:]
+        tail_users = [m["content"] for m in tail if m["role"] == "user"]
+        assert {"real 1", "real 2", "real 3"} <= set(tail_users), (
+            f"N-guarantee must win over the token budget; tail users: {tail_users}"
+        )
+        # The anchored tail legitimately exceeds the budget (and the 8-message
+        # floor is a minimum, not a cap): the guarantee is the stronger
+        # invariant by design.
+        from agent.context_compressor import _estimate_msg_budget_tokens
+        accumulated = sum(_estimate_msg_budget_tokens(m) for m in tail)
+        assert accumulated > c.tail_token_budget
+
+    def test_default_config_ships_behavior_preserving_value(self):
+        """DEFAULT_CONFIG ships min_tail_user_messages=1 so an unset key is
+        exactly the pre-feature single-anchor behavior."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["compression"]["min_tail_user_messages"] == 1

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import type { SessionTile } from '@/store/session-states'
-import { orderTilesByTree, selectionHomesToWorkspace } from '@/store/session-states'
+import { focusedSessionNeedsRoute, orderTilesByTree, selectionHomesToWorkspace } from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
@@ -42,5 +42,25 @@ describe('selectionHomesToWorkspace', () => {
 
   it('skips homing when the selected id is already an open tile', () => {
     expect(selectionHomesToWorkspace('a', tiles)).toBe(false)
+  })
+})
+
+describe('focusedSessionNeedsRoute', () => {
+  it('routes when the session is not on screen', () => {
+    expect(focusedSessionNeedsRoute(null, false)).toBe(true)
+    expect(focusedSessionNeedsRoute(null, true)).toBe(true)
+  })
+
+  it('routes for the ACTIVE main session while a full page covers the workspace', () => {
+    expect(focusedSessionNeedsRoute('main', true)).toBe(true)
+  })
+
+  it('skips the route when the main session is already the visible chat', () => {
+    expect(focusedSessionNeedsRoute('main', false)).toBe(false)
+  })
+
+  it('never routes for a tile — its pane shows the chat on any route', () => {
+    expect(focusedSessionNeedsRoute('tile', true)).toBe(false)
+    expect(focusedSessionNeedsRoute('tile', false)).toBe(false)
   })
 })

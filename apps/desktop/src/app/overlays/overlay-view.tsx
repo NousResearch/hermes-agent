@@ -9,6 +9,14 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 
+// Shared top clearance for overlay content that sits *beside* the floating
+// close button (which is absolute at `0.1875rem + titlebar/2`, -translate-y-1/2,
+// so it costs no layout space): a Panel's header and the split layout's left
+// sidebar links. They ride up next to the X on the same line across every
+// overlay (settings, system, agents, cron, …) — change it here, not per-surface.
+// Main content sits *under* the X (top-right) and keeps its own taller pad.
+export const OVERLAY_TOP_CLEARANCE = 'pt-[calc(var(--titlebar-height)/2-0.4375rem)]'
+
 interface OverlayViewProps {
   children: ReactNode
   onClose: () => void

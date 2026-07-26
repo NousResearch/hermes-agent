@@ -89,7 +89,7 @@ import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
-import { startWorkspaceSession } from '../session/workspace-session-target'
+import { newSessionOpensTab, startWorkspaceSession } from '../session/workspace-session-target'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import { titlebarControlsPosition } from '../shell/titlebar'
@@ -484,8 +484,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // New session anchored to a workspace (sidebar "+" on a project/worktree).
   // Seeds cwd + branch from the clicked workspace; an explicit worktree path
   // also drills the sidebar into that project so the new lane is visible.
+  // Once a chat is loaded the button opens a TAB instead of replacing it —
+  // see newSessionOpensTab.
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
+      if (newSessionOpensTab(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
+        void openNewSessionTile('center', { cwd: path, listed: false })
+
+        return
+      }
+
       startWorkspaceSession({
         activeSessionIdRef,
         followActiveSessionCwd,
@@ -495,7 +503,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         startFreshSessionDraft
       })
     },
-    [activeSessionIdRef, requestGateway, startFreshSessionDraft]
+    [activeSessionIdRef, openNewSessionTile, requestGateway, startFreshSessionDraft]
   )
 
   // Composer "branch off into a new worktree": open a fresh session anchored

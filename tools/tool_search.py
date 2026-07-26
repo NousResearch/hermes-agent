@@ -1,17 +1,18 @@
 """Progressive tool disclosure ("tool search") for Hermes Agent.
 
-When enabled, MCP and non-core plugin tools are replaced in the model-visible
-tools array by three bridge tools — ``tool_search``, ``tool_describe``,
-``tool_call`` — and surfaced on demand. Core Hermes tools never defer.
+When enabled, MCP, non-core plugin tools, and selected verbose Hermes built-ins
+are replaced in the model-visible tools array by three bridge tools —
+``tool_search``, ``tool_describe``, ``tool_call`` — and surfaced on demand.
 
 Design constraints this module is built around (see ``openclaw-tool-search-report``
 for the full rationale):
 
-* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
-  Always-load means always-load. No exceptions.
-* The threshold gate runs every assembly: when deferrable tools would consume
-  less than ``threshold_pct`` of the model's context window (default 10%),
-  tool search is a no-op and the tools array passes through unchanged.
+* Only an explicit allowlist of verbose core tools may defer. Cheap
+  foundational tools stay direct, and unknown tools are never silently dropped.
+* The threshold gate runs every assembly: when deferrable tools are below the
+  configured auto threshold (context percentage capped by a fixed token
+  ceiling), tool search is a no-op and the tools array passes through
+  unchanged.
 * The catalog is stateless across turns and tools-array assemblies. It is
   rebuilt from the current tool-defs list every time. This is the lesson
   from OpenClaw's cron regression (openclaw/openclaw#84141): a session-keyed
@@ -55,6 +56,53 @@ BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_N
 CHARS_PER_TOKEN = 4.0
 
 
+# Core tools whose schemas are large enough to justify progressive disclosure.
+# The always-direct core remains the substrate a model commonly needs without a
+# discovery hop: web search/extract, basic file reads/writes/search, process
+# inspection, todo, and GUI terminal-tab helpers. Everything here is still in
+# the session's scope; the bridge only moves its verbose schema behind
+# tool_search/tool_describe/tool_call.
+DEFAULT_DEFERRABLE_CORE_TOOLS = frozenset({
+    "terminal",
+    "patch",
+    "vision_analyze",
+    "image_generate",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_back",
+    "browser_press",
+    "browser_get_images",
+    "browser_vision",
+    "browser_console",
+    "browser_cdp",
+    "browser_dialog",
+    "text_to_speech",
+    "memory",
+    "session_search",
+    "clarify",
+    "execute_code",
+    "delegate_task",
+    "cronjob",
+    "ha_list_entities",
+    "ha_get_state",
+    "ha_list_services",
+    "ha_call_service",
+    "kanban_show",
+    "kanban_list",
+    "kanban_complete",
+    "kanban_block",
+    "kanban_heartbeat",
+    "kanban_comment",
+    "kanban_create",
+    "kanban_link",
+    "kanban_unblock",
+    "computer_use",
+})
+
+
 # ---------------------------------------------------------------------------
 # Configuration plumbing
 # ---------------------------------------------------------------------------
@@ -66,8 +114,10 @@ class ToolSearchConfig:
 
     enabled: str  # "auto" | "on" | "off"
     threshold_pct: float  # 0..100 — only used when enabled == "auto"
+    auto_token_threshold: int
     search_default_limit: int
     max_search_limit: int
+    defer_core_tools: bool
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -81,13 +131,19 @@ class ToolSearchConfig:
         """
         if raw is True:
             return cls(enabled="auto", threshold_pct=10.0,
-                       search_default_limit=5, max_search_limit=20)
+                       auto_token_threshold=8_000,
+                       search_default_limit=5, max_search_limit=20,
+                       defer_core_tools=True)
         if raw is False:
             return cls(enabled="off", threshold_pct=10.0,
-                       search_default_limit=5, max_search_limit=20)
+                       auto_token_threshold=8_000,
+                       search_default_limit=5, max_search_limit=20,
+                       defer_core_tools=True)
         if not isinstance(raw, dict):
             return cls(enabled="auto", threshold_pct=10.0,
-                       search_default_limit=5, max_search_limit=20)
+                       auto_token_threshold=8_000,
+                       search_default_limit=5, max_search_limit=20,
+                       defer_core_tools=True)
 
         enabled_raw = str(raw.get("enabled", "auto")).strip().lower()
         if enabled_raw in ("true", "1", "yes"):
@@ -101,16 +157,23 @@ class ToolSearchConfig:
 
         threshold_pct = _safe_float(raw.get("threshold_pct"), 10.0)
         threshold_pct = max(0.0, min(100.0, threshold_pct))
+        auto_token_threshold = max(1_000, min(
+            100_000,
+            _safe_int(raw.get("auto_token_threshold"), 8_000),
+        ))
 
         max_search_limit = max(1, min(50, _safe_int(raw.get("max_search_limit"), 20)))
         search_default_limit = max(1, min(max_search_limit,
                                           _safe_int(raw.get("search_default_limit"), 5)))
+        defer_core_tools = _safe_bool(raw.get("defer_core_tools"), True)
 
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
+            auto_token_threshold=auto_token_threshold,
             search_default_limit=search_default_limit,
             max_search_limit=max_search_limit,
+            defer_core_tools=defer_core_tools,
         )
 
 
@@ -126,6 +189,19 @@ def _safe_float(value: Any, fallback: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _safe_bool(value: Any, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return fallback
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return fallback
 
 
 def load_config() -> ToolSearchConfig:
@@ -160,18 +236,20 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+def is_deferrable_tool_name(name: str, config: Optional[ToolSearchConfig] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    A tool is deferrable iff it is registered with an MCP toolset prefix, is
+    not in ``_HERMES_CORE_TOOLS``, or is an explicitly allowed verbose core
+    tool and core deferral is enabled. Core tools outside the allowlist are
+    always direct, even when their schema is large.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+    if config is None:
+        config = load_config()
     if name in _core_tool_names():
-        return False
+        return bool(config.defer_core_tools and name in DEFAULT_DEFERRABLE_CORE_TOOLS)
     # Check registry toolset for MCP prefix.
     try:
         from tools.registry import registry
@@ -186,7 +264,10 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    config: Optional[ToolSearchConfig] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
@@ -195,6 +276,8 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
+    if config is None:
+        config = load_config()
     for td in tool_defs:
         fn = td.get("function") or {}
         name = fn.get("name", "")
@@ -202,7 +285,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, config=config):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -250,12 +333,21 @@ def should_activate(
     if config.enabled == "on":
         return True
     # auto
-    if not context_length or context_length <= 0:
-        # Without a known context size, fall back to a fixed 20K-token cutoff
-        # — the cliff above which Anthropic and OpenAI both saw quality drops.
-        return deferrable_tokens >= 20_000
-    threshold_tokens = int(context_length * (config.threshold_pct / 100.0))
+    threshold_tokens = auto_threshold_tokens(config, context_length)
     return deferrable_tokens >= threshold_tokens
+
+
+def auto_threshold_tokens(config: ToolSearchConfig, context_length: Optional[int]) -> int:
+    """Return the token threshold for ``auto`` activation.
+
+    ``threshold_pct`` keeps the gate proportional for short-context models.
+    ``auto_token_threshold`` caps that proportional threshold so a large-context
+    model does not keep paying an 8K+ schema tax just because it has room.
+    """
+    if not context_length or context_length <= 0:
+        return config.auto_token_threshold
+    threshold_tokens = int(context_length * (config.threshold_pct / 100.0))
+    return max(1, min(threshold_tokens, config.auto_token_threshold))
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +398,13 @@ def _entry_search_text(td: Dict[str, Any]) -> str:
 
 def _classify_source(name: str) -> Tuple[str, str]:
     """Return (source_kind, source_name) for a registered tool name."""
+    if name in _core_tool_names():
+        try:
+            from tools.registry import registry
+            entry = registry.get_entry(name)
+            return ("core", entry.toolset if entry is not None else "core")
+        except Exception:
+            return ("core", "core")
     try:
         from tools.registry import registry
         entry = registry.get_entry(name)
@@ -551,33 +650,53 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config=config)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
-    deferrable_tokens = estimate_tokens_from_schemas(deferrable)
+    hidden_names: set[str] = set()
+    hidden_defs: List[Dict[str, Any]] = []
+    for td in deferrable:
+        name = (td.get("function") or {}).get("name", "")
+        source, _ = _classify_source(name)
+        # Keep plugin tools directly visible when tool_search activates.
+        # This narrows the auto-deferral surface to MCP tools and the
+        # explicit verbose-core allowlist, preserving longstanding
+        # get_tool_definitions() expectations for enabled plugins.
+        if source == "plugin":
+            continue
+        hidden_names.add(name)
+        hidden_defs.append(td)
+
+    if not hidden_defs:
+        return AssemblyResult(tool_defs=incoming, activated=False)
+
+    deferrable_tokens = estimate_tokens_from_schemas(hidden_defs)
     if not should_activate(config, deferrable_tokens, context_length):
         return AssemblyResult(
             tool_defs=incoming,
             activated=False,
-            deferred_count=len(deferrable),
+            deferred_count=len(hidden_defs),
             deferred_tokens=deferrable_tokens,
-            threshold_tokens=int((context_length or 0) * (config.threshold_pct / 100.0)),
+            threshold_tokens=auto_threshold_tokens(config, context_length),
         )
 
     bridge = bridge_tool_schemas(len(deferrable))
-    result = visible + bridge
-    threshold_tokens = int((context_length or 0) * (config.threshold_pct / 100.0))
+    result = [
+        td for td in incoming
+        if (td.get("function") or {}).get("name") not in hidden_names
+    ] + bridge
+    threshold_tokens = auto_threshold_tokens(config, context_length)
 
     logger.info(
         "tool_search activated: %d core/visible tools kept, %d deferred (~%d tokens, threshold ~%d)",
-        len(visible), len(deferrable), deferrable_tokens, threshold_tokens,
+        len(result) - len(bridge), len(hidden_defs), deferrable_tokens, threshold_tokens,
     )
 
     return AssemblyResult(
         tool_defs=result,
         activated=True,
-        deferred_count=len(deferrable),
+        deferred_count=len(hidden_defs),
         deferred_tokens=deferrable_tokens,
         threshold_tokens=threshold_tokens,
     )
@@ -619,7 +738,7 @@ def dispatch_tool_search(args: Dict[str, Any],
     else:
         limit = max(1, min(config.max_search_limit, _safe_int(raw_limit, config.search_default_limit)))
 
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(current_tool_defs, config=config)
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
     return json.dumps({
@@ -631,19 +750,22 @@ def dispatch_tool_search(args: Dict[str, Any],
 
 def dispatch_tool_describe(args: Dict[str, Any],
                            *,
-                           current_tool_defs: List[Dict[str, Any]]) -> str:
+                           current_tool_defs: List[Dict[str, Any]],
+                           config: Optional[ToolSearchConfig] = None) -> str:
     """Execute the ``tool_describe`` bridge tool. Returns a JSON string."""
     name = str(args.get("name") or "").strip()
     if not name:
         return json.dumps({"error": "name is required"}, ensure_ascii=False)
-    if not is_deferrable_tool_name(name):
+    if config is None:
+        config = load_config()
+    if not is_deferrable_tool_name(name, config=config):
         return json.dumps({
             "error": (
                 f"'{name}' is not a deferrable tool. If you see it in the tools list "
                 "already, call it directly; otherwise check the spelling against tool_search."
             ),
         }, ensure_ascii=False)
-    _, deferrable = classify_tools(current_tool_defs)
+    _, deferrable = classify_tools(current_tool_defs, config=config)
     for td in deferrable:
         fn = td.get("function") or {}
         if fn.get("name") == name:
@@ -657,7 +779,10 @@ def dispatch_tool_describe(args: Dict[str, Any],
     }, ensure_ascii=False)
 
 
-def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
+def scoped_deferrable_names(
+    tool_defs: List[Dict[str, Any]],
+    config: Optional[ToolSearchConfig] = None,
+) -> frozenset[str]:
     """Return the set of deferrable tool names present in ``tool_defs``.
 
     ``tool_defs`` is expected to be the *pre-assembly* tool list for the
@@ -670,14 +795,19 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     an out-of-scope tool via the bridge.
     """
     names: set[str] = set()
+    if config is None:
+        config = load_config()
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and is_deferrable_tool_name(name, config=config):
             names.add(name)
     return frozenset(names)
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(
+    args: Dict[str, Any],
+    config: Optional[ToolSearchConfig] = None,
+) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -702,7 +832,9 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
             return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
     if not isinstance(raw_args, dict):
         return None, {}, "tool_call 'arguments' must be an object"
-    if not is_deferrable_tool_name(name):
+    if config is None:
+        config = load_config()
+    if not is_deferrable_tool_name(name, config=config):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."
@@ -723,6 +855,7 @@ __all__ = [
     "classify_tools",
     "estimate_tokens_from_schemas",
     "should_activate",
+    "auto_threshold_tokens",
     "build_catalog",
     "search_catalog",
     "bridge_tool_schemas",

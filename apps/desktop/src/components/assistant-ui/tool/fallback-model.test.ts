@@ -340,6 +340,28 @@ describe('buildToolView title actions', () => {
     expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
   })
 
+  it('never stutters the verb or echoes the command when the backend context is a phrased label', () => {
+    // Older backends stamped tool.start with a *phrased* label
+    // ("Running sleep 70 + 2 commands") rather than a raw arg preview, and the
+    // desktop merges that into args.context. The row must still prepend its own
+    // verb exactly once, show the real command in the `$` transcript, and not
+    // repeat either string as detail.
+    const command = 'sleep 70; echo "a"; echo "b"'
+
+    const view = buildToolView(
+      part({
+        args: { command, context: 'Running sleep 70 + 2 commands' },
+        result: { exit_code: 0 },
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Ran sleep 70 + 2 commands')
+    expect(view.terminalCommand).toBe(command)
+    expect(view.detail).toBe('')
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 

@@ -562,16 +562,22 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
 
-    # Create two tasks with subscriptions and complete both.
+    # Create two tasks with subscriptions and complete both. The BAD task is
+    # created first: list_notify_subs() has no ORDER BY, so SQLite's natural
+    # scan returns insertion order — the failing subscription must be
+    # processed BEFORE the good one or this test passes even without the
+    # per-subscription isolation (the good delivery happens before the tick
+    # aborts). A deterministic-order shim below removes the reliance on the
+    # scan order entirely.
     conn = kb.connect()
     try:
-        tid_good = kb.create_task(conn, title="good task", assignee="worker")
-        kb.add_notify_sub(conn, task_id=tid_good, platform="telegram", chat_id="chat-good")
-        kb.complete_task(conn, tid_good, summary="done")
-
         tid_bad = kb.create_task(conn, title="bad task", assignee="worker")
         kb.add_notify_sub(conn, task_id=tid_bad, platform="telegram", chat_id="chat-bad")
         kb.complete_task(conn, tid_bad, summary="done")
+
+        tid_good = kb.create_task(conn, title="good task", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid_good, platform="telegram", chat_id="chat-good")
+        kb.complete_task(conn, tid_good, summary="done")
     finally:
         conn.close()
 
@@ -584,6 +590,16 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
 
     monkeypatch.setattr(kb, "claim_unseen_events_for_sub", selective_claim)
 
+    # Force the failing subscription to be iterated FIRST regardless of the
+    # unordered SELECT's scan order.
+    original_list = kb.list_notify_subs
+
+    def bad_first(conn, task_id=None):
+        subs = original_list(conn, task_id)
+        return sorted(subs, key=lambda s: 0 if s["task_id"] == tid_bad else 1)
+
+    monkeypatch.setattr(kb, "list_notify_subs", bad_first)
+
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
 
@@ -592,3 +608,52 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     # The good task must still be delivered despite the bad task failing.
     assert len(adapter.sent) == 1
     assert tid_good in adapter.sent[0]["text"]
+
+
+def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch):
+    """A `block_loop_detected` event must reach the subscriber as a triage ping.
+
+    Regression for the silent-triage gap (PR #62712): kanban_db routes a task
+    to `triage` after BLOCK_RECURRENCE_LIMIT re-blocks for the same cause and
+    emits ONLY a `block_loop_detected` event — no `blocked`/`status` event.
+    Before `block_loop_detected` joined TERMINAL_KINDS with its own message
+    branch, that one transition (the whole point of which is to force human
+    attention) produced zero notification and the task stalled in triage
+    silently.
+    """
+    db_path = tmp_path / "block-loop.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="loops forever", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn, tid, "block_loop_detected",
+            {"reason": "needs credentials", "kind": "needs_input",
+             "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "block_loop_detected must produce a notification"
+    text = adapter.sent[0]["text"]
+    assert "TRIAGE" in text
+    assert tid in text
+    assert "needs credentials" in text
+    # Cursor advanced: the event is claimed and not re-delivered.
+    conn = kb.connect()
+    try:
+        _, remaining = kb.unseen_events_for_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            kinds=["block_loop_detected"],
+        )
+    finally:
+        conn.close()
+    assert remaining == []

@@ -114,6 +114,180 @@ def _orphan_fts_schema(path: Path) -> None:
         conn.close()
 
 
+def _make_page_spanning_source(
+    path: Path,
+    message_count: int = 320,
+) -> tuple[int, int | None]:
+    db = SessionDB(db_path=path)
+    try:
+        db.create_session(
+            "partial-recovery-session",
+            "cli",
+            cwd="/tmp/partial-recovery",
+        )
+        for message_number in range(message_count):
+            db.append_message(
+                "partial-recovery-session",
+                "user" if message_number % 2 == 0 else "assistant",
+                (
+                    f"partial recovery payload {message_number:04d} "
+                    + chr(65 + message_number % 26) * 1_500
+                ),
+            )
+    finally:
+        db.close()
+
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("VACUUM")
+        plan = " ".join(
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages"
+            ).fetchall()
+        )
+        count_index = next(
+            (
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'index' AND tbl_name = 'messages'"
+                ).fetchall()
+                if plan.endswith(str(row[0]))
+            ),
+            None,
+        )
+        names = ["messages"]
+        if count_index is not None:
+            names.append(count_index)
+        placeholders = ", ".join("?" for _ in names)
+        roots = {
+            str(row[0]): int(row[1])
+            for row in conn.execute(
+                "SELECT name, rootpage FROM sqlite_master "
+                f"WHERE name IN ({placeholders})",
+                tuple(names),
+            ).fetchall()
+        }
+        return roots["messages"], (
+            roots[count_index] if count_index is not None else None
+        )
+    finally:
+        conn.close()
+
+
+def _make_many_sessions_source(
+    path: Path,
+    session_count: int = 180,
+) -> int:
+    db = SessionDB(db_path=path)
+    try:
+        for session_number in range(session_count):
+            session_id = f"partial-session-{session_number:04d}"
+            db.create_session(
+                session_id,
+                "cli",
+                cwd=f"/tmp/partial-session-{session_number:04d}",
+                system_prompt=(
+                    f"session payload {session_number:04d} "
+                    + chr(65 + session_number % 26) * 1_500
+                ),
+            )
+            db.append_message(session_id, "user", f"message {session_number}")
+    finally:
+        db.close()
+
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("VACUUM")
+        row = conn.execute(
+            "SELECT rootpage FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'sessions'"
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+    finally:
+        conn.close()
+
+
+def _btree_leaf_pages(path: Path, root_page: int) -> tuple[int, list[int]]:
+    data = path.read_bytes()
+    page_size = int.from_bytes(data[16:18], "big")
+    if page_size == 1:
+        page_size = 65_536
+    leaf_pages: list[int] = []
+    visited: set[int] = set()
+
+    def visit(page_number: int) -> None:
+        if page_number in visited:
+            return
+        visited.add(page_number)
+        page_start = (page_number - 1) * page_size
+        header_offset = page_start + (100 if page_number == 1 else 0)
+        page_type = data[header_offset]
+        cell_count = int.from_bytes(
+            data[header_offset + 3 : header_offset + 5],
+            "big",
+        )
+        if page_type in {0x0A, 0x0D}:
+            leaf_pages.append(page_number)
+            return
+        assert page_type in {0x02, 0x05}, (
+            f"unexpected table b-tree page type {page_type:#x} "
+            f"on page {page_number}"
+        )
+
+        pointer_array = header_offset + 12
+        for cell_number in range(cell_count):
+            pointer_offset = pointer_array + cell_number * 2
+            cell_offset = int.from_bytes(
+                data[pointer_offset : pointer_offset + 2],
+                "big",
+            )
+            child_offset = page_start + cell_offset
+            child_page = int.from_bytes(
+                data[child_offset : child_offset + 4],
+                "big",
+            )
+            visit(child_page)
+        rightmost_page = int.from_bytes(
+            data[header_offset + 8 : header_offset + 12],
+            "big",
+        )
+        visit(rightmost_page)
+
+    visit(root_page)
+    return page_size, leaf_pages
+
+
+def _corrupt_middle_table_leaf(
+    path: Path,
+    root_page: int,
+    *,
+    require_interior: bool = True,
+) -> int:
+    page_size, leaf_pages = _btree_leaf_pages(path, root_page)
+    assert leaf_pages
+    if require_interior:
+        assert len(leaf_pages) >= 3
+    leaf_page = leaf_pages[len(leaf_pages) // 2]
+    page_start = (leaf_page - 1) * page_size
+    header_offset = page_start + (100 if leaf_page == 1 else 0)
+
+    data = bytearray(path.read_bytes())
+    assert data[header_offset] in {0x0A, 0x0D}
+    # An impossible cell count damages this one middle leaf while preserving
+    # the table root and leaves on both sides. This is a physical SQLite page
+    # failure, not a mocked cursor exception.
+    data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
+    path.write_bytes(data)
+    return leaf_page
+
+
 def test_recovery_rebuilds_canonical_data_without_opening_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -279,6 +453,194 @@ def test_recovery_requires_readable_sessions_and_messages(tmp_path: Path) -> Non
     with pytest.raises(SessionRecoverySourceError, match="messages"):
         recover_session_database(source, output, work_dir=tmp_path)
     assert not output.exists()
+
+
+def test_allow_partial_still_reports_a_complete_healthy_copy(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "healthy-state.db"
+    output = tmp_path / "healthy-recovered.db"
+    expected = _make_source(source)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=4,
+        allow_partial=True,
+    )
+
+    assert report["verified"] is True
+    assert report["complete"] is True
+    assert report["partial"] is False
+    assert report["verification"]["warnings"] == []
+    assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
+    assert report["verification"]["table_counts"]["messages"] == expected["messages"]
+    assert report["orphan_cleanup"]["total_removed_or_relinked"] == 0
+
+
+def test_cli_allow_partial_salvages_rows_across_a_corrupt_leaf(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "corrupt-state.db"
+    rejected_output = tmp_path / "rejected.db"
+    output = tmp_path / "partial-recovered.db"
+    message_count = 320
+    messages_root, count_index_root = _make_page_spanning_source(
+        source,
+        message_count,
+    )
+    corrupt_page = _corrupt_middle_table_leaf(source, messages_root)
+    if count_index_root is not None:
+        _corrupt_middle_table_leaf(
+            source,
+            count_index_root,
+            require_interior=False,
+        )
+    source_hash = _sha256(source)
+
+    inspection = inspect_session_database(source, work_dir=tmp_path)
+    assert inspection["recoverable"] is False
+    assert inspection["tables"]["messages"]["rows"] is None
+    with pytest.raises(SessionRecoverySourceError, match="messages"):
+        recover_session_database(
+            source,
+            rejected_output,
+            work_dir=tmp_path,
+        )
+    assert not rejected_output.exists()
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path / "isolated-hermes-home")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "sessions",
+            "recover",
+            "--source",
+            str(source),
+            "--output",
+            str(output),
+            "--work-dir",
+            str(tmp_path),
+            "--chunk-size",
+            "8",
+            "--allow-partial",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Partial recovery output verified" in result.stdout
+    assert "active session database was not changed" in result.stdout
+    assert _sha256(source) == source_hash
+
+    report_path = output.with_name(output.name + ".recovery.json")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["allow_partial"] is True
+    assert report["verified"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["installed"] is False
+    assert report["source_unchanged"] is True
+    assert report["verification"]["healthy"] is True
+    assert report["verification"]["integrity_check"] == ["ok"]
+    assert report["verification"]["foreign_key_check"] == []
+    assert report["verification"]["table_counts"]["sessions"] == 1
+
+    copied_messages = report["copy"]["messages"]
+    assert copied_messages["status"] == "partial"
+    assert copied_messages["copied_rows"] < message_count
+    assert copied_messages["copied_rows"] > 0
+    assert copied_messages["skipped_rowid_ranges"]
+    assert any(
+        item["low"] <= message_count and item["high"] >= 1
+        for item in copied_messages["skipped_rowid_ranges"]
+    )
+    assert copied_messages["query_limit_reached"] is False
+
+    conn = sqlite3.connect(str(output))
+    try:
+        recovered_ids = {
+            int(row[0]) for row in conn.execute("SELECT id FROM messages")
+        }
+        assert 1 in recovered_ids
+        assert message_count in recovered_ids
+        assert len(recovered_ids) == copied_messages["copied_rows"]
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+    finally:
+        conn.close()
+
+    # Prove the helper damaged an interior data leaf, so successful recovery of
+    # the first and last message IDs really crossed the corrupted region.
+    assert corrupt_page not in {
+        min(_btree_leaf_pages(source, messages_root)[1]),
+        max(_btree_leaf_pages(source, messages_root)[1]),
+    }
+
+
+def test_partial_recovery_removes_messages_for_unreadable_sessions(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "corrupt-sessions.db"
+    output = tmp_path / "partial-sessions.db"
+    session_count = 180
+    sessions_root = _make_many_sessions_source(
+        source,
+        session_count,
+    )
+    _corrupt_middle_table_leaf(source, sessions_root)
+    source_hash = _sha256(source)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=8,
+        allow_partial=True,
+    )
+
+    assert report["verified"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["source_unchanged"] is True
+    assert _sha256(source) == source_hash
+    assert report["copy"]["sessions"]["status"] == "partial"
+    assert report["copy"]["messages"]["status"] == "complete"
+    removed_messages = report["orphan_cleanup"]["messages_removed"]
+    assert removed_messages > 0
+    assert report["orphan_cleanup"]["total_removed_or_relinked"] >= removed_messages
+    assert report["verification"]["foreign_key_check"] == []
+
+    conn = sqlite3.connect(str(output))
+    try:
+        recovered_sessions = {
+            str(row[0]) for row in conn.execute("SELECT id FROM sessions")
+        }
+        assert "partial-session-0000" in recovered_sessions
+        assert f"partial-session-{session_count - 1:04d}" in recovered_sessions
+        assert 0 < len(recovered_sessions) < session_count
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages AS message "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM sessions "
+                "WHERE sessions.id = message.session_id)"
+            ).fetchone()[0]
+            == 0
+        )
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == len(
+            recovered_sessions
+        )
+    finally:
+        conn.close()
 
 
 def test_cli_recover_writes_verified_report_without_touching_source(

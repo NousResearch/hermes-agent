@@ -1134,7 +1134,7 @@ def test_s6_log_run_creates_leaf_as_hermes_without_chown(
         f"saw: {log_text!r}"
     )
     assert 's6-setuidgid hermes mkdir -p "$log_dir"' in log_text
-    assert 'mkdir -p "$log_dir"' in log_text
+    assert 'else\n  mkdir -p "$log_dir"\nfi\n' in log_text
 
     mkdir_as_hermes_idx = log_text.index('s6-setuidgid hermes mkdir -p "$log_dir"')
     exec_idx = log_text.index("s6-log 1 ")

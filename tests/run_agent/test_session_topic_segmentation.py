@@ -233,6 +233,7 @@ class TestProcessTopicSignals:
         agent._session_db = db
         agent.session_id = "test-session"
         agent._active_topic_id = None
+        agent._topic_drift = None  # bypass hysteresis for non-hysteresis tests
         agent._switch_to_topic = MagicMock()
         agent._create_topic_from_shift = MagicMock()
         agent._invalidate_system_prompt = MagicMock()
@@ -336,3 +337,155 @@ class TestProcessTopicSignals:
 
         cleaned = agent._process_topic_signals("just a response")
         assert cleaned == "just a response"
+
+
+# ---------------------------------------------------------------------------
+# _TopicDriftTracker (hysteresis)
+# ---------------------------------------------------------------------------
+
+
+class TestTopicDriftTracker:
+    """Tests for the _TopicDriftTracker hysteresis mechanism."""
+
+    def test_single_signal_no_switch(self):
+        """A single stray TOPIC signal does not trigger a switch."""
+        from run_agent import _TopicDriftTracker
+
+        tracker = _TopicDriftTracker(threshold=2)
+        assert tracker.feed("cooking") is None
+        assert tracker.feed("cooking") == "cooking"
+
+    def test_interleaved_signals_no_switch(self):
+        """Interleaved TOPIC signals reset the counter each time."""
+        from run_agent import _TopicDriftTracker
+
+        tracker = _TopicDriftTracker(threshold=2)
+        assert tracker.feed("cooking") is None   # 1
+        assert tracker.feed("git") is None        # reset → 1
+        assert tracker.feed("cooking") is None    # reset → 1
+        assert tracker.feed("cooking") == "cooking"  # 2 → confirm
+
+    def test_reset_after_confirm(self):
+        """After confirming a shift, the tracker resets."""
+        from run_agent import _TopicDriftTracker
+
+        tracker = _TopicDriftTracker(threshold=2)
+        tracker.feed("cooking")  # 1
+        result = tracker.feed("cooking")  # 2 → confirm
+        assert result == "cooking"
+        # Now the tracker should be fresh
+        assert tracker.feed("docker") is None  # 1
+
+    def test_reset_explicit(self):
+        from run_agent import _TopicDriftTracker
+
+        tracker = _TopicDriftTracker(threshold=2)
+        tracker.feed("cooking")
+        tracker.reset()
+        assert tracker.feed("cooking") is None  # starts from 1 again
+
+
+class TestProcessTopicSignalsWithHysteresis:
+    """Tests for _process_topic_signals with hysteresis enabled."""
+
+    @pytest.fixture
+    def db(self):
+        from hermes_state import SessionDB
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "state.db"
+            sdb = SessionDB(db_path=db_path)
+            import time
+            sdb._conn.execute(
+                "INSERT INTO sessions (id, source, started_at) "
+                "VALUES ('test-hyst', 'cli', ?)",
+                (time.time(),),
+            )
+            sdb._conn.commit()
+            yield sdb
+            sdb.close()
+
+    def _make_agent(self, db):
+        """Same as TestProcessTopicSignals but with _topic_drift wired."""
+        from run_agent import AIAgent, _TopicDriftTracker
+
+        agent = MagicMock()
+        agent._session_db = db
+        agent.session_id = "test-hyst"
+        agent._active_topic_id = None
+        agent._topic_drift = _TopicDriftTracker(threshold=2)
+        agent._switch_to_topic = MagicMock()
+        agent._create_topic_from_shift = MagicMock()
+        agent._invalidate_system_prompt = MagicMock()
+
+        agent._process_topic_signals = (
+            AIAgent._process_topic_signals.__get__(agent)
+        )
+        return agent
+
+    def test_two_consecutive_new_topic_creates(self, db):
+        """2 consecutive TOPIC: cooking → creates new topic."""
+        sid = "test-hyst"
+        db.create_topic(sid, "git")
+
+        agent = self._make_agent(db)
+        agent.session_id = sid
+
+        # First: no switch
+        cleaned = agent._process_topic_signals("answer\nTOPIC: cooking")
+        agent._switch_to_topic.assert_not_called()
+        agent._create_topic_from_shift.assert_not_called()
+        assert "TOPIC:" not in cleaned
+
+        # Second: creates
+        cleaned = agent._process_topic_signals("answer\nTOPIC: cooking")
+        agent._create_topic_from_shift.assert_called_once_with("cooking")
+        assert "TOPIC:" not in cleaned
+
+    def test_two_consecutive_existing_topic_switches(self, db):
+        """2 consecutive TOPIC: docker → switches to existing 'docker'."""
+        sid = "test-hyst"
+        tid = db.create_topic(sid, "docker")
+        db.create_topic(sid, "git")
+
+        agent = self._make_agent(db)
+        agent.session_id = sid
+        agent._active_topic_id = tid + 1  # on a different topic
+
+        # First: no switch
+        agent._process_topic_signals("answer\nTOPIC: docker")
+        agent._switch_to_topic.assert_not_called()
+
+        # Second: switches
+        agent._process_topic_signals("answer\nTOPIC: docker")
+        agent._switch_to_topic.assert_called_once_with(tid)
+
+    def test_interleaved_signals_no_create(self, db):
+        """TOPIC: cooking → TOPIC: git → TOPIC: cooking: still no create."""
+        sid = "test-hyst"
+        db.create_topic(sid, "git")
+
+        agent = self._make_agent(db)
+        agent.session_id = sid
+
+        agent._process_topic_signals("answer\nTOPIC: cooking")
+        agent._process_topic_signals("answer\nTOPIC: git")    # interleaving
+        agent._process_topic_signals("answer\nTOPIC: cooking")  # reset to 1
+
+        agent._switch_to_topic.assert_not_called()
+        agent._create_topic_from_shift.assert_not_called()
+
+    def test_fuzzy_match_still_works_with_hysteresis(self, db):
+        """Fuzzy matching still applies after hysteresis confirms."""
+        sid = "test-hyst"
+        tid = db.create_topic(sid, "docker")
+
+        agent = self._make_agent(db)
+        agent.session_id = sid
+
+        # docker-networking should match 'docker' after hysteresis
+        agent._process_topic_signals("answer\nTOPIC: docker-networking")
+        agent._switch_to_topic.assert_not_called()
+
+        agent._process_topic_signals("answer\nTOPIC: docker-networking")
+        agent._switch_to_topic.assert_called_once_with(tid)

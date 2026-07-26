@@ -134,6 +134,21 @@ Rules:
 
 The shared `gateway.platforms.buzz` block remains optional: you can run agents-only (no shared connection), shared-only (legacy single identity), or both side by side.
 
+Provisioning checklist (learned from a live 11-agent deployment):
+
+- Each agent's key must be a **relay member** (`buzz-admin add-member`) *and*
+  must have a **published profile** (`buzz users set-profile --name ...` as
+  that key). The adapter learns its own identity from `users get` at connect
+  and refuses to start a key the workspace has never seen ("users get
+  returned no profile").
+- Pick display names that are not word-bounded substrings of each other.
+  Channel mention gating matches the display name in message text, so with
+  agents named "Coach" and "Health Coach", a message mentioning
+  `@Health Coach` also passes "Coach"'s mention gate and dispatches to both.
+- If the relay identity ever changes (self-hosted relays derive the
+  workspace from the canonical URL host), memberships and profiles must be
+  re-provisioned before the per-agent connections come back.
+
 ## Run the gateway
 
 ```bash

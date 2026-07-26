@@ -263,6 +263,38 @@ def test_record_repos_persists_and_shows_zero_session_repo(tmp_path):
     assert by_label["fresh-repo"]["sessions"] == 0
 
 
+def test_scan_time_is_not_treated_as_session_activity(tmp_path):
+    """A scanned repo with no sessions must not rank as recently active.
+
+    ``discovered_repos.last_seen`` records when the disk scan last saw the
+    directory. Folding it into ``last_active`` stamped every scanned checkout
+    with the scan time — i.e. "just now" — so repos the user has never opened
+    in Hermes outranked the ones they actually work in.
+    """
+    worked_in = tmp_path / "worked-in"
+    worked_in.mkdir()
+    subprocess.run(["git", "init"], cwd=worked_in, check=True, capture_output=True)
+    server._get_db().create_session("worked-in-session", "cli", cwd=str(worked_in))
+
+    never_opened = tmp_path / "never-opened"
+    never_opened.mkdir()
+
+    _call(
+        "projects.record_repos",
+        {"repos": [{"root": str(never_opened)}, {"root": str(worked_in)}]},
+    )
+
+    by_root = {r["root"]: r for r in _call("projects.discover_repos")["repos"]}
+    idle = by_root[str(never_opened)]
+    active = by_root[str(worked_in)]
+
+    assert idle["sessions"] == 0
+    # A repo with no sessions has no activity to report...
+    assert idle["last_active"] == 0
+    # ...so the repo the user actually worked in sorts ahead of it.
+    assert active["last_active"] > idle["last_active"]
+
+
 def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
     repo = tmp_path / "cached-repo"
     repo.mkdir()

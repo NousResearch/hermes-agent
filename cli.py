@@ -11423,6 +11423,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "handoff":
             if not self._handle_handoff_command(cmd_original):
                 return False
+        elif canonical == "topic":
+            self._handle_topic_command(cmd_original)
         elif canonical == "new":
             # Strip inline-skip tokens (now/--yes/-y) before deriving the title
             # so "/new now My Session" yields title="My Session" instead of

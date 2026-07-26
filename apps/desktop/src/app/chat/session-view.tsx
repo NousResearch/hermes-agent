@@ -66,10 +66,7 @@ const $primaryState = computed([$activeSessionId, $sessionStates], (runtimeId, s
  * slice is authoritative — a background session publishing its own state can
  * never reach this view.
  */
-function primaryField<T>(
-  select: (state: ClientSessionState) => T,
-  $draft: ReadableAtom<T>
-): ReadableAtom<T> {
+function primaryField<T>(select: (state: ClientSessionState) => T, $draft: ReadableAtom<T>): ReadableAtom<T> {
   const $field: ReadableAtom<T> = computed([$primaryState, $draft], (state, draft: T) =>
     state ? select(state) : draft
   )

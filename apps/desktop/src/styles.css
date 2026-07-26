@@ -1467,14 +1467,6 @@ text-* variant utilities. */ .btn-arc {
   height: 0.875rem;
 }
 
-/* Live thinking preview window. Pairs with the ResizeObserver in
-   ThinkingDisclosure that pins scrollTop to the bottom — older lines fade
-   into the top mask while the latest tokens settle in below. */
-.thinking-preview {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
-}
-
 /* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
    ToolGroupSlot pins the newest call to the bottom (unless the user scrolls
    up), so a back-to-back run stays compact instead of pushing the reply off

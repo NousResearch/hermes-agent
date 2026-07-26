@@ -1,9 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { FindBar } from '@/components/find-bar'
 import { I18nProvider } from '@/i18n'
+import { en } from '@/i18n/en'
+import { zh } from '@/i18n/zh'
 import { findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
+import { KEYBIND_ACTIONS } from '@/lib/keybinds/actions'
+import { comboAllowedInInput } from '@/lib/keybinds/combo'
 import {
   $findInPage,
   closeFindBar,
@@ -183,6 +188,47 @@ describe('findBarClaimsCombo', () => {
   })
 })
 
+// ── Keybind registration ────────────────────────────────────────────────────
+
+describe('find-in-page keybind registration', () => {
+  const byId = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
+
+  it('registers view.findInPage on mod+f in the view category', () => {
+    const action = byId.get('view.findInPage')
+
+    expect(action).toBeTruthy()
+    expect(action?.category).toBe('view')
+    expect(action?.defaults).toEqual(['mod+f'])
+  })
+
+  it('mod+f fires from inside a textarea (browser find behavior)', () => {
+    // The runtime consults comboAllowedInInput before dispatching a combo
+    // while an editable element owns focus; if mod combos ever stop
+    // qualifying, ⌘F from the composer would type 'f' instead of opening find.
+    expect(comboAllowedInInput('mod+f')).toBe(true)
+  })
+
+  it('registers the step pair unbound so it cannot conflict with view.toggleReview', () => {
+    const next = byId.get('view.findNext')
+    const previous = byId.get('view.findPrevious')
+
+    expect(next?.category).toBe('view')
+    expect(previous?.category).toBe('view')
+    // mod+g stays with view.toggleReview by default; the open find bar claims
+    // it at dispatch time instead (findBarClaimsCombo above).
+    expect(next?.defaults).toEqual([])
+    expect(previous?.defaults).toEqual([])
+    expect(byId.get('view.toggleReview')?.defaults).toEqual(['mod+g'])
+  })
+
+  it('every registered find action has an i18n label (keybinds panel row)', () => {
+    for (const id of ['view.findInPage', 'view.findNext', 'view.findPrevious']) {
+      expect(en.keybinds.actions[id], id).toBeTruthy()
+      expect(zh.keybinds.actions[id], id).toBeTruthy()
+    }
+  })
+})
+
 // ── Store: open/close state + dispatch ──────────────────────────────────────
 
 describe('find-in-page store', () => {
@@ -318,12 +364,36 @@ function actStore(mutate: () => void) {
   })
 }
 
-function renderFindBar() {
+function renderFindBar(initialPath = '/') {
   return render(
-    <I18nProvider configClient={null} initialLocale="en">
-      <FindBar />
-    </I18nProvider>
+    <MemoryRouter initialEntries={[initialPath]}>
+      <I18nProvider configClient={null} initialLocale="en">
+        <FindBar />
+      </I18nProvider>
+    </MemoryRouter>
   )
+}
+
+/** Harness that can navigate the route the mounted FindBar observes. */
+function renderFindBarWithNavigation(initialPath = '/session/a') {
+  let navigateRef: ReturnType<typeof useNavigate> | undefined
+
+  function CaptureNavigate() {
+    navigateRef = useNavigate()
+
+    return null
+  }
+
+  const view = render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <I18nProvider configClient={null} initialLocale="en">
+        <CaptureNavigate />
+        <FindBar />
+      </I18nProvider>
+    </MemoryRouter>
+  )
+
+  return { ...view, navigate: (to: string) => act(() => navigateRef?.(to)) }
 }
 
 describe('FindBar', () => {
@@ -513,6 +583,31 @@ describe('FindBar', () => {
     actStore(openFindBar)
     fireEvent.keyDown(window, { key: 'Escape' })
 
+    expect(bridge.stopFindInPage).not.toHaveBeenCalled()
+  })
+
+  it('navigating to another route closes the bar and clears the highlights', async () => {
+    const { navigate } = renderFindBarWithNavigation('/session/a')
+
+    actStore(openFindBar)
+    actStore(() => $findInPage.set({ active: true, query: 'needle', matchOrdinal: 2, matchCount: 7 }))
+    await waitFor(() => expect(screen.getByRole('search')).toBeTruthy())
+
+    navigate('/session/b')
+
+    // Bar gone, state reset, and the native selection cleared — stale
+    // highlights must not survive a session switch.
+    await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
+    expect($findInPage.get()).toEqual({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+    expect(bridge.stopFindInPage).toHaveBeenCalledTimes(1)
+  })
+
+  it('navigation while the bar is closed does not reach into the bridge', async () => {
+    const { navigate } = renderFindBarWithNavigation('/session/a')
+
+    navigate('/session/b')
+
+    await waitFor(() => expect(screen.queryByRole('search')).toBeNull())
     expect(bridge.stopFindInPage).not.toHaveBeenCalled()
   })
 })

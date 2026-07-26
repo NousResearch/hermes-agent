@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -36,6 +37,21 @@ export function FindBar() {
   const { active, query, matchOrdinal, matchCount } = useStore($findInPage)
   const inputRef = useRef<HTMLInputElement>(null)
   const [localQuery, setLocalQuery] = useState('')
+  const { pathname } = useLocation()
+
+  // Navigating away (opening another session, a settings page, …) closes the
+  // bar and clears the native highlight. Electron's findInPage selection is
+  // per-webContents, not per-route: without this, highlights (and a stale
+  // match counter) from the previous chat would survive onto the next view.
+  // Implemented as effect cleanup so the first render never fires it, a
+  // pathname change tears down the previous route's search, and unmount
+  // (session/profile switches that remount the shell) gets the same teardown.
+  // closeFindBar is idempotent, so a closed bar never re-enters the bridge.
+  useEffect(() => {
+    void pathname
+
+    return () => closeFindBar()
+  }, [pathname])
 
   // Focus input when find bar opens.
   useEffect(() => {

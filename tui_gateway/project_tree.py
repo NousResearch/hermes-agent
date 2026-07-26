@@ -34,6 +34,13 @@ from typing import Any, Callable, Optional
 # cwd is not in a git repo (or cannot be probed, e.g. a remote backend).
 Resolve = Callable[[str], Optional[dict]]
 
+# A "does this directory still exist?" predicate, injected for the same reason
+# ``Resolve`` is: the builder stays pure and unit-testable. Defaults to assuming
+# everything exists, which preserves the previous behavior for callers that
+# can't stat (remote backends), where guessing "gone" would wrongly hide a
+# project that lives on the other host.
+Exists = Callable[[str], bool]
+
 # Only KANBAN-TASK worktrees (`<repo>/.worktrees/t_<hex>`, the `t_…` id kanban_db
 # mints) collapse into one lane; user-named "New worktree" dirs under
 # `.worktrees/` stay as their own lanes.
@@ -151,20 +158,40 @@ def _placement(
     }
 
 
+def _parent_dir(path: str) -> str:
+    """The containing directory of ``path`` (``""`` once the root is passed)."""
+    stripped = re.sub(r"[/\\]+$", "", path or "")
+    return re.sub(r"[/\\]+$", "", re.sub(r"[^/\\]+$", "", stripped))
+
+
 def _probe_sibling_worktree(cwd: str, resolve: Resolve) -> str:
     """The parent repo root of a deleted ``<repo>-<suffix>`` worktree, else ``""``.
 
     A deleted worktree dir can't be probed, so walk back up its name — trimming
     one ``-<segment>`` at a time — and return the first sibling that resolves.
-    Probes are bounded and served from the shared git-probe cache.
-    """
-    parts = base_name(cwd).split("-")
-    floor = max(0, len(parts) - 1 - _MAX_SIBLING_PROBES)
 
-    for i in range(len(parts) - 1, floor, -1):
-        info = resolve(_with_base_name(cwd, "-".join(parts[:i])))
-        if info and info.get("repo_root"):
-            return (info["repo_root"] or "").strip()
+    The session's cwd is frequently a SUBDIR of the deleted worktree (an agent
+    that ``cd``-ed into ``<repo>-<suffix>/apps/desktop``), whose basename shares
+    nothing with the repo. So the trim is applied to each ANCESTOR, deepest
+    first, not just to the leaf — otherwise the probe silently no-ops and the
+    dead path gets minted as its own top-level project. Probes are bounded in
+    total (each costs a git invocation) and served from the shared probe cache.
+    """
+    probes = 0
+    path = re.sub(r"[/\\]+$", "", cwd or "")
+
+    while path and probes < _MAX_SIBLING_PROBES:
+        parts = base_name(path).split("-")
+
+        for i in range(len(parts) - 1, 0, -1):
+            if probes >= _MAX_SIBLING_PROBES:
+                break
+            probes += 1
+            info = resolve(_with_base_name(path, "-".join(parts[:i])))
+            if info and info.get("repo_root"):
+                return (info["repo_root"] or "").strip()
+
+        path = _parent_dir(path)
 
     return ""
 
@@ -506,6 +533,7 @@ def build_tree(
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
     is_junk_cwd: Optional[Callable[[str], bool]] = None,
+    exists: Optional[Exists] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -517,7 +545,10 @@ def build_tree(
     bare home dir, the HERMES_HOME subtree). ``is_junk_cwd`` is the narrower
     policy for non-git session folders: selected descendants may be intentional
     workspaces even when their parent tree contains Hermes state. User-created
-    projects are honored regardless.
+    projects are honored regardless. ``exists`` reports whether a directory is
+    still on disk, so a session whose workspace was DELETED (a removed worktree,
+    a scratch dir under /tmp) doesn't get promoted to a phantom AUTO project;
+    omit it (remote backends) to keep every candidate.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -527,6 +558,7 @@ def build_tree(
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
+    _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
 
     by_project: dict[str, list[dict]] = {}
@@ -589,8 +621,10 @@ def build_tree(
         root = _session_repo_root(session, resolve)
         if root:
             # A real git root uses the stricter repo policy. Do not reinterpret a
-            # filtered internal repo as a cwd-only project.
-            if not _junk(root):
+            # filtered internal repo as a cwd-only project. A root that no longer
+            # exists is a stale persisted value (the repo was deleted after the
+            # session ran) and must not resurrect as a project.
+            if not _junk(root) and _exists(root):
                 _add_auto(root, session)
             continue
 
@@ -603,7 +637,13 @@ def build_tree(
             resolve,
             (session.get("git_repo_root") or "").strip(),
         )
-        if placement:
+        # A placement that only echoes back the unresolvable cwd is the
+        # path-only heuristic guessing — it never found a repo. When that dir is
+        # also gone from disk (a deleted worktree whose name shares no prefix
+        # with its parent, a removed /tmp scratch dir), promoting it mints a
+        # phantom project that can never be opened and can only be dismissed by
+        # hand. The session keeps its place in flat Recents.
+        if placement and _exists(placement["repo_key"]):
             _add_auto(placement["repo_key"], session)
 
     seen: set[str] = set()

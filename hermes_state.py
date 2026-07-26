@@ -509,23 +509,27 @@ def sqlite_source_id() -> str:
 def resolve_journal_mode() -> str:
     """Return the configured journal mode (``wal`` or ``delete``).
 
-    Honors ``HERMES_JOURNAL_MODE`` env var and ``database.journal_mode``
-    in config.yaml. Default is ``wal``. Set to ``delete`` on filesystems
-    where WAL is not crash-safe (virtiofs, NFS, SMB, containerized-on-
-    macOS) — the process can't detect the backing filesystem from inside
-    a container, so this is the escape hatch (#68545).
+    ``database.journal_mode`` in config.yaml is the canonical operator
+    setting. ``wal`` remains the default; use ``delete`` when the backing
+    filesystem does not provide WAL-safe durability (for example macOS
+    virtiofs, NFS, or SMB). Invalid or malformed values fail safely to the
+    existing default.
     """
-    raw = os.environ.get("HERMES_JOURNAL_MODE", "").strip().lower()
-    if not raw:
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config() or {}
-            raw = str(cfg.get("database", {}).get("journal_mode", "")).strip().lower()
-        except Exception:
-            pass
-    if raw in ("delete", "truncate", "persist", "memory", "off"):
-        return raw
-    return "wal"
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        database = config.get("database", {})
+        if not isinstance(database, dict):
+            return "wal"
+        raw = database.get("journal_mode", "wal")
+    except Exception:
+        return "wal"
+
+    if not isinstance(raw, str):
+        return "wal"
+    mode = raw.strip().lower()
+    return mode if mode in ("wal", "delete") else "wal"
 
 
 def apply_wal_with_fallback(
@@ -571,9 +575,18 @@ def apply_wal_with_fallback(
     _on_disk_journal_mode.  That holds for both the NFS path and the
     WAL-reset vulnerability path.
     """
-    # Vulnerable SQLite: do not enable WAL on new/non-WAL files.
+    configured = resolve_journal_mode()
+
+    # Vulnerable SQLite: do not enable WAL on new/non-WAL files. Resolve the
+    # operator setting first so an explicit DELETE request still verifies that
+    # SQLite actually accepted DELETE rather than silently returning MEMORY or
+    # another connection-specific mode.
     if is_sqlite_wal_reset_vulnerable():
-        return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
+        return _apply_delete_for_wal_reset_bug(
+            conn,
+            db_label=db_label,
+            require_delete=configured == "delete",
+        )
 
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
@@ -586,15 +599,16 @@ def apply_wal_with_fallback(
     except sqlite3.OperationalError:
         pass
 
-    # #68545: honor user-configured journal_mode (env/config.yaml).
-    # If the user forced DELETE (e.g. for virtiofs/NFS/SMB), don't try WAL.
-    _configured = resolve_journal_mode()
-    if _configured != "wal":
-        try:
-            conn.execute(f"PRAGMA journal_mode={_configured.upper()}")
-        except sqlite3.OperationalError:
-            pass  # mode may not be supported; leave whatever is set
-        return _configured
+    # #68545: honor the canonical database.journal_mode setting. Existing
+    # on-disk WAL databases were returned above and are never live-downgraded.
+    if configured == "delete":
+        row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+        actual = str(row[0]).lower() if row else ""
+        if actual != "delete":
+            raise sqlite3.OperationalError(
+                f"could not set configured journal_mode=delete (got {actual or 'no result'})"
+            )
+        return actual
 
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -619,11 +633,13 @@ def _apply_delete_for_wal_reset_bug(
     conn: sqlite3.Connection,
     *,
     db_label: str,
+    require_delete: bool = False,
 ) -> str:
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
     - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
     - Otherwise: set DELETE and warn.
+    - For an explicit operator request, verify SQLite accepted DELETE.
     """
     current = ""
     try:
@@ -641,11 +657,21 @@ def _apply_delete_for_wal_reset_bug(
         _enforce_macos_synchronous_full(conn)
         return "wal"
 
+    actual = ""
     try:
-        conn.execute("PRAGMA journal_mode=DELETE")
+        row = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
+        if row and row[0] is not None:
+            actual = str(row[0]).strip().lower()
     except sqlite3.OperationalError:
-        # Best-effort: DELETE is usually already the default for new files.
-        pass
+        if require_delete:
+            raise
+        # Best-effort for the automatic vulnerable-runtime fallback: DELETE is
+        # normally already the default for new file-backed databases.
+    if require_delete and actual != "delete":
+        raise sqlite3.OperationalError(
+            "could not set configured journal_mode=delete "
+            f"(got {actual or 'no result'})"
+        )
     _log_wal_reset_bug_once(db_label, kept_wal=False)
     return "delete"
 

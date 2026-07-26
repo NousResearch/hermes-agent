@@ -180,6 +180,10 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
     icon: 'files',
     tone: 'file'
   },
+  memory: {
+    icon: 'brain',
+    tone: 'agent'
+  },
   patch: { icon: 'edit', tone: 'file' },
   read_file: { icon: 'file', tone: 'file' },
   search_files: {
@@ -688,7 +692,15 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'running'
   }
 
-  return toolErrorText(part, resultRecord) ? 'error' : 'success'
+  if (!toolErrorText(part, resultRecord)) {
+    return 'success'
+  }
+
+  // A rejected memory write is a budget negotiation, not a failure: the store
+  // refuses an over-limit batch and the agent immediately retries a smaller
+  // one. Painting the row destructive-red puts an alarm next to routine
+  // bookkeeping the user never has to act on. Amber says "noted" instead.
+  return part.toolName === 'memory' ? 'warning' : 'error'
 }
 
 function durationLabel(resultRecord: Record<string, unknown>): string | undefined {
@@ -1009,6 +1021,13 @@ function toolSubtitle(
     return url ? hostnameOf(url) : 'Fetched webpage'
   }
 
+  if (toolName === 'memory') {
+    // The raw payload is bookkeeping the user never needs: usage counters, a
+    // note telling the model not to retry, and the full operations array. The
+    // human-readable line is the only part worth showing.
+    return firstStringField(resultRecord, ['message', 'error'])
+  }
+
   if (toolName === 'cronjob') {
     return cronjobSubtitle(argsRecord, resultRecord)
   }
@@ -1089,6 +1108,12 @@ function toolDetailText(
     if (content) {
       return content
     }
+  }
+
+  if (part.toolName === 'memory') {
+    // Same reasoning as toolSubtitle: without this the generic fallback dumps
+    // the whole args + result payload into the expanded row.
+    return firstStringField(resultRecord, ['message', 'error'])
   }
 
   if (isFileEditTool(part.toolName)) {

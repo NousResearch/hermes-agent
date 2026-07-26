@@ -377,6 +377,277 @@ class TestReconstructStaticPrefixMemoization:
         assert build.call_count == 1
         assert agent._cached_system_prompt_static == stable
         assert getattr(agent, "_static_rebuild_failed_for", None) is None
+# ---------------------------------------------------------------------------
+# Identity (SOUL.md) staleness on restore — issue #68563
+# ---------------------------------------------------------------------------
+
+from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE as _HELP
+# Captured at import time, BEFORE the neutral autouse fixture patches the
+# module attribute — the classification tests exercise the real function.
+from agent.system_prompt import resolve_identity_block as _REAL_RESOLVE_IDENTITY
+
+
+@pytest.fixture(autouse=True)
+def _neutral_identity_resolver(monkeypatch):
+    """Restore now consults the identity resolver on every reuse (#68563);
+    running the real one against these MagicMock agents would read the test
+    HERMES_HOME and randomly flip the decision. Default it to "no basis to
+    judge" (empty text -> check skipped, reuse); the staleness tests below
+    override it with explicit values."""
+    monkeypatch.setattr(
+        "agent.system_prompt.resolve_identity_block",
+        lambda agent: {"text": "", "from_soul": False, "checkable": True},
+    )
+
+
+def _stored_with_identity(identity: str, tail: str = "per-session context") -> str:
+    """Assemble a stored prompt the way the builder joins the stable tier."""
+    return identity.strip() + "\n\n" + _HELP.strip() + "\n\n" + tail
+
+
+def _patch_identity(monkeypatch, text, checkable=True, from_soul=True):
+    monkeypatch.setattr(
+        "agent.system_prompt.resolve_identity_block",
+        lambda agent: {"text": text, "from_soul": from_soul, "checkable": checkable},
+    )
+
+
+class TestIdentityStalenessRebuild:
+    """SOUL.md edits must reach continuing sessions (issue #68563).
+
+    ``_stored_prompt_matches_runtime`` only rejects Model/Provider/cwd/
+    Platform drift; identity content drift previously left the stale prompt
+    reused verbatim forever. The check is anchored on the identity block
+    plus ``HERMES_AGENT_HELP_GUIDANCE`` (the always-present next stable
+    component), which supplies the boundary a bare substring lacks."""
+
+    def test_edited_soul_rebuilds_and_persists(self, monkeypatch, caplog):
+        stored = _stored_with_identity("OLD SOUL IDENTITY")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _patch_identity(monkeypatch, "NEW SOUL IDENTITY")
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once()
+        db.update_system_prompt.assert_called_once_with(
+            "test-session-id", "BUILT_PROMPT"
+        )
+        assert any("stale identity" in r.getMessage() for r in caplog.records)
+
+    def test_trailing_deletion_from_soul_is_detected(self, monkeypatch):
+        """Deleting the TAIL of SOUL.md leaves the new block a prefix of the
+        old one — a bare containment check would still "match". The anchor
+        (help guidance immediately after the identity) catches it."""
+        stored = _stored_with_identity("You are concise.\nNever disclose secrets.")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _patch_identity(monkeypatch, "You are concise.")
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once()
+
+    def test_deleted_soul_falls_back_to_default_and_rebuilds(self, monkeypatch):
+        """SOUL.md removed → the resolver returns the hardcoded default,
+        which a SOUL-built stored prompt does not start with → rebuild."""
+        stored = _stored_with_identity("CUSTOM SOUL IDENTITY")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _patch_identity(
+            monkeypatch, "DEFAULT HARDCODED IDENTITY", from_soul=False
+        )
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once()
+
+    def test_matching_identity_reuses_verbatim(self, monkeypatch):
+        identity = "CURRENT SOUL IDENTITY"
+        stored = _stored_with_identity(identity)
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _patch_identity(monkeypatch, identity)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
+    def test_unreadable_soul_fails_open_to_reuse(self, monkeypatch):
+        """checkable=False = SOUL.md exists but could not be read. Declaring
+        staleness would persist a default-identity downgrade over a healthy
+        custom identity, so the check must fail open to reuse."""
+        stored = _stored_with_identity("CUSTOM SOUL IDENTITY")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _patch_identity(
+            monkeypatch, "DEFAULT HARDCODED IDENTITY",
+            checkable=False, from_soul=False,
+        )
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+    def test_resolver_exception_fails_open_to_reuse(self, monkeypatch):
+        stored = _stored_with_identity("CUSTOM SOUL IDENTITY")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        def _boom(agent):
+            raise RuntimeError("resolver crashed")
+
+        monkeypatch.setattr("agent.system_prompt.resolve_identity_block", _boom)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+
+class TestSessionStartHookGuard:
+    """on_session_start is documented "not on continuation": a stale-prompt
+    fallthrough is a CONTINUING session getting its prompt rebuilt, so the
+    hook must not re-fire there (it would duplicate session-scoped plugin
+    work). Fresh builds keep firing it."""
+
+    def test_stale_identity_fallthrough_does_not_fire_hook(self, monkeypatch):
+        stored = _stored_with_identity("OLD SOUL IDENTITY")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _patch_identity(monkeypatch, "NEW SOUL IDENTITY")
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        assert not any(
+            c.args and c.args[0] == "on_session_start" for c in hook.call_args_list
+        )
+
+    def test_fresh_build_still_fires_hook(self, monkeypatch):
+        agent = _make_agent(session_db=None)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(agent, None, [])
+
+        assert any(
+            c.args and c.args[0] == "on_session_start" for c in hook.call_args_list
+        )
+
+    def test_preview_restart_with_parent_history_still_fires_hook(self, monkeypatch):
+        """The preview-restart shape: a brand-new session that deliberately
+        receives nonempty PARENT history but has no session DB. Its start
+        hook is legitimate — a guard keyed on history truthiness (instead of
+        the stale states) would wrongly suppress it."""
+        agent = _make_agent(session_db=None)
+        hook = MagicMock()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hook)
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "from parent session"}]
+        )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        assert any(
+            c.args and c.args[0] == "on_session_start" for c in hook.call_args_list
+        )
+
+
+class TestResolveIdentityBlockClassification:
+    """Real-resolver pins for the absent/empty/unreadable provenance split
+    (#68563 review): a readable-but-empty SOUL.md is the documented way to
+    reset to the default personality, so it must stay checkable; only a
+    failed read makes staleness unjudgeable."""
+
+    @staticmethod
+    def _resolver_agent():
+        agent = MagicMock()
+        agent.load_soul_identity = True
+        agent.skip_context_files = False
+        agent.context_compressor = None
+        return agent
+
+    @pytest.fixture(autouse=True)
+    def _no_seeding(self, monkeypatch):
+        # ensure_hermes_home may seed a default SOUL.md on first run; these
+        # tests pin the classification of a state the USER created, so the
+        # first-run seeding is out of scope and disabled.
+        monkeypatch.setattr(
+            "hermes_cli.config.ensure_hermes_home", lambda: None
+        )
+
+    def test_readable_empty_soul_is_checkable_default(self):
+        from hermes_constants import get_hermes_home
+
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+        soul = get_hermes_home() / "SOUL.md"
+        soul.parent.mkdir(parents=True, exist_ok=True)
+        soul.write_text("   \n\n  ", encoding="utf-8")
+
+        ident = _REAL_RESOLVE_IDENTITY(self._resolver_agent())
+
+        assert ident["checkable"] is True
+        assert ident["from_soul"] is False
+        assert ident["text"] == DEFAULT_AGENT_IDENTITY
+
+    def test_undecodable_soul_is_not_checkable(self):
+        from hermes_constants import get_hermes_home
+
+
+        soul = get_hermes_home() / "SOUL.md"
+        soul.parent.mkdir(parents=True, exist_ok=True)
+        soul.write_bytes(b"\xff\xfe\x9c invalid utf-8 \x80")
+
+        ident = _REAL_RESOLVE_IDENTITY(self._resolver_agent())
+
+        assert ident["checkable"] is False
+        assert ident["from_soul"] is False
+
+    def test_absent_soul_is_checkable_default(self):
+        from hermes_constants import get_hermes_home
+
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+        soul = get_hermes_home() / "SOUL.md"
+        assert not soul.exists()
+
+        ident = _REAL_RESOLVE_IDENTITY(self._resolver_agent())
+
+        assert ident["checkable"] is True
+        assert ident["from_soul"] is False
+        assert ident["text"] == DEFAULT_AGENT_IDENTITY
 
 
 if __name__ == "__main__":

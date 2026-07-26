@@ -9628,6 +9628,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "context":
+            self._show_context_breakdown(cmd_original)
         elif canonical == "egress":
             from hermes_cli.proxy_cli import format_status_text
 
@@ -10698,6 +10700,55 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print("  ❌ Timed out talking to the Codex backend — try again shortly.")
                 return
         print(f"  {result.message}")
+
+    def _show_context_breakdown(self, cmd_original: str = ""):
+        """`/context [all]` — visual context-window usage breakdown.
+
+        Renders a 5×20 glyph block grid (each cell ≈ 1% of the model context
+        window) plus an estimated per-category table: system prompt, tool
+        definitions, rules, skills index, MCP, subagents, memory, and the
+        conversation itself — versus free space. `/context all` appends the
+        expanded per-skill and per-toolset cost listings.
+
+        Read-only: same chars/4 estimation engine as the desktop context
+        popover (agent.context_breakdown) — no provider calls, no prompt-cache
+        impact.
+        """
+        if not self.agent:
+            print("  (._.) No active agent -- send a message first.")
+            return
+
+        args = cmd_original.split(maxsplit=1)[1].strip().lower() if " " in cmd_original else ""
+        expanded = args in {"all", "full", "details"}
+
+        from agent.context_breakdown import (
+            compute_context_details,
+            compute_session_context_breakdown,
+            render_context_breakdown_lines,
+        )
+
+        try:
+            payload = compute_session_context_breakdown(
+                self.agent, self.conversation_history
+            )
+        except Exception as e:
+            print(f"  (._.) Could not compute context breakdown: {e}")
+            return
+
+        details = None
+        if expanded:
+            try:
+                details = compute_context_details(self.agent)
+            except Exception:
+                details = {"skills": [], "toolsets": []}
+
+        model = payload.get("model") or self.model
+        print()
+        print(f"  🧠 Context Usage — {model}")
+        print()
+        for line in render_context_breakdown_lines(payload, details=details, grid=True):
+            print(f"  {line}")
+        print()
 
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.

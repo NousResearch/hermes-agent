@@ -120,8 +120,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("egress", "Show Docker egress proxy status", "Session",
                args_hint="[status]", subcommands=("status",)),
-    CommandDef("context", "Show detailed context window view with usage gauge, compression stats, and throughput", "Session",
-               aliases=("ctx",)),
+    CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
+               aliases=("ctx",), args_hint="[all]", subcommands=("all",)),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -1180,6 +1180,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     rare from Slack; reachable as /hermes init. Without this entry, adding
 #     /init clamps /version off the native list and breaks Telegram parity.
 _SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init"})
+#   - version: low-frequency info command; reachable as /hermes version on
+#     Slack. Demoted when /context claimed a native slot (context is a
+#     recurring inspection surface; version is a one-off lookup).
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

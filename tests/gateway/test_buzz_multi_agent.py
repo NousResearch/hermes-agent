@@ -507,3 +507,74 @@ class TestConfigureAgentAdapter:
         assert adapter._gateway_routes == []
         assert adapter._default_agent_id == "chip"
         assert adapter._message_handler is fake._handle_message
+
+
+# ── 7. Registry check_fn bypass for proven per-agent instances ────────────
+
+
+class TestRegistryCheckFnBypass:
+    """A platform configured ONLY through per-agent bindings has no shared
+    BUZZ_RELAY_URL / BUZZ_PRIVATE_KEY in the process env, so the plugin's
+    no-arg ``check_fn`` gate would refuse every per-agent adapter despite
+    each binding having proven its credential by name. The per-agent
+    startup path passes ``skip_check_fn=True``; ``validate_config`` (which
+    receives the instance config) still gates."""
+
+    def test_skip_check_fn_bypasses_env_gate_but_keeps_validate_config(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platform_registry import platform_registry, PlatformEntry
+        from gateway.config import PlatformConfig
+
+        entry = PlatformEntry(
+            name="buzz",
+            label="Buzz",
+            adapter_factory=lambda cfg: _buzz_mod.BuzzAdapter(cfg),
+            check_fn=_buzz_mod.check_requirements,
+            validate_config=_buzz_mod.validate_config,
+            source="test",
+        )
+        platform_registry.register(entry)
+        try:
+            env_file = tmp_path / ".env"
+            env_file.write_text("BUZZ_NSEC_CHIP=nsec1chipkey\n", encoding="utf-8")
+
+            # No shared env config: the no-arg check_fn gate refuses.
+            cfg = PlatformConfig(
+                enabled=True,
+                extra={
+                    "relay_url": "https://relay.example",
+                    "private_key_env": "BUZZ_NSEC_CHIP",
+                    "env_file": str(env_file),
+                    "agent_id": "chip",
+                },
+            )
+            assert platform_registry.create_adapter("buzz", cfg) is None
+
+            # Bypassing check_fn creates the adapter; validate_config ran
+            # and passed because the instance config resolves its own
+            # credential.
+            adapter = platform_registry.create_adapter(
+                "buzz", cfg, skip_check_fn=True
+            )
+            assert adapter is not None
+            assert adapter.agent_id == "chip"
+
+            # validate_config still fails closed for an unconfigured
+            # instance.
+            bad = PlatformConfig(enabled=True, extra={"agent_id": "chip"})
+            assert (
+                platform_registry.create_adapter("buzz", bad, skip_check_fn=True)
+                is None
+            )
+        finally:
+            platform_registry.unregister("buzz")
+
+    def test_runner_per_agent_create_uses_skip_check_fn(self):
+        import inspect
+        from gateway.run import GatewayRunner
+
+        src = inspect.getsource(GatewayRunner._start_agent_platform_adapters)
+        assert "skip_check_fn=True" in src
+        src = inspect.getsource(GatewayRunner._run_agent_adapter_reconnect)
+        assert "skip_check_fn=True" in src

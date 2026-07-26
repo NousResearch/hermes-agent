@@ -13740,7 +13740,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             claimed[(platform, fp)] = binding.agent_id
 
             try:
-                adapter = self._create_adapter(platform, binding.config)
+                # skip_check_fn: this binding's credential was resolved by
+                # name above and its relay config travels in binding.config —
+                # the plugin's process-env check_fn cannot see either.
+                adapter = self._create_adapter(
+                    platform, binding.config, skip_check_fn=True
+                )
             except Exception as e:
                 logger.error(
                     "agent '%s': _create_adapter('%s') raised %s",
@@ -13914,7 +13919,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return  # A newer connect already won the slot.
             adapter = None
             try:
-                adapter = self._create_adapter(platform, binding.config)
+                adapter = self._create_adapter(
+                    platform, binding.config, skip_check_fn=True
+                )
                 if adapter is None:
                     return
                 self._configure_agent_adapter(adapter, agent_id, platform)
@@ -14031,14 +14038,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
 
     def _create_adapter(
-        self, 
-        platform: Platform, 
-        config: Any
+        self,
+        platform: Platform,
+        config: Any,
+        skip_check_fn: bool = False,
     ) -> Optional[BasePlatformAdapter]:
         """Create the appropriate adapter for a platform.
 
         Checks the platform_registry first (plugin adapters), then falls
         through to the built-in if/elif chain for core platforms.
+
+        ``skip_check_fn`` (plugin platforms only): bypass the registry's
+        no-arg env-scanning ``check_fn`` gate for instances whose config is
+        already proven — per-agent platform bindings resolved their
+        credential by name before this call, and plugin ``check_fn`` hooks
+        cannot see per-agent config. ``validate_config`` still runs.
         """
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
@@ -14054,7 +14068,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from gateway.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):
-                adapter = platform_registry.create_adapter(platform.value, config)
+                adapter = platform_registry.create_adapter(
+                    platform.value, config, skip_check_fn=skip_check_fn
+                )
                 if adapter is not None:
                     # Inject a back-reference to the gateway runner so every
                     # adapter can (a) deliver cross-platform admin alerts and

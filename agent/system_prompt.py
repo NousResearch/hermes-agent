@@ -374,28 +374,36 @@ def _build_topic_detection_block(agent: Any) -> str:
             lines.append(f"... and {total - 5} more archived topics.")
         lines.append("")
 
+    # Auto-detection instruction
     lines.append(
-        "After EVERY response — even short ones — you MUST append exactly "
-        "one line (and optionally a second):"
+        "After EVERY response append these lines (exact format required):"
     )
     lines.append("")
-    lines.append("```")
-    lines.append("TOPIC_SHIFT: <score 0-10> | <suggested_name or ->")
-    lines.append("TOPIC_MATCH: <topic_id or -> | <score 0-10>")
-    lines.append("```")
+    lines.append("TOPIC_SHIFT: <score> | <name>")
     lines.append("")
     lines.append(
-        "TOPIC_SHIFT is REQUIRED on every response. Use score 1-2 when "
-        "staying on the same topic. Use score 6+ when the conversation "
-        "has clearly shifted to a NEW subject. suggested_name: 2-5 words."
+        "Where <score> is 1 (same topic) or 7-10 (new topic). "
+        "<name> is '-' for same topic, or 2-5 word title for new topic."
     )
     lines.append(
-        "TOPIC_MATCH is OPTIONAL. Use when conversation has returned to a "
-        "topic in the table above. topic_id: the # from the Session Topics."
+        "Example same topic:   TOPIC_SHIFT: 1 | -"
     )
     lines.append(
-        "CRITICAL: never skip this line. Even for 'same topic', emit "
-        "TOPIC_SHIFT: 1 | -"
+        "Example new topic:    TOPIC_SHIFT: 8 | docker-containers"
+    )
+    lines.append(
+        "Also append when returning to an earlier topic:"
+    )
+    lines.append("")
+    lines.append("TOPIC_MATCH: <topic_id> | <score>")
+    lines.append("")
+    lines.append(
+        "Where <topic_id> is the # from Session Topics table above. "
+        "Example: TOPIC_MATCH: 1 | 9"
+    )
+    lines.append("")
+    lines.append(
+        "CRITICAL: never skip TOPIC_SHIFT. Even for same topic, always emit it."
     )
     return "\n".join(lines)
 

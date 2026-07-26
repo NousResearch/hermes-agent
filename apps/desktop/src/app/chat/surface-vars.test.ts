@@ -57,7 +57,7 @@ describe('per-surface measured-height vars', () => {
     const orphan = document.createElement('div')
     document.body.append(orphan)
 
-    expect(chatSurfaceRoot(orphan)).toBeNull()
+    expect(chatSurfaceRoot(orphan)).toBe(document.documentElement)
 
     setSurfaceVar(orphan, STATUS_STACK_VAR, '24px')
     expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('24px')

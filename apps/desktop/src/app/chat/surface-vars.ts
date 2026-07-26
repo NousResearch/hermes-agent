@@ -16,27 +16,25 @@
  * there is no single correct value to remeasure to.
  */
 
-/** Nearest enclosing chat surface, or `null` when the node is detached. */
-export function chatSurfaceRoot(el: Element | null): HTMLElement | null {
-  return el?.closest<HTMLElement>('[data-chat-surface]') ?? null
-}
-
 export const COMPOSER_HEIGHT_VAR = '--composer-measured-height'
 export const COMPOSER_SURFACE_HEIGHT_VAR = '--composer-surface-measured-height'
 export const STATUS_STACK_VAR = '--status-stack-measured-height'
 
 /**
- * Set a measured-height var on the surface owning `el`. Falls back to the
- * document root so a composer rendered outside a chat surface (the popped-out
- * window) keeps behaving exactly as before.
+ * The surface owning `el`, falling back to the document root so a composer
+ * rendered outside a chat surface (the popped-out window) keeps behaving
+ * exactly as before.
  */
+export function chatSurfaceRoot(el: Element | null): HTMLElement {
+  return el?.closest<HTMLElement>('[data-chat-surface]') ?? document.documentElement
+}
+
+/** Publish a measured-height var on the surface owning `el`. */
 export function setSurfaceVar(el: Element | null, name: string, value: string): void {
-  const target = chatSurfaceRoot(el) ?? document.documentElement
-  target.style.setProperty(name, value)
+  chatSurfaceRoot(el).style.setProperty(name, value)
 }
 
 /** Clear a measured-height var from the surface owning `el`. */
 export function clearSurfaceVar(el: Element | null, name: string): void {
-  const target = chatSurfaceRoot(el) ?? document.documentElement
-  target.style.removeProperty(name)
+  chatSurfaceRoot(el).style.removeProperty(name)
 }

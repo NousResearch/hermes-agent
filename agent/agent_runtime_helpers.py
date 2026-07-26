@@ -900,6 +900,25 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
     agent._client_kwargs = dict(rt["client_kwargs"])
 
 
+def _primary_runtime_with_live_credentials(agent, rt: Dict[str, Any]) -> Dict[str, Any]:
+    """``_primary_runtime`` with the *live* credential fields overlaid.
+
+    The snapshot is captured at init, so a credential-pool rotation moves the live key ahead of it;
+    restoring the snapshot's credentials would retry the exhausted key while
+    ``_credential_pool_entry_id`` still names the healthy replacement. Live values win here, and the
+    snapshot only fills a field the live runtime does not carry (e.g. Anthropic state on a re-pointed
+    agent).
+    """
+    live = {
+        "api_key": getattr(agent, "api_key", "") or rt.get("api_key", ""),
+        "client_kwargs": dict(getattr(agent, "_client_kwargs", None) or rt.get("client_kwargs") or {}),
+        "anthropic_api_key": getattr(agent, "_anthropic_api_key", None) or rt.get("anthropic_api_key"),
+        "anthropic_base_url": getattr(agent, "_anthropic_base_url", None) or rt.get("anthropic_base_url"),
+        "is_anthropic_oauth": getattr(agent, "_is_anthropic_oauth", rt.get("is_anthropic_oauth")),
+    }
+    return {**rt, **{key: value for key, value in live.items() if value is not None}}
+
+
 def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
     """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
     from agent.anthropic_adapter import build_anthropic_client
@@ -961,8 +980,15 @@ def try_recover_primary_transport(
             with contextlib.suppress(Exception):
                 agent._retire_shared_openai_client(agent.client, reason="primary_recovery")
         rt = agent._primary_runtime
-        _apply_primary_runtime_fields(agent, rt)
-        _rebuild_primary_client(agent, rt, reason="primary_recovery")
+        # ``_primary_runtime`` is captured at init and can predate a credential-pool rotation:
+        # restoring its credential fields here would retry a stale (possibly exhausted) key while
+        # ``_credential_pool_entry_id`` keeps naming the healthy replacement, so the next
+        # 401/402/429 could quarantine the wrong entry. Fallback runtimes are rejected above,
+        # therefore the live credential fields already describe the primary route we need to
+        # recover — overlay them on the snapshot, keeping its identity/request-shaping fields.
+        recovery_rt = _primary_runtime_with_live_credentials(agent, rt)
+        _apply_primary_runtime_fields(agent, recovery_rt)
+        _rebuild_primary_client(agent, recovery_rt, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
             f"{agent.log_prefix}🔁 Transient {error_type} on {agent.provider} — "

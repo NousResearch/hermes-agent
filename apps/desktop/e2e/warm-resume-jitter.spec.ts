@@ -294,12 +294,15 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
     .first()
   await newSessionButton.click()
 
-  // Wait for the new-chat empty state.
+  // Wait for the new-chat empty state. The "+" opens a NEW TAB beside the
+  // resumed session rather than replacing it, so the old transcript stays
+  // mounted — assert the newly-added surface is the empty one.
   await page.waitForFunction(
     (firstMsg: string) => {
-      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-      if (!viewport) return false
-      const text = viewport.textContent ?? ''
+      const surfaces = document.querySelectorAll('[data-composer-target]')
+      const active = surfaces[surfaces.length - 1]
+      if (!active) return false
+      const text = active.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
       return !text.includes(firstMsg)
     },
     FIRST_USER_MSG,
@@ -392,11 +395,14 @@ test('warm-route resume after background inference completes (no jitter)', async
     .locator('[data-slot="sidebar"] button[aria-label="New session"]')
     .first()
   await newSessionButton.click()
+  // "+" stacks a new tab, so the prior transcript stays mounted in its own
+  // surface — check the newly-added surface rather than the whole page.
   await page.waitForFunction(
     (prompt: string) => {
-      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-      if (!viewport) return false
-      return !(viewport.textContent ?? '').includes(prompt)
+      const surfaces = document.querySelectorAll('[data-composer-target]')
+      const active = surfaces[surfaces.length - 1]
+      if (!active) return false
+      return !(active.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(prompt)
     },
     PROMPT,
     { timeout: 15_000 },

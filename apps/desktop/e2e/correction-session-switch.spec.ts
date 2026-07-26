@@ -21,8 +21,18 @@ const INFERENCE_SWITCH_TRIGGER = 'E2E_INFERENCE_SWITCH_TRIGGER'
 const INFERENCE_PROMPT = `${INFERENCE_SWITCH_TRIGGER}: original inference prompt must remain singular.`
 const INFERENCE_CORRECTION = `${INFERENCE_SWITCH_TRIGGER}: correction sent while inference is live.`
 
+// A ⌘T-style tab can put several chat surfaces on the page at once, so every
+// locator here is scoped to the ACTIVE one (the most recently mounted surface)
+// rather than `.first()` / a bare document query, which would silently target
+// the wrong session's composer or transcript.
+const SURFACE = '[data-composer-target]'
+
+function activeSurface(page: Page) {
+  return page.locator(SURFACE).last()
+}
+
 async function send(page: Page, text: string): Promise<void> {
-  const composer = page.locator('[contenteditable="true"]').first()
+  const composer = activeSurface(page).locator('[contenteditable="true"]').first()
   await composer.waitFor({ state: 'visible', timeout: 15_000 })
   await composer.click()
   await composer.type(text, { delay: 5 })
@@ -30,8 +40,9 @@ async function send(page: Page, text: string): Promise<void> {
 }
 
 async function steer(page: Page, text: string): Promise<void> {
-  const composer = page.locator('[contenteditable="true"]').first()
-  const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+  const surface = activeSurface(page)
+  const composer = surface.locator('[contenteditable="true"]').first()
+  const primary = surface.locator('[data-slot="composer-root"] button[type="submit"]')
 
   await composer.waitFor({ state: 'visible', timeout: 15_000 })
   await composer.click()
@@ -42,55 +53,78 @@ async function steer(page: Page, text: string): Promise<void> {
 
 async function waitForTranscriptText(page: Page, text: string): Promise<void> {
   await page.waitForFunction(
-    (expected: string) => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
-    text,
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const active = surfaces[surfaces.length - 1]
+
+      return (active?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected)
+    },
+    [text, SURFACE] as [string, string],
     { timeout: 30_000 },
   )
 }
 
 async function textNodeOccurrences(page: Page, text: string): Promise<number> {
-  return page.evaluate((expected: string) => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-    if (!viewport) return 0
+  return page.evaluate(
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
+      if (!viewport) return 0
 
-    const walker = document.createTreeWalker(viewport, NodeFilter.SHOW_TEXT)
-    let count = 0
-    while (walker.nextNode()) {
-      if (walker.currentNode.textContent?.includes(expected)) {
-        count += 1
+      const walker = document.createTreeWalker(viewport, NodeFilter.SHOW_TEXT)
+      let count = 0
+      while (walker.nextNode()) {
+        if (walker.currentNode.textContent?.includes(expected)) {
+          count += 1
+        }
       }
-    }
-    return count
-  }, text)
+      return count
+    },
+    [text, SURFACE] as [string, string],
+  )
 }
 
 async function transcriptTextOrder(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+  return page.evaluate((surfaceSelector: string) => {
+    const surfaces = document.querySelectorAll(surfaceSelector)
+    const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) return []
 
     return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="message"], [data-message-id]'))
       .map(message => message.textContent?.trim() ?? '')
       .filter(Boolean)
-  })
+  }, SURFACE)
 }
 
 async function transcriptMessageOrder(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+  return page.evaluate((surfaceSelector: string) => {
+    const surfaces = document.querySelectorAll(surfaceSelector)
+    const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) return []
 
     return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"]'))
       .map(message => message.textContent?.trim() ?? '')
       .filter(Boolean)
-  })
+  }, SURFACE)
 }
 
+/**
+ * The sidebar "+" opens a NEW TAB beside the current chat rather than
+ * replacing it, so the prior session stays mounted in its own surface. Wait
+ * for the newly-mounted surface to show an empty transcript instead of waiting
+ * for the old text to disappear from the page (it never will).
+ */
 async function openFreshDraft(page: Page, priorSessionText: string): Promise<void> {
   await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
   await page.waitForFunction(
-    (priorText: string) => !(document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(priorText),
-    priorSessionText,
+    ([priorText, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const active = surfaces[surfaces.length - 1]
+      const transcript = active?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
+
+      return surfaces.length > 0 && !transcript.includes(priorText)
+    },
+    [priorSessionText, SURFACE] as [string, string],
     { timeout: 15_000 },
   )
 }

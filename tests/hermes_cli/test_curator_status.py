@@ -200,3 +200,145 @@ def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
 
     out = capsys.readouterr().out
     assert f"last report:    {missing_report} (missing)" in out
+
+
+# ---------------------------------------------------------------------------
+# Unmanaged blind spot + adopt verb
+# ---------------------------------------------------------------------------
+
+def test_status_surfaces_unmanaged_skills(curator_status_env):
+    """A skill with no provenance marker is invisible to every automatic
+    transition, so status must SAY so rather than reporting only the managed
+    count — otherwise a large library looks fully curated while much of it is
+    untouchable."""
+    env = curator_status_env
+    env["make_skill"]("managed-one")
+    env["make_skill"]("unmanaged-one")
+    env["skill_usage"].mark_agent_created("managed-one")
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "unmanaged (no provenance marker): 1 total" in out
+    assert "curator adopt" in out
+
+
+def test_status_reports_unmanaged_even_with_no_managed_skills(curator_status_env):
+    """The early 'no curator-managed skills' return must not swallow the
+    unmanaged summary — that combination is exactly the confusing case."""
+    env = curator_status_env
+    env["make_skill"]("unmanaged-one")
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "no curator-managed skills" in out
+    assert "unmanaged (no provenance marker): 1 total" in out
+
+
+def test_status_omits_unmanaged_section_when_none(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("managed-one")
+    env["skill_usage"].mark_agent_created("managed-one")
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "unmanaged (no provenance marker)" not in out
+
+
+def test_adopt_names_a_skill(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    cli = env["curator_cli"]
+
+    rc = cli._cmd_adopt(SimpleNamespace(
+        skill=["legacy-one"], all_unmanaged=False, dry_run=False, yes=False,
+    ))
+
+    assert rc == 0
+    assert env["skill_usage"].get_record("legacy-one").get("created_by") == "agent"
+
+
+def test_adopt_dry_run_writes_nothing(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    cli = env["curator_cli"]
+
+    rc = cli._cmd_adopt(SimpleNamespace(
+        skill=[], all_unmanaged=True, dry_run=True, yes=False,
+    ))
+
+    assert rc == 0
+    assert env["skill_usage"].get_record("legacy-one").get("created_by") != "agent"
+
+
+def test_adopt_all_unmanaged_requires_confirmation(curator_status_env, monkeypatch):
+    """Bulk adoption makes skills archivable, so it must confirm by default."""
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    cli = env["curator_cli"]
+    monkeypatch.setattr("builtins.input", lambda *_a: "n")
+
+    rc = cli._cmd_adopt(SimpleNamespace(
+        skill=[], all_unmanaged=True, dry_run=False, yes=False,
+    ))
+
+    assert rc == 1
+    assert env["skill_usage"].get_record("legacy-one").get("created_by") != "agent"
+
+
+def test_adopt_all_unmanaged_with_yes_skips_prompt(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    env["make_skill"]("legacy-two")
+    cli = env["curator_cli"]
+
+    rc = cli._cmd_adopt(SimpleNamespace(
+        skill=[], all_unmanaged=True, dry_run=False, yes=True,
+    ))
+
+    assert rc == 0
+    for n in ("legacy-one", "legacy-two"):
+        assert env["skill_usage"].get_record(n).get("created_by") == "agent"
+
+
+def test_adopt_rejects_names_combined_with_all_unmanaged(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    cli = env["curator_cli"]
+
+    rc = cli._cmd_adopt(SimpleNamespace(
+        skill=["legacy-one"], all_unmanaged=True, dry_run=False, yes=True,
+    ))
+
+    assert rc == 1
+
+
+def test_adopt_with_no_target_is_an_error(curator_status_env):
+    cli = curator_status_env["curator_cli"]
+
+    rc = cli._cmd_adopt(SimpleNamespace(
+        skill=[], all_unmanaged=False, dry_run=False, yes=False,
+    ))
+
+    assert rc == 1
+
+
+def test_adopt_subcommand_is_registered():
+    """The verb must be reachable through the real argparse tree, not just as a
+    callable — a handler nobody can dispatch to is dead code."""
+    import argparse
+
+    import hermes_cli.curator as curator_cli
+
+    parser = argparse.ArgumentParser()
+    curator_cli.register_cli(parser)
+
+    args = parser.parse_args(["adopt", "--all-unmanaged", "--dry-run"])
+    assert args.func is curator_cli._cmd_adopt
+    assert args.all_unmanaged is True
+    assert args.dry_run is True
+    assert args.skill == []
+
+    named = parser.parse_args(["adopt", "alpha", "beta"])
+    assert named.skill == ["alpha", "beta"]
+    assert named.all_unmanaged is False
+

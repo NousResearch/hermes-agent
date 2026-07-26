@@ -402,6 +402,36 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
     }
 
 
+def _find_installed_skill_dir_by_name(skill_dir_name: str) -> Optional[Path]:
+    """Locate an installed skill directory by its directory name.
+
+    Used only as a fallback when the repo-derived install path doesn't exist in
+    the active tree (upstream recategorized the skill after it was installed).
+    Returns None when there is no match, or when the name is AMBIGUOUS — two
+    skills sharing a directory name give us no basis to pick one, and guessing
+    would write provenance onto the wrong skill. The caller still verifies a
+    byte-identical content hash before recording anything.
+    """
+    if not skill_dir_name or not SKILLS_DIR.exists():
+        return None
+    matches: List[Path] = []
+    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+        if is_excluded_skill_path(skill_md):
+            continue
+        candidate = skill_md.parent
+        if candidate.name != skill_dir_name:
+            continue
+        # Never reach outside the skills tree (symlinked/external dirs).
+        try:
+            candidate.resolve().relative_to(SKILLS_DIR.resolve())
+        except (OSError, ValueError):
+            continue
+        matches.append(candidate)
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     """Mark already-present official optional skills as hub-installed.
 
@@ -440,7 +470,22 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
             continue
         dest = SKILLS_DIR / Path(*install_path.split("/"))
         if not dest.exists() or not dest.is_dir():
-            continue
+            # The active tree may hold the same skill under a DIFFERENT
+            # category path than the repo uses — categories get reorganized
+            # upstream (e.g. mlops/chroma → mlops/vector-databases/chroma)
+            # while the already-installed copy keeps its old location. A
+            # path-only lookup misses every one of those, so provenance repair
+            # silently skips them forever. Fall back to a unique
+            # same-directory-name match anywhere in the tree, then still
+            # require a byte-identical hash below before claiming provenance.
+            dest = _find_installed_skill_dir_by_name(src.name)
+            if dest is None:
+                continue
+            try:
+                install_path = _safe_rel_install_path(dest, SKILLS_DIR)
+            except ValueError as e:
+                logger.debug("Skipping relocated optional skill %s: %s", dest, e)
+                continue
         if _dir_hash(dest) != _dir_hash(src):
             continue
 

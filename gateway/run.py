@@ -15933,7 +15933,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Intercept messages that are responses to a pending clarify.
         # Open-ended prompts and "Other" responses are captured as free text;
         # direct replies to multi-choice prompts are accepted too ("2" maps
-        # to the second option, arbitrary text becomes a custom answer). Slash
+        # to the second option). Slash
         # commands still bypass this path so /stop and friends keep working.
         _clarify_mod = None
         try:
@@ -15990,6 +15990,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+                # Native-choice prompts deliberately reject unmatched prose
+                # so it can continue through normal busy-message routing.
+                # Release this clarify first: redirect() degrades to steer()
+                # while tools are executing, and that steer cannot drain until
+                # the clarify tool returns.
+                _clarify_mod.resolve_gateway_clarify(
+                    _pending_clarify.clarify_id,
+                    "",
+                )
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are

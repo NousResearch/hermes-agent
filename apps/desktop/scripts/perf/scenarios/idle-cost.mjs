@@ -114,20 +114,34 @@ const withFrames = body => `
   })()
 `
 
-/** Drag the sidebar splitter back and forth — the resize symptom. */
+/** Drag the sidebar splitter — the resize symptom.
+ *  Sweeps monotonically (an oscillation nets to zero and can clamp to a no-op),
+ *  and reports how far it actually moved so a drag that silently did nothing
+ *  shows up as `dragMoved: 0` instead of a confident wrong number. */
 const DRAG = withFrames(`
-  const handle = document.querySelector('[data-slot="pane-resize-handle"], [role="separator"], .resize-handle')
+  const handle = document.querySelector('[role="separator"]')
+  window.__DRAG_TARGET__ = handle ? 'separator' : 'none'
+  window.__DRAG_MOVED__ = 0
   if (handle) {
     const box = handle.getBoundingClientRect()
     const y = box.top + box.height / 2
-    let x = box.left + box.width / 2
-    handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, clientY: y, pointerId: 1 }))
-    for (let i = 0; i < 60; i++) {
-      x += (i % 2 === 0 ? 3 : -3)
-      window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x, clientY: y, pointerId: 1 }))
+    const x0 = box.left + box.width / 2
+    let x = x0
+    const opts = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1 }
+    handle.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x, clientY: y }))
+    // Out 60px then back — a real gesture, with a net displacement at the peak.
+    for (let i = 0; i < 30; i++) {
+      x += 2
+      window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x, clientY: y }))
       await new Promise(r => requestAnimationFrame(r))
     }
-    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x, clientY: y, pointerId: 1 }))
+    window.__DRAG_MOVED__ = Math.round(x - x0)
+    for (let i = 0; i < 30; i++) {
+      x -= 2
+      window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x, clientY: y }))
+      await new Promise(r => requestAnimationFrame(r))
+    }
+    window.dispatchEvent(new PointerEvent('pointerup', { ...opts, buttons: 0, clientX: x, clientY: y }))
   } else {
     await new Promise(r => setTimeout(r, 1000))
   }
@@ -199,9 +213,15 @@ export default {
 
     const idle = JSON.parse(await cdp.eval(idleCost(seconds)))
     const drag = JSON.parse(await cdp.eval(DRAG))
+    const dragTarget = await cdp.eval('window.__DRAG_TARGET__ || "unknown"')
+    const dragMoved = await cdp.eval('window.__DRAG_MOVED__ ?? 0')
     const type = JSON.parse(await cdp.eval(TYPE))
 
     await cdp.eval(CLEANUP)
+
+    if (dragTarget === 'none') {
+      throw new Error('idle-cost: no [role="separator"] sash found — the drag measured nothing.')
+    }
 
     return {
       metrics: {
@@ -218,6 +238,8 @@ export default {
       },
       detail: {
         tiles,
+        dragTarget,
+        dragMoved,
         idleSeconds: round(idle.elapsed),
         dragFps: round(drag.fps),
         dragP95: round(drag.p95),

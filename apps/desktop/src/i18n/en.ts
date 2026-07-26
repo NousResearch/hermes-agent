@@ -426,6 +426,10 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      chatLayoutTitle: 'Chat Layout',
+      chatLayoutDesc: 'Stacked keeps the current full-width transcript. Bubbles separates your messages from Hermes responses.',
+      chatLayoutStacked: 'Stacked',
+      chatLayoutBubbles: 'Bubbles',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,

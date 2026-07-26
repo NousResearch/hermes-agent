@@ -993,6 +993,26 @@ text-* variant utilities. */ .btn-arc {
   width: 100%;
 }
 
+/* Opt-in chat bubbles. The explicit human marker excludes background-process
+   notices, which use the user role for agent message alternation. */
+[data-chat-layout='bubbles'] [data-human-message='true'] {
+  align-self: flex-end;
+  width: min(82%, 44rem);
+}
+
+[data-chat-layout='bubbles'] [data-slot='aui_assistant-message-root'] {
+  align-self: flex-start;
+  width: min(90%, 52rem);
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 0.75rem;
+  background: var(--ui-bg-quinary);
+  padding: 0.5rem 0.75rem;
+}
+
+[data-chat-layout='bubbles'] [data-slot='aui_assistant-message-content'] {
+  padding-left: 0;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;

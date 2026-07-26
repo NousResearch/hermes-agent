@@ -1,4 +1,5 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import {
   type ComponentProps,
   type CSSProperties,
@@ -16,6 +17,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $chatLayout } from '@/store/chat-layout'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -141,6 +143,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionKey
 }) => {
+  const chatLayout = useStore($chatLayout)
   const messageSignature = useAuiState(s =>
     s.thread.messages
       .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
@@ -368,6 +371,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         ) : (
           <div
             className={cn('mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6', threadContentTopPad)}
+            data-chat-layout={chatLayout}
             data-slot="aui_thread-content"
             ref={contentRef as React.RefCallback<HTMLDivElement>}
           >

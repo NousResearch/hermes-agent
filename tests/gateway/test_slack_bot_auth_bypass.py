@@ -16,7 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.config import PlatformConfig
 from gateway.session import Platform, SessionSource
+from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +64,61 @@ def _make_slack_human_source(user_id="U_human"):
     )
 
 
+def test_slack_bot_profile_scope_overrides_process_policy(monkeypatch):
+    from agent import secret_scope
+
+    runner = _make_bare_runner()
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "none")
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"SLACK_ALLOW_BOTS": "mentions"})
+    try:
+        assert runner._is_user_authorized(_make_slack_bot_source()) is True
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
+def test_slack_bot_empty_profile_scope_does_not_inherit_process_policy(monkeypatch):
+    from agent import secret_scope
+
+    runner = _make_bare_runner()
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        assert runner._is_user_authorized(_make_slack_bot_source()) is False
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
+def test_slack_adapter_without_profile_policy_does_not_inherit_process_policy(
+    monkeypatch,
+):
+    """A profile adapter with no policy must not inherit another profile's bridge."""
+    from agent import secret_scope
+
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token="secondary", extra={}))
+    runner = _make_bare_runner()
+    runner.adapters = {}
+    runner._profile_adapters = {"secondary": {Platform.SLACK: adapter}}
+    source = adapter.build_source(chat_id="C-secondary", chat_type="group", is_bot=True)
+    source.profile = "secondary"
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        assert adapter._slack_allow_bots() == "none"
+        assert runner._is_user_authorized(source) is False
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
 def test_slack_bot_authorized_when_allow_bots_all(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
@@ -90,3 +147,59 @@ def test_slack_human_unaffected_by_bot_bypass(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("SLACK_ALLOW_ALL_USERS", "true")
     assert runner._is_user_authorized(_make_slack_human_source()) is True
+
+
+@pytest.mark.parametrize(
+    "load_order",
+    [
+        (("primary", "all"), ("secondary", "none")),
+        (("secondary", "none"), ("primary", "all")),
+    ],
+)
+def test_multiplex_yaml_bot_policy_matches_adapter_and_final_auth(
+    monkeypatch, load_order
+):
+    """Profile YAML bot policy survives either multiplex profile load order."""
+    from agent import secret_scope
+
+    extras = {}
+    for profile, policy in load_order:
+        extras[profile] = _apply_yaml_config({}, {"allow_bots": policy})
+
+    assert extras["primary"]["allow_bots"] == "all"
+    assert extras["secondary"]["allow_bots"] == "none"
+
+    primary = SlackAdapter(
+        PlatformConfig(enabled=True, token="primary", extra=extras["primary"])
+    )
+    secondary = SlackAdapter(
+        PlatformConfig(enabled=True, token="secondary", extra=extras["secondary"])
+    )
+    runner = _make_bare_runner()
+    runner.adapters = {Platform.SLACK: primary}
+    runner._profile_adapters = {"secondary": {Platform.SLACK: secondary}}
+
+    primary_source = primary.build_source(
+        chat_id="C-primary",
+        chat_type="group",
+        is_bot=True,
+    )
+    primary_source.profile = "primary"
+    secondary_source = secondary.build_source(
+        chat_id="C-secondary",
+        chat_type="group",
+        is_bot=True,
+    )
+    secondary_source.profile = "secondary"
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        assert primary._slack_allow_bots() == "all"
+        assert runner._is_user_authorized(primary_source) is True
+        assert secondary._slack_allow_bots() == "none"
+        assert runner._is_user_authorized(secondary_source) is False
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)

@@ -3061,10 +3061,11 @@ class BasePlatformAdapter(ABC):
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
         """
-        if not user_id or self._authorization_check is None:
+        authorization_check = getattr(self, "_authorization_check", None)
+        if not user_id or authorization_check is None:
             return None
         try:
-            return bool(self._authorization_check(user_id, chat_type, chat_id))
+            return bool(authorization_check(user_id, chat_type, chat_id))
         except Exception:
             logger.warning(
                 "[%s] Authorization check raised for user %s; treating as unknown",
@@ -4880,11 +4881,29 @@ class BasePlatformAdapter(ABC):
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = None
+        session_store = getattr(self, "_session_store", None)
+        generate_session_key = getattr(session_store, "_generate_session_key", None)
+        if callable(generate_session_key):
+            try:
+                session_key = generate_session_key(event.source)
+            except Exception:
+                logger.debug(
+                    "[%s] Canonical session-key generation failed; using adapter fallback",
+                    self.name,
+                    exc_info=True,
+                )
+        if not session_key:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get(
+                    "group_sessions_per_user", True
+                ),
+                thread_sessions_per_user=self.config.extra.get(
+                    "thread_sessions_per_user", False
+                ),
+                profile=event.source.profile,
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -4978,10 +4997,14 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     _has_text_clarify = False
 
-                if _has_text_clarify:
+                _clarify_response_only = bool(
+                    (event.metadata or {}).get("_hermes_clarify_response_only")
+                )
+                if _has_text_clarify or _clarify_response_only:
                     logger.debug(
-                        "[%s] Routing message to clarify text-intercept for %s",
-                        self.name, session_key,
+                        "[%s] Routing message to clarify text-intercept/drop for %s",
+                        self.name,
+                        session_key,
                     )
                     try:
                         _thread_meta = _thread_metadata_for_source(

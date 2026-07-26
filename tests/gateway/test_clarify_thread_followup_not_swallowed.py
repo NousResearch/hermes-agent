@@ -57,7 +57,7 @@ class _FellThroughIntercept(Exception):
     """Sentinel: _handle_message got PAST the clarify text-intercept."""
 
 
-def _event(text):
+def _event(text, *, clarify_response_id=None):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
@@ -69,6 +69,9 @@ def _event(text):
             thread_id="1111.2222",
         ),
         message_id="msg1",
+        metadata={"_hermes_clarify_response_only": clarify_response_id}
+        if clarify_response_id
+        else {},
     )
 
 
@@ -211,4 +214,67 @@ async def test_prose_still_accepted_for_open_ended_clarify():
     assert entry is not None
     assert entry.event.is_set()
     assert entry.response == "call it hermes-ux"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_clarify_only_reply_is_dropped_if_prompt_resolves_before_intercept():
+    """An adapter-authorized unmentioned reply must never become a normal turn."""
+    _clear_clarify_state()
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+
+    result = await _dispatch(
+        runner,
+        _event("stale typed answer", clarify_response_id="prompt-that-disappeared"),
+    )
+
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_clarify_only_reply_cannot_overwrite_resolved_answer_before_cleanup():
+    """A second marked response must not replace the first during index cleanup."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register("cl-first-wins", SESSION_KEY, "What should I use?", None)
+
+    assert cm.resolve_gateway_clarify("cl-first-wins", "first answer") is True
+    assert entry.event.is_set()
+    assert "cl-first-wins" in cm._entries
+
+    result = await _dispatch(
+        runner,
+        _event("second answer", clarify_response_id="cl-first-wins"),
+    )
+
+    assert result == ""
+    assert entry.response == "first answer"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_clarify_only_reply_cannot_resolve_replacement_prompt():
+    """A delayed answer for prompt A must not resolve later prompt B."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    first = cm.register("cl-prompt-a", SESSION_KEY, "First question?", None)
+    assert cm.resolve_gateway_clarify("cl-prompt-a", "first resolved") is True
+    second = cm.register("cl-prompt-b", SESSION_KEY, "Second question?", None)
+
+    result = await _dispatch(
+        runner,
+        _event("stale answer for A", clarify_response_id="cl-prompt-a"),
+    )
+
+    assert result == ""
+    assert first.response == "first resolved"
+    assert not second.event.is_set()
+    assert second.response is None
     _clear_clarify_state()

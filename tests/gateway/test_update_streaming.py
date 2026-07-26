@@ -642,6 +642,42 @@ class TestUpdatePromptInterception:
         assert session_key not in runner._update_prompt_pending
 
     @pytest.mark.asyncio
+    async def test_clarify_only_reply_bypasses_overlapping_update_prompt(self, tmp_path):
+        """A marked Slack clarify answer must never authorize an update prompt."""
+        from tools import clarify_gateway as cm
+
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        event = _make_event(text="y", platform=Platform.SLACK, chat_id="C123")
+        event.metadata = {"_hermes_clarify_response_only": "cl-update-overlap"}
+        session_key = "agent:main:slack:dm:C123"
+        runner._update_prompt_pending[session_key] = True
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._session_key_for_source = MagicMock(return_value=session_key)
+        entry = cm.register(
+            "cl-update-overlap",
+            session_key,
+            "Clarification question?",
+            None,
+        )
+        prompt_path = hermes_home / ".update_prompt.json"
+        prompt_path.write_text(json.dumps({"prompt": "update?"}))
+
+        try:
+            with patch("gateway.run._hermes_home", hermes_home):
+                result = await runner._handle_message(event)
+        finally:
+            cm.clear_session(session_key)
+
+        assert result == ""
+        assert entry.response == "y"
+        assert entry.event.is_set()
+        assert not (hermes_home / ".update_response").exists()
+        assert prompt_path.exists()
+        assert session_key in runner._update_prompt_pending
+
+    @pytest.mark.asyncio
     async def test_recognized_slash_command_bypasses_pending_update_prompt(self, tmp_path):
         """Known slash commands must dispatch normally instead of being consumed.
 

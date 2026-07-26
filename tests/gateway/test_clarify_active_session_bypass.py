@@ -32,7 +32,7 @@ class _ClarifyBypassAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "private"}
 
 
-def _event(text="custom answer"):
+def _event(text="custom answer", *, clarify_response_only=False):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
@@ -43,6 +43,11 @@ def _event(text="custom answer"):
             user_id="user1",
         ),
         message_id="msg1",
+        metadata=(
+            {"_hermes_clarify_response_only": "cl-active-session-test"}
+            if clarify_response_only
+            else {}
+        ),
     )
 
 
@@ -79,6 +84,28 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     )
     adapter._active_sessions[session_key] = asyncio.Event()
     cm.register("clarify-1", session_key, "Pick one", ["A", "B"])
+
+    await adapter.handle_message(event)
+
+    adapter._message_handler.assert_awaited_once_with(event)
+    adapter._busy_session_handler.assert_not_awaited()
+    assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_clarify_only_reply_bypasses_busy_handling_and_queueing():
+    """A raced clarification reply must reach the gateway drop path directly."""
+    _clear_clarify_state()
+    adapter = _ClarifyBypassAdapter()
+    adapter._message_handler = AsyncMock(return_value="")
+    adapter._busy_session_handler = AsyncMock(return_value=True)
+    event = _event("stale answer", clarify_response_only=True)
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
 
     await adapter.handle_message(event)
 

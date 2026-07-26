@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -239,6 +240,77 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM not in runner._failed_platforms
         assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_primary_multiplex_reconnect_restores_profile_scoped_handlers(
+        self, monkeypatch, tmp_path
+    ):
+        """Successful primary reconnect must preserve startup's profile scope."""
+        from agent.secret_scope import current_secret_scope
+
+        runner = _make_runner()
+        runner.config.multiplex_profiles = True
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._schedule_resume_pending_sessions = MagicMock(return_value=0)
+
+        profile_home = tmp_path / "primary"
+        profile_home.mkdir()
+        (profile_home / ".env").write_text("PROFILE_MARKER=primary\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "primary",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda _profile_name: profile_home,
+        )
+
+        async def capture_message(event):
+            scope = current_secret_scope()
+            return event.source.profile, (scope or {}).get("PROFILE_MARKER")
+
+        async def capture_busy(event, session_key):
+            scope = current_secret_scope()
+            return (
+                event.source.profile,
+                (scope or {}).get("PROFILE_MARKER"),
+                session_key,
+            )
+
+        runner._handle_message = capture_message
+        runner._handle_active_session_busy_message = capture_busy
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        succeed_adapter = StubAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+        runner._running = True
+        call_count = 0
+
+        async def fake_sleep(_seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                runner._running = False
+            await real_sleep(0)
+
+        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        assert succeed_adapter._gateway_profile_name == "primary"
+        event = SimpleNamespace(source=SimpleNamespace(profile=None))
+        assert await succeed_adapter._message_handler(event) == ("primary", "primary")
+        event.source.profile = None
+        assert await succeed_adapter._busy_session_handler(event, "session-key") == (
+            "primary",
+            "primary",
+            "session-key",
+        )
 
     @pytest.mark.asyncio
     async def test_reconnect_passes_is_reconnect_true(self):

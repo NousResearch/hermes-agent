@@ -165,11 +165,11 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if entry is None or entry.event.is_set():
             return False
-    entry.response = str(response) if response is not None else ""
-    entry.event.set()
-    return True
+        entry.response = str(response) if response is not None else ""
+        entry.event.set()
+        return True
 
 
 def get_pending_for_session(
@@ -191,6 +191,8 @@ def get_pending_for_session(
         for cid in ids:
             entry = _entries.get(cid)
             if entry is None:
+                continue
+            if entry.event.is_set():
                 continue
             if include_choice_prompts or entry.awaiting_text:
                 return entry
@@ -241,6 +243,26 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     return None
 
 
+def resolve_text_response_for_clarify(
+    clarify_id: str,
+    session_key: str,
+    response: str,
+) -> bool:
+    """Resolve one exact pending clarify, rejecting stale prompt identities."""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.session_key != session_key or entry.event.is_set():
+            return False
+
+        coerced = _coerce_text_response(entry, response)
+        if coerced is None:
+            return False
+
+        entry.response = coerced
+        entry.event.set()
+        return True
+
+
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     """Resolve the oldest pending clarify in ``session_key`` from typed text.
 
@@ -251,14 +273,10 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     if entry is None:
         return False
 
-    coerced = _coerce_text_response(entry, response)
-    if coerced is None:
-        # Response rejected: message should continue as a normal turn
-        return False
-
-    return resolve_gateway_clarify(
+    return resolve_text_response_for_clarify(
         entry.clarify_id,
-        coerced,
+        session_key,
+        response,
     )
 
 
@@ -292,18 +310,18 @@ def clear_session(session_key: str) -> int:
     with _lock:
         ids = list(_session_index.pop(session_key, []) or [])
         entries = [_entries.pop(cid, None) for cid in ids]
-    cancelled = 0
-    for entry in entries:
-        if entry is None:
-            continue
-        # Empty string sentinel — agent code can distinguish from a real
-        # response by inspecting the wait_for_response return value
-        # alongside its own timeout deadline.  Most callers just treat any
-        # falsy result as "user did not respond".
-        entry.response = ""
-        entry.event.set()
-        cancelled += 1
-    return cancelled
+        cancelled = 0
+        for entry in entries:
+            if entry is None or entry.event.is_set():
+                continue
+            # Empty string sentinel — agent code can distinguish from a real
+            # response by inspecting the wait_for_response return value
+            # alongside its own timeout deadline. Most callers just treat any
+            # falsy result as "user did not respond".
+            entry.response = ""
+            entry.event.set()
+            cancelled += 1
+        return cancelled
 
 
 # =========================================================================

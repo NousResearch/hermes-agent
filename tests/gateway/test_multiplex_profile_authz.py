@@ -1,5 +1,6 @@
 """Regression tests for multiplex profile-aware own-policy authorization."""
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -213,6 +214,22 @@ def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
     assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == "ignore"
 
 
+def test_scoped_auth_env_does_not_inherit_process_allowlist(monkeypatch):
+    """An empty secondary scope must not trust another profile's process env."""
+    from agent import secret_scope
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_PRIMARY_ONLY")
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        assert _auth_env("SLACK_ALLOWED_USERS") == ""
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
 def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
     """The adapter auth-check callback must stamp its own secondary profile.
 
@@ -241,26 +258,234 @@ def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
     assert captured["profile"] == "coder"
 
 
+def test_adapter_auth_check_enters_secondary_profile_secret_scope(monkeypatch):
+    """A secondary adapter must read authorization secrets from its own profile."""
+    import gateway.run as gateway_run
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    entered = []
+
+    @contextmanager
+    def fake_profile_scope(profile_home):
+        entered.append(str(profile_home))
+        try:
+            yield
+        finally:
+            entered.pop()
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_profile_scope)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda profile_name: f"/profiles/{profile_name}",
+    )
+
+    def fake_is_user_authorized(source):
+        return entered == ["/profiles/coder"] and source.profile == "coder"
+
+    runner._is_user_authorized = fake_is_user_authorized
+    check = runner._make_adapter_auth_check(Platform.SLACK, profile_name="coder")
+
+    assert check("U_CODER", "group", "C123") is True
+    assert entered == []
+
+
+def test_profile_runtime_scope_restores_home_when_secret_scope_build_fails(
+    monkeypatch, tmp_path
+):
+    """Scope-entry failures must not leak the secondary profile into later work."""
+    from agent import secret_scope
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    baseline_home = tmp_path / "baseline"
+    profile_home = tmp_path / "coder"
+    token = set_hermes_home_override(str(baseline_home))
+
+    def fail_build(_):
+        raise RuntimeError("secret scope unavailable")
+
+    monkeypatch.setattr(secret_scope, "build_profile_secret_scope", fail_build)
+    try:
+        with pytest.raises(RuntimeError, match="secret scope unavailable"):
+            with _profile_runtime_scope(profile_home):
+                raise AssertionError("scope body must not run")
+        assert str(get_hermes_home()) == str(baseline_home)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def test_adapter_auth_check_defaults_to_active_profile(monkeypatch):
-    """Primary-adapter callbacks (no profile_name) still resolve the active profile."""
+    """Primary callbacks enter the active profile scope under multiplexing."""
+    from gateway import run as gateway_run
     from gateway.run import GatewayRunner
 
     _clear_auth_env(monkeypatch)
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
+    entered: list[str] = []
 
-    captured: dict = {}
+    @contextmanager
+    def fake_profile_scope(profile_home):
+        entered.append(str(profile_home))
+        try:
+            yield
+        finally:
+            entered.pop()
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_profile_scope)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "primary",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda profile_name: f"/profiles/{profile_name}",
+    )
 
     def fake_is_user_authorized(source):
-        captured["profile"] = source.profile
-        return True
+        return entered == ["/profiles/primary"] and source.profile == "primary"
 
     runner._is_user_authorized = fake_is_user_authorized
 
     check = runner._make_adapter_auth_check(Platform.WECOM)
     assert check("some-user", "dm", "dm-chat") is True
-    assert captured["profile"] is None
+    assert entered == []
+
+
+def test_configure_slack_adapters_binds_each_profile_env_bot_policy(
+    monkeypatch, tmp_path
+):
+    """Primary and secondary production wiring bind their real profile .env."""
+    from agent import secret_scope
+    from gateway.config import PlatformConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import Platform
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    homes = {}
+    for profile, policy in (("primary", "all"), ("secondary", "mentions")):
+        home = tmp_path / profile
+        home.mkdir()
+        (home / ".env").write_text(
+            f"SLACK_ALLOW_BOTS={policy}\n", encoding="utf-8"
+        )
+        homes[profile] = home
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda profile_name: homes[profile_name],
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    runner.session_store = SimpleNamespace()
+    runner._busy_text_mode = "steer"
+    primary = SlackAdapter(PlatformConfig(enabled=True, token="primary", extra={}))
+    secondary = SlackAdapter(
+        PlatformConfig(enabled=True, token="secondary", extra={})
+    )
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        runner._configure_primary_adapter(
+            primary,
+            Platform.SLACK,
+            profile_name="primary",
+        )
+        runner._configure_profile_adapter(
+            secondary,
+            "secondary",
+            Platform.SLACK,
+        )
+        assert primary._gateway_allow_bots_policy == "all"
+        assert primary._slack_allow_bots() == "all"
+        assert secondary._gateway_allow_bots_policy == "mentions"
+        assert secondary._slack_allow_bots() == "mentions"
+    finally:
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
+def test_primary_adapter_auth_reads_active_profile_secret_scope(monkeypatch, tmp_path):
+    """Primary multiplex authorization uses its profile .env, not process env."""
+    from agent import secret_scope
+    from gateway.run import GatewayRunner
+
+    profile_home = tmp_path / "primary"
+    profile_home.mkdir()
+    (profile_home / ".env").write_text(
+        "WECOM_ALLOWED_USERS=some-user\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("WECOM_ALLOWED_USERS", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name",
+        lambda: "primary",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda _profile_name: profile_home,
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner.adapters = {}
+    runner._profile_adapters = {}
+    runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        check = runner._make_adapter_auth_check(Platform.WECOM)
+        assert check("some-user", "dm", "dm-chat") is True
+        assert check("other-user", "dm", "dm-chat") is False
+    finally:
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+
+@pytest.mark.asyncio
+async def test_profile_busy_handler_enters_profile_scope(monkeypatch):
+    """Busy-session authorization is scoped before the normal message handler."""
+    from gateway import run as gateway_run
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    entered: list[str] = []
+
+    @contextmanager
+    def fake_profile_scope(profile_home):
+        entered.append(str(profile_home))
+        try:
+            yield
+        finally:
+            entered.pop()
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_profile_scope)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda profile_name: f"/profiles/{profile_name}",
+    )
+
+    async def fake_busy(event, session_key):
+        return (
+            entered == ["/profiles/coder"]
+            and event.source.profile == "coder"
+            and session_key == "session-key"
+        )
+
+    runner._handle_active_session_busy_message = fake_busy
+    handler = runner._make_profile_busy_session_handler("coder")
+    event = SimpleNamespace(source=SimpleNamespace(profile=None))
+
+    assert await handler(event, "session-key") is True
+    assert entered == []
 
 
 def test_secondary_open_policy_fails_startup_guard(monkeypatch):

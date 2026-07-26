@@ -168,6 +168,55 @@ class TestClarifyPrimitive:
 
         assert cm.resolve_gateway_clarify("nope", "anything") is False
 
+    def test_resolve_is_single_assignment_before_wait_cleanup(self):
+        """A resolved entry cannot be rediscovered or have its answer replaced."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-single", "sk-single", "Q?", None)
+
+        assert cm.resolve_gateway_clarify("id-single", "first") is True
+        assert entry.event.is_set()
+        assert entry.response == "first"
+        # The waiting agent has not removed the entry from the indexes yet.
+        assert "id-single" in cm._entries
+        assert cm.get_pending_for_session("sk-single") is None
+
+        assert cm.resolve_gateway_clarify("id-single", "second") is False
+        assert entry.response == "first"
+
+    def test_clear_session_preserves_already_resolved_response(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-clear-resolved", "sk-clear-resolved", "Q?", None)
+        assert cm.resolve_gateway_clarify("id-clear-resolved", "first answer") is True
+
+        assert cm.clear_session("sk-clear-resolved") == 0
+        assert entry.response == "first answer"
+        assert entry.event.is_set()
+
+    def test_exact_text_resolver_rejects_stale_id_and_wrong_session(self):
+        from tools import clarify_gateway as cm
+
+        first = cm.register("prompt-a", "session-exact", "First?", None)
+        assert cm.resolve_gateway_clarify("prompt-a", "first answer") is True
+        second = cm.register("prompt-b", "session-exact", "Second?", None)
+
+        assert (
+            cm.resolve_text_response_for_clarify(
+                "prompt-a", "session-exact", "stale answer"
+            )
+            is False
+        )
+        assert (
+            cm.resolve_text_response_for_clarify(
+                "prompt-b", "different-session", "wrong session"
+            )
+            is False
+        )
+        assert first.response == "first answer"
+        assert second.response is None
+        assert not second.event.is_set()
+
     def test_resolve_after_wait_completes_is_noop(self):
         """A late resolve on a finished entry doesn't blow up."""
         from tools import clarify_gateway as cm

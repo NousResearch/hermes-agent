@@ -2060,6 +2060,28 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             _apply_assistant_cache_control_to_last_cacheable_block(
                 replayed, m.get("cache_control")
             )
+            # apply_anthropic_cache_control marks an assistant turn with
+            # non-empty text by writing cache_control INTO ``content`` (see
+            # _apply_cache_marker's list branch), not at the top level. This
+            # branch rebuilds the message from ordered_blocks and never reads
+            # ``content``, so that marker would be dropped -- and because
+            # _can_carry_marker already counted this message as a carrier, the
+            # breakpoint is burned rather than relocated. #56195 covered the
+            # complementary shape (blank content -> top-level marker); this is
+            # the interleaved thinking + preamble-text + tool_use shape.
+            _inline_cc = None
+            _msg_content = m.get("content")
+            if isinstance(_msg_content, list):
+                for _blk in _msg_content:
+                    if isinstance(_blk, dict) and isinstance(
+                        _blk.get("cache_control"), dict
+                    ):
+                        _inline_cc = _blk["cache_control"]
+                        break
+            if _inline_cc is not None:
+                _apply_assistant_cache_control_to_last_cacheable_block(
+                    replayed, _inline_cc
+                )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)

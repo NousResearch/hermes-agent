@@ -11342,6 +11342,116 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
         self._execute_write(_do)
 
+    # ── Topic Management ───────────────────────────────────────────────
+
+    def create_topic(
+        self,
+        session_id: str,
+        title: str,
+        summary: Optional[str] = None,
+    ) -> int:
+        """Create a new topic in a session. Returns the topic row ID."""
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO session_topics
+                   (session_id, title, summary, state, created_at, last_active_at)
+                   VALUES (?, ?, ?, 'active', ?, ?)""",
+                (session_id, title, summary, now, now),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def get_topics(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return all topics for a session, most recently active first."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, title, summary, message_count, state,
+                          created_at, last_active_at
+                   FROM session_topics
+                   WHERE session_id = ?
+                   ORDER BY last_active_at DESC""",
+                (session_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_topic(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the currently active topic, or None."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT id, title, summary, message_count, state,
+                          created_at, last_active_at
+                   FROM session_topics
+                   WHERE session_id = ? AND state = 'active'
+                   ORDER BY last_active_at DESC LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_active_topic(self, session_id: str, topic_id: int) -> bool:
+        """Set the active topic for a session. Archives the previous active."""
+        now = time.time()
+
+        def _do(conn):
+            # Archive current active topic
+            conn.execute(
+                """UPDATE session_topics
+                   SET state = 'warm', last_active_at = ?
+                   WHERE session_id = ? AND state = 'active'""",
+                (now, session_id),
+            )
+            # Activate the target topic
+            cursor = conn.execute(
+                """UPDATE session_topics
+                   SET state = 'active', last_active_at = ?
+                   WHERE id = ? AND session_id = ?""",
+                (now, topic_id, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
+
+    def update_topic_message_count(self, topic_id: int, count_delta: int = 1) -> None:
+        """Increment or decrement message count for a topic."""
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE session_topics
+                   SET message_count = message_count + ?,
+                       last_active_at = ?
+                   WHERE id = ?""",
+                (count_delta, time.time(), topic_id),
+            )
+
+        self._execute_write(_do)
+
+    def get_topic_messages(
+        self,
+        session_id: str,
+        topic_id: int,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Load all messages for a specific topic, active=1 only by default."""
+        active_clause = "" if include_inactive else " AND active = 1"
+        with self._lock:
+            rows = self._conn.execute(
+                f"""SELECT * FROM messages
+                    WHERE session_id = ? AND topic_id = ?{active_clause}
+                    ORDER BY id""",
+                (session_id, topic_id),
+            ).fetchall()
+        result = []
+        for row in rows:
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            result.append(msg)
+        return result
+
+    # ── End Topic Management ───────────────────────────────────────────
+
     @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.

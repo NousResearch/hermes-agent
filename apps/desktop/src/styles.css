@@ -636,14 +636,19 @@
   --arc-c2: var(--dt-background);
   --arc-angle: 160deg;
   --arc-width: 0.078125rem;
-  --arc-inset: -0.125rem;
+  /* How far the ring stands off its host, per side. */
+  --arc-standoff: 0.125rem;
+  /* An outset ring is only concentric when its radius grows by the standoff
+     (r = r_host + gap); `border-radius: inherit` leaves the corner pinched.
+     Defaults to the shared `rounded-md`; a host on another radius sets it. */
+  --arc-radius: var(--radius-md);
   --arc-duration: 2.23s;
 
   pointer-events: none;
   position: absolute;
   overflow: hidden;
-  border-radius: inherit;
-  inset: var(--arc-inset);
+  border-radius: calc(var(--arc-radius) + var(--arc-standoff));
+  inset: calc(var(--arc-standoff) * -1);
   padding: var(--arc-width);
   mask:
     linear-gradient(#000 0 0) content-box,
@@ -743,6 +748,23 @@
   --arc-c1: #4f8cff;
   --arc-c2: #ff8c42;
   --arc-duration: 3.27s;
+}
+
+/* Sidebar session row — a thin, clipped, single-line host, so it differs twice
+   from the default ring:
+
+   1. Flush, not outset. The sidebar scroller is `overflow-x-hidden` and rows sit
+      `gap-px` apart, so an outset ring loses its left/right runs to the clip.
+
+   2. A visible tail. `--arc-c2` defaults to `--dt-background` — invisible
+      against the sidebar. With c0 a transparent sentinel and c2 invisible, only
+      the bright c1 stop survives each pass, and the gradient has three of them:
+      three moving dots instead of an arc. Tying c2 to c1 gives each spike a
+      falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
+.arc-border.arc-row,
+:root.dark .arc-border.arc-row {
+  --arc-standoff: 0rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

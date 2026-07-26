@@ -21,7 +21,10 @@ cleanly on missing-arch assets, and the upgrade path uses
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
+
+import pytest
 
 
 class TestInstallCuaDriverUpgrade:
@@ -329,7 +332,11 @@ class TestArchProbeRemoval:
             urlopen.assert_not_called()
 
 
-class TestStaleInstallLockClear:
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX installer uses the .install.lock.d directory protocol",
+)
+class TestPosixStaleInstallLockClear:
     """_clear_stale_cua_install_lock: pre-clears the upstream installer's
     concurrent-install lock only when the holder is provably dead (or the
     lock is old and pid-less). Issue #58762."""
@@ -391,6 +398,87 @@ class TestStaleInstallLockClear:
         tools_config._clear_stale_cua_install_lock()  # must not raise
 
 
+class TestWindowsStaleInstallLockClearDispatch:
+    def test_windows_branch_uses_file_lock_probe(self):
+        from hermes_cli import tools_config
+
+        with patch.object(tools_config.sys, "platform", "win32"), \
+             patch.object(
+                 tools_config, "_clear_stale_windows_cua_install_lock"
+             ) as clear_windows:
+            tools_config._clear_stale_cua_install_lock()
+
+        clear_windows.assert_called_once_with()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="requires native Win32 FileShare semantics",
+)
+class TestWindowsStaleInstallLockClear:
+    def _make_lock(self, tmp_path):
+        import os
+
+        home = tmp_path / ".cua-driver"
+        home.mkdir()
+        lock = home / "install.lock"
+        lock.write_text("pid=stale\n", encoding="utf-8")
+        os.environ["CUA_DRIVER_RS_HOME"] = str(home)
+        return lock
+
+    def teardown_method(self):
+        import os
+
+        os.environ.pop("CUA_DRIVER_RS_HOME", None)
+
+    def test_unlocked_lock_file_is_cleared(self, tmp_path):
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path)
+        with patch.object(tools_config, "_print_info"):
+            tools_config._clear_stale_cua_install_lock()
+
+        assert not lock.exists()
+
+    def test_lock_held_with_file_share_none_is_kept(self, tmp_path):
+        import ctypes
+        from ctypes import wintypes
+        from hermes_cli import tools_config
+
+        lock = self._make_lock(tmp_path)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = create_file(
+            str(lock),
+            0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
+            0,  # FileShare::None, matching install.ps1
+            None,
+            3,  # OPEN_EXISTING
+            0x00000080,  # FILE_ATTRIBUTE_NORMAL
+            None,
+        )
+        assert handle != wintypes.HANDLE(-1).value
+
+        try:
+            tools_config._clear_stale_cua_install_lock()
+            assert lock.exists()
+        finally:
+            assert close_handle(handle)
+
+
 class TestInstallerTimeoutKillsProcessGroup:
     """On timeout the whole installer process group must be killed, so the
     `curl | bash` grandchildren can't survive holding the install lock."""
@@ -399,11 +487,11 @@ class TestInstallerTimeoutKillsProcessGroup:
         import os
         import signal
         import subprocess
-        import sys as _sys
         from unittest.mock import MagicMock
         from hermes_cli import tools_config
 
         killed = {}
+        sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
 
         fake_proc = MagicMock()
         fake_proc.pid = 12345
@@ -418,10 +506,15 @@ class TestInstallerTimeoutKillsProcessGroup:
             killed["sig"] = sig
 
         with patch("platform.system", return_value="Linux"), \
+             patch.object(signal, "SIGKILL", sigkill, create=True), \
              patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
              patch("subprocess.Popen", return_value=fake_proc), \
-             patch.object(tools_config.os, "getpgid", return_value=99999), \
-             patch.object(tools_config.os, "killpg", side_effect=fake_killpg), \
+             patch.object(
+                 tools_config.os, "getpgid", return_value=99999, create=True
+             ), \
+             patch.object(
+                 tools_config.os, "killpg", side_effect=fake_killpg, create=True
+             ), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(tools_config, "_print_warning"), \
              patch.object(tools_config, "_print_info"):
@@ -429,7 +522,7 @@ class TestInstallerTimeoutKillsProcessGroup:
 
         assert ok is False
         assert killed.get("pgid") == 99999
-        assert killed.get("sig") == signal.SIGKILL
+        assert killed.get("sig") == sigkill
         # Post-kill reap happened.
         assert fake_proc.communicate.call_count == 2
 

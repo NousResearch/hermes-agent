@@ -1962,10 +1962,13 @@ def resolve_provider(
         _model_cfg = (load_config() or {}).get("model")
         if isinstance(_model_cfg, dict):
             _cfg_provider = _model_cfg.get("provider")
-            if isinstance(_cfg_provider, str) and _cfg_provider.strip().lower() in PROVIDER_REGISTRY:
-                return _cfg_provider.strip().lower()
+            if isinstance(_cfg_provider, str):
+                _cfg_provider = _cfg_provider.strip().lower()
+                _cfg_provider = _PROVIDER_ALIASES.get(_cfg_provider, _cfg_provider)
+                if _cfg_provider in PROVIDER_REGISTRY:
+                    return _cfg_provider
     except Exception as e:
-        logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
+        logger.warning("Could not read config.yaml model.provider for auto-resolution: %s", e)
 
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"

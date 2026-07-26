@@ -113,7 +113,7 @@ function TileChat({
   storedSessionId: string
   view: SessionView
 }) {
-  const { gatewayRef, requestGateway } = useGatewayRequest()
+  const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
   const { selectModel } = useModelControls({ queryClient, requestGateway })
   const activeGatewayProfile = useStore($activeGatewayProfile)
@@ -151,20 +151,20 @@ function TileChat({
     () =>
       gatewayOpen ? (
         <ModelMenuPanel
-          gateway={gatewayRef.current || undefined}
+          gateway={gateway || undefined}
           onSelectModel={selectModel}
           profile={activeGatewayProfile}
           requestGateway={requestGateway}
         />
       ) : null,
-    [activeGatewayProfile, gatewayOpen, gatewayRef, requestGateway, selectModel]
+    [activeGatewayProfile, gateway, gatewayOpen, requestGateway, selectModel]
   )
 
   return (
     <SessionViewProvider value={view}>
       <ComposerScopeProvider value={scope}>
         <ChatView
-          gateway={gatewayRef.current}
+          gateway={gateway}
           modelMenuContent={modelMenuContent}
           onAddContextRef={composer.addContextRefAttachment}
           onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}

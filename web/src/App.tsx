@@ -35,6 +35,7 @@ import {
   Globe,
   Heart,
   KeyRound,
+  LayoutDashboard,
   Menu,
   MessageSquare,
   Package,
@@ -104,6 +105,15 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
+import {
+  DASHBOARD_LABEL,
+  DASHBOARD_PATH,
+  buildBuiltinNavOrder,
+  hasRootDashboardPlugin,
+  shouldDeferBuiltinRootRoute,
+  shouldIncludePluginPageTitle,
+  shouldUseExactNavMatch,
+} from "@/lib/dashboard-navigation";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -181,6 +191,12 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
 function ChatRouteSink() {
   return null;
 }
+
+const DASHBOARD_NAV_ITEM: NavItem = {
+  path: DASHBOARD_PATH,
+  label: DASHBOARD_LABEL,
+  icon: LayoutDashboard,
+};
 
 const BUILTIN_NAV_REST: NavItem[] = [
   {
@@ -306,6 +322,7 @@ function partitionSidebarNav(
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
+  pluginsLoading: boolean,
 ): Array<{
   key: string;
   path: string;
@@ -337,7 +354,13 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({
+        key: `builtin:${path}`,
+        path,
+        element: shouldDeferBuiltinRootRoute(path, pluginsLoading)
+          ? null
+          : <Component />,
+      });
     }
   }
 
@@ -400,6 +423,10 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const hasRootDashboard = useMemo(
+    () => hasRootDashboardPlugin(manifests),
+    [manifests],
+  );
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
@@ -456,26 +483,30 @@ export default function App() {
   );
 
   const builtinNav = useMemo(() => {
-    const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
-      : BUILTIN_NAV_REST;
+    const base = buildBuiltinNavOrder({
+      dashboard: DASHBOARD_NAV_ITEM,
+      chat: CHAT_NAV_ITEM,
+      rest: BUILTIN_NAV_REST,
+      includeDashboard: hasRootDashboard,
+      includeChat: embeddedChat,
+    });
     return showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+  }, [embeddedChat, hasRootDashboard, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
   const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
+    () => buildRoutes(builtinRoutes, manifests, pluginsLoading),
+    [builtinRoutes, manifests, pluginsLoading],
   );
   const pluginTabMeta = useMemo(
     () =>
       manifests
-        .filter((m) => !m.tab.hidden)
+        .filter(shouldIncludePluginPageTitle)
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
           label: m.label,
@@ -548,9 +579,17 @@ export default function App() {
           <Menu />
         </Button>
 
-        <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
-          {t.app.brand}
-        </Typography>
+        <NavLink
+          aria-label={DASHBOARD_LABEL}
+          className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground"
+          end
+          onClick={closeMobile}
+          to={DASHBOARD_PATH}
+        >
+          <Typography className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground">
+            {t.app.brand}
+          </Typography>
+        </NavLink>
       </header>
 
       {mobileOpen && (
@@ -596,11 +635,16 @@ export default function App() {
                 collapsed ? "lg:justify-center lg:px-0" : "px-4 justify-between",
               )}
             >
-              <div
+              <NavLink
+                aria-label={DASHBOARD_LABEL}
                 className={cn(
                   "flex items-center gap-2",
+                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
                   collapsed && "lg:hidden",
                 )}
+                end
+                onClick={closeMobile}
+                to={DASHBOARD_PATH}
               >
                 <PluginSlot name="header-left" />
 
@@ -609,7 +653,7 @@ export default function App() {
                   <br />
                   Agent
                 </Typography>
-              </div>
+              </NavLink>
 
               <Button
                 ghost
@@ -867,7 +911,7 @@ function SidebarNavLink({
     >
       <NavLink
         to={path}
-        end={path === "/sessions"}
+        end={shouldUseExactNavMatch(path)}
         onClick={closeMobile}
         aria-label={collapsed ? navLabel : undefined}
         onFocus={collapsed ? showTooltip : undefined}

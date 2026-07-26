@@ -9,13 +9,14 @@ from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
 
-def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
-    """The desktop app and dashboard chat reach the agent through this WS
-    sidecar, not through tui_gateway.entry.main() (which spawns the discovery
-    thread for the stdio TUI). handle_ws must start discovery itself, otherwise
-    _make_agent's wait_for_mcp_discovery no-ops and the agent snapshots an
-    MCP-less tool list. Regression test for #38945."""
+def test_ws_does_not_own_mcp_discovery_startup(monkeypatch):
+    """WebSocket transport must not start MCP discovery itself.
+
+    MCP discovery ownership belongs to the profile-scoped agent build path.
+    The WS layer only establishes the transport and emits gateway readiness.
+    """
     calls = []
+
     monkeypatch.setattr(
         mcp_startup,
         "start_background_mcp_discovery",
@@ -41,7 +42,7 @@ def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
     finally:
         server._sessions.clear()
 
-    assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
+    assert calls == []
 
 
 def _run_disconnect(monkeypatch, seed):

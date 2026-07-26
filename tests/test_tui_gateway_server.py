@@ -94,6 +94,7 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     session_key = "cwd-key"
     project = tmp_path / "project"
     project.mkdir()
+    (project / ".git").mkdir()
     launcher = tmp_path / "apps" / "desktop"
     launcher.mkdir(parents=True)
 
@@ -10787,12 +10788,14 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
 # ── verification.status ──────────────────────────────────────────────
 
 
-def test_verification_status_returns_recorded_evidence(tmp_path):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    token = set_hermes_home_override(home)
+def test_verification_status_returns_recorded_evidence(tmp_path, monkeypatch):
+    profile_home = tmp_path / "profiles" / "verify"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "verify" else None)
+    token = set_hermes_home_override(profile_home)
     project = tmp_path / "project"
     project.mkdir()
+    (project / ".git").mkdir()
     (project / "package.json").write_text(
         json.dumps({"scripts": {"test": "vitest"}}),
         encoding="utf-8",
@@ -10813,7 +10816,7 @@ def test_verification_status_returns_recorded_evidence(tmp_path):
             {
                 "id": "1",
                 "method": "verification.status",
-                "params": {"cwd": str(project), "session_id": "sid"},
+                "params": {"cwd": str(project), "session_id": "sid", "profile": "verify"},
             }
         )
     finally:

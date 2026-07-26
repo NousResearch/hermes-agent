@@ -7057,6 +7057,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("verification.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Best known coding verification evidence for a cwd/session.
 

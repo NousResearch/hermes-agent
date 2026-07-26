@@ -20,6 +20,12 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+try:
+    import msvcrt
+    import _winapi
+except ImportError:
+    msvcrt = None
+    _winapi = None
 # systemd transient scopes exist only on Linux; gate every scope-path branch on this
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
@@ -1082,10 +1088,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         end so EOF never arrives while it lives, which would park this thread and never
         fire ``notify_on_complete``; on POSIX we ``select()`` and stop draining shortly
         after the direct child exits (mirrors ``environments/base.py::_wait_for_process``).
-        Windows pipes lack select(), so the lazy ``_reconcile_local_exit`` is the net.
-
-        Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
-        poll()/wait() remains the safety net. See #68915, #8340.
+        Windows pipes lack select(), so the same loop runs on ``PeekNamedPipe``:
+        read only when bytes are available, otherwise check the direct child and stop
+        after the same short idle grace. Streams without a real OS fd still use the
+        blocking fallback. See #68915, #8340.
         """
         first_chunk = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
@@ -1103,6 +1109,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 chunk = self._clean_shell_noise(chunk)
                 first_chunk = False
             self._ingest_output(session, chunk)
+
+        def _read_raw_chunk():
+            raw = raw_read(4096)
+            if not raw:
+                return None
+            chunk = decoder.decode(raw)
+            if chunk:
+                _append_chunk(chunk)
+            return chunk
+
         try:
             proc = session.process
             if proc is None or proc.stdout is None:
@@ -1116,19 +1132,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     return stdout.read(4096) or None
                 raw = raw_read(4096)
                 return decoder.decode(raw) if raw else None
-            # select() needs a real OS fd; mocked streams (tests, adapters) may lack
-            # fileno() and use the blocking read instead.
-            try:
-                fd = stdout.fileno() if raw_read is not None and not _IS_WINDOWS else None
-            except Exception:
-                fd = None
-            if not (isinstance(fd, int) and fd >= 0):
-                fd = None
-            if fd is not None:
+
+            fd = None
+            if raw_read is not None:
+                fileno = getattr(stdout, "fileno", None)
+                try:
+                    candidate = fileno() if callable(fileno) else None
+                except Exception:
+                    candidate = None
+                if isinstance(candidate, int) and candidate >= 0:
+                    fd = candidate
+
+            peek_handle = None
+            if fd is not None and _IS_WINDOWS and msvcrt is not None and _winapi is not None:
+                try:
+                    peek_handle = msvcrt.get_osfhandle(fd)
+                except OSError:
+                    peek_handle = None
+
+            if fd is not None and not _IS_WINDOWS:
                 import select as _select
-            idle_after_exit = 0
-            while True:
-                if fd is not None:
+                idle_after_exit = 0
+                while True:
                     try:
                         ready, _, _ = _select.select([fd], [], [], 0.2)
                     except (ValueError, OSError):
@@ -1138,17 +1163,49 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # buffered tail, then stop rather than wait forever on an orphaned
                         # grandchild's pipe.
                         if proc.poll() is not None:
-                            # See #68915.
                             idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break
                         continue
-                chunk = _read_once()
-                if chunk is None:
-                    break  # true EOF — all writers closed
-                if chunk:
-                    _append_chunk(chunk)
+                    chunk = _read_once()
+                    if chunk is None:
+                        break  # true EOF — all writers closed
+                    if chunk:
+                        _append_chunk(chunk)
+                    idle_after_exit = 0
+            elif peek_handle is not None:
                 idle_after_exit = 0
+                while True:
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError, BrokenPipeError):
+                        break  # all writers closed and buffer drained
+                    if n_avail > 0:
+                        if _read_raw_chunk() is None:
+                            break
+                        idle_after_exit = 0
+                        continue
+                    time.sleep(0.2)
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError, BrokenPipeError):
+                        break
+                    if n_avail > 0:
+                        if _read_raw_chunk() is None:
+                            break
+                        idle_after_exit = 0
+                        continue
+                    if proc.poll() is not None:
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+            else:
+                while True:
+                    chunk = _read_once()
+                    if chunk is None:
+                        break
+                    if chunk:
+                        _append_chunk(chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:

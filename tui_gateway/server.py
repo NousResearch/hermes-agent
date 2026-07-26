@@ -4497,10 +4497,20 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
 
 def _tool_ctx(name: str, args: dict) -> str:
-    try:
-        from agent.display import build_tool_label
+    """Argument preview for a tool row — never a phrased label.
 
-        return build_tool_label(name, args, max_len=80) or ""
+    Clients own their own phrasing: the TUI wraps this as ``Terminal("...")``
+    and the desktop prepends its own localized verb ("Running"/"Ran"). Sending
+    ``build_tool_label`` here instead of the raw preview stutters the verb on
+    both surfaces ("Running Running sleep 70 + 2 commands") and leaks a display
+    label into the desktop's ``args.context``, where it stands in for the real
+    command. The friendly labels belong on the CLI spinner, which builds them
+    from ``build_tool_label`` at its own call sites.
+    """
+    try:
+        from agent.display import build_tool_preview
+
+        return build_tool_preview(name, args, max_len=80) or ""
     except Exception:
         return ""
 

@@ -7124,7 +7124,12 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
             ["systemctl", "--user", "restart", svc_name],
         ):
             try:
-                r = subprocess.run(candidate, capture_output=True, text=True, timeout=15)
+                r = subprocess.run(
+                    candidate,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                    timeout=15,
+                )
                 if r.returncode == 0:
                     return True
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -7132,7 +7137,12 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
         return False
 
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=15,
+        )
         return r.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False

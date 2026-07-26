@@ -790,3 +790,14 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
 
+
+def test_x_search_query_schema_requires_meaningful_natural_language():
+    from tools.x_search_tool import X_SEARCH_SCHEMA
+
+    description = X_SEARCH_SCHEMA["parameters"]["properties"]["query"]["description"]
+
+    assert "meaningful" in description
+    assert "non-empty" in description
+    assert "natural-language instruction" in description
+    assert "Grok X-search agent" in description
+

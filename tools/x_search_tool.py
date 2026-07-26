@@ -492,7 +492,10 @@ X_SEARCH_SCHEMA = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "What to look up on X.",
+                "description": (
+                    "A meaningful, non-empty natural-language instruction sent "
+                    "to the Grok X-search agent."
+                ),
             },
             "allowed_x_handles": {
                 "type": "array",

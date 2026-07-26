@@ -316,3 +316,198 @@ def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypat
     delivered = adapter.handle_message.await_args.args[0]
     assert secret not in delivered.text
     assert "HOME=/home/user" in delivered.text
+
+
+def test_concurrent_process_watchers_coalesce_one_session_completion_turn(monkeypatch):
+    """Concurrent terminal watchers for one session must re-enter the agent once."""
+    import tools.process_registry as pr_module
+
+    registry = ProcessRegistry()
+    watchers = []
+    for index in range(3):
+        session = ProcessSession(
+            id=f"proc_batch_{index}",
+            command=f"printf batch-{index}",
+            task_id=f"task-{index}",
+            started_at=1000.0 + index,
+            output_buffer=f"batch-{index}\n",
+            exited=True,
+            exit_code=0,
+            notify_on_complete=True,
+        )
+        registry._finished[session.id] = session
+        watchers.append({
+            "session_id": session.id,
+            "check_interval": 0,
+            "session_key": "agent:main:telegram:dm:123",
+            "platform": "telegram",
+            "chat_type": "dm",
+            "chat_id": "123",
+            "notify_on_complete": True,
+        })
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    async def _exercise():
+        await asyncio.gather(*(
+            runner._run_process_watcher(watcher)
+            for watcher in watchers
+        ))
+
+    asyncio.run(_exercise())
+
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert "3 background processes completed" in delivered.text
+    for index in range(3):
+        assert f"proc_batch_{index}" in delivered.text
+
+
+def test_completion_arriving_during_batch_delivery_schedules_next_flush():
+    """A new event cannot be stranded behind an in-flight batch for its route."""
+    first_delivery_entered = asyncio.Event()
+    release_first_delivery = asyncio.Event()
+    delivery_count = 0
+
+    async def _deliver(_event):
+        nonlocal delivery_count
+        delivery_count += 1
+        if delivery_count == 1:
+            first_delivery_entered.set()
+            await release_first_delivery.wait()
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_deliver))
+    runner = _runner(adapter)
+
+    async def _exercise():
+        first = asyncio.create_task(runner._enqueue_process_completion_notification(
+            "first completion",
+            _completion_event(started_at=1.0, session_id="proc_first"),
+        ))
+        await first_delivery_entered.wait()
+        second = asyncio.create_task(runner._enqueue_process_completion_notification(
+            "second completion",
+            _completion_event(started_at=2.0, session_id="proc_second"),
+        ))
+        release_first_delivery.set()
+        assert await first is True
+        assert await asyncio.wait_for(second, timeout=1.0) is True
+
+    asyncio.run(_exercise())
+
+    assert adapter.handle_message.await_count == 2
+
+
+def test_completion_batches_do_not_cross_conversation_routes():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    first = _completion_event(started_at=1.0, session_id="proc_route_a")
+    second = _completion_event(started_at=2.0, session_id="proc_route_b")
+    second["session_key"] = "agent:main:telegram:dm:456"
+    second["chat_id"] = "456"
+
+    async def _exercise():
+        return await asyncio.gather(
+            runner._enqueue_process_completion_notification("first", first),
+            runner._enqueue_process_completion_notification("second", second),
+        )
+
+    assert asyncio.run(_exercise()) == [True, True]
+    assert adapter.handle_message.await_count == 2
+
+
+def test_failed_coalesced_delivery_retries_all_entries():
+    attempts = 0
+
+    async def _deliver(_event):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary adapter failure")
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_deliver))
+    runner = _runner(adapter)
+    events = [
+        _completion_event(started_at=float(index), session_id=f"proc_retry_{index}")
+        for index in range(2)
+    ]
+
+    async def _enqueue_all():
+        return await asyncio.gather(*(
+            runner._enqueue_process_completion_notification(f"event-{index}", event)
+            for index, event in enumerate(events)
+        ))
+
+    async def _exercise():
+        assert await _enqueue_all() == [False, False]
+        assert await _enqueue_all() == [True, True]
+
+    asyncio.run(_exercise())
+    assert adapter.handle_message.await_count == 2
+
+
+def test_coalesced_success_records_every_completion_identity():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    events = [
+        _completion_event(started_at=float(index), session_id=f"proc_ledger_{index}")
+        for index in range(3)
+    ]
+
+    async def _exercise():
+        return await asyncio.gather(*(
+            runner._enqueue_process_completion_notification(f"event-{index}", event)
+            for index, event in enumerate(events)
+        ))
+
+    assert asyncio.run(_exercise()) == [True, True, True]
+    for event in events:
+        identity = runner._completion_delivery_identity(event)
+        assert identity in runner._completion_deliveries_delivered
+
+
+def test_duplicate_primary_does_not_discard_fresh_batch_sibling():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    duplicate = _completion_event(started_at=1.0, session_id="proc_duplicate")
+    fresh = _completion_event(started_at=2.0, session_id="proc_fresh")
+    duplicate_identity = runner._completion_delivery_identity(duplicate)
+    runner._completion_deliveries_delivered[duplicate_identity] = None
+
+    async def _exercise():
+        return await asyncio.gather(
+            runner._enqueue_process_completion_notification("duplicate", duplicate),
+            runner._enqueue_process_completion_notification("fresh", fresh),
+        )
+
+    assert asyncio.run(_exercise()) == [True, True]
+    adapter.handle_message.assert_awaited_once()
+    fresh_identity = runner._completion_delivery_identity(fresh)
+    assert fresh_identity in runner._completion_deliveries_delivered
+
+
+def test_batch_format_failure_resolves_waiters_for_retry(monkeypatch):
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    monkeypatch.setattr(
+        runner,
+        "_format_coalesced_process_completions",
+        MagicMock(side_effect=ValueError("bad batch")),
+    )
+    events = [
+        _completion_event(started_at=float(index), session_id=f"proc_format_{index}")
+        for index in range(2)
+    ]
+
+    async def _exercise():
+        pending = asyncio.gather(*(
+            runner._enqueue_process_completion_notification(f"event-{index}", event)
+            for index, event in enumerate(events)
+        ))
+        return await asyncio.wait_for(pending, timeout=1.0)
+
+    assert asyncio.run(_exercise()) == [False, False]
+    adapter.handle_message.assert_not_awaited()

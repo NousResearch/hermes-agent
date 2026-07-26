@@ -57,12 +57,6 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     remain protected until normal TTL expiry (conservative: PID reuse must
     never steal a live lease, and a wrongly-kept lease self-heals via TTL).
     """
-    # Windows stays TTL-only: stdlib os.kill(pid, 0) is NOT a no-op probe
-    # there (bpo-14484 — sig=0 maps to CTRL_C_EVENT and can kill the target's
-    # console group), and PID recycling semantics make liveness a weaker
-    # deadness signal. The 300s lease TTL remains the recovery path.
-    if os.name == "nt":
-        return False
     match = _COMPRESSION_LOCK_HOLDER_PID_RE.search(holder or "")
     if match is None:
         return False
@@ -84,10 +78,14 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
             return not psutil.pid_exists(pid)
         except Exception:
             return False  # any doubt → keep the lease until TTL expiry
-    # Scaffold-phase fallback only (psutil missing). POSIX-only by the
-    # os.name gate above.
+    # Scaffold-phase fallback only (psutil missing), and POSIX-only: stdlib
+    # os.kill(pid, 0) is NOT a no-op probe on Windows (bpo-14484 — sig=0 maps
+    # to CTRL_C_EVENT and can kill the target's console group). Without psutil
+    # a Windows host stays TTL-only; the lease TTL remains the recovery path.
+    if os.name == "nt":
+        return False
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — function early-returns on nt above
+        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
     except ProcessLookupError:
         return True
     except (PermissionError, OSError, OverflowError):
@@ -4592,7 +4590,24 @@ class SessionDB:
         holder: str,
         ttl_seconds: float = 300.0,
     ) -> bool:
-        """Extend the compression lock lease if ``holder`` still owns it."""
+        """Extend the compression lock lease if ``holder`` still owns it.
+
+        Ownership is decided by the ``holder`` column alone, deliberately NOT
+        by ``expires_at``: a live owner whose refresher thread was starved
+        (GC pause, loaded CI runner, a slow write escaping ``_execute_write``'s
+        retry budget) past its own TTL must be able to revive its still-unclaimed
+        row on the next tick. Requiring ``expires_at >= now`` here made such a
+        stall permanent — every later refresh matched 0 rows, so the owner kept
+        compressing and rotating with no lease at all, which is exactly the
+        unprotected window a competing path can fork the session lineage in.
+
+        This does not resurrect a lock somebody else already took: SQLite
+        serialises writes, so a reclaim (DELETE-expired + INSERT-or-IGNORE in
+        :meth:`try_acquire_compression_lock`) and this UPDATE never interleave.
+        Reclaim-first replaces ``holder``, so this UPDATE matches nothing and
+        returns False; refresh-first pushes ``expires_at`` into the future, so
+        the reclaimer's DELETE-expired matches nothing and its acquire fails.
+        """
         if not session_id or not holder:
             return False
         now = time.time()
@@ -4601,8 +4616,8 @@ class SessionDB:
         def _do(conn):
             cur = conn.execute(
                 "UPDATE compression_locks SET expires_at = ? "
-                "WHERE session_id = ? AND holder = ? AND expires_at >= ?",
-                (expires_at, session_id, holder, now),
+                "WHERE session_id = ? AND holder = ?",
+                (expires_at, session_id, holder),
             )
             return cur.rowcount > 0
 

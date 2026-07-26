@@ -94,6 +94,21 @@ def _count_children(db: SessionDB, parent_sid: str) -> int:
     return len(rows)
 
 
+def _live_child_id(db: SessionDB, parent_sid: str) -> str | None:
+    """The single child id of ``parent_sid``, or None when there is none.
+
+    Fails loudly on more than one child: callers use this to prove the agents
+    converged on the winner's session, so a multi-child state is a fork and
+    must not be silently reduced to 'the first row'.
+    """
+    rows = db._conn.execute(
+        "SELECT id FROM sessions WHERE parent_session_id = ?",
+        (parent_sid,),
+    ).fetchall()
+    assert len(rows) <= 1, f"expected at most one child of {parent_sid}, got {rows!r}"
+    return rows[0][0] if rows else None
+
+
 def _wait_for_touch(touch_calls: list[str], value: str, timeout: float = 1.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -293,21 +308,30 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
         "the concurrent rotations."
     )
 
-    # The number of agents that rotated their session_id must match the number
-    # of children created — and must never exceed one. (Both rotating would be
-    # the fork; the winner rolling back to parent under contention yields zero,
-    # which agrees with zero children.)
-    rotated = sum(
-        1 for a in (agent_a, agent_b) if a.session_id != parent_sid
+    # Every agent that moved off the parent must have landed on the SAME id.
+    # Counting movers is the wrong contract: the loser can legitimately end up
+    # on the child too, without rotating anything itself — it takes the lock
+    # after the winner released it, sees the parent was already rotated, and
+    # _adopt_live_compression_child() points it at the winner's single child
+    # (the "compression recovery: stale session=... adopted live child=..."
+    # path). That convergence is the fix working, not a fork; the fork is two
+    # DIFFERENT live ids. Asserting ``movers <= 1`` failed on that healthy
+    # outcome under concurrent load.
+    moved = {a.session_id for a in (agent_a, agent_b) if a.session_id != parent_sid}
+    assert len(moved) <= 1, (
+        f"Expected at most one post-compression session id, got {sorted(moved)}. "
+        "Two distinct ids means the lock didn't serialize them (transcript fork)."
     )
-    assert rotated <= 1, (
-        f"Expected at most one agent to rotate session_id, got {rotated}. "
-        "More than one rotating means the lock didn't serialize them."
-    )
-    assert rotated == n_children, (
-        f"Inconsistent state: {rotated} agent(s) rotated but {n_children} "
+    assert len(moved) == n_children, (
+        f"Inconsistent state: agents live on {sorted(moved)} but {n_children} "
         "child session(s) exist — rotation and child creation diverged."
     )
+    if moved:
+        child = _live_child_id(db, parent_sid)
+        assert moved == {child}, (
+            f"Agents live on {sorted(moved)} but the parent's only child is "
+            f"{child} — an agent is writing to a session outside the lineage."
+        )
 
     # The lock must be released after both paths finished, regardless of
     # whether the winner committed a child or rolled back.
@@ -1529,6 +1553,55 @@ def test_lease_refresher_survives_single_transient_failure() -> None:
     assert db.calls >= 4, (
         "Lease refresher stopped after a single transient failure — the "
         "bounded-tolerance fix regressed (one blip must not kill the lease)."
+    )
+
+
+def test_lease_refresher_first_refresh_is_immediate() -> None:
+    """Tick #1 must land before the first wait, not one interval late.
+
+    The lease clock starts at try_acquire(), but the refresher only starts
+    after the rotation-ownership lookup, the durable-breaker re-read and thread
+    startup. Waiting a full interval before the first refresh charges all of
+    that against the acquirer's first lease, so under load a short TTL can
+    expire — and be reclaimed by a competitor — before the owner ever renews.
+    """
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    db = _FlakyRefreshDB([])  # always succeeds
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
+    )
+
+    calls_before_first_wait: list[int] = []
+
+    def _wait(_interval: float) -> bool:
+        calls_before_first_wait.append(db.calls)
+        return True  # stop after the first wait
+
+    refresher._stop.wait = _wait  # type: ignore[assignment]
+    refresher._run()
+
+    assert calls_before_first_wait and calls_before_first_wait[0] == 1, (
+        "Refresher waited a full interval before its first refresh — the lease "
+        f"is renewed one interval late (calls at first wait: "
+        f"{calls_before_first_wait!r})."
+    )
+
+
+def test_lease_refresher_immediate_tick_still_honors_stop() -> None:
+    """A refresher stopped before/at startup must not fire the immediate tick."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    db = _FlakyRefreshDB([])
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
+    )
+    refresher._stop.set()  # released before the thread got to run
+    refresher._run()
+
+    assert db.calls == 0, (
+        "The immediate first tick must not resurrect a lock whose owner already "
+        f"released it (refresh calls after stop(): {db.calls})."
     )
 
 

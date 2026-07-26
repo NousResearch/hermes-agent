@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 import cli as cli_mod
 from cli import HermesCLI
 
@@ -80,6 +82,47 @@ class TestFinishInteractiveExitOrdering:
             cli._finish_interactive_exit(release_session=True)
 
         assert order == ["summary", "cleanup", "release"]
+        cli._release_active_session.assert_called_once()
+
+    def test_cleanup_still_runs_when_print_exit_summary_raises(self):
+        """A bare ``print()`` inside ``_print_exit_summary()`` can raise on
+        a broken stdout pipe (BrokenPipeError piping to e.g. `head`).
+        _run_cleanup() -- and the watchdog arm inside it -- must still run
+        even then; skipping cleanup because the print failed would trade
+        the original swallowed-summary bug for a worse never-cleaned-up
+        one.
+        """
+        cli = _make_cli()
+        order: list[str] = []
+
+        with (
+            patch.object(
+                cli,
+                "_print_exit_summary",
+                side_effect=BrokenPipeError("broken stdout"),
+            ),
+            patch.object(cli_mod, "_run_cleanup", side_effect=lambda: order.append("cleanup")),
+        ):
+            with pytest.raises(BrokenPipeError):
+                cli._finish_interactive_exit()
+
+        assert order == ["cleanup"], (
+            "_run_cleanup() must run even when _print_exit_summary() raises "
+            "-- it's in the finally block precisely so a broken stdout pipe "
+            "can't skip cleanup and leave the watchdog unarmed."
+        )
+
+    def test_release_session_still_runs_when_print_exit_summary_raises(self):
+        cli = _make_cli()
+        cli._release_active_session = MagicMock()
+
+        with (
+            patch.object(cli, "_print_exit_summary", side_effect=RuntimeError("boom")),
+            patch.object(cli_mod, "_run_cleanup"),
+        ):
+            with pytest.raises(RuntimeError):
+                cli._finish_interactive_exit(release_session=True)
+
         cli._release_active_session.assert_called_once()
 
 

@@ -13184,11 +13184,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         watchdog. Shared by both interactive-exit call sites in ``run()``
         (the stdin-unavailable early return and the main exit path) so the
         ordering can't drift out of sync between them.
+
+        The print step runs in a ``try/finally`` around cleanup: printing
+        first must not come at the cost of cleanup (and the watchdog arm
+        inside it) becoming conditional on the print succeeding.
+        ``_print_exit_summary()`` guards its own risky sub-steps
+        internally, but a bare ``print()`` can still raise on a broken
+        stdout pipe (``BrokenPipeError`` piping to e.g. ``head``) — that
+        must not skip ``_run_cleanup()`` (and therefore the watchdog and
+        session release), which would trade the original swallowed-summary
+        bug for a worse never-cleaned-up-at-all one.
         """
-        self._print_exit_summary()
-        _run_cleanup()
-        if release_session:
-            self._release_active_session()
+        try:
+            self._print_exit_summary()
+        finally:
+            _run_cleanup()
+            if release_session:
+                self._release_active_session()
 
     def _print_exit_summary(self, clear_screen: bool = True):
         """Print session resume info on exit, similar to Claude Code.

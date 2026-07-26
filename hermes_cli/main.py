@@ -16051,6 +16051,14 @@ def main():
         help="Rows committed per recovery batch (default: 1000)",
     )
     sessions_recover.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Best-effort salvage across damaged row ranges; the output remains "
+            "separate and every skipped range is recorded"
+        ),
+    )
+    sessions_recover.add_argument(
         "--report",
         type=Path,
         help="JSON report path (defaults to <output>.recovery.json)",
@@ -16159,9 +16167,13 @@ def main():
             source = args.source
             output = getattr(args, "output", None)
             inspect_only = bool(getattr(args, "inspect_only", False))
+            allow_partial = bool(getattr(args, "allow_partial", False))
             report_path = getattr(args, "report", None)
             if inspect_only and output is not None:
                 print("Error: --output cannot be used with --inspect-only.")
+                return 2
+            if inspect_only and allow_partial:
+                print("Error: --allow-partial cannot be used with --inspect-only.")
                 return 2
             if not inspect_only and output is None:
                 print("Error: --output is required unless --inspect-only is used.")
@@ -16203,6 +16215,7 @@ def main():
                         work_dir=getattr(args, "work_dir", None),
                         chunk_size=getattr(args, "chunk_size", 1000),
                         progress_cb=_recovery_progress,
+                        allow_partial=allow_partial,
                     )
                     if last_progress["table"] is not None:
                         print()
@@ -16227,6 +16240,20 @@ def main():
                 print(f"✓ Recovered database verified at: {output}")
                 print("  The active session database was not changed.")
                 print("  Review the JSON report before installing this database.")
+                return 0
+            if allow_partial and report.get("verified"):
+                counts = report.get("verification", {}).get("table_counts", {})
+                print(f"✓ Partial recovery output verified at: {output}")
+                print(
+                    "  Recovered "
+                    f"{int(counts.get('sessions') or 0):,} sessions and "
+                    f"{int(counts.get('messages') or 0):,} messages."
+                )
+                print("  The active session database was not changed.")
+                print(
+                    "  This output is incomplete. Review every skipped range "
+                    "and orphan count in the JSON report before installing it."
+                )
                 return 0
             print("✗ Recovery output did not pass every verification check.")
             print("  Do not install it. Review the JSON report for partial data or errors.")

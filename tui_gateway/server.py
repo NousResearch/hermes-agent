@@ -2177,6 +2177,80 @@ def _display_session_cwd(session: dict | None) -> str:
     return healed
 
 
+def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
+    """Re-anchor a session that SETTLED in another git checkout. Returns moved.
+
+    An agent told to work in a fresh worktree does exactly that — `git worktree
+    add`, `cd` into it, and every later command runs there — but the session
+    stayed pinned to wherever it started, so the desktop kept labelling the chat
+    with the primary checkout's branch while all the work landed elsewhere.
+
+    A plain `cd` is deliberately NOT a workspace move (see
+    ``_apply_project_workspace``): browsing to /tmp to read a log must not
+    re-home the chat. What we adopt here is narrower — the session's recorded
+    cwd is in a DIFFERENT git working tree than its workspace. That is a
+    relocation by any reading, and it is the only shape this reconciles.
+
+    Local backends only: a remote/SSH cwd names a path on the host, which this
+    gateway can neither stat nor probe with git.
+    """
+    if not session or not _is_local_terminal_backend():
+        return False
+
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(session.get("session_key") or "")
+    except Exception:
+        return False
+
+    if not recorded:
+        return False
+
+    resolved = os.path.abspath(os.path.expanduser(str(recorded)))
+    current = os.path.abspath(os.path.expanduser(_session_cwd(session)))
+    if resolved == current or not os.path.isdir(resolved):
+        return False
+
+    # The worktree ROOT, not the common repo root: folding worktrees together
+    # here is exactly what hides the move we're looking for.
+    landed = _git_repo_root_for_cwd(resolved)
+    if not landed or landed == _git_repo_root_for_cwd(current):
+        return False
+
+    session["cwd"] = resolved
+    # The session works here now, so this is its workspace — a desktop chat
+    # whose cwd was an unpersisted launch artifact earns a real row.
+    session["explicit_cwd"] = True
+    _register_session_cwd(session)
+
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.update_session_cwd(session.get("session_key", ""), resolved)
+            except Exception:
+                logger.debug("failed to persist settled session cwd", exc_info=True)
+
+    _persist_session_git_meta(session, resolved)
+    return True
+
+
+def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
+    """Emit end-of-turn ``session.info``, reconciling a settled cwd first.
+
+    The turn is over, so the agent has stopped moving: this is the one moment
+    where its recorded cwd is a stable answer to "where does this session
+    work". Reconciling before building the payload means the same event that
+    already tells the desktop the turn ended also carries the new cwd/branch —
+    the client follows it with no new event type and no extra round trip.
+    """
+    try:
+        _reconcile_session_cwd_from_terminal(session)
+    except Exception:
+        logger.debug("failed to reconcile settled session cwd", exc_info=True)
+    _emit("session.info", sid, _session_info(agent, session))
+
+
 def _session_source(session: dict | None) -> str:
     if session:
         source = str(session.get("source") or "").strip()
@@ -11860,7 +11934,7 @@ def _run_prompt_submit(
             # frame paths retire the marker as they emit).
             _retire_turn_marker(session, marker_key)
             session.pop("_auto_continue_scheduled", None)
-            _emit("session.info", sid, _session_info(agent, session))
+            _emit_settled_session_info(sid, session, agent)
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;

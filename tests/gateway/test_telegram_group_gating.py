@@ -1597,3 +1597,27 @@ def test_clean_bot_trigger_text_strips_the_current_handle():
     adapter._note_bot_username("new_helper_bot")
 
     assert adapter._clean_bot_trigger_text("@new_helper_bot ship it") == "ship it"
+
+
+def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
+    """A never-checked identity is stale even when monotonic() is near zero.
+
+    time.monotonic() has an arbitrary epoch: on a freshly-booted host (CI
+    runners, containers) it starts near 0. A 0.0 "never checked" sentinel
+    therefore reads as "checked just now" for the first TTL seconds of
+    uptime, suppressing the very first identity refresh — so the stale-handle
+    recovery silently did nothing on exactly the machines most likely to be
+    freshly booted. Caught by CI, invisible on a long-lived dev box.
+    """
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot = _IdentityBot(cached="old_helper_bot", server="new_helper_bot")
+
+    # Simulate a host that booted 12 seconds ago.
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.time.monotonic", lambda: 12.0
+    )
+
+    assert adapter._bot_identity_is_fresh() is False
+
+    adapter._note_bot_username("new_helper_bot")
+    assert adapter._bot_identity_is_fresh() is True

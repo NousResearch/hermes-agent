@@ -759,7 +759,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # pointing at the old handle until something calls getMe again. Every
         # mention/routing comparison reads _current_bot_username() instead.
         self._bot_username_observed: Optional[str] = None
-        self._bot_identity_checked_at: float = 0.0
+        # None = never checked. Must NOT be 0.0: these are compared against
+        # time.monotonic(), whose epoch is arbitrary and on a freshly-booted
+        # host starts near zero — so a 0.0 sentinel reads as "checked just
+        # now" and suppresses the first refresh for the first TTL seconds of
+        # uptime.
+        self._bot_identity_checked_at: Optional[float] = None
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         # Consecutive heartbeat probes that saw queued updates the running
         # poller is not consuming. get_me() can't see this — the send path is
@@ -7873,6 +7878,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 continue
             self._note_bot_username(getattr(candidate, "username", None))
 
+    def _bot_identity_is_fresh(self) -> bool:
+        """True when identity was re-read within the TTL.
+
+        ``None`` means never checked, which is always stale. Do not fold the
+        sentinel into ``0.0``: monotonic clocks have an arbitrary epoch that
+        can legitimately be smaller than the TTL on a freshly-booted host,
+        which would make "never" look like "just now".
+        """
+        checked_at = getattr(self, "_bot_identity_checked_at", None)
+        if checked_at is None:
+            return False
+        return (time.monotonic() - checked_at) < self._BOT_IDENTITY_TTL_SECONDS
+
     async def _refresh_bot_identity(self, *, force: bool = False) -> None:
         """Re-read the bot's identity from Telegram when the cache may be stale.
 
@@ -7883,8 +7901,7 @@ class TelegramAdapter(BasePlatformAdapter):
         bot = self._bot
         if bot is None or not callable(getattr(bot, "get_me", None)):
             return
-        now = time.monotonic()
-        if not force and (now - getattr(self, "_bot_identity_checked_at", 0.0)) < self._BOT_IDENTITY_TTL_SECONDS:
+        if not force and self._bot_identity_is_fresh():
             return
         try:
             me = await asyncio.wait_for(bot.get_me(), self._BOT_IDENTITY_PROBE_TIMEOUT)
@@ -8047,7 +8064,7 @@ class TelegramAdapter(BasePlatformAdapter):
         existing = getattr(self, "_bot_identity_refresh_task", None)
         if existing is not None and not existing.done():
             return
-        if (time.monotonic() - getattr(self, "_bot_identity_checked_at", 0.0)) < self._BOT_IDENTITY_TTL_SECONDS:
+        if self._bot_identity_is_fresh():
             return
         try:
             loop = asyncio.get_running_loop()

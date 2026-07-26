@@ -8,11 +8,13 @@ import multitab from './multitab.mjs'
 import profileSwitch from './profile-switch.mjs'
 import sessionSwitch from './session-switch.mjs'
 import stream from './stream.mjs'
+import streamHistory from './stream-history.mjs'
 import submit from './submit.mjs'
 import transcript from './transcript.mjs'
 
 export const SCENARIOS = {
   [stream.name]: stream,
+  [streamHistory.name]: streamHistory,
   [keystroke.name]: keystroke,
   [transcript.name]: transcript,
   [multitab.name]: multitab,

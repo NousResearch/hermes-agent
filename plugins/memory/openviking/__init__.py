@@ -1385,7 +1385,8 @@ def _runtime_openviking_timeout_message(endpoint: str) -> str:
         f"Local OpenViking server at {endpoint} is not reachable. "
         "Tried to start openviking-server, but it did not become reachable "
         f"within {_LOCAL_OPENVIKING_AUTOSTART_TIMEOUT:.0f} seconds. "
-        "OpenViking memory disabled for this Hermes run."
+        "OpenViking memory disabled; will retry on a later access or when "
+        "the config changes."
     )
 
 
@@ -2240,8 +2241,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     return
                 if not healthy:
                     warning_message = (
-                        f"OpenViking server at {endpoint} is still not reachable after auto-start; "
-                        "OpenViking memory disabled for this Hermes run."
+                        f"OpenViking server at {endpoint} is still not reachable after auto-start. "
+                        "OpenViking memory disabled; will retry on a later access or when "
+                        "the config changes."
                     )
                 else:
                     self._client = client
@@ -2259,7 +2261,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             except Exception as e:
                 warning_message = (
                     f"OpenViking server at {endpoint} could not be attached after auto-start: {e}. "
-                    "OpenViking memory disabled for this Hermes run."
+                    "OpenViking memory disabled; will retry on a later access or when "
+                    "the config changes."
                 )
 
         if warning_message:
@@ -2283,8 +2286,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         endpoint = self._endpoint
         if not _is_local_openviking_url(endpoint):
             _emit_runtime_warning(
-                f"Remote OpenViking server at {endpoint} is not reachable; "
-                "OpenViking memory disabled for this Hermes run. "
+                f"Remote OpenViking server at {endpoint} is not reachable. "
+                "OpenViking memory disabled; will retry on a later access or when "
+                "the config changes. "
                 "Check the configured endpoint and network connectivity.",
                 warning_callback,
             )
@@ -2309,7 +2313,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 self._runtime_start_pending = False
                 warning_message = (
                     f"Local OpenViking server at {endpoint} is not reachable. {start_message} "
-                    "OpenViking memory disabled for this Hermes run."
+                    "OpenViking memory disabled; will retry on a later access or when "
+                    "the config changes."
                 )
                 self._client = None
             else:
@@ -2386,7 +2391,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
             elif health_state != "healthy":
                 _emit_runtime_warning(
-                    f"{health_message} OpenViking memory disabled for this Hermes run.",
+                    f"{health_message} OpenViking memory disabled; will retry on a "
+                    "later access or when the config changes.",
                     warning_callback,
                 )
                 self._client = None

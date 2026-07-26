@@ -369,8 +369,9 @@ def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
 
     assert provider._client is None
     assert warnings == [
-        "Remote OpenViking server at https://localhost:1934 is not reachable; "
-        "OpenViking memory disabled for this Hermes run. "
+        "Remote OpenViking server at https://localhost:1934 is not reachable. "
+        "OpenViking memory disabled; will retry on a later access or when "
+        "the config changes. "
         "Check the configured endpoint and network connectivity."
     ]
 
@@ -403,7 +404,7 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
     assert provider._client is None
     assert warnings == [
         "OpenViking server at http://localhost:1934 responded but reported unhealthy status. "
-        "OpenViking memory disabled for this Hermes run."
+        "OpenViking memory disabled; will retry on a later access or when the config changes."
     ]
 
 
@@ -1056,5 +1057,4 @@ def test_prefetch_sends_contract_safe_memory_context_payload(monkeypatch):
     assert "top_k" not in payload
     assert "mode" not in payload
     assert "target_uri" not in payload
-
 

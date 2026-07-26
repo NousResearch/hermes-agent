@@ -90,3 +90,78 @@ def test_media_caption_and_filename_reach_model_through_cache(
             await client.close()
 
     asyncio.run(exchange())
+
+
+@pytest.mark.parametrize("gateway", [10], indirect=True)
+def test_oversized_media_exposes_caption_and_filename_without_download(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+) -> None:
+    caption = "Please review this file"
+    filename = "oversized.txt"
+
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        try:
+            await client.sync(timeout=0)
+            uploaded, decryption = await client.upload(
+                io.BytesIO(b"small"), content_type="text/plain", filename=filename, filesize=5
+            )
+            assert isinstance(uploaded, UploadResponse), uploaded
+            assert decryption is None
+
+            sent = await client.room_send(
+                live_room.room_id,
+                "m.room.message",
+                {
+                    "msgtype": "m.file",
+                    "body": caption,
+                    "filename": filename,
+                    "url": uploaded.content_uri,
+                    "info": {"mimetype": "text/plain", "size": 11},
+                },
+            )
+            assert isinstance(sent, RoomSendResponse), sent
+
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                try:
+                    response = await asyncio.wait_for(client.sync(timeout=250), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                joined = response.rooms.join.get(live_room.room_id)
+                if not joined:
+                    continue
+                replies = [
+                    (event.sender, event.body)
+                    for event in joined.timeline.events
+                    if isinstance(event, RoomMessageText) and event.sender != live_room.observer.user_id
+                ]
+                if not replies:
+                    continue
+
+                assert replies == [(live_room.bot.user_id, "Matrix live reply")]
+                requests = gateway.model.main_requests()
+                assert len(requests) == 1
+                user_messages = [
+                    message for message in requests[0]["messages"] if message["role"] == "user"
+                ]
+                assert len(user_messages) == 1
+                model_context = json.dumps(user_messages[0]["content"])
+                assert caption in model_context
+                assert f"[matrix file attachment too large: {filename}]" in model_context
+
+                cached = gateway.container.exec([
+                    "/opt/hermes/.venv/bin/python", "-c",
+                    "from pathlib import Path; "
+                    f"assert not list(Path('/opt/data/cache/documents').glob('doc_*_{filename}'))",
+                ])
+                assert (cached.exit_code, cached.output) == (0, b"")
+                return
+
+            pytest.fail("No Matrix reply to the oversized media event within 15 seconds")
+        finally:
+            await client.close()
+
+    asyncio.run(asyncio.wait_for(exchange(), timeout=20))

@@ -21,6 +21,15 @@ describe('compaction store', () => {
     expect($compactingSessions.get()).toEqual({ 'session-a': true, 'session-b': true })
   })
 
+  it('tracks session ids that collide with object prototype keys', () => {
+    setSessionCompacting('toString', true)
+
+    expect($compactingSessions.get()).toEqual({ toString: true })
+
+    $activeSessionId.set('toString')
+    expect($compactionActive.get()).toBe(true)
+  })
+
   it('exposes only the active session via the focus-scoped view', () => {
     setSessionCompacting('session-a', true)
 

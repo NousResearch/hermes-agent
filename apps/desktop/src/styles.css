@@ -514,6 +514,32 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
+/* Inline content links: a small tinted chip instead of an underline. Tint is
+   currentColor-relative (the old `decoration-current/20` idiom), so text and
+   fill share a hue on every theme from one `color` declaration. */
+.link-chip {
+  --link-chip-tint: 8%;
+
+  /* `ch`/`em` so the chip tracks the text at any size. Block padding is
+     asymmetric because an inline box's content area is ascent+descent — equal
+     padding paints the glyphs high. Keep it small: `padding-block` doesn't grow
+     the line box, so an over-padded chip creeps into the line above. */
+  padding: 0.05ch 0.5ch 0.2ch;
+  border-radius: 0.25rem;
+  color: var(--dt-primary);
+  background: color-mix(in srgb, currentColor var(--link-chip-tint), transparent);
+  /* Explicit: the base layer underlines every `a` (see the :where(a, …) reset). */
+  text-decoration: none;
+  /* A wrapped link gets a chip per line fragment, not one ragged box. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 0.12s ease;
+}
+
+.link-chip:hover {
+  --link-chip-tint: 15%;
+}
+
 /* Hover-reveal suppression — the shared, declarative escape hatch.
    A collapsed pane slides in when the pointer dwells on its thin edge trigger.
    Controls that sit over that edge gutter would drag the panel in by accident.

@@ -3153,6 +3153,14 @@ class TestWebServerEndpoints:
         assert data["AWS_PROFILE"]["provider"] == "bedrock"
 
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
+        """Platform-scoped vars belong to a Channels card; cross-cutting
+        gateway vars belong to the Keys page.
+
+        Uses credentials as the example: the self-configuring knobs
+        (*_HOME_CHANNEL, *_ALLOW_ALL_USERS, …) were deliberately dropped from
+        the setup cards and handed back to Keys — see
+        tests/hermes_cli/test_setup_hidden_env.py.
+        """
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,
             _build_catalog_entry,
@@ -3160,13 +3168,12 @@ class TestWebServerEndpoints:
         )
 
         discord = _build_catalog_entry("discord")
-        assert "DISCORD_HOME_CHANNEL" in discord["env_vars"]
-        assert "DISCORD_ALLOW_ALL_USERS" in discord["env_vars"]
+        assert "DISCORD_BOT_TOKEN" in discord["env_vars"]
+        assert "DISCORD_ALLOWED_USERS" in discord["env_vars"]
 
         managed = _channel_managed_env_keys()
-        assert "DISCORD_HOME_CHANNEL" in managed
-        assert "BLUEBUBBLES_ALLOW_ALL_USERS" in managed
-        assert "MATTERMOST_ALLOW_ALL_USERS" in managed
+        assert "DISCORD_BOT_TOKEN" in managed
+        assert "MATTERMOST_TOKEN" in managed
         assert "GATEWAY_PROXY_URL" not in managed
         assert "GATEWAY_PROXY_URL" in _MESSAGING_KEYS_PAGE_KEYS
 

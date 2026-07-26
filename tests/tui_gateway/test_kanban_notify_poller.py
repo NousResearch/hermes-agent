@@ -108,6 +108,42 @@ class TestCollectKanbanNotifications:
         assert _collect_kanban_notifications({"session_key": None}) == []
         assert len(_sub_rows(tid)) == 1
 
+    def test_profile_scoped_session_reads_the_shared_board(self, tmp_path):
+        """The kanban board is shared across profiles BY DESIGN (see the
+        hermes_cli/kanban_db.py module docstring): ``kanban_home()`` anchors on
+        ``get_default_hermes_root()``, which resolves the process env and
+        ignores context-local profile overrides. A Desktop session bound to a
+        non-launch profile (``session["profile_home"]``) must therefore still
+        have its subscription claimed from the one shared board — the poller
+        needs no per-profile home binding.
+        """
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        tid = _create_subscribed_task()
+        _complete(tid, summary="cross-profile delivery")
+
+        other_profile_home = tmp_path / "profiles" / "reviewer"
+        other_profile_home.mkdir(parents=True)
+        session = {
+            "session_key": SESSION_KEY,
+            "profile_home": str(other_profile_home),
+        }
+        # Simulate the strictest case: a context-local profile override is
+        # active while the poller collects (as a profile-bound RPC would set).
+        token = set_hermes_home_override(str(other_profile_home))
+        try:
+            texts = _collect_kanban_notifications(session)
+        finally:
+            reset_hermes_home_override(token)
+
+        assert len(texts) == 1
+        assert tid in texts[0]
+        assert "cross-profile delivery" in texts[0]
+        assert _sub_rows(tid) == []
+
 
 class TestFormatKanbanEventText:
     SUB = {"task_id": "t_abc123"}

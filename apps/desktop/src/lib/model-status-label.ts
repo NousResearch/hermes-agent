@@ -1,25 +1,4 @@
-import { normalize } from '@/lib/text'
-
-const REASONING_LABELS: Record<string, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'XHigh',
-  max: 'Max',
-  ultra: 'Ultra'
-}
-
-export function reasoningEffortLabel(effort: string): string {
-  const key = normalize(effort)
-
-  if (!key) {
-    return ''
-  }
-
-  return REASONING_LABELS[key] ?? effort
-}
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 /** Which model/provider a picker should mark "current". With a live session the
  *  gateway's `model.options` is authoritative; pre-session there is no server
@@ -122,7 +101,7 @@ export function formatModelStatusLabel(
 
   // Always surface the effort so the current reasoning level is visible at a
   // glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || 'medium'))
+  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
   return `${name} · ${parts.join(' ')}`
 }

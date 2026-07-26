@@ -13,29 +13,24 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { normalize } from '@/lib/text'
+import {
+  DEFAULT_REASONING_EFFORT,
+  isThinkingEnabled,
+  REASONING_EFFORTS,
+  resolveReasoningEffort
+} from '@/lib/reasoning-effort'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
 import {
   $defaultReasoningEffort,
-  DEFAULT_REASONING_EFFORT,
   markComposerSelectionManual,
   setCurrentFastMode,
   setCurrentReasoningEffort
 } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 
-// Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
+// Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
-const EFFORT_OPTIONS = [
-  { value: 'minimal', labelKey: 'minimal' },
-  { value: 'low', labelKey: 'low' },
-  { value: 'medium', labelKey: 'medium' },
-  { value: 'high', labelKey: 'high' },
-  { value: 'xhigh', labelKey: 'xhigh' },
-  { value: 'max', labelKey: 'max' },
-  { value: 'ultra', labelKey: 'ultra' }
-] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
@@ -118,7 +113,7 @@ export function ModelEditSubmenu({
   const touchesPrimary = view.kind === 'primary'
 
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
-  const effortValue = normalizeEffort(effort, defaultEffort)
+  const effortValue = resolveReasoningEffort(effort, defaultEffort)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
 
   // Editing always records the model's global preset (keyed by provider::model,
@@ -247,14 +242,14 @@ export function ModelEditSubmenu({
               <DropdownMenuSeparator className="mx-0" />
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {EFFORT_OPTIONS.map(option => (
+                {REASONING_EFFORTS.map(value => (
                   <DropdownMenuRadioItem
                     className={dropdownMenuRow}
-                    key={option.value}
+                    key={value}
                     onSelect={event => event.preventDefault()}
-                    value={option.value}
+                    value={value}
                   >
-                    {copy[option.labelKey]}
+                    {copy[value]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -264,20 +259,4 @@ export function ModelEditSubmenu({
       )}
     </DropdownMenuSubContent>
   )
-}
-
-function isThinkingEnabled(effort: string, fallback: string): boolean {
-  // Empty = the profile default = on; only an explicit "none" is off.
-  return normalize(effort || fallback) !== 'none'
-}
-
-function normalizeEffort(effort: string, fallback: string): string {
-  const value = normalize(effort || fallback)
-
-  // Thinking off → no effort selected in the radio group.
-  if (value === 'none') {
-    return ''
-  }
-
-  return EFFORT_OPTIONS.some(option => option.value === value) ? value : DEFAULT_REASONING_EFFORT
 }

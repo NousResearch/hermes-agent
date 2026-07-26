@@ -5040,8 +5040,13 @@ def _agent_cbs(sid: str) -> dict:
             # multi_select is a pass-through hint: renderers with checkbox
             # support can honor it; older renderers ignore the extra field
             # and stay single-select (a single answer still parses as a
-            # one-element list on the tool side).
-            {"question": q, "choices": c, "multi_select": bool(multi_select)},
+            # one-element list on the tool side). Only emitted when True so
+            # single-select payloads keep the exact pre-multi-select shape.
+            (
+                {"question": q, "choices": c, "multi_select": True}
+                if multi_select
+                else {"question": q, "choices": c}
+            ),
             timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the

@@ -13869,6 +13869,30 @@ def test_clarify_callback_uses_configured_timeout(monkeypatch):
     assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
 
 
+def test_clarify_callback_multi_select_hint(monkeypatch):
+    """multi_select=True adds the hint to the payload; the single-select
+    payload shape stays byte-identical to the pre-multi-select protocol
+    (older renderers must never see the extra field)."""
+    captured = {}
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(payload=payload)
+        return "answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    cb = server._agent_cbs("sid-1")["clarify_callback"]
+
+    cb("Pick many", ["a", "b"], multi_select=True)
+    assert captured["payload"] == {
+        "question": "Pick many",
+        "choices": ["a", "b"],
+        "multi_select": True,
+    }
+
+    cb("Pick one", ["a", "b"], multi_select=False)
+    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [(0, None), (-1, None), (42, 42)],

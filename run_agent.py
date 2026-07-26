@@ -411,7 +411,7 @@ class _StreamErrorEvent(Exception):
 
 # ── Topic Signal Parser ───────────────────────────────────────────
 _TOPIC_SHIFT_RE = re.compile(
-    r"^TOPIC:\s*new\s+(.+?)\s*$", re.MULTILINE
+    r"^TOPIC:\s*(?:new\s+)?(.+?)\s*$", re.MULTILINE
 )
 _TOPIC_MATCH_RE = re.compile(
     r"^TOPIC:\s*(\d+)\s*$", re.MULTILINE
@@ -430,17 +430,21 @@ def _parse_topic_signals(content: str) -> tuple[str, Optional[dict], Optional[di
     shift_info = None
     match_info = None
 
-    m = _TOPIC_SHIFT_RE.search(content)
-    if m:
-        name = m.group(1).strip()
-        shift_info = {"score": 10, "name": name}
-        content = content[: m.start()] + content[m.end() :]
-
+    # Check MATCH first (numeric topic ID)
     m = _TOPIC_MATCH_RE.search(content)
     if m:
         topic_id = int(m.group(1))
         match_info = {"topic_id": topic_id, "score": 10}
         content = content[: m.start()] + content[m.end() :]
+
+    # Check SHIFT (named topic, with optional "new" prefix)
+    m = _TOPIC_SHIFT_RE.search(content)
+    if m:
+        name = m.group(1).strip()
+        # Skip if it looks like a number (already handled by MATCH)
+        if not name.isdigit():
+            shift_info = {"score": 10, "name": name}
+            content = content[: m.start()] + content[m.end() :]
 
     return content.strip(), shift_info, match_info
 

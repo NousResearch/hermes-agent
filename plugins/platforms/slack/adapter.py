@@ -2725,6 +2725,13 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="ignored_channel")
         if not self._app:
             return SendResult(success=False, error="Not connected")
+        # A bare Slack user ID (U.../W...) as chat_id — e.g. the second+ call
+        # of send_or_update_status() editing its own first send() — must be
+        # resolved to its DM conversation ID the same way send() does;
+        # chat.update rejects user IDs outright.
+        chat_id = await self._ensure_dm_conversation(
+            chat_id, team_id=self._metadata_team_id(metadata)
+        )
         try:
             formatted = self.format_message(content)
             # Slack's chat.update has the same ~40k char limit as postMessage.
@@ -2826,6 +2833,15 @@ class SlackAdapter(BasePlatformAdapter):
         """
         if not self._app:
             return False
+        # Same DM-resolution gap as edit_message(): a progress bubble sent to
+        # a bare Slack user ID gets its DM ID cached by send()'s
+        # _ensure_dm_conversation call, but chat.delete still needs it passed
+        # explicitly — the raw user ID is rejected the same way chat.update's
+        # channel is. No metadata/team_id available here (matching the
+        # existing _get_client(chat_id) call below, which also has none);
+        # _ensure_dm_conversation falls back to the channel→team map/primary
+        # client the same way _get_client already does.
+        chat_id = await self._ensure_dm_conversation(chat_id)
         try:
             response = await self._get_client(chat_id).chat_delete(channel=chat_id, ts=message_id)
             if hasattr(response, "get") and response.get("ok") is False:

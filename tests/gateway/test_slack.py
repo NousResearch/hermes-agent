@@ -8107,6 +8107,97 @@ class TestEnsureDmConversation:
         post_kwargs = adapter._app.client.chat_postMessage.await_args.kwargs
         assert post_kwargs["channel"] == "D999NEW"
 
+    @pytest.mark.asyncio
+    async def test_edit_message_resolves_user_target(self, adapter):
+        """send_or_update_status()'s edit-in-place path (chat.update) rejects
+        a bare user ID as channel the same way chat.postMessage does — the
+        second+ call editing its own first send() must resolve it too."""
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        result = await adapter.edit_message("U123ABCDEF", "111.222", "updated text")
+
+        assert result.success is True
+        update_kwargs = adapter._app.client.chat_update.await_args.kwargs
+        assert update_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_conversation_id_passes_through(self, adapter):
+        """Regular channel/group/DM targets are unaffected — no spurious
+        conversations.open call for an already-resolved conversation id."""
+        adapter._app.client.conversations_open = AsyncMock()
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        result = await adapter.edit_message("C123CHAN", "111.222", "updated text")
+
+        assert result.success is True
+        update_kwargs = adapter._app.client.chat_update.await_args.kwargs
+        assert update_kwargs["channel"] == "C123CHAN"
+        adapter._app.client.conversations_open.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_message_resolves_user_target(self, adapter):
+        """Progress-bubble cleanup (chat.delete) must resolve a bare user ID
+        the same way; otherwise a "Working..." bubble sent to a DM'd user is
+        never cleaned up (channel_not_found, swallowed as best-effort)."""
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.delete_message("U123ABCDEF", "111.222")
+
+        assert result is True
+        delete_kwargs = adapter._app.client.chat_delete.await_args.kwargs
+        assert delete_kwargs["channel"] == "D999NEW"
+
+    @pytest.mark.asyncio
+    async def test_delete_message_conversation_id_passes_through(self, adapter):
+        adapter._app.client.conversations_open = AsyncMock()
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.delete_message("C123CHAN", "111.222")
+
+        assert result is True
+        delete_kwargs = adapter._app.client.chat_delete.await_args.kwargs
+        assert delete_kwargs["channel"] == "C123CHAN"
+        adapter._app.client.conversations_open.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_or_update_status_edits_in_place_for_dm_target(self, adapter):
+        """End-to-end: the whole point of send_or_update_status() (#30045) is
+        that a second call with the same status_key EDITS the first message
+        instead of posting a new one. Before this fix, edit_message() failed
+        for a bare-user-ID chat_id (chat.update rejects it), so every call
+        fell through to a fresh send() — silently defeating the edit-in-place
+        contract for any DM/cron target."""
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+        adapter._app.client.chat_update = AsyncMock(
+            return_value={"ok": True, "ts": "111.222"}
+        )
+
+        first = await adapter.send_or_update_status("U123ABCDEF", "compressing", "Compacting…")
+        second = await adapter.send_or_update_status("U123ABCDEF", "compressing", "Still compacting…")
+
+        assert first.success is True
+        assert second.success is True
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        adapter._app.client.chat_update.assert_awaited_once()
+        update_kwargs = adapter._app.client.chat_update.await_args.kwargs
+        assert update_kwargs["channel"] == "D999NEW"
+        assert update_kwargs["ts"] == "111.222"
+
 
 # ---------------------------------------------------------------------------
 # TestThreadImageContext — C1-images: images/files in prior thread messages

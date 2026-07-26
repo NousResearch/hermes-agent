@@ -330,6 +330,16 @@ def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     assert len(adapter.handled) == 1
     assert adapter.handled[0].source.chat_type == "dm"
 
+    # The wake must resume the creator's real DM session key — the whole bug
+    # was that a hardcoded chat_type="group" made build_session_key() produce
+    # a group-scoped key (a NEW session) instead of the ":dm:<chat_id>" shape
+    # the original conversation runs under (#56580 / #68874).
+    from gateway.session import build_session_key
+
+    wake_key = build_session_key(adapter.handled[0].source)
+    assert wake_key == "agent:main:telegram:dm:chat-dm"
+    assert ":group:" not in wake_key
+
 
 def test_auto_subscribe_persists_session_chat_type(tmp_path, monkeypatch):
     db_path = tmp_path / "auto-sub-chat-type.db"

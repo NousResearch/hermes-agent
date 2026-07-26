@@ -347,7 +347,8 @@
     --radius-scalar: 0.6;
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
-       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
+       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.
+       These are the defaults; each chat surface re-declares the calc against its own measurements (see below). */
     --status-stack-measured-height: 0px;
     --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 
@@ -1465,6 +1466,16 @@ text-* variant utilities. */ .btn-arc {
 [data-slot='aui_msg-actions'] button svg {
   width: 0.875rem;
   height: 0.875rem;
+}
+
+/* Re-declare the clearance calc on every chat surface. `:root` computes it
+   once against the ROOT measurements, so scoping only the inputs would leave
+   every thread reading the same substituted value. Redeclaring here makes each
+   surface resolve the calc against its own composer + status-stack heights,
+   falling back to the root defaults until this surface publishes its first
+   measurement. See surface-vars.ts. */
+[data-chat-surface] {
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 }
 
 /* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.

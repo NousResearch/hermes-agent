@@ -52,6 +52,32 @@ export function isSessionNotFoundError(error: unknown): boolean {
   return /session not found/i.test(message)
 }
 
+/**
+ * Is the session a prompt is about to run against currently mid-turn?
+ *
+ * The foreground `busyRef` is NOT the answer. It mirrors whatever chat is on
+ * screen, while submit and slash both resolve their target through
+ * `resolveTargetSessionId` — routinely a different session (a tile, a route
+ * rebind, a session created by this very call). Reading the foreground flag
+ * therefore gates one session's send on another session's turn: a stale
+ * foreground `true` (a warm resume of a still-running chat leaves one behind)
+ * blocks an IDLE target and reports "session busy" about a session doing
+ * nothing, and the converse lets a background send fire mid-turn.
+ *
+ * The published per-session state is authoritative. Fall back to the
+ * foreground flag only when the target has no state yet — a just-minted
+ * session whose first publish hasn't landed.
+ */
+export function isTargetSessionBusy(
+  sessionStates: Record<string, { busy: boolean }>,
+  sessionId: null | string,
+  foregroundBusy: boolean
+): boolean {
+  const state = sessionId ? sessionStates[sessionId] : undefined
+
+  return state ? state.busy : foregroundBusy
+}
+
 // Gateway JSON-RPC calls reject with "request timed out: <method>" when the
 // backend event loop is starved (e.g. a poller spin or a heavy async-injected
 // turn). For prompt.submit this is indistinguishable from a dead runtime

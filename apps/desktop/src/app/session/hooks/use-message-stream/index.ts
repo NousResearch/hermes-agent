@@ -251,12 +251,20 @@ export function useMessageStream({
       flushQueuedDeltas()
     }
 
-    if (sinceLast >= STREAM_DELTA_FLUSH_MS && typeof window.requestAnimationFrame === 'function') {
-      flushHandleRef.current = window.requestAnimationFrame(runFlush)
-
-      return
-    }
-
+    // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
+    // renderer it considers hidden, and "hidden" is not something this code can
+    // verify: `backgroundThrottling: false` plus the process-level switches in
+    // electron/main.ts cover the blurred and occluded cases, but they don't
+    // cover a minimized window, a fully off-screen one, or a renderer the
+    // compositor has otherwise parked. In those states an rAF-gated flush never
+    // runs, so a finished answer sits in this queue until some later input or
+    // focus event happens to wake a frame — the reply looks stalled, then
+    // arrives all at once on refocus.
+    //
+    // A timer keeps the same coalescing cadence (that's what the floor above is
+    // for) while guaranteeing delivery without user interaction. Timers are
+    // clamped in background renderers rather than suspended, and
+    // disable-background-timer-throttling already opts out of that clamp.
     flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
   }, [flushQueuedDeltas])
 
@@ -277,11 +285,7 @@ export function useMessageStream({
   useEffect(
     () => () => {
       if (flushHandleRef.current !== null && typeof window !== 'undefined') {
-        if (typeof window.cancelAnimationFrame === 'function') {
-          window.cancelAnimationFrame(flushHandleRef.current)
-        } else {
-          window.clearTimeout(flushHandleRef.current)
-        }
+        window.clearTimeout(flushHandleRef.current)
       }
 
       flushHandleRef.current = null

@@ -374,36 +374,18 @@ def _build_topic_detection_block(agent: Any) -> str:
             lines.append(f"... and {total - 5} more archived topics.")
         lines.append("")
 
-    # Auto-detection instruction
+    # Ask agent to classify the topic as part of its response
     lines.append(
-        "After EVERY response append these lines (exact format required):"
+        "Before responding, identify which topic from the table above "
+        "this message belongs to. Append exactly:"
     )
     lines.append("")
-    lines.append("TOPIC_SHIFT: <score> | <name>")
+    lines.append("TOPIC: <id>")
     lines.append("")
     lines.append(
-        "Where <score> is 1 (same topic) or 7-10 (new topic). "
-        "<name> is '-' for same topic, or 2-5 word title for new topic."
-    )
-    lines.append(
-        "Example same topic:   TOPIC_SHIFT: 1 | -"
-    )
-    lines.append(
-        "Example new topic:    TOPIC_SHIFT: 8 | docker-containers"
-    )
-    lines.append(
-        "Also append when returning to an earlier topic:"
-    )
-    lines.append("")
-    lines.append("TOPIC_MATCH: <topic_id> | <score>")
-    lines.append("")
-    lines.append(
-        "Where <topic_id> is the # from Session Topics table above. "
-        "Example: TOPIC_MATCH: 1 | 9"
-    )
-    lines.append("")
-    lines.append(
-        "CRITICAL: never skip TOPIC_SHIFT. Even for same topic, always emit it."
+        "Pick the matching topic ID (e.g. TOPIC: 1). If this is a NEW topic "
+        "not in the table, use TOPIC: new <2-5 word name>. "
+        "If no topics exist yet, use TOPIC: new <name>."
     )
     return "\n".join(lines)
 

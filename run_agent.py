@@ -411,44 +411,35 @@ class _StreamErrorEvent(Exception):
 
 # ── Topic Signal Parser ───────────────────────────────────────────
 _TOPIC_SHIFT_RE = re.compile(
-    r"^TOPIC_SHIFT:\s*(\d{1,2})\s*\|\s*(.+?)\s*$", re.MULTILINE
+    r"^TOPIC:\s*new\s+(.+?)\s*$", re.MULTILINE
 )
 _TOPIC_MATCH_RE = re.compile(
-    r"^TOPIC_MATCH:\s*(\d{1,2}|\-)\s*\|\s*(\d{1,2})\s*$", re.MULTILINE
+    r"^TOPIC:\s*(\d+)\s*$", re.MULTILINE
 )
-_TOPIC_SHIFT_THRESHOLD = 6
-_TOPIC_CONSECUTIVE_THRESHOLD = 3
+_TOPIC_SHIFT_THRESHOLD = 1  # single TOPIC: new triggers immediately
+_TOPIC_CONSECUTIVE_THRESHOLD = 1
 
 
 def _parse_topic_signals(content: str) -> tuple[str, Optional[dict], Optional[dict]]:
-    """Extract and strip TOPIC_SHIFT and TOPIC_MATCH lines from content.
+    """Extract and strip TOPIC: <id> or TOPIC: new <name> lines from content.
 
     Returns (cleaned_content, shift_info, match_info) where:
-      shift_info = {"score": int, "name": str} or None
-      match_info = {"topic_id": int, "score": int} or None
+      shift_info = {"score": 10, "name": str} when TOPIC: new <name>
+      match_info = {"topic_id": int, "score": 10} when TOPIC: <id>
     """
     shift_info = None
     match_info = None
 
     m = _TOPIC_SHIFT_RE.search(content)
     if m:
-        score = int(m.group(1))
-        name = m.group(2).strip()
-        if name == "-":
-            name = ""
-        shift_info = {"score": score, "name": name}
+        name = m.group(1).strip()
+        shift_info = {"score": 10, "name": name}
         content = content[: m.start()] + content[m.end() :]
 
     m = _TOPIC_MATCH_RE.search(content)
     if m:
-        topic_id_str = m.group(1).strip()
-        score = int(m.group(2))
-        if topic_id_str != "-":
-            try:
-                topic_id = int(topic_id_str)
-                match_info = {"topic_id": topic_id, "score": score}
-            except ValueError:
-                pass
+        topic_id = int(m.group(1))
+        match_info = {"topic_id": topic_id, "score": 10}
         content = content[: m.start()] + content[m.end() :]
 
     return content.strip(), shift_info, match_info
@@ -832,10 +823,6 @@ class AIAgent:
         self._user_turn_count = 0
 
         # Topic segmentation state
-        self._topic_shift_counter = 0
-        self._topic_shift_candidate_name: Optional[str] = None
-        self._topic_match_counter = 0
-        self._topic_match_candidate_id: Optional[int] = None
         self._active_topic_id: Optional[int] = None
 
         # Copilot x-initiator: True for the first API call of a user turn,
@@ -1754,58 +1741,29 @@ class AIAgent:
         return False
 
     def _process_topic_signals(self, content: str) -> str:
-        """Parse TOPIC_SHIFT/MATCH from assistant content and update counters.
+        """Parse TOPIC: <id> or TOPIC: new <name> from assistant content.
 
-        Strips the signal lines from content. Triggers topic creation/switch
-        when consecutive threshold is met. Returns cleaned content.
+        Strips the signal lines. Triggers topic creation/switch immediately.
+        Returns cleaned content.
         """
         cleaned, shift, match = _parse_topic_signals(content)
 
-        # --- SHIFT detection ---
-        if shift and shift["score"] >= _TOPIC_SHIFT_THRESHOLD:
-            self._topic_shift_counter += 1
-            if shift["name"]:
-                self._topic_shift_candidate_name = shift["name"]
-        elif shift is None:
-            # No signal emitted: treat as staying on same topic (counter=0)
-            self._topic_shift_counter = 0
-            self._topic_shift_candidate_name = None
-        else:
-            self._topic_shift_counter = 0
-            self._topic_shift_candidate_name = None
-
-        if self._topic_shift_counter >= _TOPIC_CONSECUTIVE_THRESHOLD:
-            self._create_topic_from_shift()
-            self._topic_shift_counter = 0
-            self._topic_match_counter = 0
+        if shift and shift["name"]:
+            self._create_topic_from_shift(shift["name"])
             return cleaned
 
-        # --- MATCH detection ---
-        if match and match["score"] >= _TOPIC_SHIFT_THRESHOLD:
-            self._topic_match_counter += 1
-            self._topic_match_candidate_id = match["topic_id"]
-        else:
-            self._topic_match_counter = 0
-            self._topic_match_candidate_id = None
-
-        if self._topic_match_counter >= _TOPIC_CONSECUTIVE_THRESHOLD:
-            if self._topic_match_candidate_id is not None:
-                self._switch_to_topic(self._topic_match_candidate_id)
-            self._topic_match_counter = 0
-            self._topic_shift_counter = 0
+        if match and match["topic_id"]:
+            self._switch_to_topic(match["topic_id"])
 
         return cleaned
 
-    def _create_topic_from_shift(self) -> None:
-        """Create a new topic from accumulated shift signal."""
-        name = self._topic_shift_candidate_name or "unnamed"
+    def _create_topic_from_shift(self, name: str) -> None:
+        """Create a new topic from TOPIC: new <name> signal."""
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
         if not db or not sid:
             return
         try:
-            if self._active_topic_id is not None:
-                db.set_active_topic(sid, 0)
             topic_id = db.create_topic(sid, name)
             self._active_topic_id = topic_id
             self._invalidate_system_prompt()

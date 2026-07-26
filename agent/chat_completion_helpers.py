@@ -436,15 +436,29 @@ def should_use_direct_api_call(agent) -> bool:
     """Whether a cron OpenAI-wire request should skip the interrupt worker.
 
     Issue #62151 is specific to OpenRouter's chat-completions path inside the
-    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
-    established workers: their cancellation and client ownership differ, and
+    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on
+    their established workers: their cancellation and client ownership differ, and
     the report provides no evidence that those paths share the pre-HTTP wedge.
+
+    Apply the same narrow scope to *which providers* the workaround targets: only
+    providers with documented evidence of the nested-ThreadPool wedge force the
+    non-streaming direct path. ``custom`` / named-custom / ``openai`` /
+    ``deepseek`` / etc. providers are kept on the normal streaming path so
+    long-reasoning models do not stall against short response-header timeouts
+    on reverse proxies (#71268).
     """
-    return (
-        getattr(agent, "platform", None) == "cron"
-        and getattr(agent, "api_mode", None) == "chat_completions"
-        and getattr(agent, "provider", None) != "moa"
-    )
+    if (
+        getattr(agent, "platform", None) != "cron"
+        or getattr(agent, "api_mode", None) != "chat_completions"
+    ):
+        return False
+    provider = getattr(agent, "provider", None) or ""
+    if provider == "moa":
+        return False
+    # Only providers that actually exhibit the #62151 deadlock. New providers
+    # must NOT be added here without a repro on the openrouter-style path —
+    # the direct/non-streaming call is an LRO-blocking fallback, not a default.
+    return provider in {"openrouter", "nous"}
 
 
 def direct_api_call(agent, api_kwargs: dict):

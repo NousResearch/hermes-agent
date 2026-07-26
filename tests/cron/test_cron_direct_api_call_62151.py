@@ -45,6 +45,38 @@ def test_should_use_direct_api_call_only_for_cron_openai_wire():
     assert should_use_direct_api_call(moa) is False
 
 
+def test_should_use_direct_api_call_only_for_openrouter_and_nous_providers():
+    """Regression guard for #71268.
+
+    The non-streaming direct path must only apply to providers documented
+    to exhibit the #62151 deadlock. Custom / named-custom / openai / deepseek
+    providers stay on the streaming path so long-reasoning models do not
+    stall against short response-header timeouts on reverse proxies.
+    """
+    for provider in ("openrouter", "nous"):
+        agent = _make_agent(platform="cron")
+        agent.provider = provider
+        assert should_use_direct_api_call(agent) is True, provider
+
+    for provider in (
+        "custom",
+        "custom:newapi2",
+        "openai",
+        "deepseek",
+        "anthropic",
+        "unknown-provider",
+    ):
+        agent = _make_agent(platform="cron")
+        agent.provider = provider
+        assert should_use_direct_api_call(agent) is False, provider
+
+    # No provider at all must also take the streaming path, not the legacy
+    # "match-anything-but-moa" fallback that #71268 removed.
+    empty = _make_agent(platform="cron")
+    empty.provider = None
+    assert should_use_direct_api_call(empty) is False
+
+
 def test_direct_api_call_runs_two_sequential_requests_on_same_thread():
     """Mirror the 2nd+ call failure mode: two back-to-back completions.create."""
     agent = _make_agent()

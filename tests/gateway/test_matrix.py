@@ -3356,7 +3356,7 @@ class TestMatrixImageOnlyMediaNormalization:
         assert captured_event.text == "Please describe this chart"
 
     @pytest.mark.asyncio
-    async def test_inbound_oversized_media_is_rejected(self):
+    async def test_inbound_oversized_media_surfaces_marker_without_download(self):
         captured_event = None
 
         async def capture(msg_event):
@@ -3381,7 +3381,43 @@ class TestMatrixImageOnlyMediaNormalization:
             msgtype="m.image",
         )
 
-        assert captured_event is None
+        assert captured_event is not None
+        assert captured_event.text == "[matrix image attachment too large]"
+        assert captured_event.media_urls is None
+        self.adapter._client.download_media.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inbound_oversized_media_preserves_caption(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter._max_media_bytes = 10
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$video-big",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.video",
+                "body": "Please summarize this recording",
+                "url": "mxc://example/large.mp4",
+                "info": {"mimetype": "video/mp4", "size": 11},
+            },
+            relates_to={},
+            msgtype="m.video",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == (
+            "Please summarize this recording\n"
+            "[matrix video attachment too large]"
+        )
+        assert captured_event.media_urls is None
         self.adapter._client.download_media.assert_not_called()
 
     @pytest.mark.asyncio

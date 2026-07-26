@@ -2958,14 +2958,16 @@ class MatrixAdapter(BasePlatformAdapter):
             event_size_int = int(event_size) if event_size is not None else 0
         except (TypeError, ValueError):
             event_size_int = 0
-        if event_size_int and event_size_int > self._max_media_bytes:
+        media_size_limit_exceeded = bool(
+            event_size_int and event_size_int > self._max_media_bytes
+        )
+        if media_size_limit_exceeded:
             logger.warning(
                 "[Matrix] Rejecting oversized inbound media %s (%d > %d bytes)",
                 event_id,
                 event_size_int,
                 self._max_media_bytes,
             )
-            return
 
         # For encrypted media, the URL may be in file.url.
         file_content = source_content.get("file", {})
@@ -3009,7 +3011,7 @@ class MatrixAdapter(BasePlatformAdapter):
         should_cache_locally = msg_type in {
             MessageType.PHOTO, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT,
         } or is_voice_message or is_encrypted_media
-        if should_cache_locally and url:
+        if should_cache_locally and url and not media_size_limit_exceeded:
             try:
                 file_bytes = await self._client.download_media(ContentURI(url))
                 if file_bytes is not None:
@@ -3107,7 +3109,20 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
 
-        allow_http_fallback = bool(http_url) and not is_encrypted_media
+        if media_size_limit_exceeded:
+            media_kind = {
+                "m.image": "image",
+                "m.audio": "audio",
+                "m.video": "video",
+            }.get(msgtype, "file")
+            marker = f"[matrix {media_kind} attachment too large]"
+            body = f"{body}\n{marker}".strip()
+
+        allow_http_fallback = (
+            bool(http_url)
+            and not is_encrypted_media
+            and not media_size_limit_exceeded
+        )
         media_urls = (
             [cached_path]
             if cached_path

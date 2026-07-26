@@ -1026,6 +1026,14 @@ def _str_arg(args: dict, key: str, default: str = "") -> str:
     return str(val) if val is not None else default
 
 
+# Marker appended to compressed terminal summaries. Its presence means "this
+# message has already been demoted; the full payload lives in the archived
+# (active=0, compacted=1) row and is retrievable via session_search". The
+# demotion pass checks for this string to stay idempotent — without it, a
+# summary long enough to exceed min_prune_chars would be summarised again on
+# the next pass, producing a summary of a summary.
+_ARCHIVED_MARKER = "[ARCHIVED - full output recoverable via session_search]"
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -1054,6 +1062,37 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] ({_len:,} chars result)"
 
 
+def _terminal_output_head(content: str, limit: int = 160) -> str:
+    """Return a short single-line head of a terminal result's stdout.
+
+    The terminal tool serialises results as JSON shaped like
+    ``{"output": "...", "exit_code": 0, "error": null}``. A shell command can
+    exit 0 while the operation it performed failed (``curl`` printing a 422
+    body is the canonical case), so the exit code alone is not a reliable
+    outcome signal. Carrying a short head of the real output into the
+    compressed summary preserves that evidence at negligible token cost.
+
+    Falls back to the raw content when the payload is not the expected JSON
+    shape. Never raises: this runs inside compression, which retries on the
+    same history and would crash-loop.
+    """
+    raw: object = content
+    try:
+        payload = json.loads(content)
+        if isinstance(payload, dict) and isinstance(payload.get("output"), str):
+            raw = payload["output"]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    try:
+        collapsed = " ".join(str(raw).split())
+    except Exception:  # noqa: BLE001 - a summary must never crash compression
+        return ""
+    if not collapsed:
+        return ""
+    if len(collapsed) > limit:
+        return collapsed[: limit - 1] + "\u2026"
+    return collapsed
+
 def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     try:
@@ -1073,7 +1112,15 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
         exit_code = exit_match.group(1) if exit_match else "?"
-        return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+        head = _terminal_output_head(content)
+        segments = [
+            f"[terminal] ran `{cmd}` -> exit {exit_code}, "
+            f"{line_count} lines, {content_len:,} chars"
+        ]
+        if head:
+            segments.append(f"output starts: {head}")
+        segments.append(_ARCHIVED_MARKER)
+        return " | ".join(segments)
 
     if tool_name == "read_file":
         path = args.get("path", "?")
@@ -2572,6 +2619,12 @@ class ContextCompressor(ContextEngine):
                 return False
             # Already replaced by a prior prune/pressure pass (1-line summary).
             if content.startswith("[") and " chars)" in content and len(content) < 400:
+                return False
+            # Terminal summaries carry an explicit archived marker. They can
+            # exceed min_prune_chars once an output head is included, so the
+            # length-based spare above is not sufficient to keep demotion
+            # idempotent.
+            if _ARCHIVED_MARKER in content:
                 return False
             if content.startswith("[screenshot removed"):
                 return False

@@ -759,3 +759,207 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# === Tests for inline_schema_refs (xAI / #67131) =============================
+#
+# `strip_nullable_unions` collapses `anyOf: [T, null]` to `T` but doesn't
+# rewrite `$ref` strings that walk through the dropped `anyOf/0/...` segment.
+# xAI's strict Responses validator resolves those refs against the post-
+# collapse tree, finds `key 'anyOf' not found`, and 400s before generation.
+#
+# `inline_schema_refs` resolves RFC 6901 `#/...` pointers against the schema
+# root before any tree-reshaping happens, so the refs disappear and the
+# strict validator has nothing to mis-resolve.
+
+from tools.schema_sanitizer import inline_schema_refs  # noqa: E402
+
+
+def test_inline_schema_refs_resolves_property_path_pointer():
+    # Pointer walks through properties/constraints into a sibling property.
+    # No combinator segment in the pointer — uses only_through_combinators=False
+    # to exercise the "inline every local ref" path (xAI Responses mode).
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "string", "minLength": 1},
+            "b": {"$ref": "#/properties/a"},
+        },
+    }
+    inlined = inline_schema_refs(schema, only_through_combinators=False)
+    assert inlined["properties"]["b"] == {"type": "string", "minLength": 1}
+    # Original $ref must not survive.
+    assert "$ref" not in inlined["properties"]["b"]
+
+
+def test_inline_schema_refs_walks_nested_arrays_and_objects():
+    # Pointer into an array-item's properties. The pointer walks through
+    # ``.../anyOf/0/...`` so it's inlined even with the default
+    # ``only_through_combinators=True`` — this is the xAI-400 reproduction.
+    schema = {
+        "type": "object",
+        "properties": {
+            "sections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "rows": {
+                            "type": "array",
+                            "items": {
+                                "anyOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string", "minLength": 1},
+                                        },
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {
+                                                "$ref": "#/properties/sections/items/properties/rows/items/anyOf/0/properties/label",
+                                            },
+                                        },
+                                    },
+                                ]
+                            },
+                        }
+                    },
+                },
+            }
+        },
+    }
+    inlined = inline_schema_refs(schema)
+    variant1 = inlined["properties"]["sections"]["items"]["properties"]["rows"]["items"]["anyOf"][1]
+    assert variant1["properties"]["label"] == {"type": "string", "minLength": 1}
+
+
+def test_inline_schema_refs_preserves_stable_dollar_defs_ref_by_default():
+    # ``#/$defs/Foo`` pointers are stable across strip_nullable_unions
+    # collapses (no combinator segment to walk through). Default mode leaves
+    # them in place — providers that can resolve local refs (Anthropic,
+    # OpenAI) prefer the dedup that ``$defs`` provides.
+    schema = {
+        "$defs": {"Label": {"type": "string", "minLength": 1}},
+        "type": "object",
+        "properties": {
+            "label": {"$ref": "#/$defs/Label"},
+        },
+    }
+    inlined = inline_schema_refs(schema)
+    # Stable ref preserved in default mode.
+    assert inlined["properties"]["label"] == {"$ref": "#/$defs/Label"}
+
+
+def test_inline_schema_refs_resolves_property_path_pointer():
+    # Pointer into a $defs entry — canonical JSON Schema shape.
+    schema = {
+        "$defs": {"Label": {"type": "string", "minLength": 1}},
+        "type": "object",
+        "properties": {
+            "label": {"$ref": "#/$defs/Label"},
+        },
+    }
+    inlined = inline_schema_refs(schema, only_through_combinators=False)
+    assert inlined["properties"]["label"] == {"type": "string", "minLength": 1}
+
+
+def test_inline_schema_refs_recursive_pointer_does_not_loop():
+    # A self-referential $ref (e.g. recursive node) should be resolved with a
+    # maximal depth guard — we replace with a minimal `object` schema so the
+    # strict validator sees a concrete shape instead of dangling $ref.
+    schema = {
+        "type": "object",
+        "properties": {
+            "node": {"$ref": "#"},  # points back at schema root
+        },
+    }
+    # Must not raise; must not loop forever.
+    inlined = inline_schema_refs(schema, max_depth=4, only_through_combinators=False)
+    assert "$ref" not in inlined["properties"]["node"]
+
+
+def test_inline_schema_refs_missing_target_replaces_with_object_schema():
+    # $ref points at a path that doesn't exist in the tree (post-collapse
+    # scenario where the target was an `anyOf/0` that's been folded away).
+    schema = {
+        "type": "object",
+        "properties": {
+            "label": {
+                "$ref": "#/properties/metadata/anyOf/0/properties/label",
+            },
+        },
+    }
+    inlined = inline_schema_refs(schema)
+    # The ref must be replaced — a missing target should NOT leave a dangling
+    # $ref for xAI's validator to choke on. A permissive object schema is the
+    # safe fallback (the field description is preserved if present).
+    assert "$ref" not in inlined["properties"]["label"]
+    assert inlined["properties"]["label"].get("type") == "object"
+
+
+def test_sanitize_tool_schemas_inlines_refs_before_nullable_collapse():
+    # End-to-end: the post-sanitization tree must not contain any `#/...`
+    # `$ref` strings into `anyOf/0/...` paths that were collapsed away by
+    # `strip_nullable_unions`. This is the exact xAI-400 reproduction shape
+    # from issue #67131 (Paperclip `paperclipAddComment` row.label ref).
+    tool = _tool("paperclipAddComment", {
+        "type": "object",
+        "properties": {
+            "metadata": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "sections": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "rows": {
+                                            "type": "array",
+                                            "items": {
+                                                "anyOf": [
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "label": {"type": "string", "nullable": True},
+                                                        },
+                                                    },
+                                                    {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "label": {
+                                                                "$ref": "#/properties/metadata/anyOf/0/properties/sections/items/properties/rows/items/anyOf/0/properties/label",
+                                                            },
+                                                        },
+                                                    },
+                                                ]
+                                            },
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                    },
+                    {"type": "null"},
+                ]
+            }
+        }
+    })
+    out = sanitize_tool_schemas([tool])
+    # Walk the entire sanitized tree and assert no dangling `anyOf/0/...` refs
+    # remain — every $ref must have been inlined before the union was collapsed.
+    def _has_dangling_ref(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and "/anyOf/" in ref:
+                return True
+            return any(_has_dangling_ref(v) for v in node.values())
+        if isinstance(node, list):
+            return any(_has_dangling_ref(v) for v in node)
+        return False
+    assert not _has_dangling_ref(
+        out[0]["function"]["parameters"]
+    ), "sanitized schema still contains `anyOf/...` $ref that survives nullable-union collapse (xAI 400)"

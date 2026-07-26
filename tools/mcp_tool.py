@@ -2105,21 +2105,39 @@ class MCPServerTask:
             # "tool not connected" / stale-handler races during startup
             # notifications. Tools absent from the fresh list are no longer
             # callable, so remove only those stale registry entries first.
+            toolset_name = f"mcp-{self.name}"
             stale_tool_names = old_tool_names - {
                 mcp_prefixed_tool_name(self.name, tool.name)
                 for tool in new_mcp_tools
             }
             for tool_name in stale_tool_names:
+                # Never let one server's refresh remove a colliding name that
+                # is currently owned by another server.
+                if registry.get_toolset_for_tool(tool_name) != toolset_name:
+                    continue
                 registry.deregister(tool_name)
                 _forget_mcp_tool_server(tool_name)
 
-            # 3. Re-register with fresh tool list
+            # 3. Re-register with the fresh list. The helper may skip names that
+            # are ambiguous after normalization.
             self._tools = new_mcp_tools
-            self._registered_tool_names = _register_server_tools(
+            registered_names = _register_server_tools(
                 self.name, self, self._config
             )
 
-            # 5. Log what changed (user-visible notification)
+            # A previously unique raw name can become ambiguous without changing
+            # its normalized registry name. In that case the pre-pass above does
+            # not consider it stale, so remove any old entry that the final,
+            # collision-checked registration set no longer owns.
+            registered_name_set = set(registered_names)
+            for tool_name in old_tool_names - registered_name_set:
+                if registry.get_toolset_for_tool(tool_name) != toolset_name:
+                    continue
+                registry.deregister(tool_name)
+                _forget_mcp_tool_server(tool_name)
+            self._registered_tool_names = registered_names
+
+            # 4. Log what changed (user-visible notification)
             new_tool_names = set(self._registered_tool_names)
             added = new_tool_names - old_tool_names
             removed = old_tool_names - new_tool_names
@@ -4075,17 +4093,15 @@ def _handle_session_expired_and_retry(
     return None
 
 
-# Sanitized server names whose ``supports_parallel_tool_calls`` config is True.
-# Populated during ``register_mcp_servers()`` and queried by
-# ``is_mcp_tool_parallel_safe()`` for the parallel-execution check in run_agent.
+# Exact raw server names whose ``supports_parallel_tool_calls`` config is True.
+# Raw identity matters: distinct names such as ``foo-bar`` and ``foo_bar`` both
+# sanitize to ``foo_bar`` but must not share policy.
 _parallel_safe_servers: set = set()
 
-# Exact MCP tool-name provenance. MCP tool names are formatted as
-# ``mcp_{sanitized_server}_{sanitized_tool}``, which is ambiguous when server
-# names contain underscores (``mcp_a_b_tool`` could be server ``a`` + tool
-# ``b_tool`` or server ``a_b`` + tool ``tool``). Keep the server component
-# captured at registration time so parallel safety never relies on prefix
-# guessing.
+# Exact MCP tool-name provenance. The generated registry name is lossy because
+# provider-safe normalization maps punctuation to ``_``. Keep the raw server
+# name captured at registration time so policy and capability checks never rely
+# on parsing or re-sanitizing the generated name.
 _mcp_tool_server_names: Dict[str, str] = {}
 
 # Dedicated event loop running in a background daemon thread.
@@ -5527,10 +5543,9 @@ _UTILITY_CAPABILITY_ATTRS = {
 
 
 def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
-    """Remember the exact MCP server that registered *tool_name*."""
-    safe_server_name = sanitize_mcp_name_component(server_name)
+    """Remember the exact raw MCP server that registered *tool_name*."""
     with _lock:
-        _mcp_tool_server_names[tool_name] = safe_server_name
+        _mcp_tool_server_names[tool_name] = server_name
 
 
 def _forget_mcp_tool_server(tool_name: str) -> None:
@@ -5616,6 +5631,11 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     for ``mcp-{server}`` and raw server-name aliases is derived from the live
     registry, rather than mutating ``toolsets.TOOLSETS`` at runtime.
 
+    Lossy provider-safe name normalization can map distinct raw names to the
+    same registry name (for example ``read-file`` and ``read_file``). Such
+    collisions fail closed: every ambiguous entry is skipped rather than
+    selecting an arbitrary handler.
+
     Used by both initial discovery and dynamic refresh (list_changed).
 
     Returns:
@@ -5634,8 +5654,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     #   include takes precedence over exclude
     #   Neither set → register all tools (backward-compatible default)
     tools_filter = config.get("tools") or {}
-    include_set = _normalize_name_filter(tools_filter.get("include"), f"mcp_servers.{name}.tools.include")
-    exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
+    include_set = _normalize_name_filter(
+        tools_filter.get("include"), f"mcp_servers.{name}.tools.include"
+    )
+    exclude_set = _normalize_name_filter(
+        tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude"
+    )
 
     def _should_register(tool_name: str) -> bool:
         if include_set:
@@ -5644,81 +5668,148 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             return not matches_name_filter(tool_name, exclude_set)
         return True
 
+    check_fn = _make_check_fn(name)
+    candidates: List[dict] = []
+
     for mcp_tool in server._tools:
         if not _should_register(mcp_tool.name):
-            logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
-            continue
-
-        # Scan tool description for prompt injection patterns
-        _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
-
-        schema = _convert_mcp_schema(name, mcp_tool)
-        tool_name_prefixed = schema["name"]
-
-        # Guard against collisions with built-in (non-MCP) tools.
-        existing_toolset = registry.get_toolset_for_tool(tool_name_prefixed)
-        if existing_toolset and not existing_toolset.startswith("mcp-"):
-            logger.warning(
-                "MCP server '%s': tool '%s' (→ '%s') collides with built-in "
-                "tool in toolset '%s' — skipping to preserve built-in",
-                name, mcp_tool.name, tool_name_prefixed, existing_toolset,
+            logger.debug(
+                "MCP server '%s': skipping tool '%s' (filtered by config)",
+                name,
+                mcp_tool.name,
             )
             continue
 
-        registry.register(
-            name=tool_name_prefixed,
-            toolset=toolset_name,
-            schema=schema,
-            handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout),
-            check_fn=_make_check_fn(name),
-            is_async=False,
-            description=schema["description"],
+        _scan_mcp_description(name, mcp_tool.name, mcp_tool.description or "")
+        schema = _convert_mcp_schema(name, mcp_tool)
+        candidates.append(
+            {
+                "registry_name": schema["name"],
+                "origin": f"tool {mcp_tool.name!r}",
+                "schema": schema,
+                "handler": _make_tool_handler(
+                    name, mcp_tool.name, server.tool_timeout
+                ),
+                "check_fn": check_fn,
+            }
         )
-        _track_mcp_tool_server(tool_name_prefixed, name)
-        registered_names.append(tool_name_prefixed)
 
-    # Register MCP Resources & Prompts utility tools, filtered by config and
-    # only when the server actually supports the corresponding capability.
-    _handler_factories = {
+    # Generated resource/prompt utility tools share the same namespace as raw
+    # MCP tools, so they must participate in the same collision preflight.
+    handler_factories = {
         "list_resources": _make_list_resources_handler,
         "read_resource": _make_read_resource_handler,
         "list_prompts": _make_list_prompts_handler,
         "get_prompt": _make_get_prompt_handler,
     }
-    check_fn = _make_check_fn(name)
     for entry in _select_utility_schemas(name, server, config):
         schema = entry["schema"]
         handler_key = entry["handler_key"]
-        handler = _handler_factories[handler_key](name, server.tool_timeout)
-        util_name = schema["name"]
+        candidates.append(
+            {
+                "registry_name": schema["name"],
+                "origin": f"generated utility {handler_key!r}",
+                "schema": schema,
+                "handler": handler_factories[handler_key](
+                    name, server.tool_timeout
+                ),
+                "check_fn": check_fn,
+            }
+        )
 
-        # Same collision guard for utility tools.
-        existing_toolset = registry.get_toolset_for_tool(util_name)
-        if existing_toolset and not existing_toolset.startswith("mcp-"):
-            logger.warning(
-                "MCP server '%s': utility tool '%s' collides with built-in "
-                "tool in toolset '%s' — skipping to preserve built-in",
-                name, util_name, existing_toolset,
+    # Exact duplicate rows from a server are harmless but should not inflate
+    # counts. Distinct origins that collapse to one normalized name are unsafe.
+    unique_candidates: List[dict] = []
+    seen_candidates: set[tuple[str, str]] = set()
+    origins_by_name: Dict[str, set[str]] = {}
+    for candidate in candidates:
+        key = (candidate["registry_name"], candidate["origin"])
+        if key in seen_candidates:
+            logger.debug(
+                "MCP server '%s': duplicate registration candidate %s for '%s'; "
+                "keeping one",
+                name,
+                candidate["origin"],
+                candidate["registry_name"],
             )
+            continue
+        seen_candidates.add(key)
+        unique_candidates.append(candidate)
+        origins_by_name.setdefault(candidate["registry_name"], set()).add(
+            candidate["origin"]
+        )
+
+    ambiguous_names = {
+        registry_name: sorted(origins)
+        for registry_name, origins in origins_by_name.items()
+        if len(origins) > 1
+    }
+    for registry_name, origins in sorted(ambiguous_names.items()):
+        logger.error(
+            "MCP server '%s': name normalization collision for '%s' from %s; "
+            "skipping every colliding entry instead of choosing an arbitrary "
+            "handler",
+            name,
+            registry_name,
+            ", ".join(origins),
+        )
+
+    for candidate in unique_candidates:
+        registry_name = candidate["registry_name"]
+        if registry_name in ambiguous_names:
+            continue
+
+        existing_toolset = registry.get_toolset_for_tool(registry_name)
+        if existing_toolset and existing_toolset != toolset_name:
+            if existing_toolset.startswith("mcp-"):
+                logger.error(
+                    "MCP server '%s': %s normalizes to '%s', already owned by "
+                    "MCP toolset '%s' — skipping to preserve the existing owner",
+                    name,
+                    candidate["origin"],
+                    registry_name,
+                    existing_toolset,
+                )
+            else:
+                logger.warning(
+                    "MCP server '%s': %s (→ '%s') collides with built-in tool "
+                    "in toolset '%s' — skipping to preserve built-in",
+                    name,
+                    candidate["origin"],
+                    registry_name,
+                    existing_toolset,
+                )
             continue
 
         registry.register(
-            name=util_name,
+            name=registry_name,
             toolset=toolset_name,
-            schema=schema,
-            handler=handler,
-            check_fn=check_fn,
+            schema=candidate["schema"],
+            handler=candidate["handler"],
+            check_fn=candidate["check_fn"],
             is_async=False,
-            description=schema["description"],
+            description=candidate["schema"]["description"],
         )
-        _track_mcp_tool_server(util_name, name)
-        registered_names.append(util_name)
+
+        # The pre-check above is advisory only. Multiple servers connect in
+        # parallel, so ToolRegistry.register() is the atomic ownership gate.
+        if registry.get_toolset_for_tool(registry_name) != toolset_name:
+            logger.error(
+                "MCP server '%s': registration of %s as '%s' was rejected by "
+                "the registry; skipping provenance/count updates",
+                name,
+                candidate["origin"],
+                registry_name,
+            )
+            continue
+
+        _track_mcp_tool_server(registry_name, name)
+        registered_names.append(registry_name)
 
     if registered_names:
         registry.register_toolset_alias(name, toolset_name)
 
     return registered_names
-
 
 async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     """Connect to a single MCP server, discover tools, and register them.
@@ -5804,9 +5895,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-                _parallel_safe_servers.add(sanitize_mcp_name_component(srv_name))
+                _parallel_safe_servers.add(srv_name)
             else:
-                _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
+                _parallel_safe_servers.discard(srv_name)
 
     for srv in stale_cached:
         _signal_reconnect(srv)

@@ -321,9 +321,13 @@ def _translate_tool_result_to_gemini(
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
     tool_call_id = str(message.get("tool_call_id") or "")
+    # A tool result can carry the unwrapped internal tool name (for example,
+    # an MCP tool invoked through the `tool_call` bridge). Gemini requires
+    # functionResponse.name to echo the matching functionCall.name, so the
+    # call-id mapping must take precedence over the internal result name.
     name = str(
-        message.get("name")
-        or tool_name_by_call_id.get(tool_call_id)
+        tool_name_by_call_id.get(tool_call_id)
+        or message.get("name")
         or tool_call_id
         or "tool"
     )

@@ -54,7 +54,7 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "upstream_rate_limit",
-            "overloaded", "server_error", "timeout",
+            "overloaded", "server_error", "upstream_html", "timeout",
             "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
@@ -245,6 +245,51 @@ class TestClassifyApiError:
     def test_403_classified_as_auth(self):
         e = MockAPIError("Forbidden", status_code=403)
         result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.auth
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "Enable JavaScript and cookies to continue",
+            "cf-browser-verification",
+            "__cf_challenge",
+            "cdn-cgi/challenge-platform",
+            "challenge-error-text",
+        ],
+    )
+    def test_403_cloudflare_challenge_classified_as_upstream_html(self, marker):
+        e = MockAPIError(
+            f"<!doctype html><html><body>{marker}</body></html>",
+            status_code=403,
+        )
+
+        result = classify_api_error(e, provider="openai-codex")
+
+        assert result.reason == FailoverReason.upstream_html
+        assert result.retryable is False
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+
+    def test_401_cloudflare_marker_remains_auth(self):
+        e = MockAPIError(
+            "<html>Enable JavaScript and cookies to continue</html>",
+            status_code=401,
+        )
+
+        result = classify_api_error(e, provider="openai-codex")
+
+        assert result.reason == FailoverReason.auth
+        assert result.should_rotate_credential is True
+
+    def test_generic_403_html_remains_auth(self):
+        e = MockAPIError(
+            "<html><title>Forbidden</title><body>Access denied</body></html>",
+            status_code=403,
+        )
+
+        result = classify_api_error(e, provider="openai-codex")
+
         assert result.reason == FailoverReason.auth
         assert result.should_fallback is True
 
@@ -2169,4 +2214,3 @@ class Test408RequestTimeout:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_compress is False
-

@@ -569,6 +569,7 @@ def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
 
 def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
     """MCP discovery must start under the selected profile's HERMES_HOME."""
+    from hermes_cli import mcp_startup
     from hermes_constants import get_hermes_home
     from tui_gateway import entry
 
@@ -587,20 +588,26 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     seen = []
 
-    monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    # ensure_mcp_discovery_started flips this module global; monkeypatch it so
+    # the enablement doesn't leak into sibling tests in this file.
+    monkeypatch.setattr(entry, "_mcp_discovery_enabled", False)
     monkeypatch.setattr(
-        "tools.mcp_tool.discover_mcp_tools",
+        mcp_startup,
+        "_discover_mcp_tools_without_interactive_oauth",
         lambda: seen.append(str(get_hermes_home())),
     )
 
     try:
         entry.ensure_mcp_discovery_started()
-        thread = entry._mcp_discovery_thread
+        thread = mcp_startup._mcp_discovery_thread
         assert thread is not None
         thread.join(timeout=2)
     finally:
         reset_hermes_home_override(token)
-        entry._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = False
 
     assert seen == [str(profile_home)]
 

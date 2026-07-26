@@ -16,7 +16,13 @@ import { useI18n } from '@/i18n'
 import { normalize } from '@/lib/text'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
-import { markComposerSelectionManual, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
+import {
+  $defaultReasoningEffort,
+  DEFAULT_REASONING_EFFORT,
+  markComposerSelectionManual,
+  setCurrentFastMode,
+  setCurrentReasoningEffort
+} from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
@@ -111,8 +117,9 @@ export function ModelEditSubmenu({
   const activeSessionId = useStore(view.$runtimeId)
   const touchesPrimary = view.kind === 'primary'
 
-  const effortValue = normalizeEffort(effort)
-  const thinkingOn = isThinkingEnabled(effort)
+  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
+  const effortValue = normalizeEffort(effort, defaultEffort)
+  const thinkingOn = isThinkingEnabled(effort, defaultEffort)
 
   // Editing always records the model's global preset (keyed by provider::model,
   // not per-surface — a tile edit re-applies to that model everywhere); the
@@ -224,7 +231,7 @@ export function ModelEditSubmenu({
               <Switch
                 checked={thinkingOn}
                 className="ml-auto"
-                onCheckedChange={checked => void patchReasoning(checked ? effortValue || 'medium' : 'none')}
+                onCheckedChange={checked => void patchReasoning(checked ? effortValue || defaultEffort : 'none')}
                 size="xs"
               />
             </DropdownMenuItem>
@@ -259,18 +266,18 @@ export function ModelEditSubmenu({
   )
 }
 
-function isThinkingEnabled(effort: string): boolean {
-  // Empty = Hermes default (medium) = on; only an explicit "none" is off.
-  return normalize(effort || 'medium') !== 'none'
+function isThinkingEnabled(effort: string, fallback: string): boolean {
+  // Empty = the profile default = on; only an explicit "none" is off.
+  return normalize(effort || fallback) !== 'none'
 }
 
-function normalizeEffort(effort: string): string {
-  const value = normalize(effort || 'medium')
+function normalizeEffort(effort: string, fallback: string): string {
+  const value = normalize(effort || fallback)
 
   // Thinking off → no effort selected in the radio group.
   if (value === 'none') {
     return ''
   }
 
-  return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
+  return EFFORT_OPTIONS.some(option => option.value === value) ? value : DEFAULT_REASONING_EFFORT
 }

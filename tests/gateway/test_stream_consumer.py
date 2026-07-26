@@ -50,12 +50,40 @@ class TestCleanForDisplay:
         assert "MEDIA:" not in result
         assert "Audio generated" in result
 
-    def test_media_tag_with_quotes(self):
-        """MEDIA: tags wrapped in quotes or backticks are removed."""
-        for wrapper in ['`MEDIA:/path/file.png`', '"MEDIA:/path/file.png"', "'MEDIA:/path/file.png'"]:
-            text = f"Result: {wrapper}"
-            result = GatewayStreamConsumer._clean_for_display(text)
-            assert "MEDIA:" not in result, f"Failed for wrapper: {wrapper}"
+    def test_media_tag_single_quoted_stripped(self):
+        """A single-quote-wrapped tag matches the known-ext cleanup pattern
+        and is removed (delivery attempts it too — consistent)."""
+        result = GatewayStreamConsumer._clean_for_display(
+            "Result: 'MEDIA:/path/file.png'"
+        )
+        assert "MEDIA:" not in result
+
+    def test_media_tag_double_quoted_json_context_stays_visible(self):
+        """A double-quoted tag preceded by a colon sits in a JSON value
+        context (#34375): extract_media masks it and never delivers, so
+        display keeps it visible too instead of silently hiding a tag that
+        produced no attachment (display/delivery consistency)."""
+        result = GatewayStreamConsumer._clean_for_display(
+            'Result: "MEDIA:/path/file.png"'
+        )
+        assert '"MEDIA:/path/file.png"' in result
+
+    def test_media_tag_in_backticks_real_file_stripped(self, tmp_path):
+        """A backtick-wrapped tag pointing at a REAL file is a delivery
+        directive: extract_media delivers it, so display strips it."""
+        p = tmp_path / "file.png"
+        p.write_bytes(b"\x89PNG")
+        result = GatewayStreamConsumer._clean_for_display(f"Result: `MEDIA:{p}`")
+        assert "MEDIA:" not in result
+
+    def test_media_tag_in_backticks_bogus_path_stays_visible(self):
+        """A backtick-wrapped tag with a non-existent path is an inline-code
+        example: extract_media does NOT deliver it, so display must not
+        silently strip it either (display/delivery consistency, #16434)."""
+        result = GatewayStreamConsumer._clean_for_display(
+            "Result: `MEDIA:/path/file.png`"
+        )
+        assert "`MEDIA:/path/file.png`" in result
 
     def test_audio_as_voice_stripped(self):
         """[[audio_as_voice]] directive is removed."""

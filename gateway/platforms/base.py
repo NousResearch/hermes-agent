@@ -1485,6 +1485,8 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+    # Geospatial / GIS (#24032)
+    ".kmz", ".kml", ".geojson", ".gpx",
     # Presentations
     ".pptx", ".ppt", ".odp", ".key",
     # Archives
@@ -1557,6 +1559,17 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
 # or to arbitrary following text (``MEDIA:/a.pngSome text``) cannot
 # silently absorb the next path — that earlier behavior merged the two
 # paths into one invalid string and dropped the file (#68773).
+#
+# The bare form stays non-greedy and whitespace-bounded — spaced paths are
+# NOT absorbed at the regex level, because greedy space-tolerance would
+# reintroduce the #68773 bug class (gluing the next MEDIA: tag or trailing
+# prose into one invalid path). Instead, unknown-extension paths containing
+# spaces (``MEDIA:/data/map data.kmz``, ``C:\...\My Documents\x.log``) are
+# recovered by ``_match_extensionless_path`` (#24032): when the bare match
+# fails validation, the candidate is progressively extended forward across
+# single spaces — bounded, stopping at newline / the next ``MEDIA:`` keyword
+# — and the first extension that validates on disk wins. Validation is the
+# oracle, so prose never rides along and non-existent paths stay visible.
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
@@ -1565,6 +1578,60 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE,
 )
+
+
+def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
+    """Resolve an extensionless MEDIA tag match to a validated on-disk path.
+
+    Tries the regex-captured path first. When that fails validation, the
+    candidate is progressively extended forward across single spaces
+    (validation-gated, bounded at 8 tokens, never past a newline or a
+    subsequent ``MEDIA:`` keyword) so unknown-extension paths containing
+    spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
+    ``end_offset`` is the index in ``scan_text`` just past the matched path,
+    or ``None`` when nothing validates.
+    """
+    raw = match.group("path")
+    path = _normalize_media_tag_path(raw)
+    if not path:
+        return None
+    safe = validate_media_delivery_path(path)
+    if safe:
+        return safe, match.end("path")
+    start = match.start("path")
+    nl = scan_text.find("\n", start)
+    limit = nl if nl != -1 else len(scan_text)
+    segment = scan_text[start:limit]
+    nxt = segment.find("MEDIA:", 1)
+    if nxt != -1:
+        segment = segment[:nxt]
+    pos = match.end("path") - start
+    for _ in range(8):
+        while pos < len(segment) and segment[pos] in " \t":
+            pos += 1
+        if pos >= len(segment):
+            break
+        tok_end = pos
+        while tok_end < len(segment) and segment[tok_end] not in " \t":
+            tok_end += 1
+        candidate = _normalize_media_tag_path(segment[:tok_end])
+        safe = validate_media_delivery_path(candidate)
+        if safe:
+            return safe, start + tok_end
+        pos = tok_end
+    return None
+
+
+def _merge_spans(spans: list) -> list:
+    """Merge overlapping/nested (start, end) spans so multi-pattern matches
+    over the same tag never double-delete adjacent text."""
+    merged: list = []
+    for s, e in sorted(spans):
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
 
 
 def _normalize_media_tag_path(raw: str) -> str:
@@ -1587,8 +1654,25 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     return not suffix or suffix not in MEDIA_DELIVERY_EXTS
 
 
+def _resolve_extensionless_candidate(path: str) -> Optional[str]:
+    """Validate a bare extensionless-branch path (no forward extension).
+
+    Thin wrapper kept for call sites that only have the normalized path
+    (no scan-text context for spaced-path recovery).
+    """
+    if not path:
+        return None
+    return validate_media_delivery_path(path)
+
+
 def _strip_media_tag_directives(text: str) -> str:
-    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
+    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers.
+
+    Protected spans (fenced code blocks, inline code holding non-deliverable
+    example tags, blockquotes, JSON string values) are used as a mask-locator
+    only — tags inside them are neither stripped nor mangled, matching
+    ``extract_media``'s treatment so display text and delivery agree (#16434).
+    """
     if (
         "MEDIA:" not in text
         and "[[audio_as_voice]]" not in text
@@ -1597,14 +1681,28 @@ def _strip_media_tag_directives(text: str) -> str:
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
 
-    def _strip_extensionless(match: re.Match) -> str:
+    # Locate real tag spans on a masked copy (offset-preserving), then delete
+    # exactly those spans from the unmasked text — same pattern as
+    # extract_media. Import-cycle-free: BasePlatformAdapter is defined later
+    # in this module, so resolve it lazily at call time.
+    masked = BasePlatformAdapter._mask_protected_spans(cleaned)
+    masked = BasePlatformAdapter._mask_json_string_media(masked)
+
+    spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
+    for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
         if not path or not _path_lacks_deliverable_extension(path):
-            return match.group(0)
-        return "" if validate_media_delivery_path(path) else match.group(0)
+            continue
+        resolved = _match_extensionless_path(masked, match)
+        if resolved is not None:
+            spans.append((match.start(), resolved[1]))
 
-    cleaned = MEDIA_TAG_CLEANUP_RE.sub("", cleaned)
-    return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
+    if spans:
+        chars = list(cleaned)
+        for start, end in reversed(_merge_spans(spans)):
+            del chars[start:end]
+        cleaned = "".join(chars)
+    return cleaned
 
 
 def get_document_cache_dir() -> Path:
@@ -4013,8 +4111,11 @@ class BasePlatformAdapter(ABC):
             path = _normalize_media_tag_path(match.group("path"))
             if not path or not _path_lacks_deliverable_extension(path):
                 continue
-            safe = validate_media_delivery_path(path)
-            if safe and safe not in seen_paths:
+            resolved = _match_extensionless_path(scan_content, match)
+            if resolved is None:
+                continue
+            safe = resolved[0]
+            if safe not in seen_paths:
                 media.append((safe, has_voice_tag))
                 seen_paths.add(safe)
 
@@ -4034,11 +4135,12 @@ class BasePlatformAdapter(ABC):
                 path = _normalize_media_tag_path(match.group("path"))
                 if not path or not _path_lacks_deliverable_extension(path):
                     continue
-                if validate_media_delivery_path(path):
-                    spans.append(match.span())
+                resolved = _match_extensionless_path(masked_cleaned, match)
+                if resolved is not None:
+                    spans.append((match.start(), resolved[1]))
             if spans:
                 chars = list(cleaned)
-                for start, end in sorted(spans, reverse=True):
+                for start, end in reversed(_merge_spans(spans)):
                     del chars[start:end]
                 cleaned = "".join(chars)
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()

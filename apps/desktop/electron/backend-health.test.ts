@@ -11,8 +11,7 @@ import {
   waitForHermesReady
 } from './backend-health'
 
-const GATE_401 =
-  '401: {"error":"unauthenticated","detail":"Unauthorized","reason":"no_cookie","login_url":"/login"}'
+const GATE_401 = '401: {"error":"unauthenticated","detail":"Unauthorized","reason":"no_cookie","login_url":"/login"}'
 
 test('uses lightweight /api/health for current backends', async () => {
   const calls: string[][] = []

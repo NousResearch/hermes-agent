@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  currentPickerSelection,
-  displayModelName,
-  formatModelStatusLabel,
-  reasoningEffortLabel
-} from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelStatusLabel } from './model-status-label'
+import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
   it('formats display names consistently', () => {

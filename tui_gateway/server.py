@@ -1849,6 +1849,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     session_db = SessionDB(db_path=Path(profile_home) / "state.db")
                 except Exception:
                     session_db = None
+
+            try:
+                from tui_gateway.entry import ensure_mcp_discovery_started
+
+                ensure_mcp_discovery_started()
+            except Exception:
+                logger.warning("MCP discovery startup failed", exc_info=True)
+
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session

@@ -364,19 +364,26 @@ def ensure_mcp_discovery_started() -> None:
     """
     global _mcp_discovery_thread
 
+    from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+
     if _mcp_discovery_thread is not None:
         return
 
     if not _has_configured_mcp_servers():
         return
 
+    home_override = get_hermes_home_override()
+
     def _discover_mcp_background() -> None:
+        token = set_hermes_home_override(home_override)
         try:
             from tools.mcp_tool import discover_mcp_tools
 
             discover_mcp_tools()
         except Exception:
             logger.warning("Background MCP tool discovery failed", exc_info=True)
+        finally:
+            reset_hermes_home_override(token)
 
     import threading as _mcp_threading
 

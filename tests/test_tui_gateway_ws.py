@@ -213,5 +213,7 @@ def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
 
     asyncio.run(ws_mod.handle_ws(FakeWS()))
 
-    assert calls == ["mcp"]
-    assert events == ["accept", "ready_after_1"]
+    # Discovery moved to profile-aware agent construction. WebSocket transport
+    # should not start MCP discovery before a profile has been bound.
+    assert calls == []
+    assert events == ["accept", "ready_after_0"]

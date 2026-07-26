@@ -3893,14 +3893,15 @@ class TestSanitizeTitle:
 
 class TestSchemaInit:
     def test_wal_mode(self, db):
-        """WAL is used regardless of the linked SQLite's WAL-reset status.
+        """Prefer WAL on fixed SQLite; DELETE on WAL-reset-vulnerable builds (#69784)."""
+        from hermes_state import is_sqlite_wal_reset_vulnerable
 
-        Forcing DELETE on vulnerable builds (#69784) was reverted: DELETE is
-        the mode that actually corrupts under Hermes' concurrent writers.
-        """
         cursor = db._conn.execute("PRAGMA journal_mode")
         mode = cursor.fetchone()[0].lower()
-        assert mode == "wal"
+        if is_sqlite_wal_reset_vulnerable():
+            assert mode == "delete"
+        else:
+            assert mode == "wal"
 
     def test_foreign_keys_enabled(self, db):
         cursor = db._conn.execute("PRAGMA foreign_keys")

@@ -126,9 +126,8 @@ def test_recovery_rebuilds_canonical_data_without_opening_source(
     source_hash = _sha256(source)
     source_stat = source.stat()
 
-    # A recovered DB is born in WAL even on a WAL-reset-vulnerable runtime:
-    # forcing DELETE there was reverted (DELETE is the mode that corrupts
-    # under Hermes' concurrent writers -- see hermes_cli.sqlite_safe_read).
+    # Exercise the vulnerable-runtime fallback: a fresh recovered DB must be
+    # born in DELETE mode instead of enabling WAL (#70055, retained).
     monkeypatch.setattr(
         hermes_state,
         "is_sqlite_wal_reset_vulnerable",
@@ -145,7 +144,7 @@ def test_recovery_rebuilds_canonical_data_without_opening_source(
     assert report["complete"] is True
     assert report["installed"] is False
     assert report["source_unchanged"] is True
-    assert report["verification"]["journal_mode"] == "wal"
+    assert report["verification"]["journal_mode"] == "delete"
     assert report["verification"]["integrity_check"] == ["ok"]
     assert report["verification"]["foreign_key_check"] == []
     assert report["verification"]["schema_version"] == SCHEMA_VERSION

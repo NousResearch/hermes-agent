@@ -528,18 +528,20 @@ def apply_wal_with_fallback(
     log one WARNING explaining why.
 
     On SQLite builds that still contain the WAL-reset corruption bug
-    (issue #69784), Hermes previously refused WAL and forced DELETE on
-    fresh databases.  That mitigation is REVERTED: measured against
-    Hermes' own multi-process write paths, DELETE is the mode that
-    corrupts (a bare open()/close() on the DB file cancels this process's
-    POSIX advisory locks -- including a running VACUUM's EXCLUSIVE lock --
-    and DELETE-mode rollback journals have no second line of defence).
-    WAL survived the same harness cleanly.  Upstream also rates the
-    WAL-reset race at or below the background rate of SSD failure and
-    could not reproduce it without patching SQLite to force the window,
-    whereas the lock-cancellation path reproduces on demand.  The real fix
-    is to never open() a live database file -- see
-    ``hermes_cli.sqlite_safe_read``.
+    (issue #69784), refuse to enable WAL on fresh / non-WAL databases
+    (prefer DELETE).  If the on-disk DB is already WAL, keep WAL and warn
+    — never live-downgrade under possible concurrent openers.
+
+    This gate (#70055) is deliberately RETAINED. An earlier revision of the
+    lock-cancellation fix (#71724) reverted it on the theory that DELETE was
+    "the mode that corrupts", but that comparison was confounded: the clean
+    WAL result came from SQLite 3.53.1, which carries BOTH the WAL-reset fix
+    AND 3.51.0's defenses against close()-broken POSIX locks, so it says
+    nothing about 3.50.4.  Re-measured on the actually-bundled 3.50.4 with
+    the lock fix in place, WAL and DELETE are both clean (0/3 each) — i.e.
+    there is no evidence that WAL is safer here, and upstream still documents
+    the WAL-reset bug as real through 3.51.2 with serious consequences.  Until
+    a fixed runtime is delivered, keep new databases out of WAL.
 
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
@@ -551,12 +553,12 @@ def apply_wal_with_fallback(
     both databases get identical fallback behavior.
 
     Never downgrades to DELETE if the on-disk DB header reports WAL — see
-    _on_disk_journal_mode.
+    _on_disk_journal_mode.  That holds for both the NFS path and the
+    WAL-reset vulnerability path.
     """
-    # Vulnerable SQLite still gets WAL: see the docstring. We warn once so
-    # the operator can upgrade the runtime, but we do NOT force DELETE.
+    # Vulnerable SQLite: do not enable WAL on new/non-WAL files.
     if is_sqlite_wal_reset_vulnerable():
-        _log_wal_reset_bug_once(db_label, kept_wal=True)
+        return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
 
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
@@ -588,6 +590,41 @@ def apply_wal_with_fallback(
         return "delete"
 
 
+def _apply_delete_for_wal_reset_bug(
+    conn: sqlite3.Connection,
+    *,
+    db_label: str,
+) -> str:
+    """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
+
+    - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
+    - Otherwise: set DELETE and warn.
+    """
+    current = ""
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        if row and row[0] is not None:
+            current = str(row[0]).strip().lower()
+    except sqlite3.OperationalError:
+        current = ""
+
+    if current == "wal":
+        # Do not TRUNCATE / journal_mode=DELETE while other processes may
+        # still hold this WAL DB open — same safety rule as the NFS path.
+        _log_wal_reset_bug_once(db_label, kept_wal=True)
+        _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
+        return "wal"
+
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+    except sqlite3.OperationalError:
+        # Best-effort: DELETE is usually already the default for new files.
+        pass
+    _log_wal_reset_bug_once(db_label, kept_wal=False)
+    return "delete"
+
+
 def _log_wal_reset_bug_once(
     db_label: str,
     *,
@@ -599,9 +636,8 @@ def _log_wal_reset_bug_once(
             return
         _wal_reset_bug_warned_paths.add(db_label)
     action = (
-        "keeping WAL — WAL is the safer mode here (forcing DELETE was "
-        "reverted; DELETE is what corrupts under Hermes' concurrent "
-        "writers)"
+        "is already in WAL mode — leaving WAL in place (no live "
+        "downgrade under concurrent openers)"
         if kept_wal
         else "using journal_mode=DELETE instead of enabling WAL"
     )
@@ -706,9 +742,29 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
     Raw file copy on purpose: the DB won't open cleanly, so we preserve the
     bytes exactly for forensics / manual restore. WAL and SHM sidecars are
     copied too when present. Returns the backup path, or None on failure.
+
+    Refuses when a connection to this database is still live in the process:
+    reading the file would ``close()`` a descriptor for it and cancel that
+    connection's POSIX advisory locks (see ``hermes_cli.sqlite_safe_read``).
+    The repair path can be entered by one SessionDB while the gateway holds
+    others, so this is a real possibility rather than a theoretical one.
     """
     import datetime
     import shutil
+
+    try:
+        from hermes_cli.sqlite_safe_read import has_live_connection
+    except ImportError:
+        has_live_connection = None  # type: ignore[assignment]
+
+    if has_live_connection is not None and has_live_connection(db_path):
+        logger.error(
+            "Refusing to raw-copy %s for backup: a connection to it is still "
+            "open in this process and the copy would cancel that connection's "
+            "POSIX locks. Close all SessionDB handles first.",
+            db_path,
+        )
+        return None
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
@@ -1551,21 +1607,39 @@ class CompressionSessionBusyError(RuntimeError):
     """A non-owner tried to write while compression owns the session."""
 
 
-def _connect_tracked_db(path, **kwargs):
+def _connect_tracked_db(path, tracking_path=None, **kwargs):
     """``sqlite3.connect`` that registers the open fd for lock-safety.
 
     While a connection is live, byte-level probes of the same file are
     refused: an ``open()``/``close()`` cancels every POSIX advisory lock this
-    process holds on it -- including a running VACUUM's EXCLUSIVE lock. The
-    registration is released automatically on ``close()``. Falls back to a
-    plain connect if the helper is unavailable (scaffold/embed installs).
+    process holds on it -- including a running VACUUM's EXCLUSIVE lock.
+    Released automatically on ``close()``.
+
+    The ONLY tolerated fallback is the helper being absent entirely
+    (scaffold/embed installs that ship hermes_state without hermes_cli). A
+    real connection failure must propagate: silently retrying an *untracked*
+    connect would disable the guard for the lifetime of that connection,
+    which is precisely the failure mode this module exists to prevent.
     """
     try:
         from hermes_cli.sqlite_safe_read import connect_tracked
-
-        return connect_tracked(path, **kwargs)
-    except Exception:
+    except ImportError:
+        logger.debug(
+            "hermes_cli.sqlite_safe_read unavailable; opening %s untracked "
+            "(byte-probe guard inactive in this install)",
+            path,
+        )
         return sqlite3.connect(str(path), **kwargs)
+
+    # Open through THIS module's sqlite3.connect so callers (and tests) that
+    # patch hermes_state.sqlite3.connect keep control of connection creation;
+    # the helper still owns tracking.
+    return connect_tracked(
+        path,
+        tracking_path=tracking_path,
+        connect_fn=sqlite3.connect,
+        **kwargs,
+    )
 
 
 def is_zeroed_state_db(
@@ -1797,6 +1871,7 @@ class SessionDB:
                 # the caller degrades per-profile.
                 self._conn = _connect_tracked_db(
                     f"file:{self.db_path}?mode=ro",
+                    tracking_path=self.db_path,
                     uri=True,
                     check_same_thread=False,
                     timeout=1.0,

@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
 
 import pytest
 
@@ -219,11 +220,125 @@ def test_tracking_registry_does_not_leak_across_close_paths(tmp_path, clean_regi
     assert not has_live_connection(db)
 
 
-def test_caller_supplied_connection_factory_still_works(tmp_path, clean_registry):
-    """A caller's own factory wins; tracking is skipped rather than crashing.
+def test_probe_and_connect_do_not_race(tmp_path, clean_registry, monkeypatch):
+    """The check and the raw read must be atomic w.r.t. connection lifecycle.
 
-    Tracking is an optimisation for the probe guard, never a precondition for
-    opening the database — passing a custom factory must not raise.
+    Deterministic interleaving: pause the probe *inside* the byte read — after
+    it has decided "nothing is live" and opened its descriptor — then let
+    another thread open a tracked connection and take a write lock, then let
+    the probe close.
+
+    With the guard holding ``_live_lock`` across check+open+read+close, the
+    other thread blocks on that lock until the probe is done, so no
+    interleaving is possible. If the lock is only held across the check, that
+    thread slips in and the probe's ``close()`` cancels its POSIX locks.
+    """
+    import hermes_cli.sqlite_safe_read as ssr
+
+    db = tmp_path / "state.db"
+    _make_db(db, "DELETE")
+
+    inside_read = threading.Event()
+    may_close = threading.Event()
+    failures: list[str] = []
+    real_open = open
+
+    def slow_open(*args, **kwargs):
+        handle = real_open(*args, **kwargs)
+        inside_read.set()
+        # Hold the descriptor open while the writer tries to get in.
+        may_close.wait(10)
+        return handle
+
+    def writer():
+        inside_read.wait(10)
+        # If the guard is correct this blocks until the probe releases the
+        # lock; if not, it opens and locks inside the probe's window.
+        conn = ssr.connect_tracked(db, isolation_level=None, timeout=0.5)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO t(v) VALUES ('holder')")
+            may_close.set()  # let the probe's close() land
+            if _external_writer_can_break_in(db):
+                failures.append(
+                    "external writer broke in: the probe's close() cancelled "
+                    "this connection's POSIX locks"
+                )
+            conn.execute("COMMIT")
+        except sqlite3.Error as exc:  # a cancelled lock surfaces here too
+            failures.append(f"holder transaction failed: {exc}")
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(ssr, "open", slow_open, raising=False)
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    try:
+        read_header_bytes_preopen(db, length=16)
+    finally:
+        may_close.set()  # never wedge the probe if the writer died
+    t.join(20)
+
+    assert not failures, failures[0]
+
+
+def test_read_only_uri_connection_is_tracked_by_real_path(tmp_path, clean_registry):
+    """A ``file:...?mode=ro`` connection must register under the real path.
+
+    SessionDB's read-only path opens a URI, not a filesystem path. Keying the
+    registry on the caller's spelling produces something like
+    ``<cwd>/file:/…/state.db?mode=ro``, which no probe of the actual Path can
+    match -- leaving the read-only connection invisible to the guard and its
+    locks cancellable.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    _make_db(db, "DELETE")
+
+    conn = connect_tracked(
+        f"file:{db}?mode=ro", uri=True, isolation_level=None, timeout=0.5
+    )
+    try:
+        assert has_live_connection(db), (
+            "read-only URI connection was registered under a URI-shaped key; "
+            "a probe of the real path cannot see it"
+        )
+        assert read_header_bytes_preopen(db, length=16) is None
+    finally:
+        conn.close()
+
+    assert not has_live_connection(db)
+
+
+def test_session_db_read_only_is_tracked(tmp_path, clean_registry, monkeypatch):
+    """End-to-end: a real read-only SessionDB blocks byte-probes."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    seed = SessionDB(db_path=db_path)
+    seed.create_session("s1", source="cli")
+    seed.close()
+
+    ro = SessionDB(db_path=db_path, read_only=True)
+    try:
+        assert has_live_connection(db_path)
+        assert read_header_bytes_preopen(db_path, length=16) is None
+    finally:
+        ro.close()
+
+    assert not has_live_connection(db_path)
+    assert read_header_bytes_preopen(db_path, length=16) is not None
+
+
+def test_custom_factory_is_honoured_and_still_tracked(tmp_path, clean_registry):
+    """A caller's factory must work AND keep byte-probe protection.
+
+    Callers legitimately pass their own Connection subclasses (the suite uses
+    them to simulate FTS5-less runtimes). Neither rejecting them nor silently
+    leaving them untracked is acceptable — the former breaks real callers, the
+    latter quietly unguards the database. The factory is augmented instead.
     """
     from hermes_cli.sqlite_safe_read import connect_tracked
 
@@ -235,8 +350,71 @@ def test_caller_supplied_connection_factory_still_works(tmp_path, clean_registry
 
     conn = connect_tracked(db, factory=CustomConnection)
     try:
-        assert isinstance(conn, CustomConnection)
+        assert isinstance(conn, CustomConnection), "caller's factory must be honoured"
         assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 200
+        assert has_live_connection(db), "custom factory must still be tracked"
+        assert read_header_bytes_preopen(db, length=16) is None
+    finally:
+        conn.close()
+
+    assert not has_live_connection(db), "custom factory must untrack on close"
+
+
+def test_opener_that_discards_our_factory_is_still_tracked(tmp_path, clean_registry):
+    """Tracking must survive an opener that substitutes its own factory.
+
+    Two distinct paths reach a custom Connection subclass: the caller passing
+    ``factory=`` (augmented before the open) and an opener that ignores the
+    factory we asked for and supplies its own (retrofitted after the open).
+    The suite's FTS5-less doubles take the second path, so it needs its own
+    coverage -- otherwise a regression there is invisible.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    class CustomConnection(sqlite3.Connection):
+        pass
+
+    db = tmp_path / "state.db"
+    _make_db(db, "DELETE")
+
+    def opener_that_ignores_factory(path, **kwargs):
+        kwargs.pop("factory", None)
+        return sqlite3.connect(path, factory=CustomConnection, **kwargs)
+
+    conn = connect_tracked(db, connect_fn=opener_that_ignores_factory)
+    try:
+        assert isinstance(conn, CustomConnection), "opener's factory must survive"
+        assert has_live_connection(db), (
+            "connection opened with a substituted factory was left untracked; "
+            "its database silently lost byte-probe protection"
+        )
+        assert read_header_bytes_preopen(db, length=16) is None
+    finally:
+        conn.close()
+
+    assert not has_live_connection(db), "retrofitted connection must untrack on close"
+
+
+def test_session_db_read_only_tracks_under_canonical_path(tmp_path, clean_registry):
+    """The read-only URI must resolve to the real path even without a hint.
+
+    ``SessionDB`` passes ``tracking_path`` explicitly, but the helper must not
+    depend on that: ``PRAGMA database_list`` is the authority. This exercises
+    the no-hint path directly so removing the fallback is caught.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    _make_db(db, "DELETE")
+
+    conn = connect_tracked(
+        f"file:{db}?mode=ro", uri=True, isolation_level=None, timeout=0.5
+    )
+    try:
+        assert has_live_connection(db), (
+            "canonical-path resolution failed: the URI spelling was used as "
+            "the registry key"
+        )
     finally:
         conn.close()
 

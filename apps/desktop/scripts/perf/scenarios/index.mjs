@@ -4,6 +4,7 @@
 import coldStart from './cold-start.mjs'
 import firstToken from './first-token.mjs'
 import keystroke from './keystroke.mjs'
+import multitab from './multitab.mjs'
 import profileSwitch from './profile-switch.mjs'
 import sessionSwitch from './session-switch.mjs'
 import stream from './stream.mjs'
@@ -14,6 +15,7 @@ export const SCENARIOS = {
   [stream.name]: stream,
   [keystroke.name]: keystroke,
   [transcript.name]: transcript,
+  [multitab.name]: multitab,
   [coldStart.name]: coldStart,
   [firstToken.name]: firstToken,
   [submit.name]: submit,

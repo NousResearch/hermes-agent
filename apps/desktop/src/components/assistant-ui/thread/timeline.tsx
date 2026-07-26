@@ -196,6 +196,17 @@ export const ThreadTimeline: FC = () => {
     const compute = () => {
       raf = 0
 
+      // Pinned to the bottom (the entire streaming steady-state): the active
+      // prompt is simply the last one. Skipping the walk matters — it reads a
+      // rect per user message per scroll frame, and interleaved with React's
+      // streaming style writes each read forces a full reflow (the single
+      // hottest frame in the multitab profile).
+      if (viewport.dataset.following === 'true') {
+        setActiveIndex(prev => (prev === entries.length - 1 ? prev : entries.length - 1))
+
+        return
+      }
+
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {

@@ -774,6 +774,41 @@ def _compression_deferred_result(
     }
 
 
+def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool:
+    """Rewrite a cache-decorated system message in place, keeping its blocks.
+
+    ``apply_anthropic_cache_control`` runs once per call block, *before* the
+    retry loop, and splits the system prompt into ``[static prefix, volatile
+    tail]`` text blocks carrying the cache_control breakpoints. Assigning a bare
+    string over that list drops both breakpoints, so the failover retry ships
+    the whole system prompt uncached and re-bills it in full.
+
+    ``rewrite_prompt_model_identity`` only touches the LAST ``Model:`` /
+    ``Provider:`` lines, and those live in the volatile tail — so the static
+    prefix stays byte-identical and its cache entry keeps matching. Returns
+    False when the shape is not one we can safely patch, so the caller falls
+    back to the plain-string assignment.
+    """
+    content = system_message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    if not all(
+        isinstance(part, dict) and part.get("type") == "text" for part in content
+    ):
+        return False
+    if len(content) == 1:
+        content[0]["text"] = effective
+        return True
+    if len(content) == 2:
+        head = content[0].get("text") or ""
+        if head and effective.startswith(head):
+            tail = effective[len(head):]
+            if tail:
+                content[1]["text"] = tail
+                return True
+    return False
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -796,7 +831,8 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
         effective = sp
         if agent.ephemeral_system_prompt:
             effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
-        api_messages[0]["content"] = effective
+        if not _rewrite_system_content_blocks(api_messages[0], effective):
+            api_messages[0]["content"] = effective
     return sp
 
 

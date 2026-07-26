@@ -4675,6 +4675,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._pet_turn_error: bool = False
         self._attached_images: list[Path] = []
         self._image_counter = 0
+        # Ctrl+S prompt stash — park a half-written draft, send something
+        # else, bring the draft back.  Session-scoped and in-memory only:
+        # drafts routinely contain secrets, so nothing is written to disk.
+        from hermes_cli.prompt_stash import PromptStash as _PromptStash
+        self._prompt_stash = _PromptStash()
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
         self._active_session_lease = None
@@ -6090,6 +6095,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
 
+            # Stash indicator (📌 N) — appended after all width tiers so the
+            # user always knows a parked draft exists, even on narrow
+            # terminals.  Placed before the battery prepend so it stays at the
+            # right edge, and it is the first thing the width trim below drops
+            # if the bar genuinely cannot fit.
+            try:
+                stash_indicator = self._prompt_stash.indicator()
+            except Exception:
+                stash_indicator = ""
+            if stash_indicator:
+                # Insert before the trailing pad fragment so the bar keeps its
+                # one-cell right margin.
+                if frags and frags[-1] == ("class:status-bar", " "):
+                    frags[-1:-1] = [
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-strong", stash_indicator),
+                    ]
+                else:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-strong", stash_indicator))
+
             # Battery is the first status-bar element when enabled: prepend it
             # ahead of the leading ⚕ marker in whichever width tier ran above.
             if battery_label:
@@ -6123,42 +6149,60 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return f"{mins // 60}h ago"
 
     def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
-        """Return prompt_toolkit formatted_text fragments for the stash panel box."""
-        W = min(width - 4, 80)
+        """Return prompt_toolkit formatted_text fragments for the stash panel box.
 
-        HDR_PREFIX = "╭─ 📌 Stash ("
+        Every horizontal measurement goes through ``_status_bar_display_width``
+        (prompt_toolkit's ``get_cwidth``) rather than ``len()``.  The header
+        contains 📌, which is one Python codepoint but two terminal cells; the
+        original PR chased that off-by-one through three successive
+        "subtract 1 from len()" commits.  Measuring in display cells fixes it
+        for real and keeps CJK previews from bleeding past the right border.
+        """
+        cw = self._status_bar_display_width
+        W = max(12, min(width - 4, 80))
+
         n = len(stash_list)
-        title_mid = f"{n} item{'s' if n != 1 else ''}) "
+        hdr_prefix_str = f"╭─ 📌 Stash ({n} item{'s' if n != 1 else ''}) "
         HDR_SUFFIX = " Ctrl+S ─╮"
         FTR_PREFIX = "╰"
         FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
 
-        # Header dashes fill between title and suffix
-        # HDR_PREFIX includes emoji (📌 = 2 wide) — measure in display cols
-        hdr_fixed = 2 + len(HDR_PREFIX) - 2 + len(title_mid) + len(HDR_SUFFIX)
-        # 📌 is 2 wide, "╭─ " already counted title chars fine since we
-        # just need to fit in W columns
-        hdr_prefix_str = f"{HDR_PREFIX}{title_mid}"
-        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
-        ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
+        # On narrow terminals the full hint text is wider than the box itself.
+        # Drop to compact affordances rather than letting the frame bleed past
+        # the right edge (which is what made the panel look broken).
+        if cw(hdr_prefix_str) + cw(HDR_SUFFIX) > W:
+            hdr_prefix_str = f"╭─ 📌 {n} "
+            HDR_SUFFIX = "─╮"
+        if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
+            FTR_SUFFIX = " ↑↓ ⏎ D Esc ─╯"
+        if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
+            FTR_SUFFIX = "─╯"
 
-        # Row inner width: W minus 2 border chars '│' on each side
+        hdr_dashes = max(0, W - cw(hdr_prefix_str) - cw(HDR_SUFFIX))
+        ftr_dashes = max(0, W - cw(FTR_PREFIX) - cw(FTR_SUFFIX))
+
+        # Row inner width: W minus the two '│' border cells.
         INNER = W - 2
 
         frags: list = []
 
         def line(text: str, style: str = "") -> None:
-            frags.append((style, text + "\n"))
+            # Final guard: never emit a line wider than the box, whatever the
+            # label lengths worked out to.
+            frags.append((style, self._trim_status_bar_text(text, W) + "\n"))
 
         line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
 
         for i, item in enumerate(stash_list):
             age = self._fmt_stash_age(item["stashed_at"])
             # Row: " ► [N] {age:<10} {preview} "
-            prefix = f" {'►' if i == cursor else ' '} [{i+1}] {age:<10} "
-            avail = max(0, INNER - len(prefix) - 1)
-            preview = item["preview"][:avail].ljust(avail)
-            row = f"│{prefix}{preview} │"
+            prefix = f" {'►' if i == cursor else ' '} [{i + 1}] {age:<10} "
+            if cw(prefix) > INNER - 2:
+                prefix = f" {'►' if i == cursor else ' '} [{i + 1}] "
+            avail = max(0, INNER - cw(prefix) - 1)
+            preview = self._trim_status_bar_text(item.get("preview") or "", avail)
+            preview = preview + " " * max(0, avail - cw(preview))
+            row = self._trim_status_bar_text(f"│{prefix}{preview} │", W)
             if i == cursor:
                 frags.append(("class:subagent-selected", row + "\n"))
             else:
@@ -14640,6 +14684,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 spacer,
                 *self._get_extra_tui_widgets(),
                 getattr(self, "_pet_widget", None),
+                getattr(self, "_stash_panel_widget", None),
                 status_bar,
                 input_rule_top,
                 image_bar,
@@ -15213,6 +15258,105 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def handle_open_in_editor(event):
             """Ctrl+G (or Alt+G in VSCode/Cursor) opens the current draft in an external editor."""
             cli_ref._open_external_editor(event.current_buffer)
+
+        # --- Ctrl+S prompt stash -------------------------------------------
+        # Park a half-written draft, send something else, then bring the draft
+        # back.  Suppressed while a modal prompt owns the composer (sudo /
+        # secret / approval / clarify) so Ctrl+S can't stash a password.
+        _stash_filter = Condition(
+            lambda: not cli_ref._clarify_state
+            and not cli_ref._approval_state
+            and not cli_ref._sudo_state
+            and not cli_ref._secret_state
+            and not cli_ref._slash_confirm_state
+            and not cli_ref._model_picker_state
+        )
+        _stash_panel_filter = Condition(
+            lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))
+        )
+
+        def _restore_stash_payload(event, payload) -> None:
+            """Put a popped (text, images) payload back into the composer."""
+            if not payload:
+                return
+            text, images = payload
+            buf = event.app.current_buffer
+            buf.text = text
+            buf.cursor_position = len(text)
+            if images:
+                # Restore attachments the draft was carrying.  Extend rather
+                # than replace: the user may have attached something new since
+                # the stash was taken and silently dropping it would be data
+                # loss.
+                for img in images:
+                    if img not in cli_ref._attached_images:
+                        cli_ref._attached_images.append(img)
+
+        @kb.add('c-s', filter=_stash_filter)
+        def handle_prompt_stash(event):
+            """Ctrl+S: stash the current draft, or restore/browse a stashed one.
+
+            - Composer has content → push it onto the stash and clear the input.
+            - Composer empty, one stashed draft → pop it straight back.
+            - Composer empty, several stashed → open the browse panel.
+            - Browse panel open → close it.
+
+            Pushing onto a stack (rather than a single slot) is what makes
+            repeated Ctrl+S safe: a second stash never silently overwrites the
+            first, both stay reachable in the panel.
+            """
+            from hermes_cli.prompt_stash import (
+                ACTION_OPEN_PANEL,
+                ACTION_RESTORED,
+                ACTION_STASHED,
+                resolve_ctrl_s,
+            )
+
+            buf = event.app.current_buffer
+            action, payload = resolve_ctrl_s(
+                cli_ref._prompt_stash, buf.text, cli_ref._attached_images
+            )
+
+            if action == ACTION_STASHED:
+                # reset() (not `text = ""`) so completion state, selection, and
+                # the undo stack are cleared along with the text.
+                buf.reset()
+                cli_ref._attached_images.clear()
+            elif action == ACTION_RESTORED:
+                _restore_stash_payload(event, payload)
+            elif action == ACTION_OPEN_PANEL:
+                pass  # resolve_ctrl_s already flipped panel_open
+
+            event.app.invalidate()
+
+        @kb.add('up', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_up(event):
+            cli_ref._prompt_stash.move_cursor(-1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_down(event):
+            cli_ref._prompt_stash.move_cursor(1)
+            event.app.invalidate()
+
+        @kb.add('enter', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_restore(event):
+            """Enter in the browse panel restores the highlighted draft."""
+            payload = cli_ref._prompt_stash.restore_at_cursor()
+            _restore_stash_payload(event, payload)
+            event.app.invalidate()
+
+        @kb.add('d', filter=_stash_panel_filter, eager=True)
+        @kb.add('D', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_delete(event):
+            """D in the browse panel discards the highlighted draft."""
+            cli_ref._prompt_stash.delete_at_cursor()
+            event.app.invalidate()
+
+        @kb.add('escape', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_close(event):
+            cli_ref._prompt_stash.close_panel()
+            event.app.invalidate()
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
@@ -16079,6 +16223,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if cli_ref._voice_mode:
                 _label = cli_ref._voice_record_key_label()
                 return f"type or {_label} to record"
+            # Advertise a parked draft so the stash can never be silently
+            # forgotten — the composer itself tells you how to get it back.
+            _stash_hint = ""
+            try:
+                _stash_hint = cli_ref._prompt_stash.placeholder_hint()
+            except Exception:
+                _stash_hint = ""
+            if _stash_hint:
+                return _stash_hint
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -16653,6 +16806,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(
                 lambda: cli_ref._status_bar_visible
                 and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
+        )
+
+        # Stash browse panel — appears just above the status bar when the user
+        # presses Ctrl+S on an empty composer with 2+ stashed drafts.
+        def _get_stash_panel_display():
+            try:
+                _stash = cli_ref._prompt_stash
+                return cli_ref._render_stash_panel(
+                    _stash.panel_rows(),
+                    _stash.panel_cursor,
+                    cli_ref._get_tui_terminal_width(),
+                )
+            except Exception:
+                return []
+
+        self._stash_panel_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_stash_panel_display),
+                wrap_lines=False,
+            ),
+            filter=Condition(
+                lambda: cli_ref._prompt_stash.panel_open
+                and bool(len(cli_ref._prompt_stash))
             ),
         )
 

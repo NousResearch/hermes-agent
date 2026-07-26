@@ -251,10 +251,13 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
   fallbackLabel?: string
 }
 
+// Title resolution is a fallback, not an override. Both props carry authored
+// text — chat markdown passes `fallbackLabel` — so either one skips the fetch.
 export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: PrettyLinkProps) {
   const target = useMemo(() => normalizeExternalUrl(href), [href])
-  const fetched = useLinkTitle(label ? null : target)
-  const display = fetched || label?.trim() || fallbackLabel?.trim() || urlSlugTitleLabel(target)
+  const authoredLabel = label?.trim() || fallbackLabel?.trim()
+  const fetched = useLinkTitle(authoredLabel ? null : target)
+  const display = authoredLabel || fetched || urlSlugTitleLabel(target)
 
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>

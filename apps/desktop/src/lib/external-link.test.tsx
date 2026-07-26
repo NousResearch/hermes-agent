@@ -127,7 +127,7 @@ describe('external link helpers', () => {
     render(
       <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
         Example link
-      </ExternalLink>,
+      </ExternalLink>
     )
 
     const link = screen.getByRole('link', { name: 'Example link' })

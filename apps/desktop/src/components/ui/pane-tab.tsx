@@ -22,8 +22,7 @@ const TAB_VERTICAL =
   'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
 
 // Full height, so the active tab alone covers that row and cuts the rule.
-const TAB_ACTIVE =
-  'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
+const TAB_ACTIVE = 'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
 // Inactive = gutter. Hover DARKENS: active is the lighter content surface, so a
 // lightening wash made the two nearly indistinguishable.

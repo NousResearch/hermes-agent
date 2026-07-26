@@ -87,8 +87,14 @@ Rules:
   - Pick assignees from the roster by matching the task to the profile's
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
-  - Each child task body is what a fresh worker will read with no other
-    context — be specific about goal, approach, and acceptance criteria.
+  - Every generated body, including the single-task fallback, is what a fresh
+    worker will read with no other context. It MUST use these bold markdown
+    headings in order:
+      **Outcome** — the observable result the worker must produce.
+      **Verification** — concrete checks or evidence that prove completion.
+      **Constraints** — scope and side-effect limits; write "None" if absent.
+      **Stop/ask** — conditions requiring human or parent input; write "None"
+          if absent.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:

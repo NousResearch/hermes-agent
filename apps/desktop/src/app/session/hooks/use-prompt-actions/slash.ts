@@ -48,6 +48,7 @@ import { resolveTargetSessionId } from './resolve-target-session'
 import {
   type GatewayRequest,
   isSessionIdCandidate,
+  isTargetSessionBusy,
   renderCommandsCatalog,
   renderRpcResult,
   slashStatusText,
@@ -252,7 +253,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
           }
 
-          if (busyRef.current) {
+          // Gate on the TARGET session's own busy state, not the foreground
+          // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
+          // is on screen, while this command runs against the session
+          // resolveTargetSessionId picked, routinely a different one.
+          const sessionStates = $sessionStates.get()
+          const targetState = sessionStates[sessionId]
+
+          if (isTargetSessionBusy(sessionStates, sessionId, busyRef.current)) {
             // The backend already executed the command — for `/goal <text>`
             // the goal is set and `message` is its kickoff prompt. Dropping
             // it here loses the kickoff silently (the goal exists but the
@@ -266,8 +274,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // would otherwise park the kickoff on whichever chat is now in
             // front. Fall back through the live selection for a session whose
             // cache entry hasn't landed yet.
-            const storedId =
-              storedSessionId || $sessionStates.get()[sessionId]?.storedSessionId || $selectedStoredSessionId.get()
+            const storedId = storedSessionId || targetState?.storedSessionId || $selectedStoredSessionId.get()
 
             const queueKey = resolveComposerSessionKey(storedId, $sessions.get()) || storedId || sessionId
 

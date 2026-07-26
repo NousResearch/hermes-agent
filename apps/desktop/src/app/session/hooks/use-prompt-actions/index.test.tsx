@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
@@ -19,6 +20,7 @@ import {
   setMessages,
   setSessions
 } from '@/store/session'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './utils'
@@ -1040,6 +1042,83 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
     expect(renderedText).toContain('queued')
 
+    $queuedPromptsBySession.set({})
+  })
+
+  it('gates the busy queue on the TARGET session, not the foreground busy flag', async () => {
+    // `busyRef` is the FOREGROUND view's busy flag; a slash command runs against
+    // the session `resolveTargetSessionId` picked, which is frequently not the
+    // foreground one (tile, route rebind, freshly created session). A stale
+    // foreground `true` — e.g. left behind by a warm resume of a *different*,
+    // still-running session — parked the kickoff of an idle session's command
+    // on the queue and told the user "session busy" about a session that was
+    // doing nothing.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState(RUNTIME_SESSION_ID))
+
+    const calls: string[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      return (method === 'slash.exec' ? { type: 'send', message: 'audit the session states' } : {}) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/audit-only audit the session states')
+
+    // The target session is idle, so the command sends now — nothing queues.
+    expect(calls).toContain('prompt.submit')
+    expect(getQueuedPrompts(RUNTIME_SESSION_ID)).toEqual([])
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('still queues when the TARGET session is busy and the foreground flag is not', async () => {
+    // The converse leak: a background/tile command must not submit mid-turn
+    // just because the foreground view happens to be idle.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
+
+    const calls: string[] = []
+    const busyRef = { current: false }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      return (method === 'slash.exec' ? { type: 'send', message: 'audit the session states' } : {}) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/audit-only audit the session states')
+
+    expect(calls).toEqual(['slash.exec'])
+    expect(getQueuedPrompts(RUNTIME_SESSION_ID).map(entry => entry.text)).toEqual(['audit the session states'])
+
+    dropSessionState(RUNTIME_SESSION_ID)
     $queuedPromptsBySession.set({})
   })
 

@@ -2730,6 +2730,13 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        # Operator-customizable policy text for smart approvals. When
+        # non-empty, this is appended to the smart-approval guardian's
+        # SYSTEM prompt (trusted channel) as additional rules — e.g.
+        # "Always ESCALATE commands touching /etc" or "APPROVE docker
+        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
+        # customizable auto-review guardian policy.
+        "smart_policy": "",
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable

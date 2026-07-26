@@ -2024,6 +2024,18 @@ approvals:
 
 Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny) for details.
 
+### Custom smart-approval policy
+
+`approvals.smart_policy` lets you append your own rules to the smart-approval reviewer's instructions. When set, the text is added to the guardian LLM's system prompt (the trusted channel — never alongside the untrusted command text), so you can tighten or relax its judgment for your environment without editing code:
+
+```yaml
+approvals:
+  smart_policy: |
+    Always ESCALATE commands that modify anything under /etc.
+    APPROVE docker compose restarts in ~/deploys — they are routine here.
+```
+
+
 ## Checkpoints
 
 Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/user-guide/checkpoints-and-rollback) for details.

@@ -1051,7 +1051,7 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -1093,7 +1093,7 @@ async def test_startup_auto_resume_includes_crash_recovery():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -1123,10 +1123,47 @@ async def test_startup_auto_resume_skips_stale_entries():
     runner.session_store._entries = {stale_entry.session_key: stale_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_stale_marker_cleared_on_persist():
+    """Stale resume_pending markers must be cleared via the async store.
+
+    When a session's last_resume_marked_at exceeds the freshness window,
+    the scheduler must call clear_resume_pending() so the flag doesn't
+    accumulate across restarts. The existing test only asserts no dispatch;
+    this verifies the async persistence call is made.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="stale-persist")
+    stale_marker = datetime.now() - timedelta(
+        seconds=_auto_continue_freshness_window() + 30
+    )
+    stale_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:stale-persist",
+        session_id="sid-sp",
+        created_at=stale_marker,
+        updated_at=stale_marker,
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=stale_marker,
+    )
+    runner.session_store._entries = {stale_entry.session_key: stale_entry}
+
+    scheduled = await runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    # stale marker must be persisted through the async boundary
+    runner.session_store.clear_resume_pending.assert_called_once_with(
+        stale_entry.session_key
+    )
 
 
 @pytest.mark.asyncio
@@ -1165,7 +1202,7 @@ async def test_startup_auto_resume_skips_suspended_and_originless():
     }
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1196,7 +1233,7 @@ async def test_startup_auto_resume_skips_disallowed_reasons():
     runner.session_store._entries = {other_entry.session_key: other_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1232,7 +1269,7 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
@@ -1271,7 +1308,7 @@ async def test_startup_auto_resume_fails_closed_on_auth_error():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
@@ -1300,7 +1337,7 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
     runner.adapters = {}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1336,12 +1373,12 @@ async def test_reconnect_reschedules_pending_after_late_platform_connect():
 
     # Platform was not connected at gateway startup → session skipped.
     runner.adapters = {}
-    assert runner._schedule_resume_pending_sessions() == 0
+    assert await runner._schedule_resume_pending_sessions() == 0
     adapter.handle_message.assert_not_called()
 
     # Platform reconnects → its pending session is retried.
     runner.adapters = {Platform.TELEGRAM: adapter}
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
     await asyncio.sleep(0)
 
     assert scheduled == 1
@@ -1394,7 +1431,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
 
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
     await asyncio.sleep(0)
 
     # Only the telegram session is resumed; the discord session waits for its
@@ -1428,7 +1465,7 @@ async def test_auto_resume_skips_sessions_with_running_agent():
     runner._running_agents = {pending_entry.session_key: object()}
     adapter.handle_message = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
+    scheduled = await runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
@@ -1489,7 +1526,7 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
 
     adapter.handle_message = fake_handle_message
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     inbound = MessageEvent(
@@ -1783,7 +1820,7 @@ async def test_auto_resume_sets_sentinel_before_task_execution():
 
     adapter.handle_message = _slow_handle
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
 
     assert scheduled == 1
     # The sentinel must be set immediately — before the task starts executing.
@@ -1825,7 +1862,7 @@ async def test_auto_resume_sentinel_cleaned_on_task_failure():
 
     adapter.handle_message = _failing_handle
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     assert scheduled == 1
 
     # Sentinel is set immediately.
@@ -1921,7 +1958,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     )
     adapter._run_processing_hook = AsyncMock()
 
-    scheduled = runner._schedule_resume_pending_sessions()
+    scheduled = await runner._schedule_resume_pending_sessions()
     assert scheduled == 1
     # Pre-claim must be visible immediately.
     assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL

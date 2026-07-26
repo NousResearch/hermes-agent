@@ -7596,7 +7596,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
         return redelivered
 
-    def _schedule_resume_pending_sessions(self, platform=None) -> int:
+    async def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -7665,7 +7665,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # still trigger normal reset-policy evaluation in
                 # get_or_create_session().
                 try:
-                    self.session_store.clear_resume_pending(entry.session_key)
+                    await self.async_session_store.clear_resume_pending(entry.session_key)
                 except Exception:
                     pass
                 continue
@@ -8547,7 +8547,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that session) is strictly cheaper and more correct than re-running
         # the whole turn.
         await self._redeliver_pending_obligations()
-        self._schedule_resume_pending_sessions()
+        await self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
@@ -9299,7 +9299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # auto-resume scoped to this platform so recovery
                         # doesn't silently wait for a manual user message.
                         try:
-                            self._schedule_resume_pending_sessions(platform=platform)
+                            await self._schedule_resume_pending_sessions(platform=platform)
                         except Exception:
                             logger.debug(
                                 "resume-pending reschedule after %s reconnect failed",

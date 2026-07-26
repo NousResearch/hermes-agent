@@ -3192,7 +3192,10 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    agent._session_db.archive_and_compact(
+                        agent.session_id, compressed,
+                        topic_id=getattr(agent, "_active_topic_id", None),
+                    )
                     split_status = "in_place_committed"
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts

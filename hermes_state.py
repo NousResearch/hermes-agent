@@ -6740,7 +6740,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return cursor.fetchone() is not None
 
     def archive_and_compact(
-        self, session_id: str, compacted_messages: List[Dict[str, Any]]
+        self, session_id: str, compacted_messages: List[Dict[str, Any]],
+        topic_id: Optional[int] = None,
     ) -> int:
         """Non-destructive in-place compaction for a single durable session id.
 
@@ -6767,16 +6768,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
 
         def _do(conn):
-            # Soft-archive the live turns: active=0 hides them from the live
-            # context load, compacted=1 marks them as "summarized away" (vs
-            # rewind/undo's active=0+compacted=0, which means "user took it
-            # back"). search_messages includes compacted=1 rows by default so
-            # the pre-compaction transcript stays discoverable; live-context
-            # loads (active=1 only) still exclude them.
+            # Soft-archive the live turns for this topic (or all if topic_id=None).
+            where = "session_id = ? AND active = 1"
+            params: list = [session_id]
+            if topic_id is not None:
+                where += " AND topic_id = ?"
+                params.append(topic_id)
             conn.execute(
-                "UPDATE messages SET active = 0, compacted = 1 "
-                "WHERE session_id = ? AND active = 1",
-                (session_id,),
+                f"UPDATE messages SET active = 0, compacted = 1 WHERE {where}",
+                params,
             )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, compacted_messages

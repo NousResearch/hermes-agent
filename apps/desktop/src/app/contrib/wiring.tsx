@@ -942,11 +942,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
-      <ModelPickerOverlay
-        gateway={gateway || undefined}
-        onSelect={selectModel}
-        profile={activeGatewayProfile}
-      />
+      <ModelPickerOverlay gateway={gateway || undefined} onSelect={selectModel} profile={activeGatewayProfile} />
       <SessionPickerOverlay onResume={resumeSession} />
       <ModelVisibilityOverlay
         gateway={gateway || undefined}

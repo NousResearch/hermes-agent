@@ -143,8 +143,17 @@ test.describe('sidebar states — tab (hidden) unread is correct', () => {
 
     // A tab that's not the active tab IS hidden — the unread dot is correct.
     // The user is NOT looking at it, so marking it "unread" is right.
-    const unreadCount = await page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count()
-    expect(unreadCount, 'hidden tab should be marked unread').toBeGreaterThan(0)
+    //
+    // Poll rather than sampling once: "finished-unread" is an event-driven
+    // transition that lands slightly after the running dot clears, and with a
+    // released (rather than slowly-expiring) process there is no incidental
+    // slack between the two. Same reasoning as the cross-session spec.
+    await expect
+      .poll(
+        () => page.locator(`[aria-label="${UNREAD_DOT_LABEL}"]`).count(),
+        { timeout: 30_000, message: 'hidden tab should be marked unread' },
+      )
+      .toBeGreaterThan(0)
 
     await page.screenshot({ path: 'test-results/tile-bug-tab-unread-correct.png' })
   })

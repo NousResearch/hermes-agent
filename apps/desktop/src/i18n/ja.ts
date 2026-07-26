@@ -2613,6 +2613,11 @@ export const ja = defineLocale({
           pending: 'ファイルを一覧表示中',
           pendingAction: '一覧表示中'
         },
+        memory: {
+          done: 'メモリに保存しました',
+          pending: 'メモリに保存中',
+          pendingAction: '保存中'
+        },
         patch: {
           done: 'ファイルにパッチを適用しました',
           pending: 'ファイルにパッチ適用中',

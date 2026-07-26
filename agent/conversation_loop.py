@@ -2155,6 +2155,10 @@ def run_conversation(
                     )
                     if _composed is not None:
                         api_msg["content"] = _composed
+
+                    # Inject TOPIC instruction into current user message
+                    if isinstance(api_msg.get("content"), str):
+                        api_msg["content"] += "\n\n(Append exactly: TOPIC: <name>)"
             elif (
                 isinstance(_api_content, str)
                 and _api_content

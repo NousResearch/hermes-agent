@@ -1,6 +1,7 @@
 const EMOJI_RE = /(?:[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]|[\u{FE0F}\u{200D}]|[\u{E0020}-\u{E007F}])+/gu
 
 const FENCED_CODE_RE = /```[\s\S]*?(?:```|$)/g
+const CODE_BLOCK_SUMMARY = ' code block omitted '
 const INLINE_CODE_RE = /`([^`]+)`/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)]+)\)/g
 const PARAGRAPH_BREAK_RE = /[ \t]*\n{2,}[ \t]*/g
@@ -21,7 +22,7 @@ function normalizeLineBreaks(text: string): string {
 
 export function sanitizeTextForSpeech(text: string): string {
   return normalizeLineBreaks(text)
-    .replace(FENCED_CODE_RE, ' ')
+    .replace(FENCED_CODE_RE, CODE_BLOCK_SUMMARY)
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')

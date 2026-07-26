@@ -89,12 +89,9 @@ deepseek = DeepSeekProfile(
     display_name="DeepSeek",
     description="DeepSeek — native DeepSeek API",
     signup_url="https://platform.deepseek.com/",
-    fallback_models=(
-        "deepseek-chat",
-        "deepseek-reasoner",
-    ),
+    fallback_models=(),
     base_url="https://api.deepseek.com/v1",
-    default_aux_model="deepseek-chat",
+    default_aux_model="deepseek-v4-flash",
 )
 
 register_provider(deepseek)

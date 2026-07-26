@@ -13888,12 +13888,34 @@ def _project_tree_inputs(
     return sessions, projects, discovered, active_id
 
 
+# Per-build memo for `_dir_exists_cached`. Cleared at the top of every
+# `_build_project_tree`, so a dir created or deleted between sidebar refreshes
+# is seen on the next one.
+_DIR_EXISTS_CACHE: dict[str, bool] = {}
+
+
+def _dir_exists_cached(path: str) -> bool:
+    """``os.path.isdir`` for the project tree, memoized per build.
+
+    ``build_tree`` asks per SESSION, not per distinct path, so a power user with
+    hundreds of sessions across a handful of dirs would otherwise fire hundreds
+    of redundant stats on every sidebar open. The memo is per build, so a dir
+    created or deleted between refreshes is picked up on the next one.
+    """
+    hit = _DIR_EXISTS_CACHE.get(path)
+    if hit is None:
+        hit = os.path.isdir(path)
+        _DIR_EXISTS_CACHE[path] = hit
+    return hit
+
+
 def _build_project_tree(
     db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
 
+    _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
     )
@@ -13906,6 +13928,7 @@ def _build_project_tree(
         hydrate=hydrate,
         is_junk_root=_is_repo_junk,
         is_junk_cwd=_is_session_cwd_junk,
+        exists=_dir_exists_cached,
     )
     return tree, active_id
 

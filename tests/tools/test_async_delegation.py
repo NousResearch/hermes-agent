@@ -347,6 +347,39 @@ def test_stalling_runner_that_honors_interrupt_keeps_its_result(monkeypatch):
     assert ad.active_count() == 0
 
 
+def test_streaming_child_counts_as_alive(monkeypatch):
+    """A child mid-stream (api_call_count frozen, last_activity_ts ticking)
+    must never be stalled — streamed chunks tick _touch_activity, and the
+    progress token includes that timestamp (same liveness signal as the
+    compaction inactivity budget, PR #71508)."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    now = {"ts": 1000.0}
+
+    def progress_fn():
+        # api_call_count and current_tool frozen (long streaming response in
+        # flight), but the activity timestamp advances with every chunk.
+        now["ts"] += 1.0
+        return ((1, None, now["ts"]),), False
+
+    res = ad.dispatch_async_delegation(
+        goal="streaming child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: (gate.wait(timeout=10), {"status": "completed", "summary": "streamed"})[1],
+        progress_fn=progress_fn,
+    )
+    assert res["status"] == "dispatched"
+
+    time.sleep(0.6)  # several sweeps past the shrunk idle threshold
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+
+
 def test_stalled_batch_is_interrupted_then_finalized(monkeypatch):
     _fast_stale_monitor(monkeypatch)
     gate = threading.Event()
@@ -1079,6 +1112,7 @@ def test_delegate_task_background_passes_progress_fn_to_async_registry(monkeypat
     fake_child.get_activity_summary.return_value = {
         "api_call_count": 4,
         "current_tool": "terminal",
+        "last_activity_ts": 1234.5,
     }
 
     creds = {
@@ -1101,11 +1135,13 @@ def test_delegate_task_background_passes_progress_fn_to_async_registry(monkeypat
     assert parsed["status"] == "dispatched"
     assert parsed["delegation_id"] == "deleg_progress"
     # The dispatch wires a live progress sampler over the child agents so the
-    # async registry's stale monitor can watch the detached batch.
+    # async registry's stale monitor can watch the detached batch. The token
+    # includes last_activity_ts so streamed chunks count as liveness (each
+    # chunk ticks _touch_activity), not just completed API calls.
     progress_fn = captured["progress_fn"]
     assert callable(progress_fn)
     token, in_tool = progress_fn()
-    assert token == ((4, "terminal"),)
+    assert token == ((4, "terminal", 1234.5),)
     assert in_tool is True
 
 

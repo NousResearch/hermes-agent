@@ -87,10 +87,7 @@ export function sortProjectsForOverview(
 // Fresh projects keep their place in the deterministic sort instead: ones with
 // real activity go on top (a project you just started still surfaces), and
 // zero-session discoveries sink below the hand-ordered list.
-export function orderProjectsByIds(
-  projects: SidebarProjectTree[],
-  orderIds: string[]
-): SidebarProjectTree[] {
+export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: string[]): SidebarProjectTree[] {
   if (!orderIds.length) {
     return projects
   }

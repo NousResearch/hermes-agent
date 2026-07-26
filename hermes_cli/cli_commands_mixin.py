@@ -1101,6 +1101,8 @@ class CLICommandsMixin:
 
         elif sub == "new":
             name = arg if arg else "unnamed"
+            # Archive current active first
+            db.set_active_topic(sid, 0)
             tid = db.create_topic(sid, name)
             db.set_topic_session_title(sid)
             _cprint(f"  Created topic [{tid}] '{name}'.")

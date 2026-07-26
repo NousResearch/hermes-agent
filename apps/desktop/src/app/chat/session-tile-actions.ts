@@ -273,6 +273,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       }
 
       const messageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
       const mutate = (updater: (state: ClientSessionState) => ClientSessionState) =>
         sessionTileDelegate()?.updateSession(sessionId, updater)
 
@@ -284,11 +285,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           role: 'user' as const,
           parts: [textPart(text)]
         }
-        const streamIndex = state.streamId
-          ? state.messages.findIndex(candidate => candidate.id === state.streamId)
-          : -1
+
+        const streamIndex = state.streamId ? state.messages.findIndex(candidate => candidate.id === state.streamId) : -1
+
         const lastAssistantIndex = state.messages.map(candidate => candidate.role).lastIndexOf('assistant')
         const insertionIndex = streamIndex >= 0 ? streamIndex : lastAssistantIndex
+
         const messages =
           insertionIndex >= 0
             ? [...state.messages.slice(0, insertionIndex), message, ...state.messages.slice(insertionIndex)]

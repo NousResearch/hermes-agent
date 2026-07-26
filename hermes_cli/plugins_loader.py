@@ -19,7 +19,7 @@ import types
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Union
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator
@@ -309,8 +309,15 @@ class PluginLoaderMixin:
                 module = self._load_directory_module(manifest, module_name=module_name)
             elif module is None:
                 module = self._load_entrypoint_module(manifest)
+            register_fn = None
+            if module is not None and not isinstance(module, types.ModuleType) and callable(module):
+                # An entry point declared as ``module:function`` resolves to the function object itself via
+                # ``ep.load()``, not its module (#72052).
+                register_fn = module
+                module = sys.modules.get(getattr(register_fn, "__module__", ""))
             loaded.module = module
-            register_fn = getattr(module, "register", None)
+            if register_fn is None:
+                register_fn = getattr(module, "register", None)
             if register_fn is None:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
@@ -470,8 +477,9 @@ class PluginLoaderMixin:
             raise
         return module
 
-    def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType:
-        """Load a pip-installed plugin via its entry-point reference."""
+    def _load_entrypoint_module(self, manifest: PluginManifest) -> Union[types.ModuleType, Callable[..., Any]]:
+        """Load a pip-installed plugin via its entry-point reference: the module for a bare ``module`` target,
+        the referenced attribute (normally ``register``) for the ``module:function`` form."""
         for ep in _select_entry_point_group(importlib.metadata.entry_points(), ENTRY_POINTS_GROUP):
             if ep.name == manifest.name:
                 return ep.load()

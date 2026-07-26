@@ -4066,9 +4066,13 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
     ]
 
 
-def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
-    """Without an explicit workspace, cwd is left null so the session groups
-    under "No workspace" rather than the gateway's launch directory."""
+def test_ensure_session_db_row_records_a_terminal_workspace(monkeypatch, tmp_path):
+    """A terminal session's directory IS its workspace, so the row records it.
+
+    The user cd'd there before running hermes. Leaving it null stranded the row
+    with no cwd and no git_repo_root, so the sidebar could never place the
+    session under its project.
+    """
     created = []
 
     class _FakeDB:
@@ -4085,7 +4089,28 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
     assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": None}
+        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
+    ]
+
+
+def test_ensure_session_db_row_defaults_desktop_to_no_workspace(monkeypatch, tmp_path):
+    """The desktop launches from wherever the bundle was opened, so an unpicked
+    cwd is an artifact — those chats stay null and group under "No workspace"."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None, profile_name=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "source": "desktop", "cwd": str(tmp_path)})
+
+    assert created == [
+        {"key": "k1", "source": "desktop", "model": "test-model", "model_config": None, "cwd": None}
     ]
 
 

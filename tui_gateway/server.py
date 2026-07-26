@@ -2102,7 +2102,10 @@ def _persisted_session_cwd(session: dict) -> str | None:
         return _session_cwd(session)
     if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
         return None
-    return _session_cwd(session) or None
+    # Only the session's OWN directory. `_session_cwd` falls back to the
+    # gateway-wide completion cwd, which belongs to no session in particular —
+    # stamping that would invent a workspace for a session that never had one.
+    return str(session.get("cwd") or "") or None
 
 
 def _heal_dead_cwd(cwd: str) -> str:

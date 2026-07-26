@@ -741,6 +741,14 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
+# Default bound for how long ``_finish_startup_restore`` waits on boot
+# auto-resume turns before releasing the inbound gate (see
+# ``_startup_restore_drain_timeout_secs``).  30s is comfortably longer than a
+# normal resume turn's first response yet short enough that one pathologically
+# long resumed turn can't hold every channel's inbound queued for minutes.
+# Override via ``config.yaml`` ``agent.gateway_startup_restore_drain_timeout``.
+_STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT = 30.0
+
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
@@ -792,6 +800,39 @@ def _auto_continue_freshness_window() -> float:
     """
     from gateway.session import auto_continue_freshness_window
     return auto_continue_freshness_window()
+
+
+def _startup_restore_drain_timeout_secs() -> float:
+    """Max seconds ``_finish_startup_restore`` waits on boot auto-resume turns
+    before releasing the inbound gate and draining the queue.
+
+    While startup restore is in progress the gateway QUEUES every inbound
+    message (``_queue_startup_restore_event``) instead of processing it, so no
+    channel gets a reply until the gate opens.  The gate is opened by
+    ``_finish_startup_restore``, which waits for the synthetic boot
+    auto-resume turns to finish.  A single long resumed turn therefore held
+    the gate shut for every channel — inbound piled up unanswered for as long
+    as that one turn ran.
+
+    This bounds that wait.  Duplicate-agent safety does NOT depend on the
+    wait: ``_schedule_resume_pending_sessions`` claims each session's
+    ``_running_agents`` slot SYNCHRONOUSLY (before the gate ever runs), so a
+    message drained while a resume turn is still running queues behind that
+    slot rather than spawning a second agent.  So on timeout we release the
+    gate and let the slow turn finish in the background.
+
+    Reads ``HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT`` (bridged from
+    ``config.yaml`` ``agent.gateway_startup_restore_drain_timeout`` at gateway
+    startup, same pattern as the other ``agent.*`` knobs).  Non-positive
+    disables the bound (restores the historical "wait forever" behaviour).
+    """
+    raw = os.environ.get("HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT")
+    if raw is None or raw == "":
+        return float(_STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT)
 
 
 def _float_env(name: str, default: float) -> float:
@@ -1950,6 +1991,10 @@ if _config_path.exists():
             if "gateway_auto_continue_freshness" in _agent_cfg:
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
+                )
+            if "gateway_startup_restore_drain_timeout" in _agent_cfg:
+                os.environ["HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT"] = str(
+                    _agent_cfg["gateway_startup_restore_drain_timeout"]
                 )
         # config-authoritative knobs for the session-search index; same
         # bridge semantics as the agent settings above.
@@ -7482,21 +7527,77 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return drained
 
     async def _finish_startup_restore(self) -> None:
-        """Wait for startup auto-resume, then release and drain inbound queue."""
+        """Wait (BOUNDED) for startup auto-resume, then release + drain inbound.
+
+        The wait is bounded by ``_startup_restore_drain_timeout_secs`` so that
+        a single pathologically long boot-resume turn cannot hold the inbound
+        gate shut for every channel.  On timeout we release the gate and let
+        the still-running resume turn(s) finish in the background — they are
+        NOT cancelled.  This is safe because duplicate-agent protection does
+        not depend on the wait: ``_schedule_resume_pending_sessions`` claims
+        each session's ``_running_agents`` slot SYNCHRONOUSLY before this gate
+        runs, so any inbound message drained while a resume turn is still in
+        flight queues behind that slot instead of spawning a second agent.
+        """
         tasks = list(getattr(self, "_startup_restore_tasks", []) or [])
         if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
+            timeout = _startup_restore_drain_timeout_secs()
+            if timeout > 0:
+                # asyncio.wait (unlike wait_for / gather+timeout) does NOT
+                # cancel the pending tasks on timeout — the slow resume turn
+                # keeps running in the background instead of being killed.
+                done, pending = await asyncio.wait(tasks, timeout=timeout)
+                if pending:
+                    logger.warning(
+                        "Startup-restore gate released after %.0fs with %d boot "
+                        "auto-resume turn(s) still running; draining inbound "
+                        "queue now (resume slots already claimed, so no "
+                        "duplicate agents). Slow turn(s) continue in the "
+                        "background.",
+                        timeout,
+                        len(pending),
+                    )
+                    # These tasks outlive the gate.  Their normal done-callback
+                    # only discards them from _background_tasks, so a LATER
+                    # failure would be silently swallowed.  Attach a logging
+                    # callback so a background resume turn that fails after the
+                    # timeout is still recorded.
+                    for task in pending:
+                        task.add_done_callback(self._log_background_resume_result)
+            else:
+                # Non-positive timeout => opt out of the bound (historical
+                # "wait forever" behaviour).
+                await asyncio.gather(*tasks, return_exceptions=True)
+                done = set(tasks)
+            for task in done:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None:
                     logger.debug(
                         "startup auto-resume task failed",
-                        exc_info=(type(result), result, result.__traceback__),
+                        exc_info=(type(exc), exc, exc.__traceback__),
                     )
         self._startup_restore_tasks = []
         drained = await self._drain_startup_restore_queue()
         self._startup_restore_in_progress = False
         if drained:
             logger.info("Drained %d inbound message(s) queued during startup restore", drained)
+
+    @staticmethod
+    def _log_background_resume_result(task: "asyncio.Task") -> None:
+        """Done-callback for a boot-resume turn that outlived the
+        startup-restore gate.  Logs a late failure that would otherwise be
+        swallowed once the task is discarded from ``_background_tasks``.
+        Cancellation is expected (shutdown) and is not an error."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.debug(
+                "background startup auto-resume task failed after gate release",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
     async def _redeliver_pending_obligations(self) -> int:
         """Redeliver final responses recorded in the delivery ledger by a

@@ -111,13 +111,16 @@ class TestClarifyDictChoices:
         assert _flatten_choice({"label": "Short", "description": "Long"}) == "Short"
 
 
+    def test_flatten_accepts_value_only_dict(self):
+        assert _flatten_choice({"value": "Use OAuth"}) == "Use OAuth"
+
     def test_flatten_unwraps_serialized_json_value(self):
         assert _flatten_choice('{"value": "Use OAuth"}') == "Use OAuth"
 
     def test_flatten_unwraps_serialized_json_description(self):
         assert _flatten_choice('{"description": "Use API key"}') == "Use API key"
 
-    def test_flatten_keeps_non_object_json_string(self):
+    def test_flatten_keeps_malformed_json_braces_as_plain_text(self):
         assert _flatten_choice('{not valid json}') == "{not valid json}"
 
     def test_dict_choices_reach_callback_as_clean_text(self):

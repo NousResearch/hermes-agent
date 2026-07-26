@@ -313,6 +313,34 @@ def _cmd_unpin(args) -> int:
     return 0
 
 
+def _cmd_list_unmanaged(args) -> int:
+    """List curation-eligible skills that carry no provenance marker.
+
+    The same population `status` summarizes, itemized. Useful before deciding
+    what to hand over with `adopt`.
+    """
+    from tools import skill_usage
+
+    rows = skill_usage.unmanaged_report()
+    if not rows:
+        print("curator: no unmanaged skills — every eligible skill is managed")
+        return 0
+
+    print(f"unmanaged skills ({len(rows)}):")
+    for r in sorted(rows, key=lambda x: x["name"]):
+        why = "created_by:null" if r.get("has_provenance_key") else "no marker"
+        last = _fmt_ts(r.get("last_activity_at"))
+        print(
+            f"  {r['name']:44s} "
+            f"activity={r.get('activity_count', 0):4d}  "
+            f"last_activity={last:14s}  "
+            f"({why})"
+        )
+    print("\nadopt one with `hermes curator adopt <name>`, "
+          "or all with `hermes curator adopt --all-unmanaged`")
+    return 0
+
+
 def _cmd_adopt(args) -> int:
     """Hand unmanaged skills to the curator by explicit user declaration.
 
@@ -715,6 +743,11 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_unpin = subs.add_parser("unpin", help="Unpin a skill")
     p_unpin.add_argument("skill", help="Skill name")
     p_unpin.set_defaults(func=_cmd_unpin)
+
+    subs.add_parser(
+        "list-unmanaged",
+        help="List curation-eligible skills with no provenance marker",
+    ).set_defaults(func=_cmd_list_unmanaged)
 
     p_adopt = subs.add_parser(
         "adopt",

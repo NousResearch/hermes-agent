@@ -34,6 +34,13 @@ from typing import Any, Callable, Optional
 # cwd is not in a git repo (or cannot be probed, e.g. a remote backend).
 Resolve = Callable[[str], Optional[dict]]
 
+# A "does this directory still exist?" predicate, injected for the same reason
+# ``Resolve`` is: the builder stays pure and unit-testable. Defaults to assuming
+# everything exists, which preserves the previous behavior for callers that
+# can't stat (remote backends), where guessing "gone" would wrongly hide a
+# project that lives on the other host.
+Exists = Callable[[str], bool]
+
 # Only KANBAN-TASK worktrees (`<repo>/.worktrees/t_<hex>`, the `t_…` id kanban_db
 # mints) collapse into one lane; user-named "New worktree" dirs under
 # `.worktrees/` stay as their own lanes.
@@ -526,6 +533,7 @@ def build_tree(
     hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
     is_junk_cwd: Optional[Callable[[str], bool]] = None,
+    exists: Optional[Exists] = None,
 ) -> dict:
     """Build the authoritative project tree.
 
@@ -537,7 +545,10 @@ def build_tree(
     bare home dir, the HERMES_HOME subtree). ``is_junk_cwd`` is the narrower
     policy for non-git session folders: selected descendants may be intentional
     workspaces even when their parent tree contains Hermes state. User-created
-    projects are honored regardless.
+    projects are honored regardless. ``exists`` reports whether a directory is
+    still on disk, so a session whose workspace was DELETED (a removed worktree,
+    a scratch dir under /tmp) doesn't get promoted to a phantom AUTO project;
+    omit it (remote backends) to keep every candidate.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -547,6 +558,7 @@ def build_tree(
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
+    _exists = exists or (lambda _path: True)
     folder_index = _FolderIndex(active_projects)
 
     by_project: dict[str, list[dict]] = {}
@@ -609,8 +621,10 @@ def build_tree(
         root = _session_repo_root(session, resolve)
         if root:
             # A real git root uses the stricter repo policy. Do not reinterpret a
-            # filtered internal repo as a cwd-only project.
-            if not _junk(root):
+            # filtered internal repo as a cwd-only project. A root that no longer
+            # exists is a stale persisted value (the repo was deleted after the
+            # session ran) and must not resurrect as a project.
+            if not _junk(root) and _exists(root):
                 _add_auto(root, session)
             continue
 
@@ -623,7 +637,13 @@ def build_tree(
             resolve,
             (session.get("git_repo_root") or "").strip(),
         )
-        if placement:
+        # A placement that only echoes back the unresolvable cwd is the
+        # path-only heuristic guessing — it never found a repo. When that dir is
+        # also gone from disk (a deleted worktree whose name shares no prefix
+        # with its parent, a removed /tmp scratch dir), promoting it mints a
+        # phantom project that can never be opened and can only be dismissed by
+        # hand. The session keeps its place in flat Recents.
+        if placement and _exists(placement["repo_key"]):
             _add_auto(placement["repo_key"], session)
 
     seen: set[str] = set()

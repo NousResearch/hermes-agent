@@ -588,41 +588,6 @@ def apply_wal_with_fallback(
         return "delete"
 
 
-def _apply_delete_for_wal_reset_bug(
-    conn: sqlite3.Connection,
-    *,
-    db_label: str,
-) -> str:
-    """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
-
-    - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
-    - Otherwise: set DELETE and warn.
-    """
-    current = ""
-    try:
-        row = conn.execute("PRAGMA journal_mode").fetchone()
-        if row and row[0] is not None:
-            current = str(row[0]).strip().lower()
-    except sqlite3.OperationalError:
-        current = ""
-
-    if current == "wal":
-        # Do not TRUNCATE / journal_mode=DELETE while other processes may
-        # still hold this WAL DB open — same safety rule as the NFS path.
-        _log_wal_reset_bug_once(db_label, kept_wal=True)
-        _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
-        return "wal"
-
-    try:
-        conn.execute("PRAGMA journal_mode=DELETE")
-    except sqlite3.OperationalError:
-        # Best-effort: DELETE is usually already the default for new files.
-        pass
-    _log_wal_reset_bug_once(db_label, kept_wal=False)
-    return "delete"
-
-
 def _log_wal_reset_bug_once(
     db_label: str,
     *,
@@ -1586,19 +1551,21 @@ class CompressionSessionBusyError(RuntimeError):
     """A non-owner tried to write while compression owns the session."""
 
 
-def _track_live_connection(db_path: Path) -> None:
-    """Register a live connection so byte-probes of this file are refused.
+def _connect_tracked_db(path, **kwargs):
+    """``sqlite3.connect`` that registers the open fd for lock-safety.
 
-    See ``hermes_cli.sqlite_safe_read``: once a connection exists, any
-    ``open()``/``close()`` on the same file cancels this process's POSIX
-    advisory locks on it -- including a VACUUM's EXCLUSIVE lock.
+    While a connection is live, byte-level probes of the same file are
+    refused: an ``open()``/``close()`` cancels every POSIX advisory lock this
+    process holds on it -- including a running VACUUM's EXCLUSIVE lock. The
+    registration is released automatically on ``close()``. Falls back to a
+    plain connect if the helper is unavailable (scaffold/embed installs).
     """
     try:
-        from hermes_cli.sqlite_safe_read import track_connection
+        from hermes_cli.sqlite_safe_read import connect_tracked
 
-        track_connection(db_path)
+        return connect_tracked(path, **kwargs)
     except Exception:
-        pass
+        return sqlite3.connect(str(path), **kwargs)
 
 
 def is_zeroed_state_db(
@@ -1828,7 +1795,7 @@ class SessionDB:
                 # must already exist + be initialised (callers guard on
                 # db_path.exists()); a SELECT against an empty file raises and
                 # the caller degrades per-profile.
-                self._conn = sqlite3.connect(
+                self._conn = _connect_tracked_db(
                     f"file:{self.db_path}?mode=ro",
                     uri=True,
                     check_same_thread=False,
@@ -1836,7 +1803,6 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                _track_live_connection(self.db_path)
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1871,7 +1837,7 @@ class SessionDB:
                     raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
-                self._conn = sqlite3.connect(
+                self._conn = _connect_tracked_db(
                     str(self.db_path),
                     check_same_thread=False,
                     # Short timeout — application-level retry with random
@@ -1884,7 +1850,6 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                _track_live_connection(self.db_path)
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
@@ -2468,12 +2433,6 @@ class SessionDB:
                     logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
-                try:
-                    from hermes_cli.sqlite_safe_read import untrack_connection
-
-                    untrack_connection(self.db_path)
-                except Exception:
-                    pass
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #

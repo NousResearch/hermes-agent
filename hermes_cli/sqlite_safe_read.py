@@ -72,6 +72,54 @@ def track_connection(path: Path | str) -> None:
         _live_connections[key] = _live_connections.get(key, 0) + 1
 
 
+class TrackedConnection(sqlite3.Connection):
+    """A ``sqlite3.Connection`` that untracks its path exactly once on close.
+
+    Counting opens is easy; counting closes reliably is not, because callers
+    close connections in many places (and some hand them to
+    ``contextlib.closing``). Subclassing the connection puts the decrement on
+    the one method every close path must go through, so the live-connection
+    registry cannot drift upward and permanently disable byte-probes.
+
+    Note ``with conn:`` does NOT close a sqlite3 connection (it only commits or
+    rolls back), so this hook is not fired spuriously by transaction scopes.
+    """
+
+    _hermes_tracked_path: str | None = None
+
+    def close(self) -> None:
+        path = getattr(self, "_hermes_tracked_path", None)
+        # Untrack before the actual close: even if close() raises, the
+        # descriptor is going away and holding the path open would wedge
+        # every future probe.
+        if path is not None:
+            self._hermes_tracked_path = None
+            untrack_connection(path)
+        super().close()
+
+
+def connect_tracked(path: Path | str, **kwargs) -> sqlite3.Connection:
+    """``sqlite3.connect`` that registers the connection for the lifetime of the fd.
+
+    Use for any connection to a database whose file might otherwise be
+    byte-probed (state.db, kanban.db). The registration is released
+    automatically on ``close()``.
+
+    A caller (or a test double) that supplies its own ``factory`` wins: we
+    pass ``factory`` positionally-compatible via kwargs only when it is
+    absent, and simply skip tracking when the resulting object is not a
+    :class:`TrackedConnection`. Tracking is an optimisation for the probe
+    guard, never a correctness requirement for opening the database.
+    """
+    if "factory" not in kwargs:
+        kwargs["factory"] = TrackedConnection
+    conn = sqlite3.connect(str(path), **kwargs)
+    if isinstance(conn, TrackedConnection):
+        conn._hermes_tracked_path = _key(path)
+        track_connection(path)
+    return conn
+
+
 def untrack_connection(path: Path | str) -> None:
     """Record that one connection to *path* has been closed."""
     key = _key(path)

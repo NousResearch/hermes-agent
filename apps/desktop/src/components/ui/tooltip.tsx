@@ -108,14 +108,53 @@ interface TipProps extends Omit<React.ComponentProps<typeof TooltipPrimitive.Con
 // position-aware, themed. Self-contained (carries its own Provider) so it works
 // anywhere without a provider ancestor. Renders the child untouched when label
 // is falsy. Open state is trigger-hover only — never sticky, never click-blocking.
+//
+// Perf: the Radix machinery is mounted LAZILY, on first hover/focus. `Tip` has
+// ~107 call sites, and Radix's `Tooltip` holds real state (trigger element,
+// content id, open) while `Popper` subscribes to layout — so eagerly mounting
+// all of them made every one of those subtrees re-render during unrelated
+// interactions. Measured while dragging the sidebar splitter with five busy
+// tiles: 105,385 TooltipProvider renders and ~15s of component time across a
+// 60-frame gesture, which is what dropped the drag to ~1.5fps. Until the
+// pointer actually arrives, a Tip is just its child plus one wrapper.
 function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
+  // Once armed, stay armed: unmounting the machinery on pointer-out would
+  // close the tip mid-hover and re-pay the mount on every re-entry.
+  const [armed, setArmed] = React.useState<'focus' | 'pointer' | null>(null)
+
   if (!label) {
     return <>{children}</>
   }
 
+  if (!armed) {
+    // `display: contents` so this wrapper never affects layout — the child
+    // participates in its parent's box exactly as it did before.
+    return (
+      <span
+        data-slot="tooltip-idle"
+        onFocus={event => {
+          suppressNonKeyboardFocusOpen(event)
+
+          if (!event.defaultPrevented) {
+            setArmed('focus')
+          }
+        }}
+        onPointerEnter={() => setArmed('pointer')}
+        style={{ display: 'contents' }}
+      >
+        {children}
+      </span>
+    )
+  }
+
+  // `defaultOpen` is required, not incidental: the pointerenter/focus that
+  // armed this has ALREADY fired, so Radix's own trigger handlers never see it
+  // and the tip would mount silently closed. Arming IS the hover, so open with
+  // it — Radix owns every subsequent open/close from here (pointerleave, blur,
+  // escape, pointerdown) exactly as before.
   return (
     <TooltipProvider delayDuration={delayDuration} disableHoverableContent>
-      <Tooltip disableHoverableContent>
+      <Tooltip defaultOpen disableHoverableContent>
         <TooltipTrigger asChild>{children}</TooltipTrigger>
         <TooltipContent {...props}>{label}</TooltipContent>
       </Tooltip>

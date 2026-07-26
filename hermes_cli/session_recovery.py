@@ -239,34 +239,33 @@ def _disk_space_preflight(
 def _copy_source_bundle(source: Path, snapshot_dir: Path) -> tuple[Path, list[str]]:
     """Copy the source DB bundle aside so SQLite never opens the original.
 
-    Refuses when a connection to *source* is live in this process. Copying a
-    database file is an ``open()``/``close()`` on it, and ``close()`` cancels
-    every POSIX advisory lock the process holds on that file -- including a
-    running VACUUM's EXCLUSIVE lock (see ``hermes_cli.sqlite_safe_read``).
-    Recovery normally runs as its own short-lived CLI process against an
-    offline/quarantined file, so this should never fire; the check keeps this
-    path consistent with ``hermes_state._backup_db_file``, which refuses the
-    same situation, rather than leaving two policies for one hazard.
-    """
-    from hermes_cli.sqlite_safe_read import has_live_connection
+    The whole copy runs inside ``offline_file_access``, which holds the
+    connection-lifecycle lock for its duration. Checking for a live connection
+    and *then* copying would be a check/use race: a connection could open in
+    that window, and the copy's ``close()`` would cancel its POSIX advisory
+    locks -- the failure class ``hermes_cli.sqlite_safe_read`` exists to
+    prevent (see #71724). Holding the lock means no connection can appear
+    mid-copy, across the main file and every sidecar.
 
-    if has_live_connection(source):
-        raise SessionRecoverySafetyError(
-            f"Refusing to snapshot {source}: a connection to it is still open "
-            "in this process, and copying the file would cancel that "
-            "connection's POSIX locks. Close all database handles (stop the "
-            "gateway/dashboard) and re-run."
-        )
+    Recovery normally runs as its own short-lived CLI process against an
+    offline/quarantined file, so the refusal should never fire; the guard
+    keeps this path consistent with ``hermes_state._backup_db_file``.
+    """
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 
     snapshot_source = snapshot_dir / source.name
     copied: list[str] = []
-    for suffix in _SIDECAR_SUFFIXES:
-        source_part = _sidecar_path(source, suffix)
-        if not source_part.exists():
-            continue
-        destination_part = _sidecar_path(snapshot_source, suffix)
-        shutil.copy2(source_part, destination_part)
-        copied.append(destination_part.name)
+    try:
+        with offline_file_access(source, what="snapshot"):
+            for suffix in _SIDECAR_SUFFIXES:
+                source_part = _sidecar_path(source, suffix)
+                if not source_part.exists():
+                    continue
+                destination_part = _sidecar_path(snapshot_source, suffix)
+                shutil.copy2(source_part, destination_part)
+                copied.append(destination_part.name)
+    except LiveConnectionError as exc:
+        raise SessionRecoverySafetyError(str(exc)) from exc
     return snapshot_source, copied
 
 
@@ -751,7 +750,39 @@ def _copy_state_meta_salvage(
     progress_cb: Optional[ProgressCallback],
     source_rows: Optional[int],
 ) -> dict[str, Any]:
-    """Salvage readable user metadata while regenerating derived FTS state."""
+    """Salvage readable user metadata while regenerating derived FTS state.
+
+    Requires both ``key`` and ``value``, matching the non-partial
+    :func:`_copy_state_meta`. A damaged ``state_meta`` can retain one column
+    and lose the other; without this check a missing ``key`` raised
+    ``ValueError`` from ``columns.index("key")`` and aborted the entire
+    partial recovery, and a missing ``value`` would have copied key-only rows
+    while reporting the table complete. ``state_meta`` is optional metadata —
+    recording it as unusable lets ``--allow-partial`` surface the loss as a
+    warning and carry on recovering sessions and messages.
+    """
+    source_columns = _table_columns(source, "state_meta")
+    destination_columns = _table_columns(destination, "state_meta")
+    if not {"key", "value"}.issubset(source_columns):
+        return {
+            "mode": "rowid_range_salvage",
+            "source_meta_rows": source_rows,
+            "copied_rows": 0,
+            "columns": ["key", "value"],
+            "excluded_keys": sorted(_GENERATED_META_KEYS),
+            "status": "missing",
+            "error": "source state_meta is missing the key/value columns",
+        }
+    if not {"key", "value"}.issubset(destination_columns):
+        return {
+            "mode": "rowid_range_salvage",
+            "source_meta_rows": source_rows,
+            "copied_rows": 0,
+            "columns": ["key", "value"],
+            "excluded_keys": sorted(_GENERATED_META_KEYS),
+            "status": "failed",
+            "error": "destination state_meta schema is incomplete",
+        }
 
     def keep_user_meta(
         row: tuple[Any, ...],

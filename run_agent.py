@@ -2080,17 +2080,17 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
-        """
-        # Ensure a topic exists before persisting messages
-        self._ensure_topic_for_session()
 
-        # Trailing empty-response scaffolding is dropped from the live list in
+        Trailing empty-response scaffolding is dropped from the live list in
         place (it is ephemeral junk the real transcript should shed). The
         persist user-message *override* is NOT applied here — it is resolved
         inside ``_flush_messages_to_session_db`` and written only to the DB row,
         never mutating the live message list used by the API call (#48677 is
         thus closed for every persist caller, not just this one).
         """
+
+        # Ensure a topic exists before persisting messages
+        self._ensure_topic_for_session()
         # Scaffolding removal mutates the live list (desired — ephemeral
         # retry/failure sentinels must not survive into the real transcript).
         # Close and turn-start persistence can run on separate CLI threads; the

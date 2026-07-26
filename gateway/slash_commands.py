@@ -3073,6 +3073,116 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    async def _handle_diff_command(self, event: MessageEvent) -> str:
+        """Handle /diff — show git changes in the working directory.
+
+        ``/diff`` (default) shows unstaged + untracked changes, ``/diff
+        staged`` the staged ones, ``/diff all`` everything since HEAD, and
+        ``/diff session`` the cumulative checkpoint-baseline diff of what
+        Hermes itself changed. ``--stat`` limits output to the summary.
+
+        The diff body is truncated hard here (messaging surfaces are not a
+        pager); platform senders additionally split/clamp long messages to
+        per-platform limits, the same way tool-progress output is truncated
+        in three layers before delivery.
+        """
+        args = event.get_command_args().strip()
+
+        stat_only = False
+        mode = "working"
+        for arg in args.split():
+            low = arg.lower()
+            if low in ("--stat", "stat"):
+                stat_only = True
+            elif low in ("staged", "--staged", "cached", "--cached"):
+                mode = "staged"
+            elif low in ("all", "--all", "head"):
+                mode = "all"
+            elif low == "session":
+                mode = "session"
+
+        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+
+        if mode == "session":
+            return await self._gateway_session_diff(cwd, stat_only)
+
+        from tools.working_diff import collect_working_diff
+
+        result = await asyncio.to_thread(collect_working_diff, cwd, mode)
+        if not result.get("success"):
+            return t("gateway.diff.failed",
+                     error=result.get("error", "Could not generate diff"))
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        untracked = result.get("untracked", [])
+        if result.get("empty") or (not stat and not diff and not untracked):
+            return t("gateway.diff.no_changes")
+
+        out: list[str] = []
+        if stat:
+            out.append(f"```\n{stat}\n```")
+        if untracked:
+            shown = "\n".join(f"+ {rel}" for rel in untracked[:15])
+            more = f"\n... and {len(untracked) - 15} more" if len(untracked) > 15 else ""
+            out.append(f"**Untracked:**\n```\n{shown}{more}\n```")
+        if not stat_only and diff:
+            out.append(self._fenced_truncated_diff(diff))
+        return "\n\n".join(out)
+
+    async def _gateway_session_diff(self, cwd: str, stat_only: bool) -> str:
+        """Cumulative checkpoint-baseline diff for /diff session (gateway)."""
+        from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from tools.checkpoint_manager import CheckpointManager
+
+        cp_kwargs = _checkpoint_agent_kwargs(_load_gateway_config())
+        if not cp_kwargs["checkpoints_enabled"]:
+            return t("gateway.diff.not_enabled")
+
+        mgr = CheckpointManager(
+            enabled=True,
+            max_snapshots=cp_kwargs["checkpoint_max_snapshots"],
+            max_total_size_mb=cp_kwargs["checkpoint_max_total_size_mb"],
+            max_file_size_mb=cp_kwargs["checkpoint_max_file_size_mb"],
+        )
+
+        result = await asyncio.to_thread(mgr.session_diff, cwd)
+        if not result.get("success"):
+            return t("gateway.diff.failed",
+                     error=result.get("error", "Could not generate diff"))
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        if result.get("empty") or (not stat and not diff):
+            return t("gateway.diff.no_changes")
+
+        out: list[str] = []
+        if stat:
+            out.append(f"```\n{stat}\n```")
+        if not stat_only and diff:
+            out.append(self._fenced_truncated_diff(diff))
+        return "\n\n".join(out)
+
+    @staticmethod
+    def _fenced_truncated_diff(diff: str, max_lines: int = 60,
+                               max_chars: int = 3000) -> str:
+        """Fence a diff body, truncating to messaging-friendly size."""
+        diff_lines = diff.splitlines()
+        truncated = False
+        if len(diff_lines) > max_lines:
+            diff = "\n".join(diff_lines[:max_lines])
+            truncated = True
+        if len(diff) > max_chars:
+            diff = diff[:max_chars]
+            truncated = True
+        note = ""
+        if truncated:
+            note = (
+                f"\n... (truncated — {len(diff_lines)} lines total; "
+                "use /diff --stat for a summary)"
+            )
+        return f"```diff\n{diff}{note}\n```"
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 

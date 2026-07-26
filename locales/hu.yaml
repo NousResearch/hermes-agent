@@ -279,6 +279,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Visszaállítva a(z) {hash} ellenőrzőpontra: {reason}\nA visszaállítás előtti pillanatkép automatikusan elmentve."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "A checkpointok nincsenek engedélyezve, így nincs munkamenet-alapvonal.\nEngedélyezd a config.yaml-ban:\n```\ncheckpoints:\n  enabled: true\n```\nA sima /diff továbbra is működik — közvetlenül a gitet használja."
+    no_changes:            "Nincs változás."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"
     success:               "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."

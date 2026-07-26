@@ -279,6 +279,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ 체크포인트 {hash}(으)로 복원됨: {reason}\n롤백 전 스냅샷이 자동으로 저장되었습니다."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "체크포인트가 활성화되지 않아 세션 기준선이 없습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```\n일반 /diff는 여전히 작동합니다 — git을 직접 사용합니다."
+    no_changes:            "변경 사항이 없습니다."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "홈 채널 저장에 실패했습니다: {error}"
     success:               "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."

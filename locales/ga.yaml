@@ -283,6 +283,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "Níl seicphointí cumasaithe, mar sin níl aon bhonnlíne seisiúin ann.\nCumasaigh in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nOibríonn /diff simplí fós — úsáideann sé git go díreach."
+    no_changes:            "Gan athruithe."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "Theip ar shábháil chainéil bhaile: {error}"
     success:               "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."

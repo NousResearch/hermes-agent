@@ -861,19 +861,39 @@ def _reconstruct_missing_sessions(
     if not orphaned:
         return result
 
+    title_sequence = 1
     for session_id, first_timestamp, message_count in orphaned:
         started_at = float(first_timestamp) if first_timestamp is not None else 0.0
-        destination.execute(
-            "INSERT OR IGNORE INTO sessions "
+        while True:
+            title = (
+                f"[recovered {title_sequence}] "
+                "session metadata was unreadable"
+            )
+            title_sequence += 1
+            if (
+                destination.execute(
+                    "SELECT 1 FROM sessions WHERE title = ? LIMIT 1",
+                    (title,),
+                ).fetchone()
+                is None
+            ):
+                break
+
+        cursor = destination.execute(
+            "INSERT INTO sessions "
             "(id, source, started_at, title, message_count) "
             "VALUES (?, 'recovered', ?, ?, ?)",
             (
                 session_id,
                 started_at,
-                "[recovered] session metadata was unreadable",
+                title,
                 int(message_count),
             ),
         )
+        if cursor.rowcount != 1:
+            raise sqlite3.IntegrityError(
+                f"failed to reconstruct missing session {session_id!r}"
+            )
         result["sessions_reconstructed"] += 1
         result["messages_retained"] += int(message_count)
     return result

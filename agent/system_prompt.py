@@ -375,9 +375,8 @@ def _build_topic_detection_block(agent: Any) -> str:
         lines.append("")
 
     lines.append(
-        "After your response, append exactly one or two lines to help track "
-        "conversation topics. These lines are parsed by the system and "
-        "stripped before the user sees your output:"
+        "After EVERY response — even short ones — you MUST append exactly "
+        "one line (and optionally a second):"
     )
     lines.append("")
     lines.append("```")
@@ -386,17 +385,17 @@ def _build_topic_detection_block(agent: Any) -> str:
     lines.append("```")
     lines.append("")
     lines.append(
-        "TOPIC_SHIFT — conversation has moved to a NEW topic. Score 6+ means "
-        "a clear shift. suggested_name: short English name (2-5 words)."
+        "TOPIC_SHIFT is REQUIRED on every response. Use score 1-2 when "
+        "staying on the same topic. Use score 6+ when the conversation "
+        "has clearly shifted to a NEW subject. suggested_name: 2-5 words."
     )
     lines.append(
-        "TOPIC_MATCH — conversation has RETURNED to a topic in the table above. "
-        "topic_id: the # from the table. Score 6+ means a clear match."
+        "TOPIC_MATCH is OPTIONAL. Use when conversation has returned to a "
+        "topic in the table above. topic_id: the # from the Session Topics."
     )
     lines.append(
-        "For ongoing discussion on the same topic, use low scores (0-2). "
-        "Brief tangents score 3-5. Only score 6+ on consecutive turns "
-        "triggers a switch."
+        "CRITICAL: never skip this line. Even for 'same topic', emit "
+        "TOPIC_SHIFT: 1 | -"
     )
     return "\n".join(lines)
 

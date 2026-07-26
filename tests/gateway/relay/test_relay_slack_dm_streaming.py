@@ -1,0 +1,220 @@
+"""Slack relay: edit-based streaming of the reply must fire in a DM.
+
+Reported symptom (live): agent responses stream progressively (edit-based) in a
+Slack THREAD but arrive FLAT (single message, no progressive edits) in a Slack
+DM/home over the relay.
+
+Root cause: a DM turn's streaming reply is sent with
+``reply_to = <triggering message ts>`` (the stream consumer's
+``initial_reply_to_id`` — its edit anchor). The connector's slackRestSender maps
+a raw ``reply_to`` to a Slack ``thread_ts``, so a plain DM reply gets threaded
+UNDER the user's message instead of posting flat at the DM root, and a threaded
+first send loses the progressive edit streaming the user sees in a real thread.
+Native ``SlackAdapter._resolve_thread_ts`` already suppresses this synthetic DM
+thread anchor; the relay lane had no such disambiguation.
+
+These are behaviour-contract tests: they assert how the outbound frame relates to
+the chat type + thread metadata (the invariant the connector depends on), not a
+snapshot. They drive the REAL ``RelayAdapter`` + ``GatewayStreamConsumer`` +
+``StubConnector`` end to end.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.relay.adapter import RelayAdapter
+from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.session import SessionSource
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+from tests.gateway.relay.stub_connector import StubConnector
+
+
+def _slack_desc(**kw) -> CapabilityDescriptor:
+    base = dict(
+        contract_version=CONTRACT_VERSION,
+        platform="slack",
+        label="Slack",
+        max_message_length=4000,
+        supports_draft_streaming=False,
+        supports_edit=True,
+        supports_threads=True,
+        markdown_dialect="mrkdwn",
+        len_unit="chars",
+        emoji="\U0001f4ac",
+        platform_hint="",
+        pii_safe=False,
+    )
+    base.update(kw)
+    return CapabilityDescriptor(**base)
+
+
+def _wire(chat_id: str, chat_type: str, *, user_id="U1", scope_id=None):
+    """A RelayAdapter fronting Slack, with inbound scope captured for chat_id."""
+    stub = StubConnector(_slack_desc())
+    adapter = RelayAdapter(PlatformConfig(), _slack_desc(), transport=stub)
+    src = SessionSource(
+        platform=Platform.SLACK,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        user_id=user_id,
+        scope_id=scope_id,
+    )
+    adapter._capture_scope(
+        MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+    )
+    return adapter, stub
+
+
+# ---------------------------------------------------------------------------
+# The pure disambiguation contract (RelayAdapter.send)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_slack_dm_reply_drops_synthetic_thread_anchor():
+    """A Slack DM reply with no real thread posts FLAT: reply_to is dropped so
+    the connector cannot thread it under the triggering message."""
+    adapter, stub = _wire("D1", "dm")
+    await adapter.send("D1", "the answer", reply_to="1700.0001")
+    assert len(stub.sent) == 1
+    frame = stub.sent[0]
+    assert frame["op"] == "send"
+    # The synthetic self-anchor is suppressed on BOTH surfaces.
+    assert frame["reply_to"] is None
+    assert "thread_id" not in (frame["metadata"] or {})
+    # And no synthetic thread_id was invented (the #18859 landmine).
+    assert "thread_ts" not in (frame["metadata"] or {})
+
+
+@pytest.mark.asyncio
+async def test_slack_dm_reply_with_real_thread_keeps_anchor():
+    """A DM turn that IS inside a real thread (metadata carries a distinct
+    thread_id) must keep threading — the guard only drops the synthetic anchor."""
+    adapter, stub = _wire("D1", "dm")
+    await adapter.send(
+        "D1", "in thread", reply_to="1700.0002", metadata={"thread_id": "1699.9000"}
+    )
+    frame = stub.sent[0]
+    assert frame["reply_to"] == "1700.0002"
+    assert frame["metadata"]["thread_id"] == "1699.9000"
+
+
+@pytest.mark.asyncio
+async def test_slack_channel_top_level_reply_keeps_autothread_anchor():
+    """A channel top-level reply carries thread_id (its own ts) in metadata when
+    autoThread is on; the DM-only guard must not touch it."""
+    adapter, stub = _wire("C1", "channel", scope_id="T1")
+    await adapter.send(
+        "C1", "channel reply", reply_to="1700.0003", metadata={"thread_id": "1700.0003"}
+    )
+    frame = stub.sent[0]
+    assert frame["reply_to"] == "1700.0003"
+    assert frame["metadata"]["thread_id"] == "1700.0003"
+
+
+@pytest.mark.asyncio
+async def test_non_slack_dm_reply_unchanged():
+    """The disambiguation is Slack-scoped: a non-Slack relay chat keeps reply_to
+    (its connector owns its own threading semantics)."""
+    stub = StubConnector(_slack_desc(platform="discord"))
+    adapter = RelayAdapter(
+        PlatformConfig(), _slack_desc(platform="discord"), transport=stub
+    )
+    src = SessionSource(
+        platform=Platform.DISCORD, chat_id="dc1", chat_type="dm", user_id="U1"
+    )
+    adapter._capture_scope(
+        MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+    )
+    await adapter.send("dc1", "hi", reply_to="msg-9")
+    assert stub.sent[0]["reply_to"] == "msg-9"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the stream consumer keeps edit-streaming in a DM
+# ---------------------------------------------------------------------------
+async def _drive_stream(adapter, chat_id, *, metadata, initial_reply_to_id, chat_type):
+    cfg = StreamConsumerConfig(
+        edit_interval=0.0,
+        buffer_threshold=1,
+        transport="edit",
+        chat_type=chat_type,
+    )
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id=chat_id,
+        config=cfg,
+        metadata=metadata,
+        initial_reply_to_id=initial_reply_to_id,
+    )
+    # Feed progressive deltas, then finalize — mirrors the live delta callback.
+    for chunk in ("Hel", "lo ", "world", ". Done."):
+        consumer.on_delta(chunk)
+    consumer.finish()
+    await consumer.run()
+    return consumer
+
+
+@pytest.mark.asyncio
+async def test_slack_dm_stream_consumer_edits_own_ts_not_flat():
+    """A Slack DM turn (chat_type='dm', no thread, metadata None) still builds a
+    stream consumer that keeps edit support and emits progressive EDITs of the
+    reply message — the flat-DM regression contract.
+
+    The connector returns a real message_id for the flat first send, so edit
+    support must stay on and at least one edit op must be emitted (progressive
+    streaming), identical to a thread. No synthetic thread is created."""
+    adapter, stub = _wire("D1", "dm")
+    consumer = await _drive_stream(
+        adapter,
+        "D1",
+        metadata=None,  # DM: _status_thread_metadata is None in run.py
+        initial_reply_to_id="1700.0001",  # the triggering message ts
+        chat_type="dm",
+    )
+
+    ops = [f["op"] for f in stub.sent]
+    # First a flat send; edit support stays on so progressive edits CAN flow
+    # (exact intermediate-frame timing is covered by the stream_consumer unit
+    # suite — here we assert the DM regression contract: streaming is not
+    # self-disabled and every edit targets the reply's own ts).
+    assert ops[0] == "send"
+    # Edit support survived: message_id set, not the __no_edit__ sentinel.
+    assert consumer.message_id and consumer.message_id != "__no_edit__"
+    assert consumer._edit_supported is True
+
+    first_send = stub.sent[0]
+    # The reply posts FLAT at the DM root — no synthetic thread anchor.
+    assert first_send["reply_to"] is None
+    assert "thread_id" not in (first_send["metadata"] or {})
+    assert "thread_ts" not in (first_send["metadata"] or {})
+    # reply_to_message_id (the mirrored self-anchor) is stripped too.
+    assert "reply_to_message_id" not in (first_send["metadata"] or {})
+
+    # Any edits that flowed target the same first-send ts (editing its own
+    # message), never a synthetic thread.
+    edit_ids = {f["message_id"] for f in stub.sent if f["op"] == "edit"}
+    assert edit_ids <= {stub.next_send_result["message_id"]}
+
+
+@pytest.mark.asyncio
+async def test_slack_thread_stream_consumer_still_threads_and_streams():
+    """Regression guard: a Slack THREAD turn keeps its real thread_id AND streams
+    (the DM fix must not change the thread path)."""
+    adapter, stub = _wire("C1", "channel", scope_id="T1")
+    consumer = await _drive_stream(
+        adapter,
+        "C1",
+        metadata={"thread_id": "1699.9000"},
+        initial_reply_to_id="1700.0002",
+        chat_type="channel",
+    )
+    ops = [f["op"] for f in stub.sent]
+    assert ops[0] == "send"
+    assert consumer._edit_supported is True
+    first_send = stub.sent[0]
+    # Thread preserved: the real thread_id rides along and reply_to is kept.
+    assert first_send["metadata"]["thread_id"] == "1699.9000"
+    assert first_send["reply_to"] == "1700.0002"

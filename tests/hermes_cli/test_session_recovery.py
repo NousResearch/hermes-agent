@@ -291,16 +291,19 @@ def _corrupt_middle_table_leaf(
 def test_snapshot_blocks_connections_opened_during_the_copy(
     tmp_path: Path,
 ) -> None:
-    """No connection may open mid-copy — a bare pre-check is a check/use race.
+    """A connection must not be able to open while raw copy descriptors exist.
 
     Checking has_live_connection() and then copying leaves a window: a
     connection can open between the two, and the copy's close() cancels its
     POSIX advisory locks. The guard must hold the lifecycle lock across the
-    whole bundle copy, so connect_tracked() blocks until every raw descriptor
-    is closed.
+    whole bundle copy.
+
+    Runs the copy in a worker thread and pauses it inside the patched copy, so
+    the assertion is about lock ordering rather than which thread the
+    scheduler happens to resume first: while the copy is parked, a
+    connect_tracked() attempt must NOT complete; once released, it must.
     """
     import threading
-    import time
 
     from hermes_cli import session_recovery as recovery_module
     from hermes_cli.sqlite_safe_read import connect_tracked
@@ -312,53 +315,72 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
 
     inside_copy = threading.Event()
     release_copy = threading.Event()
-    observed: dict[str, object] = {}
+    connection_opened = threading.Event()
+    errors: list[str] = []
     real_copy2 = recovery_module.shutil.copy2
 
     def slow_copy2(src, dst, *args, **kwargs):
         result = real_copy2(src, dst, *args, **kwargs)
         if str(src).endswith("racy-state.db"):
             inside_copy.set()
-            release_copy.wait(10)
+            release_copy.wait(30)
         return result
 
-    def racer():
-        inside_copy.wait(10)
-        started = time.monotonic()
-        conn = connect_tracked(source, isolation_level=None, timeout=10.0)
-        observed["blocked_seconds"] = time.monotonic() - started
-        observed["copy_finished_first"] = release_copy.is_set()
-        conn.close()
+    def do_copy():
+        try:
+            recovery_module._copy_source_bundle(source, snapshot_dir)
+        except Exception as exc:  # pragma: no cover - surfaced via errors
+            errors.append(f"copy failed: {exc}")
 
-    thread = threading.Thread(target=racer, daemon=True)
-    thread.start()
+    def do_connect():
+        try:
+            conn = connect_tracked(source, isolation_level=None, timeout=30.0)
+            connection_opened.set()
+            conn.close()
+        except Exception as exc:  # pragma: no cover - surfaced via errors
+            errors.append(f"connect failed: {exc}")
 
     recovery_module.shutil.copy2 = slow_copy2
+    copier = threading.Thread(target=do_copy, daemon=True)
+    connector = threading.Thread(target=do_connect, daemon=True)
     try:
-        _, copied = recovery_module._copy_source_bundle(source, snapshot_dir)
-        # Let the racer proceed only once the copy has fully returned.
+        copier.start()
+        assert inside_copy.wait(30), "copy never reached the patched operation"
+
+        connector.start()
+        # While the copy holds the lifecycle lock the connection must not open.
+        assert not connection_opened.wait(1.0), (
+            "connect_tracked() completed while raw copy descriptors were open "
+            "— the guard is not holding the lifecycle lock across the copy"
+        )
+
         release_copy.set()
+        # Once the copy finishes and releases the lock, it must open promptly.
+        assert connection_opened.wait(30), (
+            "connect_tracked() never completed after the copy released the lock"
+        )
     finally:
-        recovery_module.shutil.copy2 = real_copy2
         release_copy.set()
-    thread.join(20)
+        recovery_module.shutil.copy2 = real_copy2
+        copier.join(30)
+        connector.join(30)
 
-    assert copied, "snapshot should have copied at least the main database"
-    assert observed.get("copy_finished_first") is True, (
-        "a tracked connection opened while raw descriptors on the database "
-        "were still open — the check/use race is present"
-    )
+    assert not errors, errors[0]
 
 
-def test_partial_recovery_survives_state_meta_missing_key_column(
+def test_partial_recovery_reports_damaged_state_meta_as_loss(
     tmp_path: Path,
 ) -> None:
-    """A damaged optional state_meta must degrade, not abort the recovery.
+    """A damaged optional state_meta must degrade AND be reported as loss.
 
     state_meta can lose ``key`` while ``value`` stays readable. Indexing
     ``key`` unconditionally raised ValueError and killed the whole partial
-    recovery; the table must instead be recorded as unusable so sessions and
-    messages still come back.
+    recovery. Reporting it as ``missing`` instead is just as wrong in the
+    other direction: verification only escalates ``failed``/``partial``, so
+    the run would claim ``complete=True`` after silently dropping real
+    metadata. A present-but-unusable table must be ``failed``, surface a
+    warning, and mark the output partial — while sessions and messages still
+    recover.
     """
     source = tmp_path / "meta-damaged.db"
     output = tmp_path / "meta-recovered.db"
@@ -380,12 +402,99 @@ def test_partial_recovery_survives_state_meta_missing_key_column(
         allow_partial=True,
     )
 
-    assert report["copy"]["state_meta"]["status"] in {"missing", "failed"}
+    # The table existed and could not be salvaged: that is loss, not absence.
+    assert report["copy"]["state_meta"]["status"] == "failed"
+    assert any(
+        "state_meta" in warning for warning in report["verification"]["warnings"]
+    ), report["verification"]["warnings"]
+    assert report["verification"]["loss_detected"] is True
+    assert report["partial"] is True
+    assert report["complete"] is False
+
+    # Structurally sound, so still installable-with-review.
+    assert report["verified"] is True
+    assert report["verification"]["healthy"] is True
+    assert report["installed"] is False
+
     # The canonical data still recovers.
     assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
     assert report["verification"]["table_counts"]["messages"] == expected["messages"]
     assert report["verification"]["integrity_check"] == ["ok"]
-    assert report["installed"] is False
+
+
+def test_partial_recovery_treats_absent_state_meta_as_no_loss(
+    tmp_path: Path,
+) -> None:
+    """A genuinely absent state_meta is not data loss and must not warn."""
+    source = tmp_path / "meta-absent.db"
+    output = tmp_path / "meta-absent-recovered.db"
+    _make_source(source)
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("DROP TABLE IF EXISTS state_meta")
+    finally:
+        conn.close()
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=4,
+        allow_partial=True,
+    )
+
+    assert report["copy"]["state_meta"]["status"] == "missing"
+    assert not any(
+        "state_meta" in warning for warning in report["verification"]["warnings"]
+    ), report["verification"]["warnings"]
+    assert report["verification"]["integrity_check"] == ["ok"]
+
+
+def test_state_meta_salvage_distinguishes_absent_from_unusable(
+    tmp_path: Path,
+) -> None:
+    """Unit-level: the salvage helper must not conflate absent with damaged.
+
+    ``recover_session_database`` short-circuits on the inspection result when
+    state_meta is entirely absent, so the helper's own absent-branch is never
+    reached through the public path — a regression there would be invisible
+    end-to-end. Exercise it directly so both statuses are pinned:
+    absent -> ``missing`` (no loss), present-but-unusable -> ``failed``
+    (loss, which verification escalates into a warning).
+    """
+    destination_path = tmp_path / "dest.db"
+    destination = sqlite3.connect(str(destination_path), isolation_level=None)
+    destination.execute("CREATE TABLE state_meta(key TEXT PRIMARY KEY, value TEXT)")
+
+    absent_path = tmp_path / "absent.db"
+    absent = sqlite3.connect(str(absent_path), isolation_level=None)
+    absent.execute("CREATE TABLE unrelated(x)")
+
+    damaged_path = tmp_path / "damaged.db"
+    damaged = sqlite3.connect(str(damaged_path), isolation_level=None)
+    damaged.execute("CREATE TABLE state_meta(value TEXT)")
+    damaged.execute("INSERT INTO state_meta(value) VALUES ('orphaned')")
+
+    try:
+        absent_result = session_recovery._copy_state_meta_salvage(
+            absent, destination, chunk_size=4, progress_cb=None, source_rows=0
+        )
+        assert absent_result["status"] == "missing", (
+            "a table that was never there is not data loss"
+        )
+
+        damaged_result = session_recovery._copy_state_meta_salvage(
+            damaged, destination, chunk_size=4, progress_cb=None, source_rows=1
+        )
+        assert damaged_result["status"] == "failed", (
+            "a present-but-unusable table is data loss; reporting 'missing' "
+            "would let verification claim complete=True after dropping it"
+        )
+    finally:
+        destination.close()
+        absent.close()
+        damaged.close()
 
 
 def test_recovery_refuses_to_snapshot_a_live_database(tmp_path: Path) -> None:

@@ -27,9 +27,15 @@ export interface RenderRecord {
   /** ...of those, how many had changed hook state (useState/useMemo/store). */
   stateChanged: number
   /**
-   * ...of those, how many had NEITHER changed props nor changed state. These
-   * re-rendered purely because a parent did — the wasted work a `memo()` or a
-   * narrower store subscription would eliminate.
+   * ...of those, how many consumed a context whose value changed. `memo()`
+   * cannot block these — the fix is to narrow or split the provider, not to
+   * add a memo boundary.
+   */
+  contextChanged: number
+  /**
+   * ...of those, how many had NEITHER changed props, changed state, nor a
+   * changed context. These re-rendered purely because a parent did — the
+   * wasted work a `memo()` or a narrower store subscription would eliminate.
    */
   wasted: number
   /** Sum of `actualDuration` across counted renders, in ms. */
@@ -41,6 +47,7 @@ let commits = 0
 let recording = false
 
 const blank = (): RenderRecord => ({
+  contextChanged: 0,
   propsChanged: 0,
   renders: 0,
   stateChanged: 0,
@@ -84,6 +91,25 @@ function stateChanged(fiber: Fiber): boolean {
   return false
 }
 
+/** Did any consumed context value change? A `memo()` cannot block a re-render
+ *  caused by context, so distinguishing this from a parent-driven render is
+ *  the difference between "add a memo" and "split the provider". */
+function contextChanged(fiber: Fiber): boolean {
+  let dep = fiber.dependencies?.firstContext
+
+  while (dep) {
+    const context = dep.context as { _currentValue?: unknown } | undefined
+
+    if (context && 'memoizedValue' in dep && !Object.is(dep.memoizedValue, context._currentValue)) {
+      return true
+    }
+
+    dep = dep.next
+  }
+
+  return false
+}
+
 function record(fiber: Fiber) {
   const name = getDisplayName(fiber)
 
@@ -94,6 +120,7 @@ function record(fiber: Fiber) {
   const entry = counts.get(name) ?? blank()
   const props = propsChanged(fiber)
   const state = stateChanged(fiber)
+  const context = contextChanged(fiber)
 
   entry.renders += 1
   entry.totalMs += fiber.actualDuration ?? 0
@@ -106,7 +133,11 @@ function record(fiber: Fiber) {
     entry.stateChanged += 1
   }
 
-  if (!props && !state) {
+  if (context) {
+    entry.contextChanged += 1
+  }
+
+  if (!props && !state && !context) {
     entry.wasted += 1
   }
 

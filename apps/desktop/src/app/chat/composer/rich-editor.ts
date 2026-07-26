@@ -144,14 +144,15 @@ function composerSelectionRange(editor: HTMLElement) {
   return { range, selection }
 }
 
-/** Insert plain text at the caret (replacing any selection). Pastes use this
- *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
- *  ~O(n²) on large multiline blobs. */
-export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+/** Insert text at the caret (replacing any selection), with any `@kind:value`
+ *  directives in it landing as chips. Pastes use this instead of
+ *  `execCommand('insertText')` — Chromium's editing pipeline is ~O(n²) on large
+ *  multiline blobs. */
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 
-  appendTextWithBreaks(fragment, text)
+  appendComposerContents(fragment, text)
 
   const tail = fragment.lastChild
 
@@ -170,6 +171,41 @@ export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+}
+
+/** Swap the `length` characters immediately before a collapsed caret for
+ *  `fragment`, leaving the caret after it. Returns whether it ran — a caret that
+ *  isn't inside a text node holding the whole token is left alone. */
+export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment: DocumentFragment) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit?.range.collapsed) {
+    return false
+  }
+
+  const { startContainer, startOffset } = hit.range
+
+  if (startContainer.nodeType !== Node.TEXT_NODE || startOffset < length) {
+    return false
+  }
+
+  const range = document.createRange()
+  const tail = fragment.lastChild
+
+  range.setStart(startContainer, startOffset - length)
+  range.setEnd(startContainer, startOffset)
+  range.deleteContents()
+  range.insertNode(fragment)
+
+  if (tail) {
+    range.setStartAfter(tail)
+  }
+
+  range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(range)
+
+  return true
 }
 
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND

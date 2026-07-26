@@ -225,6 +225,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    # Pytest is routinely launched from a delegated worker.  The worker
+    # lineage marker must not make parent-state tests run as delegated
+    # children; tests that exercise child behavior set it explicitly.
+    "HERMES_DELEGATED_CHILD_CONTEXT",
     "HERMES_TENANT",
     # Honcho host selection changes which nested config block wins. A local
     # shell override leaked "myhost" into the full suite and flipped 20
@@ -265,6 +269,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "DINGTALK_ALLOWED_USERS",
     "FEISHU_ALLOWED_USERS",
     "WECOM_ALLOWED_USERS",
+    "PHOTON_ALLOWED_USERS",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
     "TELEGRAM_ALLOW_ALL_USERS",
@@ -274,6 +279,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOW_ALL_USERS",
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
+    "PHOTON_ALLOW_ALL_USERS",
     # Gateway home channels are set by /sethome in real profiles. Tests that
     # exercise dashboard notification toggles must opt in explicitly or they
     # can accidentally subscribe against a developer's real home channel.
@@ -314,6 +320,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WECOM_HOME_CHANNEL",
     "WECOM_HOME_CHANNEL_THREAD_ID",
     "WECOM_HOME_CHANNEL_NAME",
+    "PHOTON_HOME_CHANNEL",
+    "PHOTON_HOME_CHANNEL_THREAD_ID",
+    "PHOTON_HOME_CHANNEL_NAME",
     # API server bind/auth settings are common in local gateway profiles and
     # change adapter defaults plus load_gateway_config() enablement. Tests that
     # need them set opt in explicitly with monkeypatch.

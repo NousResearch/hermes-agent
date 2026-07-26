@@ -2387,11 +2387,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             event_size_int = int(content_info.get("size") or 0)
         except (TypeError, ValueError):
             event_size_int = 0
-        if event_size_int and event_size_int > self._max_media_bytes:
+        media_size_limit_exceeded = event_size_int > self._max_media_bytes
+        if media_size_limit_exceeded:
             logger.warning(
                 "[Matrix] Rejecting oversized inbound media %s (%d > %d bytes)", event_id, event_size_int,
                 self._max_media_bytes)
-            return
         file_content = source_content.get("file", {})  # encrypted media carries file.url
         if not url and isinstance(file_content, dict):
             url = file_content.get("url", "") or ""
@@ -2415,6 +2415,22 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             if gate is not None:
                 self._parked_voices.release(room_id, sender, gate)
         if ctx is None:
+            return
+        if media_size_limit_exceeded:
+            media_kind = {
+                "m.image": "image", "m.audio": "audio", "m.video": "video",
+            }.get(msgtype, "file")
+            filename = declared_filename or (body if _is_bare_media_filename(msgtype, body) else "")
+            marker = f"[matrix {media_kind} attachment too large"
+            if filename:
+                marker += f": {filename}"
+            marker += "]"
+            msg_event = await self._build_inbound_event(
+                room_id, sender, event_id, body, source_content, relates_to, ctx=ctx,
+                message_type=MessageType.TEXT, media_urls=None, media_types=None, media_msgtype=msgtype)
+            if msg_event is not None:
+                msg_event.text = f"{msg_event.text}\n{marker}".strip()
+                await self.handle_message(msg_event)
             return
         # Cache locally so downstream tools get a real file path.
         cached_path = None

@@ -49,7 +49,7 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
-  insertPlainTextAtCaret,
+  insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
   RICH_INPUT_SLOT
 } from './rich-editor'
@@ -60,6 +60,7 @@ import { extractClipboardImageBlobs } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
+import { chipTypedUrlOnSpace, linkifyUrls } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -402,7 +403,11 @@ export function ChatBar({
     }
 
     event.preventDefault()
-    insertPlainTextAtCaret(event.currentTarget, pastedText)
+
+    // Links in the paste land as `@url:` chips rather than a wall of URL text —
+    // the same reference the "Add URL" dialog inserts, parsed in place so a link
+    // mid-sentence keeps its position.
+    insertComposerContentsAtCaret(event.currentTarget, linkifyUrls(pastedText))
     scheduleFlushEditorToDraft(event.currentTarget)
   }
 
@@ -435,6 +440,15 @@ export function ChatBar({
     // Non-collapsed Backspace/Delete: native selection-delete is ~O(n²) on large
     // drafts (Ctrl+A → Delete froze ~1.3s). Collapsed carets fall through.
     if ((event.key === 'Backspace' || event.key === 'Delete') && deleteSelectionInEditor(event.currentTarget)) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
+    // A typed link finished with a space chips like a pasted one — the space
+    // itself rides along inside the insert.
+    if (chipTypedUrlOnSpace(event)) {
       event.preventDefault()
       flushEditorToDraft(event.currentTarget)
 

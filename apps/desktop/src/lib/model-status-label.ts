@@ -1,25 +1,4 @@
-import { normalize } from '@/lib/text'
-
-const REASONING_LABELS: Record<string, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'XHigh',
-  max: 'Max',
-  ultra: 'Ultra'
-}
-
-export function reasoningEffortLabel(effort: string): string {
-  const key = normalize(effort)
-
-  if (!key) {
-    return ''
-  }
-
-  return REASONING_LABELS[key] ?? effort
-}
+import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 /** Which model/provider a picker should mark "current". With a live session the
  *  gateway's `model.options` is authoritative; pre-session there is no server
@@ -99,10 +78,12 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
+/** Status bar trigger label — model name plus the live session state (effort/fast).
+ *  `defaultEffort` is the profile's configured level, used when the surface has
+ *  no explicit effort so the label never advertises a default the agent won't use. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
 ): string {
   const name = displayModelName(model)
 
@@ -118,9 +99,9 @@ export function formatModelStatusLabel(
     parts.push('Fast')
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  // Always surface the effort so the current reasoning level is visible at a
+  // glance, not just when non-default.
+  parts.push(reasoningEffortLabel(options?.reasoningEffort || options?.defaultEffort || DEFAULT_REASONING_EFFORT))
 
   return `${name} · ${parts.join(' ')}`
 }

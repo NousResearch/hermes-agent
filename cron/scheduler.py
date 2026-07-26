@@ -294,6 +294,15 @@ SILENT_MARKER = "[SILENT]"
 # "I considered staying [SILENT] but here is the summary…" must deliver).
 _CRON_SILENCE_TOKENS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
 
+# Back-compat for existing Gmail Inbox Zero cron prompts that predate the
+# [SILENT] contract and returned a human no-op line.  Treat these as silence
+# only when they are the whole final response; a report that merely mentions
+# the phrase still delivers.
+_CRON_WHOLE_RESPONSE_SILENCE_PHRASES = frozenset({
+    "GMAIL: НОВЫХ ДЕЙСТВИЙ НЕТ",
+    "GMAIL: NO NEW ACTIONS",
+})
+
 
 def _is_cron_silence_response(text: str) -> bool:
     """Return True when a cron final response should suppress delivery.
@@ -315,6 +324,9 @@ def _is_cron_silence_response(text: str) -> bool:
 
     # Whole response is exactly a token.
     if _is_token(stripped):
+        return True
+    normalized_whole = " ".join(stripped.upper().rstrip(".!。 ").split())
+    if normalized_whole in _CRON_WHOLE_RESPONSE_SILENCE_PHRASES:
         return True
     # Marker on its own first or last line (trailing/leading note on a
     # separate line — e.g. "2 deals filtered\n\n[SILENT]").

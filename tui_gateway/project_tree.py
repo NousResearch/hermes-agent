@@ -41,6 +41,11 @@ _KANBAN_DIR_RE = re.compile(r"^(.*[/\\]\.worktrees)[/\\]t_[0-9a-f]+[/\\]?$")
 _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
 
+# How many sibling candidates to try when recovering a deleted worktree's parent
+# repo (see ``_probe_sibling_worktree``). Each miss costs a git probe, so keep it
+# tight — real suffixes are one or two segments.
+_MAX_SIBLING_PROBES = 4
+
 
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
     """The one definition of a main-checkout lane id (must match the desktop)."""
@@ -146,6 +151,24 @@ def _placement(
     }
 
 
+def _probe_sibling_worktree(cwd: str, resolve: Resolve) -> str:
+    """The parent repo root of a deleted ``<repo>-<suffix>`` worktree, else ``""``.
+
+    A deleted worktree dir can't be probed, so walk back up its name — trimming
+    one ``-<segment>`` at a time — and return the first sibling that resolves.
+    Probes are bounded and served from the shared git-probe cache.
+    """
+    parts = base_name(cwd).split("-")
+    floor = max(0, len(parts) - 1 - _MAX_SIBLING_PROBES)
+
+    for i in range(len(parts) - 1, floor, -1):
+        info = resolve(_with_base_name(cwd, "-".join(parts[:i])))
+        if info and info.get("repo_root"):
+            return (info["repo_root"] or "").strip()
+
+    return ""
+
+
 def _place_by_heuristic(path: str) -> Optional[dict]:
     """Path-only fallback when there is no git probe and no persisted root."""
     base = base_name(path)
@@ -194,6 +217,14 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
             return _placement(persisted_root, _kanban_lane_id(persisted_root), "kanban", kanban_dir, False, True)
         b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
         return _placement(persisted_root, _branch_lane_id(persisted_root, b), b, persisted_root, True, False)
+
+    # Unresolvable cwd: a deleted ``<repo>-<suffix>`` worktree still belongs to
+    # its parent. It has no checkout to return to, so absorb it into the trunk
+    # lane rather than stranding a dead-path lane in the project forever.
+    sibling_root = _probe_sibling_worktree(cwd, resolve) if resolve else ""
+    if sibling_root:
+        b = (branch or "").strip() or DEFAULT_BRANCH_LABEL
+        return _placement(sibling_root, _branch_lane_id(sibling_root, b), b, sibling_root, True, False)
 
     return _place_by_heuristic(cwd)
 

@@ -25,10 +25,10 @@ import tools.terminal_tool as terminal_tool
 
 
 @pytest.fixture
-def _isolated_cwd(tmp_path, monkeypatch):
+def _isolated_cwd(safe_tmp_path, monkeypatch):
     """Two checkouts: workspace (intended) + decoy (process cwd)."""
-    workspace = tmp_path / "workspace"
-    decoy = tmp_path / "decoy"
+    workspace = safe_tmp_path / "workspace"
+    decoy = safe_tmp_path / "decoy"
     workspace.mkdir()
     decoy.mkdir()
     (workspace / "target.py").write_text("WORKSPACE_ORIGINAL\n")
@@ -36,8 +36,14 @@ def _isolated_cwd(tmp_path, monkeypatch):
     # Process cwd = decoy, analogous to "main repo" while the terminal is in
     # the worktree.
     monkeypatch.chdir(decoy)
-    # No session cwd recorded yet (fresh-session condition).
+    # Every test gets a genuinely fresh terminal/file session.  In particular,
+    # a LocalEnvironment from the previous test may point at a TemporaryDirectory
+    # that has already been removed.
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
     return workspace, decoy
 
 

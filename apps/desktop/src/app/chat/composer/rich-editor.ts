@@ -11,11 +11,11 @@ import {
   directiveIconElement,
   directiveIconSvg,
   formatRefValue,
+  refChipLabel,
   slashChipClass,
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
-import { sessionRefFallbackLabel } from '@/lib/session-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
@@ -33,10 +33,6 @@ export function unquoteRef(raw: string) {
   const quoted = (head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")
 
   return quoted ? raw.slice(1, -1) : raw.replace(/[,.;!?]+$/, '')
-}
-
-export function refLabel(id: string) {
-  return id.split(/[\\/]/).filter(Boolean).pop() || id
 }
 
 /** Always-quote variant of formatRefValue — chips need a fence even for safe values. */
@@ -60,9 +56,9 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
 
-  const label = displayLabel || (kind === 'session' ? sessionRefFallbackLabel(id) : refLabel(id))
+  const label = displayLabel || refChipLabel(kind, id)
 
-  return `<span contenteditable="false" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
+  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -72,12 +68,13 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const label = document.createElement('span')
 
   chip.contentEditable = 'false'
+  chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
   chip.className = DIRECTIVE_CHIP_CLASS
   label.className = 'truncate'
-  label.textContent = displayLabel || (kind === 'session' ? sessionRefFallbackLabel(id) : refLabel(id))
+  label.textContent = displayLabel || refChipLabel(kind, id)
   chip.append(directiveIconElement(kind), label)
 
   return chip
@@ -147,14 +144,15 @@ function composerSelectionRange(editor: HTMLElement) {
   return { range, selection }
 }
 
-/** Insert plain text at the caret (replacing any selection). Pastes use this
- *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
- *  ~O(n²) on large multiline blobs. */
-export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+/** Insert text at the caret (replacing any selection), with any `@kind:value`
+ *  directives in it landing as chips. Pastes use this instead of
+ *  `execCommand('insertText')` — Chromium's editing pipeline is ~O(n²) on large
+ *  multiline blobs. */
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 
-  appendTextWithBreaks(fragment, text)
+  appendComposerContents(fragment, text)
 
   const tail = fragment.lastChild
 
@@ -173,6 +171,41 @@ export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+}
+
+/** Swap the `length` characters immediately before a collapsed caret for
+ *  `fragment`, leaving the caret after it. Returns whether it ran — a caret that
+ *  isn't inside a text node holding the whole token is left alone. */
+export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment: DocumentFragment) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit?.range.collapsed) {
+    return false
+  }
+
+  const { startContainer, startOffset } = hit.range
+
+  if (startContainer.nodeType !== Node.TEXT_NODE || startOffset < length) {
+    return false
+  }
+
+  const range = document.createRange()
+  const tail = fragment.lastChild
+
+  range.setStart(startContainer, startOffset - length)
+  range.setEnd(startContainer, startOffset)
+  range.deleteContents()
+  range.insertNode(fragment)
+
+  if (tail) {
+    range.setStartAfter(tail)
+  }
+
+  range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(range)
+
+  return true
 }
 
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND

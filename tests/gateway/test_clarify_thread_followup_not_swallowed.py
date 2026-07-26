@@ -123,11 +123,13 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
     with pytest.raises(_FellThroughIntercept):
         await _dispatch(runner, _event("just checking the visual UI, no need to pass any data"))
 
-    # The clarify entry must still be pending and unresolved.
+    # The prose is not accepted as the answer, but the clarify must be
+    # released before normal busy routing so redirect-to-steer can drain.
     with cm._lock:
         entry = cm._entries.get("cl-native")
     assert entry is not None
-    assert not entry.event.is_set()
+    assert entry.event.is_set()
+    assert entry.response == ""
     _clear_clarify_state()
 
 

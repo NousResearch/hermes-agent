@@ -397,6 +397,8 @@ The gateway calls the transport with action dicts. Source of truth:
 | `send_media` | `chat_id`, `media_kind`, `source_url`, `content?` (caption), `filename?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `prompt` | `chat_id`, `prompt_kind`, `prompt_id`, `content` (the question), `options[]{id,label,style?}`, `timeout_s?`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `react` | `chat_id`, `message_id`, `emoji`, `remove?`, `metadata?` | `{success: bool, error?}` |
+| `thread_create` | `chat_id` (parent), `thread_name`, `message_id?` (anchor), `metadata?` | `{success: bool, thread_id?, error?}` |
+| `thread_rename` | `chat_id` (parent), `message_id` (the THREAD id), `thread_name`, `only_if_current_name?`, `metadata?` | `{success: bool, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`.
@@ -477,6 +479,48 @@ restriction can reject glyphs — the failure is structured and the gateway
 treats reactions as cosmetic). WhatsApp sends a reaction message (empty
 emoji = remove). Reactions are best-effort by contract: a `react` failure
 must never fail a turn.
+
+**`thread_create` / `thread_rename` (Phase 4 thread lifecycle).** One
+platform-abstract pair covers handoff threads, Telegram DM/forum topics, and
+LLM-title semantic renames. `thread_create`: Discord posts a channel thread
+(type 11) or a message-anchored thread when `message_id` is set; Telegram
+`createForumTopic` (topic id returned); Slack posts a NAMED seed root
+message and returns its `ts` (threads there are message-anchored — an
+explicit `message_id` anchor is echoed back verbatim). The created id rides
+`SendResult.thread_id`. `thread_rename`: Discord PATCHes the thread channel;
+Telegram `editForumTopic`. The **`only_if_current_name` no-clobber guard**
+is the native adapters' human-rename-wins semantics, enforced
+CONNECTOR-side: Discord reads the current name first and no-ops (structured
+`success:false`) on mismatch; Telegram has no topic-name read, so a GUARDED
+rename is unsatisfiable and fails safe (unguarded renames proceed). Slack
+does not advertise `thread_rename` (a root message's text is content, not a
+name). WhatsApp advertises neither (no threads).
+
+**Auto-thread markers + gateway-declared command manifest (Phase 4
+inbound/handshake).** When the connector's auto-thread egress policy creates
+a Discord thread, later inbound events from that thread carry
+`source.auto_thread_created: true` + `source.auto_thread_initial_name` — the
+connector-observed evidence that lights the gateway's semantic-rename lane
+(the LLM session title renames the thread via a GUARDED `thread_rename`;
+per-instance memory, so in an N>1 fleet a miss simply never lights the
+lane). The gateway may also declare its slash-command set on the Discord
+`hello` frame (`command_manifest: [{name, description, options?}]`); the
+connector reconciles Discord's GLOBAL application-command registration
+against it (GET → diff → bulk PUT overwrite; idempotent, debounced,
+best-effort — a registration failure never affects the handshake). Commands
+still dispatch through the passthrough plane as before; the manifest only
+keeps Discord's registry in sync with what the gateway's dispatcher handles.
+
+**Inbound `reply_to` enrichment (Phase 4).** A platform reply may carry
+`reply_to: {text?, author?, is_own?}` alongside `reply_to_message_id` — what
+the user QUOTED, populated only from data the connector already had in hand
+(Discord's inline `referenced_message`, Telegram's inline
+`reply_to_message`, WhatsApp `context.from` + a bounded per-instance
+inbound-text cache for the text leg). Absent fields mean the platform didn't
+carry the data — never triggers an extra platform API call. `is_own` = the
+quoted message was authored by the fronted bot (same evidence as the
+`is_reply_to_bot` relevance marker). The gateway maps these onto the same
+MessageEvent reply-context fields native adapters populate.
 
 **`typing` `content?` (Slack status clear).** A `typing` frame normally omits
 `content` — the connector renders its platform's active indicator ("is

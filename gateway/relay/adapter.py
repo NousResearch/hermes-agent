@@ -1522,3 +1522,98 @@ class RelayAdapter(BasePlatformAdapter):
             await self._react(str(chat_id), str(message_id), "✅")
         elif outcome == ProcessingOutcome.FAILURE:
             await self._react(str(chat_id), str(message_id), "❌")
+
+    # ── Phase 4 thread lifecycle ──────────────────────────────────────────
+
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a thread/topic under ``parent_chat_id`` via the connector.
+
+        One `thread_create` op covers Discord (channel thread), Telegram
+        (forum topic), and Slack (named seed root message — threads there are
+        message-anchored). Op-gated on the descriptor advertising
+        `thread_create`; None on any failure/unavailability so the handoff
+        watcher falls back to the parent channel — the same contract as the
+        native adapters' create_handoff_thread.
+        """
+        if self._transport is None or not self.descriptor.supports_op("thread_create"):
+            return None
+        thread_name = (str(name or "").strip() or "handoff")[:100]
+        try:
+            result = await self._transport.send_outbound(
+                {
+                    "op": "thread_create",
+                    "chat_id": str(parent_chat_id),
+                    "thread_name": thread_name,
+                    "metadata": self._with_scope(str(parent_chat_id), None),
+                },
+                platform=self._platform_by_chat.get(str(parent_chat_id)),
+            )
+        except Exception:  # noqa: BLE001 - handoff falls back to the parent channel
+            logger.debug("relay thread_create transport failure", exc_info=True)
+            return None
+        if not result.get("success"):
+            logger.info(
+                "relay thread_create declined for %s: %s",
+                parent_chat_id,
+                result.get("error"),
+            )
+            return None
+        thread_id = result.get("thread_id") or result.get("message_id")
+        return str(thread_id) if thread_id else None
+
+    async def rename_thread(
+        self,
+        thread_id: str,
+        name: str,
+        *,
+        only_if_current_name: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
+    ) -> bool:
+        """Best-effort thread rename via the connector's `thread_rename` op.
+
+        The relay sibling of the native Discord adapter's rename_thread —
+        called by the SAME semantic-rename lane (run.py
+        _rename_discord_auto_thread_for_session_title), which fires only for
+        sources carrying the connector-stamped auto-thread markers.
+        ``only_if_current_name`` crosses the wire; the CONNECTOR enforces the
+        no-clobber guard (it owns the platform read), failing safe on
+        platforms that can't read the current name. ``parent_chat_id`` is
+        the containing chat where the caller knows it (Telegram needs it);
+        defaults to the thread id itself (Discord ignores chat_id).
+        """
+        if self._transport is None or not self.descriptor.supports_op("thread_rename"):
+            return False
+        cleaned = " ".join(str(name or "").split()).strip()
+        if not cleaned or not thread_id:
+            return False
+        chat_id = str(parent_chat_id or thread_id)
+        action: Dict[str, Any] = {
+            "op": "thread_rename",
+            "chat_id": chat_id,
+            "message_id": str(thread_id),
+            "thread_name": cleaned[:100],
+            "metadata": self._with_scope(chat_id, None),
+        }
+        if only_if_current_name is not None:
+            action["only_if_current_name"] = str(only_if_current_name)
+        try:
+            result = await self._transport.send_outbound(
+                action,
+                platform=self._platform_by_chat.get(chat_id)
+                or self._platform_by_chat.get(str(thread_id)),
+            )
+        except Exception:  # noqa: BLE001 - renames are cosmetic
+            logger.debug("relay thread_rename transport failure", exc_info=True)
+            return False
+        if not result.get("success"):
+            logger.info(
+                "relay thread_rename declined for %s: %s",
+                thread_id,
+                result.get("error"),
+            )
+            return False
+        return True

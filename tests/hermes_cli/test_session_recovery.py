@@ -288,6 +288,106 @@ def _corrupt_middle_table_leaf(
     return leaf_page
 
 
+def test_snapshot_blocks_connections_opened_during_the_copy(
+    tmp_path: Path,
+) -> None:
+    """No connection may open mid-copy — a bare pre-check is a check/use race.
+
+    Checking has_live_connection() and then copying leaves a window: a
+    connection can open between the two, and the copy's close() cancels its
+    POSIX advisory locks. The guard must hold the lifecycle lock across the
+    whole bundle copy, so connect_tracked() blocks until every raw descriptor
+    is closed.
+    """
+    import threading
+    import time
+
+    from hermes_cli import session_recovery as recovery_module
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    source = tmp_path / "racy-state.db"
+    snapshot_dir = tmp_path / "snapshot"
+    snapshot_dir.mkdir()
+    _make_source(source)
+
+    inside_copy = threading.Event()
+    release_copy = threading.Event()
+    observed: dict[str, object] = {}
+    real_copy2 = recovery_module.shutil.copy2
+
+    def slow_copy2(src, dst, *args, **kwargs):
+        result = real_copy2(src, dst, *args, **kwargs)
+        if str(src).endswith("racy-state.db"):
+            inside_copy.set()
+            release_copy.wait(10)
+        return result
+
+    def racer():
+        inside_copy.wait(10)
+        started = time.monotonic()
+        conn = connect_tracked(source, isolation_level=None, timeout=10.0)
+        observed["blocked_seconds"] = time.monotonic() - started
+        observed["copy_finished_first"] = release_copy.is_set()
+        conn.close()
+
+    thread = threading.Thread(target=racer, daemon=True)
+    thread.start()
+
+    recovery_module.shutil.copy2 = slow_copy2
+    try:
+        _, copied = recovery_module._copy_source_bundle(source, snapshot_dir)
+        # Let the racer proceed only once the copy has fully returned.
+        release_copy.set()
+    finally:
+        recovery_module.shutil.copy2 = real_copy2
+        release_copy.set()
+    thread.join(20)
+
+    assert copied, "snapshot should have copied at least the main database"
+    assert observed.get("copy_finished_first") is True, (
+        "a tracked connection opened while raw descriptors on the database "
+        "were still open — the check/use race is present"
+    )
+
+
+def test_partial_recovery_survives_state_meta_missing_key_column(
+    tmp_path: Path,
+) -> None:
+    """A damaged optional state_meta must degrade, not abort the recovery.
+
+    state_meta can lose ``key`` while ``value`` stays readable. Indexing
+    ``key`` unconditionally raised ValueError and killed the whole partial
+    recovery; the table must instead be recorded as unusable so sessions and
+    messages still come back.
+    """
+    source = tmp_path / "meta-damaged.db"
+    output = tmp_path / "meta-recovered.db"
+    expected = _make_source(source)
+
+    conn = sqlite3.connect(str(source), isolation_level=None)
+    try:
+        conn.execute("DROP TABLE IF EXISTS state_meta")
+        conn.execute("CREATE TABLE state_meta(value TEXT)")
+        conn.execute("INSERT INTO state_meta(value) VALUES ('orphaned')")
+    finally:
+        conn.close()
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=4,
+        allow_partial=True,
+    )
+
+    assert report["copy"]["state_meta"]["status"] in {"missing", "failed"}
+    # The canonical data still recovers.
+    assert report["verification"]["table_counts"]["sessions"] == expected["sessions"]
+    assert report["verification"]["table_counts"]["messages"] == expected["messages"]
+    assert report["verification"]["integrity_check"] == ["ok"]
+    assert report["installed"] is False
+
+
 def test_recovery_refuses_to_snapshot_a_live_database(tmp_path: Path) -> None:
     """Snapshotting must refuse while a connection to the source is live.
 

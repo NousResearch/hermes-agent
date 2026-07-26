@@ -61,6 +61,7 @@ later probe of the real ``Path`` can ever match.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
@@ -372,3 +373,37 @@ def read_header_bytes_preopen(
                 return handle.read(length)
         except OSError:
             return None
+
+
+class LiveConnectionError(RuntimeError):
+    """A raw file operation was attempted on a database with live connections."""
+
+
+@contextlib.contextmanager
+def offline_file_access(path: Path | str, *, what: str = "read"):
+    """Hold the connection-lifecycle lock across a raw read of a database file.
+
+    Checking :func:`has_live_connection` and *then* doing the raw I/O is a
+    check/use race: a connection can be opened in the window between the two,
+    and the raw ``close()`` will cancel its POSIX advisory locks — the exact
+    failure class the registry exists to prevent. Any multi-step raw access
+    (copying a database plus its ``-wal``/``-shm``/``-journal`` sidecars,
+    hashing a file, moving a bundle aside) must therefore run *inside* this
+    context manager rather than after a bare check.
+
+    While held, :func:`connect_tracked` blocks, so no new connection can
+    appear mid-copy. Raises :class:`LiveConnectionError` if a connection is
+    already live when the guard is entered.
+
+    The lock is only held for the duration of the raw I/O; it never spans
+    caller work on an open connection, so it does not serialise database use.
+    """
+    with _live_lock:
+        if _key(path) in _live_connections:
+            raise LiveConnectionError(
+                f"Refusing to {what} {path}: a connection to it is still open "
+                "in this process, and raw file access would cancel that "
+                "connection's POSIX advisory locks. Close all database "
+                "handles (stop the gateway/dashboard) and retry."
+            )
+        yield

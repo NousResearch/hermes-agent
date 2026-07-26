@@ -151,8 +151,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
                cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status"), aliases=("ts",)),
-    CommandDef("diff", "Show git diff of changes in the current working directory", "Info",
-               cli_only=True, args_hint="[--stat]"),
+    CommandDef("diff", "Show git changes in the working directory", "Info",
+               args_hint="[staged|all|session] [--stat] [path...]",
+               subcommands=("staged", "all", "session")),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose -> log",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
@@ -1187,7 +1188,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - version: low-frequency info command; reachable as /hermes version on
 #     Slack. Demoted when /context claimed a native slot (context is a
 #     recurring inspection surface; version is a one-off lookup).
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version"})
+#   - diff: git working-tree diff; reached via /hermes diff on Slack so it
+#     doesn't displace an existing native slash at the 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

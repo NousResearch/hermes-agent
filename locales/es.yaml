@@ -276,6 +276,11 @@ gateway:
     restored:              "✅ Restaurado al checkpoint {hash}: {reason}\nSe guardó automáticamente un snapshot previo al rollback."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "Los checkpoints no están activados, así que no hay línea base de sesión.\nActívalos en config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nEl /diff normal sigue funcionando — usa git directamente."
+    no_changes:            "Sin cambios."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "No se pudo guardar el canal principal: {error}"
     success:               "✅ Canal principal establecido en **{name}** (ID: {chat_id}).\nLas tareas cron y los mensajes entre plataformas se entregarán aquí."

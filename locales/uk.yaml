@@ -279,6 +279,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ Відновлено до контрольної точки {hash}: {reason}\nЗнімок перед відкатом збережено автоматично."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "Контрольні точки не ввімкнено, тому базової лінії сесії немає.\nУвімкніть у config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nЗвичайний /diff все одно працює — він використовує git напряму."
+    no_changes:            "Змін немає."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "Не вдалося зберегти головний канал: {error}"
     success:               "✅ Головний канал встановлено на **{name}** (ID: {chat_id}).\nCron-завдання та міжплатформні повідомлення доставлятимуться сюди."

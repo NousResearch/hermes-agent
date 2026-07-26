@@ -142,6 +142,140 @@ class CLICommandsMixin:
         else:
             print(f"  ❌ {result['error']}")
 
+    def _handle_diff_command(self, command: str):
+        """Handle /diff — show git changes in the working directory.
+
+        Syntax:
+            /diff                  — unstaged changes + untracked files
+            /diff staged           — staged changes (git diff --cached)
+            /diff all              — staged + unstaged + untracked (vs HEAD)
+            /diff session          — everything Hermes changed (checkpoint baseline)
+            /diff [mode] --stat    — summary only (changed files + counts)
+            /diff [mode] <path...> — restrict to specific paths
+        """
+        import shlex
+
+        try:
+            parts = shlex.split(command)[1:]  # preserves quoted paths
+        except ValueError:
+            parts = command.split()[1:]
+
+        stat_only = False
+        mode = "working"
+        paths: list[str] = []
+        for arg in parts:
+            low = arg.lower()
+            if low in ("--stat", "stat"):
+                stat_only = True
+            elif low in ("staged", "--staged", "cached", "--cached"):
+                mode = "staged"
+            elif low in ("all", "--all", "head"):
+                mode = "all"
+            elif low == "session":
+                mode = "session"
+            else:
+                paths.append(arg)
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+
+        if mode == "session":
+            self._print_session_diff(cwd, stat_only)
+            return
+
+        from tools.working_diff import collect_working_diff
+
+        result = collect_working_diff(cwd, mode=mode, paths=paths or None)
+        if not result.get("success"):
+            print(f"  {result.get('error', 'Could not generate diff')}")
+            return
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        untracked = result.get("untracked", [])
+        if result.get("empty") or (not stat and not diff and not untracked):
+            print("  No changes.")
+            return
+
+        label = {"working": "Unstaged", "staged": "Staged", "all": "All (vs HEAD)"}[mode]
+        if stat:
+            print(f"\n  {label}:")
+            self._print_diff_text(stat)
+        if untracked and mode in ("working", "all"):
+            print("\n  Untracked:")
+            for rel in untracked[:20]:
+                print(f"    + {rel}")
+            if len(untracked) > 20:
+                print(f"    ... and {len(untracked) - 20} more")
+        if stat_only or not diff:
+            return
+
+        diff_lines = diff.splitlines()
+        print("")
+        if len(diff_lines) > 400:
+            self._print_diff_text("\n".join(diff_lines[:400]))
+            print(
+                f"\n  ... ({len(diff_lines) - 400} more lines — "
+                "run /diff --stat for a summary)"
+            )
+        else:
+            self._print_diff_text(diff)
+
+    def _print_session_diff(self, cwd: str, stat_only: bool):
+        """Print the cumulative checkpoint-baseline diff (/diff session)."""
+        if not hasattr(self, 'agent') or not self.agent:
+            print("  No active agent session.")
+            return
+
+        mgr = self.agent._checkpoint_mgr
+        if not mgr.enabled:
+            print("  Checkpoints are not enabled, so there's no session baseline.")
+            print("  Enable with: hermes --checkpoints")
+            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            print("  (Plain /diff still works — it uses git directly.)")
+            return
+
+        result = mgr.session_diff(cwd)
+        if not result.get("success"):
+            print(f"  {result.get('error', 'Could not generate diff')}")
+            return
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        if result.get("empty") or (not stat and not diff):
+            print("  No changes — Hermes hasn't edited any files here yet.")
+            return
+
+        if stat:
+            self._print_diff_text(f"\n{stat}")
+        if stat_only or not diff:
+            return
+        diff_lines = diff.splitlines()
+        print("")
+        if len(diff_lines) > 400:
+            self._print_diff_text("\n".join(diff_lines[:400]))
+            print(
+                f"\n  ... ({len(diff_lines) - 400} more lines — "
+                "run /diff session --stat for a summary)"
+            )
+        else:
+            self._print_diff_text(diff)
+
+    def _print_diff_text(self, text: str) -> None:
+        """Render diff/stat text with color when a rich console is present.
+
+        Falls back to plain print when the console isn't available (e.g. unit
+        tests instantiating the mixin standalone).
+        """
+        console = getattr(self, "console", None)
+        if console is not None:
+            try:
+                from cli import _rich_text_from_ansi
+                console.print(_rich_text_from_ansi(text))
+                return
+            except Exception:
+                pass
+        print(text)
+
     def _handle_snapshot_command(self, command: str):
         """Handle /snapshot — lightweight state snapshots for Hermes config/state.
 

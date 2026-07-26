@@ -299,6 +299,11 @@ gateway:
     restored:              "✅ استُعيد إلى نقطة التحقّق {hash}: {reason}\nحُفظت لقطة ما قبل التراجع تلقائيًا."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "نقاط التحقق غير مفعّلة، لذا لا يوجد خط أساس للجلسة.\nفعّلها في config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nلا يزال /diff العادي يعمل — فهو يستخدم git مباشرة."
+    no_changes:            "لا توجد تغييرات."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "فشل حفظ القناة الرئيسية: {error}"
     success:               "✅ ضُبطت القناة الرئيسية إلى **{name}** (المعرّف: {chat_id}).\nستُسلَّم مهام cron والرسائل عبر المنصّات هنا."

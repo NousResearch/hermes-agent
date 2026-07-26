@@ -279,6 +279,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     restored:              "✅ チェックポイント {hash} に復元しました: {reason}\nロールバック前のスナップショットが自動的に保存されました。"
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "チェックポイントが有効になっていないため、セッションのベースラインがありません。\nconfig.yaml で有効にしてください:\n```\ncheckpoints:\n  enabled: true\n```\n通常の /diff は引き続き使えます — git を直接使用します。"
+    no_changes:            "変更はありません。"
+    failed:                "{error}"
+
   set_home:
     save_failed:           "ホームチャンネルを保存できませんでした: {error}"
     success:               "✅ ホームチャンネルを **{name}** (ID: {chat_id}) に設定しました。\nCron ジョブとプラットフォーム間メッセージはここに配信されます。"

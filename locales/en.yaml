@@ -291,6 +291,11 @@ gateway:
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
     restore_failed:        "❌ {error}"
 
+  diff:
+    not_enabled:           "Checkpoints are not enabled, so there's no session baseline.\nEnable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nPlain /diff still works — it uses git directly."
+    no_changes:            "No changes."
+    failed:                "{error}"
+
   set_home:
     save_failed:           "Failed to save home channel: {error}"
     success:               "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."

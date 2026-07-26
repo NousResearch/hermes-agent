@@ -79,6 +79,14 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # token orders because real reproductions show both.
     r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
     r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # Branch E (Windows): schtasks /End targeting a Hermes gateway task.
+    # Real task names observed: Hermes_Gateway, Hermes-Gateway, Hermes_Gateway_*
+    # The /End flag terminates the running instance of the task tree.
+    r"|(?:schtasks\b[^\n]*/End\b[^\n]*\bHermes[_\-]?Gateway)"
+    r"|(?:schtasks\b[^\n]*/TN\b[^\n]*\bHermes[_\-]?Gateway[^\n]*/End)"
+    # Branch F (Windows): Stop-ScheduledTask / Disable-ScheduledTask targeting
+    # the gateway task — PowerShell equivalents of schtasks /End.
+    r"|(?:(?:Stop|Disable)-ScheduledTask\b[^\n]*\bHermes[_\-]?Gateway)"
 )
 
 

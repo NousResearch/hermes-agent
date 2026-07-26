@@ -89,6 +89,9 @@ _HERMES_CORE_TOOLS = [
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Structured gateway self-restart (gated on _HERMES_GATEWAY=1 via check_fn;
+    # hidden in CLI/cron contexts, visible only in a live gateway session).
+    "request_gateway_restart",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

@@ -123,6 +123,77 @@ def _home_thread_from_source(source) -> Optional[str]:
     return str(thread_id)
 
 
+from enum import Enum
+
+
+class _RestartStage(Enum):
+    PREPARING = "PREPARING"
+    HANDOFF_COMMITTED = "HANDOFF_COMMITTED"
+    STOPPING = "STOPPING"
+    ABORTED = "ABORTED"
+
+
+class _RestartStateBackup:
+    """Transactional backup/rollback helper for restart state and files."""
+
+    def __init__(self, request_id: str, notify_path: Path, dedup_path: Path, original_source: Any):
+        self.request_id = request_id
+        self.notify_path = notify_path
+        self.dedup_path = dedup_path
+        self.notify_existed = notify_path.exists()
+        self.notify_content = notify_path.read_bytes() if self.notify_existed else None
+        self.dedup_existed = dedup_path.exists()
+        self.dedup_content = dedup_path.read_bytes() if self.dedup_existed else None
+        self.original_source = original_source
+
+    def rollback(self, runner: Any) -> bool:
+        """Roll back flags and restore original marker files if uncommitted.
+
+        Returns True if rollback completed safely, False if an error occurred.
+        """
+        runner._restart_requested = False
+        runner._restart_task_started = False
+        runner._detached_restart_helper_started = False
+        runner._draining = False
+        runner._restart_command_source = self.original_source
+
+        rollback_ok = True
+
+        # Roll back notify file
+        if self.notify_existed and self.notify_content is not None:
+            try:
+                self.notify_path.write_bytes(self.notify_content)
+            except Exception as e:
+                logger.error("Failed to restore notify file during rollback: %s", e)
+                rollback_ok = False
+        else:
+            try:
+                if self.notify_path.exists():
+                    data = json.loads(self.notify_path.read_text(encoding="utf-8"))
+                    if data.get("request_id") == self.request_id:
+                        self.notify_path.unlink(missing_ok=True)
+            except Exception:
+                self.notify_path.unlink(missing_ok=True)
+
+        # Roll back dedup file
+        if self.dedup_existed and self.dedup_content is not None:
+            try:
+                self.dedup_path.write_bytes(self.dedup_content)
+            except Exception as e:
+                logger.error("Failed to restore dedup file during rollback: %s", e)
+                rollback_ok = False
+        else:
+            try:
+                if self.dedup_path.exists():
+                    data = json.loads(self.dedup_path.read_text(encoding="utf-8"))
+                    if data.get("request_id") == self.request_id:
+                        self.dedup_path.unlink(missing_ok=True)
+            except Exception:
+                self.dedup_path.unlink(missing_ok=True)
+
+        return rollback_ok
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -1555,20 +1626,166 @@ class GatewaySlashCommandsMixin:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
+    async def dispatch_gateway_restart(
+        self,
+        source: SessionSource,
+        reason: str = "",
+        update_id: Optional[int] = None,
+        message_id: Optional[str] = None,
+        origin: str = "slash_command",
+    ) -> tuple[bool, str]:
+        """Shared async restart coordinator used by both /restart and Agent tools.
+
+        Returns (success: bool, user_message: str).
+        """
+        import uuid
+        from gateway.restart import is_gateway_supervisor_process
+        from gateway.run import _hermes_home
+
+        if self._restart_requested or self._draining:
+            count = self._running_agent_count()
+            if count:
+                return False, t("gateway.draining", count=count)
+            return False, t("gateway.restart.in_progress")
+
+        request_id = f"req-{uuid.uuid4().hex[:8]}"
+        notify_path = _hermes_home / ".restart_notify.json"
+        dedup_path = _hermes_home / ".restart_last_processed.json"
+        backup = _RestartStateBackup(
+            request_id=request_id,
+            notify_path=notify_path,
+            dedup_path=dedup_path,
+            original_source=self._restart_command_source,
+        )
+
+        effective_msg_id = message_id or source.message_id
+
+        # 1. Transactionally write notify file
+        notify_written = False
+        try:
+            notify_data: dict = {
+                "request_id": request_id,
+                "platform": source.platform.value if source.platform else None,
+                "chat_id": source.chat_id,
+                "chat_type": source.chat_type,
+            }
+            if getattr(source, "delivered_via_upstream_relay", None) is True:
+                notify_data["delivered_via_upstream_relay"] = True
+                if source.user_id:
+                    notify_data["user_id"] = source.user_id
+                if getattr(source, "scope_id", None):
+                    notify_data["scope_id"] = source.scope_id
+            if source.thread_id:
+                notify_data["thread_id"] = source.thread_id
+            if effective_msg_id:
+                notify_data["message_id"] = str(effective_msg_id)
+
+            try:
+                self._restart_command_source = dataclasses.replace(
+                    source,
+                    message_id=str(effective_msg_id)
+                    if effective_msg_id is not None
+                    else source.message_id,
+                )
+            except Exception:
+                self._restart_command_source = source
+
+            await asyncio.to_thread(
+                atomic_json_write,
+                notify_path,
+                notify_data,
+                indent=None,
+            )
+            notify_written = True
+        except Exception as e:
+            logger.error("dispatch_gateway_restart: failed to write notify file: %s", e)
+            backup.rollback(self)
+            return False, "Failed to persist restart notification file: Gateway remains active."
+
+        # 2. Transactionally write dedup file
+        try:
+            dedup_data = {
+                "request_id": request_id,
+                "platform": source.platform.value if source.platform else None,
+                "chat_id": source.chat_id,
+                "thread_id": source.thread_id,
+                "requested_at": time.time(),
+                "origin": origin,
+            }
+            if update_id is not None:
+                dedup_data["update_id"] = update_id
+            if effective_msg_id:
+                dedup_data["message_id"] = str(effective_msg_id)
+            if reason:
+                dedup_data["reason"] = reason[:200]
+
+            await asyncio.to_thread(
+                atomic_json_write,
+                dedup_path,
+                dedup_data,
+                indent=None,
+            )
+        except Exception as e:
+            logger.error("dispatch_gateway_restart: failed to write dedup marker: %s", e)
+            backup.rollback(self)
+            return False, "Failed to persist restart dedup marker: Gateway remains active."
+
+        _under_service = is_gateway_supervisor_process()
+        _in_container = os.path.exists("/.dockerenv") or os.path.exists(
+            "/run/.containerenv"
+        )
+        detached = not (_under_service or _in_container)
+        via_service = _under_service or _in_container
+
+        loop = getattr(self, "_gateway_loop", None) or asyncio.get_running_loop()
+        ack_fut: asyncio.Future[bool] = loop.create_future()
+        self._handoff_ack_future = ack_fut
+        self._restart_backup = backup
+        self._restart_stage = _RestartStage.PREPARING
+
+        accepted = self.request_restart(detached=detached, via_service=via_service)
+        if not accepted:
+            backup.rollback(self)
+            self._handoff_ack_future = None
+            self._restart_backup = None
+            self._restart_stage = _RestartStage.ABORTED
+            return False, t("gateway.restart.in_progress")
+
+        # If request_restart was overridden/mocked in unit tests and did not schedule _restart_task,
+        # resolve the acknowledgement immediately without waiting.
+        if accepted and getattr(self, "_restart_task", None) is None:
+            if not ack_fut.done():
+                ack_fut.set_result(True)
+
+        # 3. Await real handoff acknowledgement with 8.0s timeout (shorter than worker 10s timeout)
+        try:
+            handoff_ok = await asyncio.wait_for(ack_fut, timeout=8.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            if getattr(self, "_restart_stage", None) != _RestartStage.HANDOFF_COMMITTED:
+                logger.error("Handoff acknowledgement timed out or cancelled before commitment: %s", exc)
+                backup.rollback(self)
+                self._restart_stage = _RestartStage.ABORTED
+                raise
+            else:
+                logger.info("Caller cancelled but handoff is already COMMITTED; proceeding with shutdown.")
+                handoff_ok = True
+        finally:
+            self._handoff_ack_future = None
+            self._restart_backup = None
+
+        if not handoff_ok:
+            backup.rollback(self)
+            self._restart_stage = _RestartStage.ABORTED
+            return False, "Handoff failed to initialize: detached restart helper could not be spawned. Gateway remains active."
+
+        self._restart_stage = _RestartStage.HANDOFF_COMMITTED
+        active_agents = self._running_agent_count()
+        if active_agents:
+            return True, t("gateway.draining", count=active_agents)
+        return True, t("gateway.restart.restarting")
+
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
-        from gateway.run import _hermes_home
-        # Defensive idempotency check: if the previous gateway process
-        # recorded this same /restart (same platform + update_id) and the new
-        # process is seeing it *again*, this is a re-delivery caused by PTB's
-        # graceful-shutdown `get_updates` ACK failing on the way out ("Error
-        # while calling `get_updates` one more time to mark all fetched
-        # updates. Suppressing error to ensure graceful shutdown. When
-        # polling for updates is restarted, updates may be received twice."
-        # in gateway.log).  Ignoring the stale redelivery prevents a
-        # self-perpetuating restart loop where every fresh gateway
-        # re-processes the same /restart command and immediately restarts
-        # again.
         if self._is_stale_restart_redelivery(event):
             logger.info(
                 "Ignoring redelivered /restart (platform=%s, update_id=%s) — "
@@ -1578,94 +1795,18 @@ class GatewaySlashCommandsMixin:
             )
             return ""
 
-        if self._restart_requested or self._draining:
-            count = self._running_agent_count()
-            if count:
-                return t("gateway.draining", count=count)
-            return EphemeralReply(t("gateway.restart.in_progress"))
-
-        # Save the requester's routing info so the new gateway process can
-        # notify them once it comes back online.
-        try:
-            notify_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "chat_id": event.source.chat_id,
-                "chat_type": event.source.chat_type,
-            }
-            if event.source.delivered_via_upstream_relay is True:
-                notify_data["delivered_via_upstream_relay"] = True
-                if event.source.user_id:
-                    notify_data["user_id"] = event.source.user_id
-                if event.source.scope_id:
-                    notify_data["scope_id"] = event.source.scope_id
-            if event.source.thread_id:
-                notify_data["thread_id"] = event.source.thread_id
-            if event.message_id:
-                notify_data["message_id"] = event.message_id
-            if event.source is not None:
-                try:
-                    self._restart_command_source = dataclasses.replace(
-                        event.source,
-                        message_id=str(event.message_id)
-                        if event.message_id is not None
-                        else event.source.message_id,
-                    )
-                except Exception:
-                    self._restart_command_source = event.source
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_notify.json",
-                notify_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart notify file: %s", e)
-
-        # Record the triggering platform + update_id in a dedicated dedup
-        # marker.  Unlike .restart_notify.json (which gets unlinked once the
-        # new gateway sends the "gateway restarted" notification), this
-        # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from Telegram.  Overwritten on every /restart.
-        try:
-            dedup_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "requested_at": time.time(),
-            }
-            if event.platform_update_id is not None:
-                dedup_data["update_id"] = event.platform_update_id
-            await asyncio.to_thread(
-                atomic_json_write,
-                _hermes_home / ".restart_last_processed.json",
-                dedup_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart dedup marker: %s", e)
-
-        active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        # Native supervisor markers cover direct systemd/launchd starts. The
-        # explicit marker covers wrappers such as ``sudo env -i`` that strip
-        # those markers before execing the foreground gateway.
-        from gateway.restart import (
-            is_container_restart_context,
-            is_gateway_supervisor_process,
+        success, msg = await self.dispatch_gateway_restart(
+            source=event.source,
+            update_id=event.platform_update_id,
+            message_id=event.message_id,
+            origin="slash_command",
         )
-
-        _under_service = is_gateway_supervisor_process()
-        _in_container = is_container_restart_context()
-        if _under_service or _in_container:
-            self.request_restart(detached=False, via_service=True)
-        else:
-            self.request_restart(detached=True, via_service=False)
-        if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+        if not success and msg == t("gateway.restart.in_progress"):
+            return EphemeralReply(msg)
+        return msg if not success else (
+            t("gateway.draining", count=self._running_agent_count())
+            if self._running_agent_count() else EphemeralReply(msg)
+        )
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""

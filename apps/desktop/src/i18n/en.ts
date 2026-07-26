@@ -541,7 +541,9 @@ export const en: Translations = {
       imported: 'Config imported',
       invalidJson: 'Invalid config JSON',
       keepAwakeTitle: 'Keep computer awake',
-      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
+      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      disableF12Title: 'Disable F12 DevTools',
+      disableF12Desc: 'Block F12 from opening Developer Tools. Ctrl+Shift+I (or Cmd+Opt+I on Mac) still works.'
     },
     credentials: {
       pasteKey: 'Paste key',

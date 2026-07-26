@@ -238,10 +238,11 @@ THREAT_PATTERNS = [
     # `os.environ` bare access (dict dump / iteration) is suspicious, but the
     # common `os.environ.get("SOME_CONFIG")` form is just a config read and is
     # the OPPOSITE of exfiltration (it reads a local var, sends nothing). The
-    # ^(?!\s*#) prevents matching inside comment lines (lines starting
-    # with '#' outside docstrings). os.environ in prose/docstrings is not
-    # an exfiltration signal.
-    (r'^(?!\s*#).*os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
+    # ^[^#\n]* prevents matching when a '#' comment appears anywhere before
+    # os.environ on the line — handles both full-line comments and inline
+    # comments like `x = 1  # os.environ`. The docstring pre-filter in
+    # scan_file() skips lines inside triple-quoted strings entirely.
+    (r'^[^#\n]*os\.environ\b(?!\s*\.get\s*\(\s*["\'](?![^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)))',
      "python_os_environ", "high", "exfiltration",
      "accesses os.environ outside comments/docstrings (potential env dump)"),
     (r'os\.environ\s*\.get\s*\(\s*["\'][^"\']*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)',
@@ -695,9 +696,46 @@ INVISIBLE_CHARS = {
 }
 
 
+def _compute_docstring_lines(lines: list) -> set:
+    """Return a set of 1-indexed line numbers inside triple-quoted strings.
+
+    Uses a simple state machine: toggles ``in_docstring`` each time a line
+    contains an odd number of ``\"\"\"`` or triple-single-quote markers.  Lines
+    that are *themselves* part of a docstring (opening line, interior lines,
+    and closing line) are all included in the returned set.
+
+    Single-line docstrings (e.g. ``x = \"\"\" ... \"\"\"``) where both the
+    opening and closing markers appear on the same line are also flagged,
+    since ``os.environ`` in such a context is not real exfiltration.
+
+    This is a heuristic -- it does not handle
+    ``'\\\"\"\"'  # triple quote inside a string literal``
+    or similar edge cases -- but it catches the common skill-content patterns
+    (docstrings, multiline comments containing prose samples) that trigger
+    false-positive ``python_os_environ`` matches.
+    """
+    doc_lines: set = set()
+    in_docstring = False
+    for i, line in enumerate(lines):
+        was_in = in_docstring
+        has_marker = False
+        for marker in ('"""', "'''"):
+            count = line.count(marker)
+            if count > 0:
+                has_marker = True
+            if count % 2 == 1:
+                in_docstring = not in_docstring
+        # Include line if we were already in a docstring, just entered one,
+        # or this is a self-contained single-line docstring (e.g. """foo""")
+        if was_in or in_docstring or (has_marker and not was_in and not in_docstring):
+            doc_lines.add(i + 1)
+    return doc_lines
+
+
 # ---------------------------------------------------------------------------
 # Scanning functions
 # ---------------------------------------------------------------------------
+
 
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
@@ -725,10 +763,16 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     lines = content.split('\n')
     seen = set()  # (pattern_id, line_number) for deduplication
 
+    # Pre-compute line numbers inside triple-quoted strings (docstrings)
+    # so code patterns like python_os_environ don't fire on prose.
+    docstring_lines = _compute_docstring_lines(lines)
+
     # Regex pattern matching
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
+                continue
+            if i in docstring_lines:
                 continue
             if pattern.search(line):
                 seen.add((pid, i))

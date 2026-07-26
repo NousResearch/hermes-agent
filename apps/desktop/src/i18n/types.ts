@@ -1915,7 +1915,6 @@ export interface Translations {
       editModels: string
       refreshModels: string
       fast: string
-      medium: string
     }
     modelOptions: {
       noOptions: string

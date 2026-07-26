@@ -2306,8 +2306,7 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
-      fast: 'Fast',
-      medium: 'Med'
+      fast: 'Fast'
     },
     modelOptions: {
       noOptions: 'No options for this model',

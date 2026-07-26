@@ -5122,6 +5122,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
+        # Standing /goal state (Ralph loop). GoalManager is cached on self and
+        # keeps its state in memory, so this is a cheap attribute read — no DB
+        # hit per repaint. Only an *active* goal earns a segment; paused/done
+        # goals stay out of the bar (matching the desktop's active-first row).
+        snapshot["goal_active"] = False
+        snapshot["goal_turns_used"] = 0
+        snapshot["goal_max_turns"] = 0
+        try:
+            goal_mgr = self._get_goal_manager()
+            if goal_mgr is not None and goal_mgr.is_active():
+                goal_state = goal_mgr.state
+                snapshot["goal_active"] = True
+                snapshot["goal_turns_used"] = int(getattr(goal_state, "turns_used", 0) or 0)
+                snapshot["goal_max_turns"] = int(getattr(goal_state, "max_turns", 0) or 0)
+        except Exception:
+            pass
+
 
         if not agent:
             return snapshot
@@ -5564,6 +5581,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         cont = " | Continuous" if self._voice_continuous else ""
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
+    @staticmethod
+    def _status_bar_goal_segment(snapshot: Dict[str, Any]) -> str:
+        """Return the ``⊙ goal 3/20`` segment, or ``""`` when no goal is active.
+
+        Active-goal-only by design: paused/done goals don't occupy status-bar
+        real estate (they already print their own glyph lines in the thread).
+        """
+        if not snapshot.get("goal_active"):
+            return ""
+        used = snapshot.get("goal_turns_used") or 0
+        max_turns = snapshot.get("goal_max_turns") or 0
+        if max_turns:
+            return f"⊙ goal {used}/{max_turns}"
+        return "⊙ goal"
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
         try:
@@ -5577,8 +5609,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             battery_prefix = f"{battery_label} │ " if battery_label else ""
 
             yolo_active = self._is_session_yolo_active()
+            goal_segment = self._status_bar_goal_segment(snapshot)
             if width < 52:
                 text = f"{battery_prefix}⚕ {snapshot['model_short']} · {duration_label}"
+                if goal_segment:
+                    text += f" · {goal_segment}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
@@ -5598,6 +5633,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 bg_subagent_count = snapshot.get("active_background_subagents", 0)
                 if bg_subagent_count:
                     parts.append(f"⛓ {bg_subagent_count}")
+                if goal_segment:
+                    parts.append(goal_segment)
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
@@ -5625,6 +5662,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
                 parts.append(f"⛓ {bg_subagent_count}")
+            if goal_segment:
+                parts.append(goal_segment)
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -5651,6 +5690,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            goal_segment = self._status_bar_goal_segment(snapshot)
             battery_label = snapshot.get("battery_label") or ""
             battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
 
@@ -5661,6 +5701,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
+                if goal_segment:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-strong", goal_segment))
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -5691,6 +5734,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    if goal_segment:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", goal_segment))
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
@@ -5734,6 +5780,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    if goal_segment:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", goal_segment))
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),

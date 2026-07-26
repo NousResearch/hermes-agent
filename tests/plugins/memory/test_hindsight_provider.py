@@ -262,6 +262,28 @@ class TestParseFloatSetting:
     def test_excessively_large_value_returns_default(self):
         assert _parse_float_setting("1e20", 5.0) == 5.0
 
+    def test_upper_boundary_at_max_is_accepted(self):
+        """Value exactly at _MAX_PREFETCH_JOIN_TIMEOUT (60.0) is valid."""
+        assert _parse_float_setting(60.0, 5.0) == 60.0
+
+    def test_upper_boundary_above_max_is_rejected(self):
+        """Value just above _MAX_PREFETCH_JOIN_TIMEOUT falls back to default."""
+        assert _parse_float_setting(60.01, 5.0) == 5.0
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_bool_returns_default(self, value):
+        """bool is a subclass of int; float(True)==1.0 and float(False)==0.0
+        but a boolean in a JSON config is almost certainly a mistake."""
+        assert _parse_float_setting(value, 5.0) == 5.0
+
+    def test_default_exceeding_max_is_clamped(self):
+        """Default above _MAX_PREFETCH_JOIN_TIMEOUT must be clamped."""
+        assert _parse_float_setting(None, 999.0) == 60.0
+
+    def test_negative_default_is_clamped_to_zero(self):
+        """Negative default must be clamped to 0."""
+        assert _parse_float_setting(None, -5.0) == 0.0
+
 
 # ---------------------------------------------------------------------------
 # Schema tests
@@ -817,6 +839,70 @@ class TestSessionSwitchBufferFlush:
         provider.on_session_switch("new-sid")
 
         assert provider._prefetch_result == ""
+
+    def test_prefetch_returns_empty_with_zero_timeout(self, provider_with_config):
+        """With prefetch_join_timeout=0, prefetch() must not block and must
+        return empty when the background thread hasn't completed yet."""
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0)
+        gate = threading.Event()
+
+        def _slow(_op):
+            gate.wait(timeout=5.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="slow memory")])
+
+        p._run_hindsight_operation = _slow
+        p.queue_prefetch("test query")
+
+        # prefetch() with timeout=0 should return immediately with empty.
+        assert p.prefetch("test query") == ""
+
+        # Clean up the background thread.
+        gate.set()
+        p._prefetch_thread.join(timeout=2.0)
+
+    def test_multiple_session_switches_increment_generation(self, provider_with_config):
+        """Each session switch must increment _prefetch_generation so that
+        prefetch workers from any prior session are invalidated."""
+        p = provider_with_config(prefetch_join_timeout=0)
+
+        assert p._prefetch_generation == 0
+        p.on_session_switch("session-1")
+        assert p._prefetch_generation == 1
+        p.on_session_switch("session-2")
+        assert p._prefetch_generation == 2
+        p.on_session_switch("session-3")
+        assert p._prefetch_generation == 3
+
+    def test_generation_mismatch_logs_debug(self, provider_with_config, monkeypatch, caplog):
+        """When a prefetch worker's generation is stale, it must log a debug
+        message and discard the result."""
+        import logging
+        import threading
+
+        p = provider_with_config(prefetch_join_timeout=0)
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocked(_op):
+            started.set()
+            release.wait(timeout=5.0)
+            return SimpleNamespace(results=[SimpleNamespace(text="stale memory")])
+
+        monkeypatch.setattr(p, "_run_hindsight_operation", _blocked)
+        p.queue_prefetch("old query")
+        assert started.wait(timeout=1.0)
+
+        # Switch session to invalidate the generation.
+        p.on_session_switch("new-sid")
+
+        with caplog.at_level(logging.DEBUG, logger="plugins.memory.hindsight"):
+            release.set()
+            p._prefetch_thread.join(timeout=2.0)
+
+        assert any("discarding result" in r.message for r in caplog.records)
+        assert p._prefetch_result == ""
 
     def test_flush_serializes_behind_pending_retains_via_writer_queue(
         self, provider_with_config

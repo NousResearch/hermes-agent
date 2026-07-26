@@ -93,16 +93,17 @@ def _parse_int_setting(value: Any, default: int) -> int:
 
 def _parse_float_setting(value: Any, default: float) -> float:
     """Parse a bounded non-negative float config value."""
-    if value is None or value == "":
-        return default
+    clamped_default = max(0.0, min(default, _MAX_PREFETCH_JOIN_TIMEOUT))
+    if value is None or value == "" or isinstance(value, bool):
+        return clamped_default
     try:
         result = float(value)
     except (TypeError, ValueError):
-        logger.warning("Invalid float Hindsight setting %r; using default %s", value, default)
-        return default
+        logger.warning("Invalid float Hindsight setting %r; using clamped default %s", value, clamped_default)
+        return clamped_default
     if not math.isfinite(result) or result < 0 or result > _MAX_PREFETCH_JOIN_TIMEOUT:
-        logger.warning("Out-of-range float Hindsight setting %r; using default %s", value, default)
-        return default
+        logger.warning("Out-of-range float Hindsight setting %r; using clamped default %s", value, clamped_default)
+        return clamped_default
     return result
 
 
@@ -140,7 +141,7 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
         )
         return
     # setdefault: an explicit env var the operator set wins over config.
-    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
+    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, str(seconds))
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -1559,6 +1560,11 @@ class HindsightMemoryProvider(MemoryProvider):
                     with self._prefetch_lock:
                         if prefetch_generation == self._prefetch_generation:
                             self._prefetch_result = text
+                        else:
+                            logger.debug(
+                                "Prefetch: discarding result (generation %d != current %d)",
+                                prefetch_generation, self._prefetch_generation,
+                            )
             except Exception as e:
                 logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 

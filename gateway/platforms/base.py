@@ -1525,11 +1525,18 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # followed by stray text don't merge into one invalid path. The trailing
 # lookahead also accepts ``MEDIA:`` as a boundary, so the next tag stops
 # the current match cleanly (#68773).
+#
+# Sentence-final punctuation: a ``.`` is accepted as a boundary only when
+# followed by whitespace / EOL (``\.(?=\s|$)``) so ``MEDIA:/x/data.csv.``
+# at the end of a sentence still extracts ``data.csv``. The whitespace
+# guard keeps multi-part extensions intact — for ``archive.tar.gz`` the
+# ``.`` after ``tar`` is followed by ``g``, so the match must extend to
+# ``.gz`` instead of stopping early at ``.tar``.
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"'*_,;:)\]}\[]|MEDIA:|$)[`"'*_]{0,3}''',
+    r'''(?=[\s`"'*_,;:)\]}\[]|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
     re.IGNORECASE,
 )
 
@@ -3831,6 +3838,17 @@ class BasePlatformAdapter(ABC):
             prefix = content[max(0, start - 20):start]
             if re.search(r'MEDIA:\s*$', prefix):
                 continue  # This is a MEDIA path quote, not inline code
+            # A whole tag wrapped in inline code (`MEDIA:/path.csv`) is a real
+            # delivery directive, not a prose example — models routinely format
+            # file paths as inline code. Deliver it IF the path validates
+            # (exists on disk, not denylisted). Prose examples with
+            # non-existent paths stay masked (#35695), and fenced code blocks
+            # are always masked regardless.
+            inner = m.group(0)[1:-1].strip()
+            if inner.upper().startswith("MEDIA:"):
+                candidate = _normalize_media_tag_path(inner[6:])
+                if candidate and validate_media_delivery_path(candidate):
+                    continue  # Real deliverable tag in inline code — keep it scannable
             spans.append((start, m.end()))
 
         # Blockquote lines: > at line start

@@ -2019,6 +2019,81 @@ _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
 # =========================================================================
+# Consecutive-denial circuit breaker for smart approvals
+# =========================================================================
+# Nothing stops the model from retrying variants of a smart-denied command —
+# each retry burns another guardian LLM call and agent iteration. After
+# ``approvals.denial_breaker_threshold`` consecutive guardian DENY verdicts
+# in one session (default 3; 0 disables), the deny message returned to the
+# model escalates to a hard-stop instruction. Any approval resets the tally.
+# This changes only the TOOL RESULT text — no message-history surgery, no
+# interrupts — so it is prompt-cache-invariant by construction. Inspired by
+# ChatGPT Work's auto-review circuit breaker (3 consecutive denials).
+_denial_tally: dict[str, int] = {}
+# Plain dict with a small cap so an army of short-lived session keys cannot
+# grow it without bound; oldest (least recently denied) entries are evicted.
+_DENIAL_TALLY_MAX_SESSIONS = 256
+
+
+def _get_denial_breaker_threshold() -> int:
+    """Read ``approvals.denial_breaker_threshold`` from config.
+
+    Defaults to 3 consecutive guardian denials; 0 (or negative) disables
+    the breaker entirely.
+    """
+    try:
+        return int(_get_approval_config().get("denial_breaker_threshold", 3))
+    except (ValueError, TypeError):
+        return 3
+
+
+def _record_denial(session_key: str) -> int:
+    """Increment and return the session's consecutive guardian-denial count.
+
+    Pop-and-reinsert keeps actively-denying sessions at the most-recent end
+    of the dict so eviction (insertion-ordered) drops genuinely idle keys.
+    """
+    with _lock:
+        count = _denial_tally.pop(session_key, 0) + 1
+        _denial_tally[session_key] = count
+        while len(_denial_tally) > _DENIAL_TALLY_MAX_SESSIONS:
+            _denial_tally.pop(next(iter(_denial_tally)))
+        return count
+
+
+def _reset_denials(session_key: str) -> None:
+    """Clear the session's consecutive-denial tally (an approval happened)."""
+    with _lock:
+        _denial_tally.pop(session_key, None)
+
+
+def _denial_breaker_addendum(session_key: str) -> str:
+    """Return the escalated hard-stop text when the breaker has tripped.
+
+    Read-only: callers increment via :func:`_record_denial` on the guardian
+    DENY verdict; this just checks the session's tally against the
+    configured threshold. Returns '' below the threshold (or when
+    disabled), otherwise a leading-space addendum the caller appends
+    verbatim to the deny message returned to the model.
+    """
+    with _lock:
+        count = _denial_tally.get(session_key, 0)
+    threshold = _get_denial_breaker_threshold()
+    if threshold <= 0 or count < threshold:
+        return ""
+    logger.warning(
+        "Smart-approval circuit breaker tripped for session %s: "
+        "%d consecutive denials (threshold %d)",
+        session_key, count, threshold,
+    )
+    return (
+        f" CIRCUIT BREAKER: {count} consecutive commands were blocked by "
+        "the security reviewer. STOP attempting variations of this "
+        "operation. Report the blocked operation to the user and either "
+        "ask them to run it manually or use /approve."
+    )
+
+# =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
 # =========================================================================
 # Per-session QUEUE of pending approvals.  Multiple threads (parallel
@@ -3430,19 +3505,27 @@ def check_all_command_guards(command: str, env_type: str,
             # Approve this command only. Pattern-level persistence would let one
             # benign command suppress review of later commands that happen to
             # match the same broad detector category.
+            _reset_denials(session_key)
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
             return {"approved": True, "message": None,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
         elif verdict == "deny" and not (is_cli or is_gateway or is_ask):
+            _record_denial(session_key)
+            breaker_addendum = _denial_breaker_addendum(session_key)
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                           "The command was assessed as genuinely dangerous. "
+                           f"Do NOT retry.{breaker_addendum}",
                 "smart_denied": True,
             }
         elif verdict == "deny":
+            # Guardian DENY that falls through to a one-operation human
+            # override still counts toward the consecutive-denial breaker;
+            # a subsequent human approval resets the tally below.
+            _record_denial(session_key)
             smart_denied_for_owner = True
         # An interactive owner may override DENY for this operation only.
         # ESCALATE follows the normal, potentially persistent manual behavior.
@@ -3537,6 +3620,7 @@ def check_all_command_guards(command: str, env_type: str,
                 reason_addendum = ""
                 if outcome == "denied" and deny_reason:
                     reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                breaker_addendum = _denial_breaker_addendum(session_key)
                 return {
                     "approved": False,
                     "message": (
@@ -3546,7 +3630,7 @@ def check_all_command_guards(command: str, env_type: str,
                         f"same outcome via a different command. Stop the "
                         f"current workflow and wait for the user to respond "
                         f"before taking any further destructive or "
-                        f"irreversible action.{timeout_addendum}"
+                        f"irreversible action.{timeout_addendum}{breaker_addendum}"
                     ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
@@ -3567,6 +3651,9 @@ def check_all_command_guards(command: str, env_type: str,
                         approve_permanent(key)
                         save_permanent_allowlist(_permanent_approved)
 
+            # A human approval (including an ESCALATE-then-approve or a
+            # smart-DENY owner override) resets the consecutive-denial tally.
+            _reset_denials(session_key)
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
 
@@ -3631,6 +3718,7 @@ def check_all_command_guards(command: str, env_type: str,
     )
 
     if choice == "deny":
+        breaker_addendum = _denial_breaker_addendum(session_key)
         return {
             "approved": False,
             "message": (
@@ -3638,8 +3726,8 @@ def check_all_command_guards(command: str, env_type: str,
                 "to this action. Do NOT retry this command, do NOT rephrase "
                 "it, and do NOT attempt the same outcome via a different "
                 "command. Stop the current workflow and wait for the user "
-                "to respond before taking any further destructive or "
-                "irreversible action."
+                f"to respond before taking any further destructive or "
+                f"irreversible action.{breaker_addendum}"
             ),
             "pattern_key": primary_key,
             "description": combined_desc,
@@ -3660,6 +3748,8 @@ def check_all_command_guards(command: str, env_type: str,
                 approve_permanent(key)
                 save_permanent_allowlist(_permanent_approved)
 
+    # A human approval resets the consecutive-denial tally.
+    _reset_denials(session_key)
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
 
@@ -3761,16 +3851,19 @@ def check_execute_code_guard(code: str, env_type: str,
         verdict = _smart_approve(command, description)
         _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
+            _reset_denials(session_key)
             logger.debug("Smart approval: auto-approved execute_code for session %s",
                          session_key)
             return {"approved": True, "message": None,
                     "smart_approved": True, "description": description}
         if verdict == "deny" and not (is_gateway or is_ask):
+            _record_denial(session_key)
+            breaker_addendum = _denial_breaker_addendum(session_key)
             return {
                 "approved": False,
                 "message": ("BLOCKED by smart approval: execute_code script "
                             "execution was assessed as genuinely dangerous. "
-                            "Do NOT retry."),
+                            f"Do NOT retry.{breaker_addendum}"),
                 "smart_denied": True,
                 "pattern_key": pattern_key,
                 "description": description,
@@ -3778,6 +3871,10 @@ def check_execute_code_guard(code: str, env_type: str,
                 "user_consent": False,
             }
         if verdict == "deny":
+            # Guardian DENY that falls through to a one-operation human
+            # override still counts toward the consecutive-denial breaker;
+            # a subsequent human approval resets the tally below.
+            _record_denial(session_key)
             smart_denied_for_owner = True
         # Interactive DENY falls through to one-operation human approval;
         # ESCALATE retains the normal manual approval behavior.
@@ -3859,13 +3956,14 @@ def check_execute_code_guard(code: str, env_type: str,
         reason_addendum = ""
         if resolved and choice == "deny" and deny_reason:
             reason_addendum = f' Reason given by the user: "{deny_reason}".'
+        breaker_addendum = _denial_breaker_addendum(session_key)
         return {
             "approved": False,
             "message": (
                 f"BLOCKED: execute_code script {reason}.{reason_addendum} The "
                 f"user has NOT consented to running this code. Do NOT retry, "
                 f"do NOT rephrase the script, and do NOT attempt the same "
-                f"outcome via a different tool.{addendum}"
+                f"outcome via a different tool.{addendum}{breaker_addendum}"
             ),
             "pattern_key": pattern_key,
             "description": description,
@@ -3886,6 +3984,8 @@ def check_execute_code_guard(code: str, env_type: str,
             save_permanent_allowlist(_permanent_approved)
     # choice == "once": no persistence — approval lasts this single call only.
 
+    # A human approval resets the consecutive-denial tally.
+    _reset_denials(session_key)
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
 

@@ -1366,10 +1366,19 @@ def _resolve_busy_timeout_ms() -> int:
 
 
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
-    """Open a Kanban SQLite connection with consistent lock waiting."""
+    """Open a Kanban SQLite connection with consistent lock waiting.
+
+    Uses ``connect_tracked`` so the live-connection registry knows this file
+    is open: while it is, byte-level probes of the same file are refused,
+    because an ``open()``/``close()`` would cancel this process's POSIX
+    advisory locks on the database (see ``hermes_cli.sqlite_safe_read``).
+    The registration is released automatically when the connection closes.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     busy_timeout_ms = _resolve_busy_timeout_ms()
-    conn = sqlite3.connect(
-        str(path),
+    conn = connect_tracked(
+        path,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
     )
@@ -1377,15 +1386,6 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     # the PRAGMA explicitly so it is observable and survives future wrapper
     # changes. Parameter binding is not supported for PRAGMA assignments.
     conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
-    # Register the live connection so byte-level probes of this file are
-    # refused while it is open (see hermes_cli.sqlite_safe_read): an
-    # open()/close() would cancel this process's POSIX locks on the DB.
-    try:
-        from hermes_cli.sqlite_safe_read import track_connection
-
-        track_connection(path)
-    except Exception:
-        pass
     return conn
 
 

@@ -164,6 +164,83 @@ def test_preopen_read_refused_while_connection_is_live(tmp_path, clean_registry)
     assert read_header_bytes_preopen(db, length=16) is not None
 
 
+def test_tracking_registry_does_not_leak_across_close_paths(tmp_path, clean_registry):
+    """A drifting counter would silently disable the probe guard forever.
+
+    Opens are easy to count; closes happen in many places. If the registry
+    ever over-counts, ``has_live_connection`` stays true for a path with no
+    live connection and every later byte-probe is refused — turning the
+    safety guard into a permanent outage of zeroed-file / header detection.
+    """
+    import contextlib
+
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    db = tmp_path / "state.db"
+    boot = connect_tracked(db, isolation_level=None)
+    boot.execute("CREATE TABLE t(v TEXT)")
+    boot.close()
+    assert not has_live_connection(db)
+
+    # plain close
+    connect_tracked(db).close()
+    assert not has_live_connection(db)
+
+    # contextlib.closing
+    with contextlib.closing(connect_tracked(db)):
+        assert has_live_connection(db)
+    assert not has_live_connection(db)
+
+    # `with conn:` is a TRANSACTION scope, not a close — must stay tracked
+    conn = connect_tracked(db, isolation_level=None)
+    with conn:
+        conn.execute("INSERT INTO t(v) VALUES ('x')")
+    assert has_live_connection(db), "transaction scope must not untrack"
+    conn.close()
+    assert not has_live_connection(db)
+
+    # double close is idempotent (must not under-count into negatives)
+    dup = connect_tracked(db)
+    dup.close()
+    dup.close()
+    assert not has_live_connection(db)
+
+    # nested lifetimes: still live until the last one closes
+    first = connect_tracked(db)
+    second = connect_tracked(db)
+    first.close()
+    assert has_live_connection(db)
+    second.close()
+    assert not has_live_connection(db)
+
+    # churn must not drift
+    for _ in range(100):
+        connect_tracked(db).close()
+    assert not has_live_connection(db)
+
+
+def test_caller_supplied_connection_factory_still_works(tmp_path, clean_registry):
+    """A caller's own factory wins; tracking is skipped rather than crashing.
+
+    Tracking is an optimisation for the probe guard, never a precondition for
+    opening the database — passing a custom factory must not raise.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    class CustomConnection(sqlite3.Connection):
+        pass
+
+    db = tmp_path / "state.db"
+    _make_db(db, "WAL")
+
+    conn = connect_tracked(db, factory=CustomConnection)
+    try:
+        assert isinstance(conn, CustomConnection)
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 200
+    finally:
+        conn.close()
+
+
 def test_page_count_bytes_matches_on_disk_size(tmp_path):
     """The PRAGMA route reports the same size the header field encodes."""
     db = tmp_path / "state.db"

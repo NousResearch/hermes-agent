@@ -376,19 +376,13 @@ def _build_topic_detection_block(agent: Any) -> str:
 
     # Ask agent to classify the topic as part of its response
     lines.append(
-        "Before responding, identify which topic from the table above "
-        "this message belongs to. Append exactly:"
+        "Append exactly one line to every response: TOPIC: <id or new name>"
     )
-    lines.append("")
-    lines.append("TOPIC: <id>")
-    lines.append("")
     lines.append(
-        "Before responding, identify which topic this belongs to. "
-        "If it continues an existing topic from the table above, use "
-        "TOPIC: <id> (just the number). "
-        "Only if the subject has CLEARLY changed to something unrelated, "
-        "use TOPIC: new <2-4 word name>. "
-        "Follow-up questions on the same subject are NOT new topics."
+        "Pick from table above, or 'TOPIC: new <name>' for new subjects."
+    )
+    lines.append(
+        "Follow-ups on same subject reuse the same topic ID. Do NOT skip."
     )
     return "\n".join(lines)
 

@@ -1399,16 +1399,15 @@ class RelayAdapter(BasePlatformAdapter):
         button→text fallback takes over (same contract as a native adapter's
         failed button send).
         """
-        options: list = [{"id": "once", "label": "✅ Allow Once", "style": "success"}]
+        options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
         if not smart_denied and allow_session:
-            options.append({"id": "session", "label": "✅ Session", "style": "primary"})
+            options.append({"id": "session", "label": "Allow Session"})
             if allow_permanent:
                 options.append({
                     "id": "always",
-                    "label": "✅ Always",
-                    "style": "primary",
+                    "label": "Always Allow",
                 })
-        options.append({"id": "deny", "label": "❌ Deny", "style": "danger"})
+        options.append({"id": "deny", "label": "Deny", "style": "danger"})
 
         cmd_preview = command if len(command) <= 1500 else command[:1500] + "..."
         text = (
@@ -1455,9 +1454,9 @@ class RelayAdapter(BasePlatformAdapter):
         gateway's text-intercept flow when the prompt lane is unavailable.
         """
         options = [
-            {"id": "once", "label": "✅ Approve Once", "style": "success"},
-            {"id": "always", "label": "🔒 Always Approve", "style": "primary"},
-            {"id": "cancel", "label": "❌ Cancel", "style": "danger"},
+            {"id": "once", "label": "Approve Once", "style": "primary"},
+            {"id": "always", "label": "Always Approve"},
+            {"id": "cancel", "label": "Cancel", "style": "danger"},
         ]
         text = f"**{title}**\n\n{message}" if title else message
         prompt_id = self._mint_prompt(

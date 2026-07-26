@@ -58,6 +58,7 @@ gateway:
     more:                  "... و{count} آخر"
     running_processes:     "**العمليات الخلفية الجارية:** {count}"
     async_jobs:            "**مهام البوابة غير المتزامنة:** {count}"
+    background_delegations: "**التفويضات في الخلفية:** {count}"
     none:                  "لا يوجد وكلاء نشطون أو مهام جارية."
     state_starting:        "قيد البدء"
     state_running:         "قيد التشغيل"

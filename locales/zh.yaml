@@ -53,6 +53,7 @@ gateway:
     more:                  "... 还有 {count} 个"
     running_processes:     "**运行中的后台进程：** {count}"
     async_jobs:            "**网关异步任务：** {count}"
+    background_delegations: "**后台委派：** {count}"
     none:                  "没有活跃的代理或运行中的任务。"
     state_starting:        "启动中"
     state_running:         "运行中"

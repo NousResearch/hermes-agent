@@ -53,6 +53,7 @@ gateway:
     more:                  "... en nog {count}"
     running_processes:     "**Lopende agtergrondprosesse:** {count}"
     async_jobs:            "**Asinchrone werke van die gateway:** {count}"
+    background_delegations: "**Agtergrond-delegasies:** {count}"
     none:                  "Geen aktiewe agente of lopende take nie."
     state_starting:        "begin"
     state_running:         "loop"

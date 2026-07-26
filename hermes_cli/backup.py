@@ -689,6 +689,18 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             tmp = dst.parent / f".{dst.name}.snap_restore"
             shutil.copy2(src, tmp)
             dst.unlink(missing_ok=True)
+            # Drop the destination's sidecars before installing the
+            # snapshot. The snapshot is a checkpointed ``sqlite3.backup()``
+            # image (see ``_safe_copy_db``) that owns no WAL, so any
+            # ``-wal``/``-shm`` still sitting here describes the database we
+            # just unlinked — an ungracefully killed gateway leaves them
+            # behind, which is exactly when a restore gets run. SQLite
+            # replays that foreign WAL over the restored file on the next
+            # open and the database comes up "malformed" (or silently
+            # resurrects post-snapshot rows). Same reasoning as
+            # ``_EXCLUDED_SUFFIXES``, applied to the restore destination.
+            for _sidecar_suffix in ("-wal", "-shm", "-journal"):
+                dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
             shutil.move(str(tmp), str(dst))
             return True
         except Exception as exc2:

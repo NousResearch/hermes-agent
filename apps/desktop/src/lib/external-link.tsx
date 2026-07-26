@@ -215,14 +215,14 @@ export function ExternalLink({
   className,
   href,
   onClick,
-  showExternalIcon = true,
+  showExternalIcon = false,
   ...rest
 }: ExternalLinkProps) {
   const target = normalizeExternalUrl(href)
 
   return (
     <a
-      className={cn('font-semibold text-foreground underline underline-offset-4 decoration-current/20', className)}
+      className={cn('link-chip font-semibold', className)}
       href={target}
       onClick={event => {
         event.stopPropagation()

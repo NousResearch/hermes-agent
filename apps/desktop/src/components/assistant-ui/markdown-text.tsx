@@ -100,7 +100,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   return (
     <span className="block">
       <button
-        className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+        className="mt-2 link-chip bg-transparent text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={open}
         type="button"
       >
@@ -196,7 +196,7 @@ function MediaAttachment({ path }: { path: string }) {
   return (
     <span className="wrap-anywhere">
       <a
-        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        className="link-chip font-semibold wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()
@@ -246,10 +246,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   if (!target || !/^https?:\/\//i.test(target)) {
     return (
       <a
-        className={cn(
-          'font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere',
-          className
-        )}
+        className={cn('link-chip font-semibold wrap-anywhere', className)}
         href={href}
         rel="noopener noreferrer"
         target="_blank"
@@ -324,7 +321,7 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
       <span className="my-2 block text-sm text-muted-foreground">
         Couldn&apos;t load {name}.{' '}
         <button
-          className="bg-transparent font-medium text-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+          className="link-chip bg-transparent font-medium text-foreground hover:text-foreground"
           onClick={open}
           type="button"
         >

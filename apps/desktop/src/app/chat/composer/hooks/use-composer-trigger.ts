@@ -191,10 +191,13 @@ export function useComposerTrigger({
     // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
     // it — expand to its options step so the popover shows the inline list, just
     // as typing `/personality ` by hand would. A serialized value with a space is
-    // already an arg pick (`/personality alice`), so it commits normally.
+    // already an arg pick (`/personality alice`), so it commits normally. An
+    // inline (mid-message) pick never expands: it's a reference inside prose, so
+    // there's no command invocation for the args to belong to.
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
-    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+    const expandsToArgs =
+      trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)

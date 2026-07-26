@@ -1,11 +1,15 @@
 import { Box, Link, stringWidth, Text } from '@hermes/ink'
-import { Fragment, memo, type ReactNode, useMemo } from 'react'
+import React, { Fragment, memo, type ReactNode, useMemo } from 'react'
 
+import type { CopyBloxFence } from '../domain/codeFence.js'
+import { parseCodeFences } from '../domain/codeFence.js'
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl, urlSlugTitleLabel, useLinkTitle } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
+
+import { CopyBlox } from './copyblox.js'
 
 // `\boxed{X}` regions in `texToUnicode` output are marked with the
 // non-printable U+0001 / U+0002 sentinels. Split on them and render the
@@ -715,6 +719,18 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
     }
 
     const lines = ensureEmojiPresentation(text).split('\n')
+
+    // Compute raw source fence data BEFORE display normalisation changes text.
+    // parseCodeFences operates on `text` (raw) so rawContent is byte-accurate.
+    const rawFences = parseCodeFences(text)
+
+    // Map display-line indices (open fence) to raw fence content.
+    const fenceContentMap = new Map<number, CopyBloxFence>()
+
+    for (const rf of rawFences) {
+      fenceContentMap.set(rf.openLineIndex, rf)
+    }
+
     const nodes: ReactNode[] = []
 
     let prevKind: Kind = null
@@ -778,6 +794,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       const fence = line.match(FENCE_RE)
 
       if (fence) {
+        const openLineIndex = i
         const char = fence[1]![0] as '`' | '~'
         const len = fence[1]!.length
         const lang = fence[2]!.trim().toLowerCase()
@@ -793,10 +810,14 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           block.push(lines[i]!)
         }
 
-        if (i < lines.length) {
+        const closed = i < lines.length
+
+        if (closed) {
           i++
         }
 
+        // Preserve the established nested-Markdown rendering for Markdown
+        // fences. These are display-only; other fenced languages get CopyBlox.
         if (['md', 'markdown'].includes(lang)) {
           start('paragraph')
           nodes.push(<Md cols={cols} compact={compact} key={key} t={t} text={block.join('\n')} />)
@@ -804,48 +825,60 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           continue
         }
 
-        start('code')
-
+        // Look up raw content from pre-computed raw source parse using the
+        // saved opener index.  `block` contains display-normalized lines
+        // (ensureEmojiPresentation may have mutated emoji bytes), so we must
+        // never fall back to `block.join('\n')` for clipboard content.
+        const rawFence = fenceContentMap.get(openLineIndex)
+        const rawContent = rawFence ? rawFence.rawContent : block.join('\n')
         const isDiff = lang === 'diff'
         const highlighted = !isDiff && isHighlightable(lang)
 
+        // Build display lines for syntax rendering.
+        const codeChildren: ReactNode[] = block.map((l, j) => {
+          if (highlighted) {
+            return (
+              <Text key={j}>
+                {highlightLine(l, lang, t).map(([color, text], kk) =>
+                  color ? (
+                    <Text color={color} key={kk}>
+                      {text}
+                    </Text>
+                  ) : (
+                    <Text key={kk}>{text}</Text>
+                  )
+                )}
+              </Text>
+            )
+          }
+
+          const add = isDiff && l.startsWith('+')
+          const del = isDiff && l.startsWith('-')
+          const hunk = isDiff && l.startsWith('@@')
+
+          return (
+            <Text
+              backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
+              color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
+              dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
+              key={j}
+            >
+              {l}
+            </Text>
+          )
+        })
+
         nodes.push(
-          <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
-
-            {block.map((l, j) => {
-              if (highlighted) {
-                return (
-                  <Text key={j}>
-                    {highlightLine(l, lang, t).map(([color, text], kk) =>
-                      color ? (
-                        <Text color={color} key={kk}>
-                          {text}
-                        </Text>
-                      ) : (
-                        <Text key={kk}>{text}</Text>
-                      )
-                    )}
-                  </Text>
-                )
-              }
-
-              const add = isDiff && l.startsWith('+')
-              const del = isDiff && l.startsWith('-')
-              const hunk = isDiff && l.startsWith('@@')
-
-              return (
-                <Text
-                  backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
-                  dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
-                  key={j}
-                >
-                  {l}
-                </Text>
-              )
-            })}
-          </Box>
+          <CopyBlox
+            closed={closed}
+            cols={cols ?? 80}
+            key={key}
+            language={isDiff ? 'diff' : lang}
+            rawContent={rawContent}
+            theme={t}
+          >
+            {codeChildren}
+          </CopyBlox>
         )
 
         continue

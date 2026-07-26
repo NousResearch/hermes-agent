@@ -27,6 +27,7 @@ export { default as measureElement } from './ink/measure-element.js'
 export { scrollFastPathStats, type ScrollFastPathStats } from './ink/render-node-to-output.js'
 export { createRoot, forceRedraw, default as render, renderSync } from './ink/root.js'
 export { stringWidth } from './ink/stringWidth.js'
+export { setClipboard } from './ink/termio/osc.js'
 export {
   isXtermJs,
   onTerminalBackground,

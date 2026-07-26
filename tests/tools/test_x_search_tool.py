@@ -98,6 +98,28 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
     assert result["error"] == "allowed_x_handles and excluded_x_handles cannot be used together"
 
 
+def test_x_search_schema_is_read_only_without_cross_tool_names():
+    """Static schema must state read-only scope without naming other surfaces.
+
+    AGENTS.md forbids hardcoding cross-tool/skill names in tool schemas because
+    those surfaces may be unavailable. Keep out-of-scope guidance generic here;
+    xurl routing lives in the skill and feature docs.
+    """
+    from tools.x_search_tool import X_SEARCH_SCHEMA
+
+    description = X_SEARCH_SCHEMA["description"]
+    lowered = description.lower()
+
+    assert "read-only" in lowered
+    assert "public x" in lowered
+    for action in ("post", "reply", "like", "dm", "upload media", "delete"):
+        assert action in lowered
+    assert "authenticated" in lowered
+    # No static cross-surface names in the model-facing schema.
+    assert "xurl" not in lowered
+    assert "web_search" not in lowered
+
+
 def test_x_search_extracts_inline_url_citations(monkeypatch):
     from tools.x_search_tool import x_search_tool
 

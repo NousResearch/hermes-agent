@@ -4687,7 +4687,7 @@ def _maybe_autoinstall_chromium() -> bool:
         proc = subprocess.run(
             install_cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=600,
             env=_build_browser_env(),
         )

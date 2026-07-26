@@ -20,6 +20,7 @@ from tools.session_search_tool import (
     _is_compacted_message,
     _is_compression_ended,
     _resolve_to_parent,
+    _session_link,
     session_search,
 )
 
@@ -490,6 +491,69 @@ class TestReadShape:
         assert result["message_count"] == 50
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
+
+
+# =========================================================================
+# Session links — the value the agent writes to point the user at a session
+# =========================================================================
+
+def _linked_session_id(link: str) -> str:
+    """Recover the session id from an `@session:[<profile>/]<id>` value."""
+    assert link.startswith("@session:"), link
+    value = link[len("@session:"):]
+
+    return value.rsplit("/", 1)[-1]
+
+
+class TestSessionLink:
+    def test_link_carries_the_named_profile(self):
+        assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
+
+    def test_link_falls_back_to_a_bare_id_when_the_profile_is_unknown(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "custom",
+        )
+
+        assert _session_link("s_oldest") == "@session:s_oldest"
+
+    def test_link_survives_a_failure_to_resolve_the_profile(self, monkeypatch):
+        def boom():
+            raise RuntimeError("no profile")
+
+        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", boom)
+
+        assert _session_link("s_oldest") == "@session:s_oldest"
+
+    def test_read_result_links_to_the_session_it_read(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(session_id="s_oldest", db=db))
+
+        assert _linked_session_id(result["link"]) == result["session_id"]
+
+    def test_every_discovery_result_links_to_its_own_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(query="modpack", limit=5, db=db))
+
+        assert result["results"]
+        for entry in result["results"]:
+            assert _linked_session_id(entry["link"]) == entry["session_id"]
+
+    def test_every_browse_result_links_to_its_own_session(self, db):
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(db=db))
+
+        assert result["results"]
+        for entry in result["results"]:
+            assert _linked_session_id(entry["link"]) == entry["session_id"]
+
+    def test_link_splits_the_way_the_tool_parses_it_back(self):
+        """The agent hands its own link back as session_id; the value has to
+        survive the profile/id partition in session_search."""
+        value = _session_link("s_middle", "work")[len("@session:"):]
+        profile, _, session_id = value.partition("/")
+
+        assert (profile, session_id) == ("work", "s_middle")
 
 
 # =========================================================================

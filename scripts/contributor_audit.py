@@ -87,7 +87,7 @@ def git(*args, cwd=None):
     result = subprocess.run(
         ["git"] + list(args),
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         cwd=cwd or str(REPO_ROOT),
     )
     if result.returncode != 0:
@@ -112,7 +112,7 @@ def gh_pr_list():
                 "--limit", "300",
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
         )
         if result.returncode != 0:

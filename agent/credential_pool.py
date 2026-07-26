@@ -594,6 +594,14 @@ class CredentialPool:
         # Re-armed to None on every successful selection so a recover→re-exhaust
         # transition logs promptly instead of being swallowed by a stale window.
         self._last_no_entries_log_at: Optional[float] = None
+        # #70401: consecutive mark_exhausted_and_rotate() calls whose supplied
+        # credential identity matched no pool entry (OAuth wrappers whose
+        # runtime key rotates, entries pruned by another process, ...).  These
+        # rotations mark nothing exhausted, so without a cap the pool can
+        # never converge to "no available entries" and the caller's 401 retry
+        # loop runs unbounded and non-interruptible.  Reset whenever a real
+        # entry is identified or an escape path returns None.
+        self._unmatched_rotation_streak: int = 0
 
     def has_credentials(self) -> bool:
         with self._lock:
@@ -621,6 +629,28 @@ class CredentialPool:
     def current(self) -> Optional[PooledCredential]:
         with self._lock:
             return self._current_unlocked()
+
+    def entry_id_for_api_key(self, api_key_hint: Any = None) -> Optional[str]:
+        """Return the stable id for the runtime credential in use.
+
+        Prefer the current selection when it still supplies ``api_key_hint``.
+        If the cursor was cleared, fall back to an unambiguous key match.
+        """
+        with self._lock:
+            current = self._current_unlocked()
+            if current is not None and (
+                api_key_hint is None
+                or current.runtime_api_key == api_key_hint
+            ):
+                return current.id
+            if api_key_hint is None:
+                return None
+            matches = [
+                entry
+                for entry in self._entries
+                if entry.runtime_api_key == api_key_hint
+            ]
+            return matches[0].id if len(matches) == 1 else None
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
@@ -1562,7 +1592,13 @@ class CredentialPool:
 
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            entry = self._select_unlocked()
+            if entry is not None:
+                # A normal (non-recovery) selection starts a fresh episode —
+                # don't let a leftover unmatched-rotation streak from an old
+                # failure trip the #70401 bound early next time.
+                self._unmatched_rotation_streak = 0
+            return entry
 
     def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
@@ -1763,10 +1799,17 @@ class CredentialPool:
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
+        credential_id: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = None
-            if api_key_hint:
+            identity_supplied = bool(credential_id or api_key_hint)
+            if credential_id:
+                entry = next(
+                    (e for e in self._entries if e.id == credential_id),
+                    None,
+                )
+            if entry is None and api_key_hint:
                 # Prefer the specific entry whose API key matches the one that
                 # actually failed.  When this pool was freshly loaded from disk
                 # (another process already rotated), current() is None and
@@ -1775,20 +1818,59 @@ class CredentialPool:
                     (e for e in self._entries if e.runtime_api_key == api_key_hint),
                     None,
                 )
-                if entry is None:
-                    # The failed key is identifiable but matches no entry
-                    # (rotated away, or a wrapper whose runtime key differs).
-                    # Falling through to current()/_select_unlocked() would
-                    # mark an INNOCENT healthy key exhausted for the full
-                    # cooldown TTL.  Don't guess — just hand back a fresh
-                    # selection so the caller can retry.
-                    logger.info(
-                        "credential pool: failed key hint matched no %s entry; "
-                        "rotating without marking any credential exhausted",
+            if entry is None and identity_supplied:
+                # The failed credential is identifiable but matches no entry
+                # (rotated away, or a wrapper whose runtime key differs).
+                # Falling through to current()/_select_unlocked() would mark an
+                # innocent healthy key exhausted for the full cooldown TTL.
+                #
+                # #70401: this branch must still be BOUNDED. With OAuth-token
+                # auth the upstream 401's key hint never matches any entry's
+                # ``runtime_api_key``, so every retry lands here, nothing is
+                # ever marked exhausted, and the pool can never reach the
+                # "no available entries" state — the caller retries the same
+                # dead token forever (~6/sec, starving the event loop so chat
+                # interrupts are never processed). The single-entry case
+                # below already escapes; multi-entry pools could still
+                # ping-pong A→B→A indefinitely without marking anything.
+                # Cap consecutive no-mark rotations at one full lap of the
+                # available entries: past that, every candidate has been
+                # handed back at least once without recovery, so stop
+                # guessing and surface the error (no cooldown is written for
+                # anybody — healthy keys stay available for the next turn).
+                self._unmatched_rotation_streak += 1
+                available_count = len(self._available_entries())
+                if self._unmatched_rotation_streak > max(available_count, 1):
+                    logger.warning(
+                        "credential pool: failed credential identity matched no "
+                        "%s entry for %d consecutive rotations (pool size %d) — "
+                        "surfacing the error instead of rotating again",
                         self.provider,
+                        self._unmatched_rotation_streak,
+                        available_count,
                     )
+                    self._unmatched_rotation_streak = 0
                     self._current_id = None
-                    return self._select_unlocked()
+                    return None
+                logger.info(
+                    "credential pool: failed credential identity matched no %s "
+                    "entry; rotating without marking any credential exhausted",
+                    self.provider,
+                )
+                self._current_id = None
+                next_entry = self._select_unlocked()
+                if next_entry is not None and len(self._available_entries()) == 1:
+                    # A single-entry pool cannot rotate. Returning its only
+                    # entry reports a successful recovery without changing
+                    # the credential, so the caller retries the same 401
+                    # indefinitely. Let fallback/error propagation proceed.
+                    self._unmatched_rotation_streak = 0
+                    self._current_id = None
+                    return None
+                return next_entry
+            # A real entry was identified — any prior unmatched-rotation
+            # streak is stale (this mark WILL advance pool state).
+            self._unmatched_rotation_streak = 0
             if entry is None:
                 entry = self._current_unlocked() or self._select_unlocked()
             if entry is None:
@@ -1806,12 +1888,13 @@ class CredentialPool:
             # disconnects (a ~2.5min hang with no error surfaced to the user).
             # Mark every entry sharing the failed key so the pool can reach the
             # "no available entries" state and let the error propagate.
-            if api_key_hint:
+            failed_runtime_key = getattr(entry, "runtime_api_key", None)
+            if identity_supplied and failed_runtime_key:
                 siblings_marked = False
                 for sibling in self._entries:
                     if sibling.id == entry.id:
                         continue
-                    if sibling.runtime_api_key == api_key_hint:
+                    if sibling.runtime_api_key == failed_runtime_key:
                         self._mark_exhausted(
                             sibling, status_code, error_context, persist=False
                         )
@@ -1885,9 +1968,11 @@ class CredentialPool:
             return self._try_refresh_current_unlocked()
 
     def try_refresh_matching(
-        self, api_key_hint: Optional[str] = None
+        self,
+        api_key_hint: Optional[str] = None,
+        credential_id: Optional[str] = None,
     ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied ``api_key_hint``.
+        """Force-refresh the entry that supplied the failed request.
 
         Direct provider integrations may reload the pool after a request has
         already failed, so they cannot rely on ``current_id`` identifying the
@@ -1897,17 +1982,29 @@ class CredentialPool:
         """
         with self._lock:
             entry = None
-            if api_key_hint:
+            if credential_id:
                 entry = next(
                     (
                         candidate
                         for candidate in self._entries
-                        if candidate.runtime_api_key == api_key_hint
+                        if candidate.id == credential_id
                     ),
                     None,
                 )
-            else:
-                entry = self._current_unlocked() or self._select_unlocked(refresh=False)
+            if entry is None:
+                if api_key_hint:
+                    entry = next(
+                        (
+                            candidate
+                            for candidate in self._entries
+                            if candidate.runtime_api_key == api_key_hint
+                        ),
+                        None,
+                    )
+                else:
+                    entry = self._current_unlocked() or self._select_unlocked(
+                        refresh=False
+                    )
             if entry is None:
                 return None
             self._current_id = entry.id

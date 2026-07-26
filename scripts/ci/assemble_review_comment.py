@@ -419,7 +419,7 @@ def main() -> int:
         pending_jobs=pending,
     )
 
-    args.output.write_text(body)
+    args.output.write_text(body, encoding="utf-8")
     print(f"Wrote {len(body)} chars to {args.output}")
     return 0
 

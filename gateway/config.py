@@ -431,6 +431,11 @@ class HomeChannel:
     chat_id: str
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
+    # Authenticated logical-target provenance observed by a platform adapter.
+    # Relay egress re-attaches these values, but the connector remains the
+    # authorization boundary and resolves them against its authoritative stores.
+    user_id: Optional[str] = None
+    scope_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -440,6 +445,10 @@ class HomeChannel:
         }
         if self.thread_id:
             result["thread_id"] = self.thread_id
+        if self.user_id:
+            result["user_id"] = self.user_id
+        if self.scope_id:
+            result["scope_id"] = self.scope_id
         return result
     
     @classmethod
@@ -449,7 +458,28 @@ class HomeChannel:
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
+            user_id=str(data["user_id"]) if data.get("user_id") else None,
+            scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
         )
+
+
+def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
+    """Persist a logical home without falsely enabling a Relay-fronted adapter."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+    platform_config = platforms.setdefault(home.platform.value, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[home.platform.value] = platform_config
+    if enabled_if_new:
+        platform_config.setdefault("enabled", True)
+    platform_config["home_channel"] = home.to_dict()
+    save_config(config)
 
 
 @dataclass
@@ -900,6 +930,13 @@ class GatewayConfig:
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
 
+    # In-process event-loop liveness watchdog (#69089). A daemon OS thread
+    # probes the gateway loop with call_soon_threadsafe; after consecutive
+    # missed probes it dumps all-thread stacks and hard-exits with the
+    # service-restart code so the supervisor can revive the process. On by
+    # default; set gateway.loop_watchdog: false in config.yaml to disable.
+    loop_watchdog: bool = True
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -1034,6 +1071,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
+            "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1105,6 +1143,11 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             systemd_watchdog_raw, systemd_watchdog_key
         )
+        if "loop_watchdog" in data:
+            loop_watchdog_raw = data.get("loop_watchdog")
+        else:
+            loop_watchdog_raw = nested_gateway.get("loop_watchdog")
+        loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1165,6 +1208,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
+            loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1942,12 +1986,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
     slack_home = getenv("SLACK_HOME_CHANNEL")
-    if slack_home and Platform.SLACK in config.platforms:
-        config.platforms[Platform.SLACK].home_channel = HomeChannel(
+    if slack_home:
+        slack_config = config.platforms.setdefault(
+            Platform.SLACK,
+            PlatformConfig(enabled=False),
+        )
+        existing_home = slack_config.home_channel
+        same_home = existing_home is not None and existing_home.chat_id == slack_home
+        slack_config.home_channel = HomeChannel(
             platform=Platform.SLACK,
             chat_id=slack_home,
             name=getenv("SLACK_HOME_CHANNEL_NAME", ""),
             thread_id=getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
+            user_id=existing_home.user_id if existing_home and same_home else None,
+            scope_id=existing_home.scope_id if existing_home and same_home else None,
         )
     
     # Signal

@@ -7,6 +7,7 @@
  */
 
 import { $workspaceIsPage } from '@/app/routes'
+import { queryVisible } from '@/components/pane-shell/pane-visibility'
 import { switcherActive } from '@/store/session-switcher'
 
 import { isEditableTarget, isFocusWithin } from './combo'
@@ -37,8 +38,15 @@ const ENTER_ACTIVATES = [
   '[role="treeitem"]'
 ].join(',')
 
-const BLOCKING_SURFACE =
-  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface],[data-clarify-choices]'
+// Overlays that cover the whole window (portaled to the body, or the overlay
+// shell itself) — one anywhere means the composer is behind it.
+const BLOCKING_OVERLAY =
+  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]'
+
+// Blockers that live INSIDE a chat surface. Inactive tabs stay mounted, so this
+// one has to be visible-scoped: a clarify card waiting in a background thread
+// must not take the foreground composer's letter keys.
+const BLOCKING_IN_SURFACE = '[data-clarify-choices]'
 
 /** True when the focused control would normally handle Enter itself. */
 export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
@@ -59,7 +67,8 @@ export function composerFocusBlockedBySurface(): boolean {
     switcherActive() ||
     $workspaceIsPage.get() ||
     isFocusWithin('[data-terminal]') ||
-    Boolean(document.querySelector(BLOCKING_SURFACE))
+    Boolean(document.querySelector(BLOCKING_OVERLAY)) ||
+    Boolean(queryVisible(BLOCKING_IN_SURFACE))
   )
 }
 

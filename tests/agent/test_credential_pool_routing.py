@@ -405,11 +405,12 @@ class TestFailureAttribution:
         entry.update(overrides)
         return entry
 
-    def _agent(self, pool, failing_key):
+    def _agent(self, pool, failing_key, credential_id=None):
         return SimpleNamespace(
             provider="anthropic",
             api_key=failing_key,
             _credential_pool=pool,
+            _credential_pool_entry_id=credential_id,
             _swap_credential=MagicMock(),
         )
 
@@ -507,6 +508,87 @@ class TestFailureAttribution:
         assert pool.current().id == "cred-0"
 
         agent = self._agent(pool, failing_key="key-b")
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=401, has_retried_429=False
+        )
+
+        assert recovered is True
+        statuses = self._statuses(pool)
+        assert statuses["cred-1"] == "exhausted"
+        assert statuses["cred-0"] != "exhausted"
+        swapped = agent._swap_credential.call_args[0][0]
+        assert swapped.id == "cred-0"
+
+    def test_auth_refresh_uses_stable_id_after_runtime_key_changes(
+        self, tmp_path, monkeypatch
+    ):
+        """A refreshed pool token must not detach the failed request from the
+        entry that supplied its now-stale runtime key."""
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "new-runtime-key")],
+        )
+        selected = pool.select()
+        assert selected.id == "cred-0"
+        assert pool.entry_id_for_api_key("new-runtime-key") == "cred-0"
+
+        agent = self._agent(
+            pool,
+            failing_key="stale-runtime-key",
+            credential_id="cred-0",
+        )
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=401, has_retried_429=False
+        )
+
+        assert recovered is False
+        assert self._statuses(pool)["cred-0"] == "exhausted"
+        agent._swap_credential.assert_not_called()
+
+    def test_unmatched_key_does_not_retry_only_pool_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """Legacy agents without a stable id must stop when an unmatched key
+        has no different credential to rotate to."""
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "pool-runtime-key")],
+        )
+        agent = self._agent(pool, failing_key="wrapper-runtime-key")
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recovered, _ = recover_with_credential_pool(
+            agent, status_code=401, has_retried_429=False
+        )
+
+        assert recovered is False
+        assert self._statuses(pool)["cred-0"] != "exhausted"
+        agent._swap_credential.assert_not_called()
+
+    def test_stable_id_rotates_from_failed_entry_when_cursor_points_elsewhere(
+        self, tmp_path, monkeypatch
+    ):
+        """Stable identity wins over both a stale key and the shared cursor."""
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b-new")],
+        )
+        assert pool.select().id == "cred-0"
+        agent = self._agent(
+            pool,
+            failing_key="key-b-old",
+            credential_id="cred-1",
+        )
         agent._is_entitlement_failure = MagicMock(return_value=False)
 
         from agent.agent_runtime_helpers import recover_with_credential_pool

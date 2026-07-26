@@ -26,6 +26,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -95,6 +96,44 @@ const TOOL_SECTION_SURFACE_CLASS =
 const TOOL_EXPANDED_SHELL_CLASS = 'rounded-[0.3125rem] border border-(--ui-stroke-tertiary)'
 
 const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.7rem] leading-relaxed')
+
+// Raw args/result dump — reference material, so a notch smaller than a body.
+const TOOL_PAYLOAD_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.65rem] leading-relaxed')
+
+/**
+ * Technical-mode raw payload, behind a chevron disclosure.
+ *
+ * Collapsed by default — in technical mode every tool row carries one, and
+ * expanding them all buries the transcript. Uses `DisclosureCaret` rather than
+ * a native `<details>`, whose marker is a browser-drawn triangle matching
+ * nothing else here.
+ */
+function ToolPayloadDisclosure({ args, result }: { args: unknown; result: unknown }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    // `py-0.5` tops up the parent's `p-1.5` to an even block on both edges.
+    <div className="max-w-full py-0.5">
+      <button
+        aria-expanded={open}
+        className={cn(
+          TOOL_SECTION_LABEL_CLASS,
+          'mb-0 flex items-center gap-1 bg-transparent transition-colors hover:text-(--ui-text-secondary)'
+        )}
+        onClick={() => setOpen(value => !value)}
+        type="button"
+      >
+        <DisclosureCaret className="text-(--ui-text-tertiary)" open={open} size="0.625rem" />
+        Tool payload
+      </button>
+      {open && (
+        <pre className={cn(TOOL_PAYLOAD_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
+          {technicalTrace(args, result)}
+        </pre>
+      )}
+    </div>
+  )
+}
 
 interface ToolStatusCopy {
   statusDone: string
@@ -616,19 +655,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (
-            <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-              {technicalTrace(part.args, part.result)}
-            </pre>
-          )}
-          {toolViewMode === 'technical' && isFileEdit && view.inlineDiff && (
-            <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0 cursor-pointer')}>Tool payload</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {technicalTrace(part.args, part.result)}
-              </pre>
-            </details>
-          )}
+          {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
       )}
     </div>
@@ -673,10 +700,30 @@ function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
 
-// Tools whose body (an interactive form, a full-size image) must never be
-// trapped behind the window's max-height + fade mask. A run holding any of
-// them stays a plain, fully-visible stack no matter how long it is.
-export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
+// Tools whose body (an interactive form, a full-size image, a syntax-
+// highlighted code/diff block) must never be trapped behind the window's
+// max-height + fade mask. A run holding any of them stays a plain, fully-
+// visible stack no matter how long it is.
+//
+// A row rendered by ToolEntry carries `data-tool-row`, so once the user
+// expands it the `:has([data-tool-row][data-tool-open])` rule in styles.css
+// lifts the cap on its own. That escape hatch is why most tools are safe to
+// bound. These are the ones it cannot reach:
+//
+//   - `clarify` / `image_generate` render their own components and never emit
+//     `data-tool-row`, so no amount of expanding frees them.
+//   - the code tools *do* emit it, but their body is a code block the user
+//     reads rather than a one-line status — peering at a diff through a
+//     ~2-row viewport until you think to expand it is the bug. Console output
+//     (`terminal`) stays boundable: it's a log tail, and the last lines are
+//     the ones that matter, which is exactly what the window pins.
+const CODE_BODY_TOOLS = ['execute_code', 'read_file']
+
+const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate', ...CODE_BODY_TOOLS])
+
+export function isUnboundableTool(toolName: string): boolean {
+  return UNBOUNDABLE_TOOLS.has(toolName) || isFileEditTool(toolName)
+}
 
 export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
   return childCount >= TOOL_GROUP_SCROLL_THRESHOLD && !hasUnboundable
@@ -761,7 +808,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const hasUnboundable = useAuiState(s =>
     s.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .some(part => part.type === 'tool-call' && UNBOUNDABLE_TOOLS.has(part.toolName))
+      .some(part => part.type === 'tool-call' && isUnboundableTool(part.toolName))
   )
 
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)

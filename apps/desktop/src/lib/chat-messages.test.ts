@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import type { SessionMessage } from '@/types/hermes'
+
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
@@ -131,6 +133,65 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('Here you go.')
   })
 
+  it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png\nwhat is in this photo?',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('keeps a user turn that carried only an attached image (no caption)', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png',
+        timestamp: 1
+      }
+    ])
+
+    // The bubble has no visible text, but must survive the empty-turn filter
+    // because it carries attachment refs — otherwise a stand-alone attachment
+    // vanishes from the transcript after a session switch / restart.
+    expect(chatMessageText(message)).toBe('')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('renders a native-vision turn as caption plus thumbnail, not raw placeholder text', () => {
+    // How a turn sent to a natively-vision-capable model comes back out of the
+    // session store: a backtick-quoted ref (the path has spaces) and the
+    // `[screenshot]` stand-in left by flattening the parts list.
+    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: `${ref}\nwhat is in this photo?\n[screenshot]`,
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
+  })
+
+  it('leaves a plain user prompt without attachment refs untouched', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'just a question',
+        timestamp: 1
+      }
+    ])
+
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toBeUndefined()
+  })
+
   it('coerces non-string message content without throwing', () => {
     const [message] = toChatMessages([
       {
@@ -180,16 +241,47 @@ describe('toChatMessages', () => {
         content: 'opaque delegation context payload',
         display_kind: 'async_delegation_complete',
         timestamp: 5
+      },
+      {
+        role: 'user',
+        content: '[System note: Your previous turn was interrupted mid-run…]\n\noriginal prompt',
+        display_kind: 'auto_continue',
+        timestamp: 6
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system'])
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system'])
     expect(messages.map(chatMessageText)).toEqual([
       'real user turn',
       'real assistant reply',
       'model changed',
-      'background agent work finished'
+      'background agent work finished',
+      'resumed interrupted turn'
     ])
+  })
+
+  // A backend older than this app serves display_metadata as unparsed JSON
+  // text. Indexing into that string used to throw and fail the whole resume.
+  it.each([
+    ['an object', { delegation_id: 'deleg_1', task_count: 2 }, '2 background agents finished'],
+    ['JSON text', JSON.stringify({ delegation_id: 'deleg_1', task_count: 1 }), '1 background agent finished'],
+    ['unparseable text', '{not-json', 'background agent work finished'],
+    ['text that is not an object', '"deleg_1"', 'background agent work finished'],
+    ['a missing task count', { delegation_id: 'deleg_1' }, 'background agent work finished']
+  ])('labels a delegation event given %s', (_case, displayMetadata, expected) => {
+    const read = () =>
+      toChatMessages([
+        {
+          role: 'user',
+          content: 'opaque delegation context payload',
+          display_kind: 'async_delegation_complete',
+          display_metadata: displayMetadata as SessionMessage['display_metadata'],
+          timestamp: 1
+        }
+      ])
+
+    expect(read).not.toThrow()
+    expect(chatMessageText(read()[0])).toBe(expected)
   })
 })
 

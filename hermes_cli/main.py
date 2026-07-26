@@ -61,6 +61,15 @@ try:
 except ModuleNotFoundError:
     pass
 
+# Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
+# imports — it shells out ``cmd /c ver`` (shell=True, no CREATE_NO_WINDOW), so
+# any dependency touching ``platform.uname()`` at import time flashes a
+# visible console when this process is windowless (pythonw gateway + every
+# kanban worker).  No-op on POSIX; never raises.
+from hermes_cli._subprocess_compat import suppress_platform_ver_console
+
+suppress_platform_ver_console()
+
 import os
 import sys
 
@@ -630,7 +639,7 @@ def _apply_profile_override() -> None:
 
             active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
-                name = active_path.read_text().strip()
+                name = active_path.read_text(encoding="utf-8").strip()
                 if name and name != "default":
                     profile_name = name
                     consume = 0  # don't strip anything from argv
@@ -1012,7 +1021,7 @@ def _has_any_provider_configured() -> bool:
         try:
             import json
 
-            auth = json.loads(auth_file.read_text())
+            auth = json.loads(auth_file.read_text(encoding="utf-8"))
             active = auth.get("active_provider")
             if active:
                 status = get_auth_status(active)
@@ -1321,7 +1330,7 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
     all other exceptions propagate naturally.
     """
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except subprocess.TimeoutExpired:
         label = f"sudo {backend}" if via_sudo else backend
         print(
@@ -1834,7 +1843,7 @@ def _restore_tui_workspace(tui_dir: Path) -> bool:
             [git, "restore", "--", tui_dir.name],
             cwd=str(tui_dir.parent),
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
         )
     except OSError:
@@ -3617,13 +3626,16 @@ def _aux_config_menu() -> None:
 def _aux_select_for_task(task: str) -> None:
     """Pick a provider + model for a single auxiliary task and persist it.
 
-    Uses ``list_authenticated_providers()`` to only show providers the user
-    has already configured. This avoids re-running OAuth/credential flows
-    inside the aux picker — users set up new providers through the normal
-    ``hermes model`` flow, then route aux tasks to them here.
+    Provider rows come from ``build_aux_picker_rows()`` — the shared aux-picker
+    substrate — so this surface shows exactly what every other aux picker
+    shows: authenticated built-ins, the user's own ``providers:`` /
+    ``custom_providers:`` endpoints, and providers whose credential pool is
+    temporarily exhausted. Only already-configured providers appear; users set
+    up new ones through the normal ``hermes model`` flow, then route aux tasks
+    to them here.
     """
     from hermes_cli.config import load_config
-    from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
 
     cfg = load_config()
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
@@ -3636,7 +3648,7 @@ def _aux_select_for_task(task: str) -> None:
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
-        providers = list_authenticated_providers(
+        providers = build_aux_picker_rows(
             current_provider=current_provider,
             current_model=current_model,
             current_base_url=current_base_url,
@@ -3652,16 +3664,13 @@ def _aux_select_for_task(task: str) -> None:
     )
     entries.append(("__auto__", f"auto (recommended){auto_marker}", []))
 
-    for p in providers:
-        slug = p.get("slug", "")
-        name = p.get("name") or slug
-        total = p.get("total_models", 0)
-        models = p.get("models") or []
-        model_hint = f" — {total} models" if total else ""
-        marker = (
-            "  ← current" if slug == current_provider and not current_base_url else ""
+    entries.extend(
+        format_aux_picker_entries(
+            providers,
+            current_provider=current_provider,
+            current_base_url=current_base_url,
         )
-        entries.append((slug, f"{name}{model_hint}{marker}", list(models)))
+    )
 
     # Custom endpoint (raw base_url)
     custom_marker = "  ← current" if current_base_url else ""
@@ -3966,13 +3975,17 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 
 def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None, api_mode=None
+    base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
+    key_env=""
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
     Deduplicates by base_url — if the URL already exists, updates the
     model name, context_length, and api_mode but doesn't add a duplicate entry.
     Uses *name* when provided, otherwise auto-generates from the URL.
+
+    When *key_env* is set the caller has already written the key to ``.env``,
+    so the entry references it instead of inlining the secret (#69449).
     """
     from hermes_cli.config import load_config, save_config
 
@@ -4004,6 +4017,10 @@ def _save_custom_provider(
             elif "api_mode" in entry:
                 entry.pop("api_mode", None)
                 changed = True
+            if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
+                entry["key_env"] = key_env
+                entry.pop("api_key", None)
+                changed = True
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
@@ -4014,7 +4031,9 @@ def _save_custom_provider(
         name = _auto_provider_name(base_url)
 
     entry = {"name": name, "base_url": base_url}
-    if api_key:
+    if key_env:
+        entry["key_env"] = key_env
+    elif api_key:
         entry["api_key"] = api_key
     if model:
         entry["model"] = model
@@ -4720,7 +4739,7 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
             git_cmd + ["rev-parse", "HEAD"],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=True,
         )
         return result.stdout.strip() or None
@@ -4797,7 +4816,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
         "id": str(_uuid.uuid4()),
     }
     tmp = prompt_path.with_suffix(".tmp")
-    tmp.write_text(_json.dumps(payload))
+    tmp.write_text(_json.dumps(payload), encoding="utf-8")
     tmp.replace(prompt_path)
 
     # Poll for response
@@ -4805,7 +4824,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     while _time.monotonic() < deadline:
         if response_path.exists():
             try:
-                answer = response_path.read_text().strip()
+                answer = response_path.read_text(encoding="utf-8").strip()
                 response_path.unlink(missing_ok=True)
                 prompt_path.unlink(missing_ok=True)
                 return answer if answer else default
@@ -5079,7 +5098,7 @@ def _nixos_build_env() -> dict[str, str] | None:
     try:
         result = subprocess.run(
             ["nix-shell", "-p", "python3", "--run", "which python3"],
-            capture_output=True, text=True, check=False, timeout=15,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=15,
         )
         if result.returncode == 0:
             python3_path = result.stdout.strip()
@@ -5498,7 +5517,354 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
+    if sys.platform == "win32" and len(existing) > 1:
+        # Multiple unpacked trees can coexist (e.g. a stale win-arm64-unpacked
+        # left behind by a cross-arch experiment next to the real win-unpacked).
+        # Picking purely by mtime can then hand a wrong-architecture Hermes.exe
+        # to the launcher, which Windows rejects with "This app can't run on
+        # your computer" (#69179). Prefer candidates whose PE machine field
+        # matches the host; fall back to mtime when none can be parsed.
+        expected = _expected_windows_pe_machines()
+        matching = [p for p in existing if _pe_machine_or_none(p) in expected]
+        if matching:
+            existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+# ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
+#
+# The desktop self-update chain (Desktop → hermes-setup --update →
+# `hermes update` → `hermes desktop --build-only` → relaunch) rebuilds
+# Hermes.exe on the end user's machine and used to verify only that the file
+# EXISTS before declaring success. A corrupt cached Electron zip whose
+# extraction produced a truncated electron.exe, an interrupted rcedit resource
+# rewrite, a disk-full pack, or a wrong-arch unpacked tree therefore shipped a
+# broken binary that Windows refuses to load ("This app can't run on your
+# computer" / 此应用无法在你的电脑上运行). These helpers parse the PE header —
+# no signature infrastructure required — so a structurally broken or
+# wrong-architecture Hermes.exe is caught BEFORE the updater replaces the
+# working app, and the previous build can be restored from the .bak tree that
+# apps/desktop/scripts/before-pack.mjs now preserves.
+
+_PE_MACHINE_I386 = 0x014C
+_PE_MACHINE_AMD64 = 0x8664
+_PE_MACHINE_ARM64 = 0xAA64
+
+_PE_MACHINE_NAMES = {
+    _PE_MACHINE_I386: "x86 (32-bit)",
+    _PE_MACHINE_AMD64: "x64 (AMD64)",
+    _PE_MACHINE_ARM64: "ARM64",
+}
+
+_PE_MACHINE_TO_NAME = {
+    _PE_MACHINE_ARM64: "ARM64",
+    _PE_MACHINE_AMD64: "AMD64",
+    _PE_MACHINE_I386: "X86",
+}
+
+# MACHINE_ATTRIBUTES bits (processthreadsapi.h). UserEnabled means the host
+# can run user-mode code of that machine type — natively or under emulation.
+_MACHINE_ATTRIBUTE_USER_ENABLED = 0x00000001
+
+
+def _windows_native_machine_from_iswow64() -> Optional[str]:
+    """Ask IsWow64Process2 for the OS-native machine (None if unavailable/fail).
+
+    ctypes defaults ``GetCurrentProcess``'s restype to ``c_int``, so the
+    current-process pseudo-handle ``(HANDLE)-1`` is truncated to
+    ``0xFFFFFFFF`` and zero-extended into a 64-bit invalid handle. On Win64
+    that makes ``IsWow64Process2`` fail with ``ERROR_INVALID_HANDLE`` (6),
+    which is exactly the residual Windows-on-ARM failure after #71218: the
+    gate fell through to ``PROCESSOR_ARCHITECTURE=AMD64`` (the emulated
+    process arch) and rejected a correctly-built ARM64 ``Hermes.exe``.
+    Binding ``restype``/``argtypes`` to ``wintypes.HANDLE`` keeps the full
+    ``0xFFFFFFFFFFFFFFFF`` pseudo-handle.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.IsWow64Process2.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.USHORT),
+        ctypes.POINTER(wintypes.USHORT),
+    ]
+    kernel32.IsWow64Process2.restype = wintypes.BOOL
+
+    process_machine = wintypes.USHORT(0)
+    native_machine = wintypes.USHORT(0)
+    if not kernel32.IsWow64Process2(
+        kernel32.GetCurrentProcess(),
+        ctypes.byref(process_machine),
+        ctypes.byref(native_machine),
+    ):
+        return None
+    return _PE_MACHINE_TO_NAME.get(native_machine.value)
+
+
+def _windows_user_runnable_pe_machines() -> Optional[set]:
+    """PE machines this host can run in user mode, via GetMachineTypeAttributes.
+
+    This asks the question the integrity gate actually cares about — "can this
+    Windows host load a PE of machine X?" — instead of inferring it from a
+    host-architecture name. It is also the only documented API that reports
+    AMD64-on-ARM64 emulation support; ``IsWow64GuestMachineSupported`` only
+    answers for 32-bit guests.
+
+    Returns None when the API is unavailable (pre-Windows-11 build 22000) or
+    reports nothing runnable, so callers fall back to name-based detection.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetMachineTypeAttributes.argtypes = [
+        wintypes.USHORT,
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    kernel32.GetMachineTypeAttributes.restype = ctypes.c_long
+
+    runnable = set()
+    for machine in (_PE_MACHINE_ARM64, _PE_MACHINE_AMD64, _PE_MACHINE_I386):
+        attributes = ctypes.c_int(0)
+        # HRESULT: zero is success, any nonzero value is a failure.
+        if kernel32.GetMachineTypeAttributes(machine, ctypes.byref(attributes)):
+            continue
+        if attributes.value & _MACHINE_ATTRIBUTE_USER_ENABLED:
+            runnable.add(machine)
+    return runnable or None
+
+
+def _windows_native_machine() -> str:
+    """The Windows host OS's NATIVE machine architecture, normalized upper.
+
+    ``platform.machine()`` reports the PROCESS architecture, which lies under
+    emulation: the desktop update chain runs an x64 hermes-setup.exe (and thus
+    x64 Python) on Windows-on-ARM devices, where ``platform.machine()``
+    returns ``AMD64`` even though the OS is ARM64. The #71119 integrity gate
+    then rejected the CORRECT ARM64 rebuild as an "architecture mismatch"
+    (#69179 follow-up report). Probe order:
+
+    1. ``IsWow64Process2`` with a correctly-typed current-process HANDLE
+       (#71218 + HANDLE-truncation fix). This is the only API that tells the
+       truth from an x64 process emulated on ARM64.
+    2. ``PROCESSOR_ARCHITEW6432`` / ``PROCESSOR_ARCHITECTURE`` — WOW64
+       (32-bit) hosts and pre-1511 Windows 10 without the newer API.
+    3. ``platform.machine()``.
+
+    Note ``GetNativeSystemInfo`` is deliberately NOT used: Microsoft documents
+    that it "also returns emulated processor details when run from an app
+    under emulation", so on the very WoA hosts this function exists to serve
+    it reports AMD64 — no better than the env-var rung below it.
+    """
+    if sys.platform == "win32":
+        try:
+            name = _windows_native_machine_from_iswow64()
+        except (OSError, AttributeError, TypeError, ValueError):
+            # API missing (pre-1511), DLL load failure in tests, or a
+            # mistyped ctypes binding — fall through to the env vars.
+            name = None
+        if name:
+            return name
+        env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get(
+            "PROCESSOR_ARCHITECTURE"
+        )
+        if env_arch:
+            return env_arch.upper()
+    import platform as _platform
+
+    return (_platform.machine() or "").upper()
+
+
+def _expected_windows_pe_machines() -> set:
+    """PE machine values the current Windows host can natively load.
+
+    Preferred source is ``GetMachineTypeAttributes``, which answers this
+    question directly (including AMD64-on-ARM64 emulation) instead of
+    inferring it from an architecture name.
+
+    Fallback is name-based: AMD64 hosts run x64 and (via WOW64) x86. ARM64
+    hosts run ARM64 and (Windows 11 emulation) x64. 32-bit x86 hosts run only
+    x86. Unknown machines return the permissive full set so the integrity gate
+    can never brick launch on exotic hosts. Host detection uses the OS-native
+    machine (see ``_windows_native_machine``), not the process architecture.
+    """
+    if sys.platform == "win32":
+        try:
+            runnable = _windows_user_runnable_pe_machines()
+        except (OSError, AttributeError, TypeError, ValueError):
+            runnable = None
+        if runnable:
+            return runnable
+    machine = _windows_native_machine().upper()
+    if machine in ("AMD64", "X86_64", "X64"):
+        return {_PE_MACHINE_AMD64, _PE_MACHINE_I386}
+    if machine in ("ARM64", "AARCH64"):
+        return {_PE_MACHINE_ARM64, _PE_MACHINE_AMD64}
+    if machine in ("X86", "I386", "I486", "I586", "I686"):
+        return {_PE_MACHINE_I386}
+    return {_PE_MACHINE_AMD64, _PE_MACHINE_ARM64, _PE_MACHINE_I386}
+
+
+def _parse_pe_machine(path: Path) -> int:
+    """Parse ``path`` as a PE executable and return its COFF machine field.
+
+    Raises ``ValueError`` with a human-readable reason when the file is not a
+    structurally complete PE: missing MZ/PE magic (an HTML error page or JSON
+    body saved as .exe), header truncation, or raw section data extending past
+    the end of the file (the truncated-download / interrupted-extraction
+    shape). Purely a header walk — cheap even on a 200 MB Electron exe.
+    """
+    import struct
+
+    try:
+        file_size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"unreadable: {exc}")
+    if file_size < 512:
+        raise ValueError(
+            f"file is only {file_size} bytes — far too small to be a Windows executable"
+        )
+    with path.open("rb") as fh:
+        head = fh.read(64)
+        if len(head) < 64 or head[:2] != b"MZ":
+            raise ValueError(
+                "missing MZ header — not a Windows executable "
+                "(a truncated or non-binary file saved as .exe?)"
+            )
+        e_lfanew = struct.unpack_from("<I", head, 0x3C)[0]
+        if e_lfanew <= 0 or e_lfanew + 24 > file_size:
+            raise ValueError("corrupt DOS header: PE header offset points past end of file")
+        fh.seek(e_lfanew)
+        pe_head = fh.read(24)
+        if len(pe_head) < 24 or pe_head[:4] != b"PE\x00\x00":
+            raise ValueError("missing PE signature — corrupt executable header")
+        machine, n_sections = struct.unpack_from("<HH", pe_head, 4)
+        size_of_optional = struct.unpack_from("<H", pe_head, 20)[0]
+        fh.seek(e_lfanew + 24 + size_of_optional)
+        max_section_end = 0
+        for _ in range(n_sections):
+            section = fh.read(40)
+            if len(section) < 40:
+                raise ValueError("truncated PE section table")
+            size_of_raw, pointer_to_raw = struct.unpack_from("<II", section, 16)
+            max_section_end = max(max_section_end, pointer_to_raw + size_of_raw)
+        if file_size < max_section_end:
+            raise ValueError(
+                f"truncated executable: file is {file_size} bytes but its PE "
+                f"sections extend to {max_section_end} bytes"
+            )
+    return machine
+
+
+def _pe_machine_or_none(path: Path) -> Optional[int]:
+    try:
+        return _parse_pe_machine(path)
+    except ValueError:
+        return None
+
+
+def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
+    """Return a human-readable reason ``path`` cannot run on this Windows host,
+    or ``None`` when the exe parses as a complete PE of a loadable architecture.
+    """
+    try:
+        machine = _parse_pe_machine(path)
+    except ValueError as exc:
+        return str(exc)
+    expected = _expected_windows_pe_machines()
+    if machine not in expected:
+        got = _PE_MACHINE_NAMES.get(machine, f"unknown machine 0x{machine:04X}")
+        return (
+            f"architecture mismatch: built a {got} executable but this is a "
+            f"{_windows_native_machine()} Windows host"
+        )
+    return None
+
+
+def _desktop_backup_unpacked_dir(packaged_executable: Path) -> Path:
+    """The rollback tree before-pack.mjs preserves: ``<unpacked-dir>.bak``."""
+    unpacked = packaged_executable.parent
+    return unpacked.parent / (unpacked.name + ".bak")
+
+
+def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
+    """Restore the previous unpacked desktop app from its ``.bak`` tree.
+
+    Returns the restored executable path, or ``None`` when no usable backup
+    exists (missing, or its exe fails the same integrity probe). The corrupt
+    tree is kept alongside as ``<unpacked-dir>.corrupt`` for diagnostics.
+    Best-effort: never raises.
+    """
+    unpacked = packaged_executable.parent
+    backup_dir = _desktop_backup_unpacked_dir(packaged_executable)
+    backup_exe = backup_dir / packaged_executable.name
+    if not backup_exe.exists():
+        return None
+    if _desktop_exe_integrity_error(backup_exe) is not None:
+        return None
+    corrupt_dir = unpacked.parent / (unpacked.name + ".corrupt")
+    try:
+        shutil.rmtree(corrupt_dir, ignore_errors=True)
+        try:
+            unpacked.rename(corrupt_dir)
+        except OSError:
+            shutil.rmtree(unpacked, ignore_errors=True)
+        backup_dir.rename(unpacked)
+    except OSError:
+        return None
+    restored = unpacked / packaged_executable.name
+    return restored if restored.exists() else None
+
+
+def _ensure_desktop_exe_launchable(
+    desktop_dir: Path, packaged_executable: Optional[Path]
+) -> tuple:
+    """Windows post-build integrity gate for the self-update rebuild (#69179).
+
+    Returns ``(verified_exe_or_None, rolled_back)``:
+
+    - exe passed the probe → ``(exe, False)``
+    - exe corrupt/wrong-arch, previous build restored → ``(old_exe, True)``
+    - exe corrupt and nothing restorable → ``(None, False)``
+
+    On any integrity failure the corrupt cached Electron zip is purged and the
+    desktop build stamp invalidated, so the updater's retry-once rebuild pulls
+    a fresh, SHASUM-verified Electron download instead of re-staging the same
+    corrupt bytes. No-op off Windows and when there is no executable to check.
+    """
+    if packaged_executable is None or sys.platform != "win32":
+        return packaged_executable, False
+
+    error = _desktop_exe_integrity_error(packaged_executable)
+    if error is None:
+        return packaged_executable, False
+
+    print(f"✗ The built Hermes.exe failed its integrity check: {error}")
+    print(f"    at: {packaged_executable}")
+
+    # Self-heal setup for the retry: drop the (likely corrupt) cached Electron
+    # zip and the content stamp so the next rebuild is a genuine re-download +
+    # re-stage rather than a replay of the same broken extraction.
+    _purge_electron_build_cache(desktop_dir)
+    try:
+        _desktop_stamp_path().unlink()
+    except OSError:
+        pass
+
+    restored = _rollback_desktop_from_backup(packaged_executable)
+    if restored is not None:
+        print("  ↩ Update aborted — restored the previous working Hermes.exe from backup.")
+        print("    Your existing version was kept and still works. Run `hermes desktop`")
+        print("    (or the in-app update) again to retry with a fresh Electron download.")
+        return restored, True
+
+    print("  ✗ No usable backup was found to restore.")
+    print("    Run `hermes desktop --force-build` to rebuild, or re-run the Hermes")
+    print("    installer to repair the install.")
+    return None, False
 
 
 def _electron_download_cache_dirs() -> list[Path]:
@@ -6142,6 +6508,22 @@ def cmd_gui(args: argparse.Namespace):
                 # damaged"). No-op on non-macOS and on real-identity builds.
                 _desktop_macos_relaunchable_fixup(desktop_dir)
 
+                # Windows integrity gate (#69179): never declare the rebuild a
+                # success on a Hermes.exe Windows cannot load (truncated PE from
+                # a corrupt cached Electron zip, wrong-arch tree, interrupted
+                # rcedit rewrite). Roll back to the .bak tree preserved by
+                # before-pack.mjs when possible, then fail loudly so the
+                # updater's retry-once rebuilds from a fresh Electron download
+                # instead of silently shipping the broken exe.
+                verified_executable, rolled_back = _ensure_desktop_exe_launchable(
+                    desktop_dir, packaged_executable
+                )
+                if packaged_executable is not None and (
+                    rolled_back or verified_executable is None
+                ):
+                    sys.exit(1)
+                packaged_executable = verified_executable
+
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
@@ -6281,7 +6663,7 @@ def _find_stale_dashboard_pids(
             result = subprocess.run(
                 ["ps", "-A", "-o", "pid=,command="],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -6570,7 +6952,7 @@ def _restart_managed_dashboard_service(
         return subprocess.run(
             ["systemctl", *args],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
         )
 
@@ -6634,7 +7016,7 @@ def _restart_managed_dashboard_service(
             result = subprocess.run(
                 list(command),
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=60,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
@@ -6723,7 +7105,7 @@ def _kill_stale_dashboard_processes(
                 result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=10,
                 )
                 if result.returncode == 0:
@@ -6998,6 +7380,11 @@ def _update_via_zip(args):
             )
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
+        if result.get("relocated"):
+            print(
+                f"  → {len(result['relocated'])} moved to new upstream paths: "
+                f"{', '.join(result['relocated'])}"
+            )
         if not result["copied"] and not result.get("updated"):
             print("  ✓ Skills are up to date")
     except Exception:
@@ -7012,6 +7399,66 @@ def _update_via_zip(args):
             print("  ✓ Model catalog cache refreshed from checkout")
     except Exception as e:
         logger.debug("Model catalog seed during zip update failed: %s", e)
+
+    # ── Post-update state.db integrity guard (#68474) ─────────────────
+    # Same as the git-pull path: verify state.db survived the ZIP update
+    # and auto-restore from the most recent pre-update snapshot if needed.
+    try:
+        from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
+
+        _state_path = get_hermes_home() / "state.db"
+        if _state_path.exists():
+            _state_ok = verify_sqlite_integrity(
+                _state_path, check_header=True, run_pragma=True
+            )
+            if not _state_ok.get("valid"):
+                print()
+                print(
+                    "⚠ state.db is corrupted after update: "
+                    + _state_ok.get("message", "unknown error")
+                )
+                _snap_root = _quick_snapshot_root(get_hermes_home())
+                if _snap_root.exists():
+                    _snap_dirs = sorted(
+                        (d for d in _snap_root.iterdir() if d.is_dir()),
+                        reverse=True,
+                    )
+                    for _snap_dir in _snap_dirs:
+                        _snap_state = _snap_dir / "state.db"
+                        if _snap_state.exists():
+                            _snap_ok = verify_sqlite_integrity(
+                                _snap_state, check_header=True, run_pragma=True
+                            )
+                            if _snap_ok.get("valid"):
+                                try:
+                                    import shutil as _shutil
+
+                                    _shutil.copy2(_snap_state, _state_path)
+                                    _restored_ok = verify_sqlite_integrity(
+                                        _state_path,
+                                        check_header=True,
+                                        run_pragma=True,
+                                    )
+                                    if _restored_ok.get("valid"):
+                                        print(
+                                            "  ✓ Auto-restored from snapshot "
+                                            f"{_snap_dir.name}"
+                                        )
+                                    else:
+                                        print(
+                                            "  ✗ Auto-restore FAILED — restored "
+                                            "copy also failed integrity"
+                                        )
+                                    break
+                                except OSError as _exc:
+                                    print(
+                                        f"  ✗ Auto-restore file copy failed: {_exc}"
+                                    )
+                                    break
+    except Exception as exc:
+        logger.debug(
+            "Post-update state.db integrity check (zip path) failed: %s", exc
+        )
 
     print()
     if node_failures:
@@ -7046,7 +7493,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["status", "--porcelain"],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         check=True,
     )
     if not status.stdout.strip():
@@ -7060,7 +7507,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["ls-files", "--unmerged"],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
@@ -7076,13 +7523,13 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
     push = subprocess.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     if push.stdout.strip():
         print(push.stdout.strip())
@@ -7090,7 +7537,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     stash_ref = stash_probe.stdout.strip()
     stash_created = (
@@ -7148,7 +7595,7 @@ def _resolve_stash_selector(
         git_cmd + ["stash", "list", "--format=%gd %H"],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         check=True,
     )
     for line in stash_list.stdout.splitlines():
@@ -7233,7 +7680,7 @@ def _restore_stashed_changes(
         git_cmd + ["stash", "apply", stash_ref],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
@@ -7241,7 +7688,7 @@ def _restore_stashed_changes(
         git_cmd + ["diff", "--name-only", "--diff-filter=U"],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     has_conflicts = bool(unmerged.stdout.strip())
 
@@ -7303,7 +7750,7 @@ def _restore_stashed_changes(
             git_cmd + ["stash", "drop", stash_selector],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if drop.returncode != 0:
             print(
@@ -7355,7 +7802,7 @@ def _discard_stashed_changes(
         git_cmd + ["stash", "drop", stash_selector],
         cwd=cwd,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     if drop.returncode != 0:
         print(
@@ -7392,7 +7839,7 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
             git_cmd + ["remote", "get-url", "origin"],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -7425,7 +7872,7 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             git_cmd + ["remote", "get-url", "upstream"],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         return result.returncode == 0
     except Exception:
@@ -7439,7 +7886,7 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
             git_cmd + ["remote", "add", "upstream", OFFICIAL_REPO_URL],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         return result.returncode == 0
     except Exception:
@@ -7453,7 +7900,7 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
             git_cmd + ["rev-list", "--count", f"{base}..{head}"],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
@@ -7489,7 +7936,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
             git_cmd + ["push", "origin", "main", "--force-with-lease"],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         return result.returncode == 0
     except Exception:
@@ -8514,6 +8961,7 @@ def _detect_broken_lazy_refresh_imports(
         f"    ({mod!r}, {attr!r})," for mod, attr in _LAZY_REFRESH_IMPORT_PROBES
     )
     check_script = (
+        "import os\n"
         "import sys\n"
         "probes = [\n"
         f"{probe_lines}\n"
@@ -8524,6 +8972,13 @@ def _detect_broken_lazy_refresh_imports(
         "        imported = __import__(mod)\n"
         "        if not hasattr(imported, attr):\n"
         "            broken.append(mod)\n"
+        "        elif mod == 'certifi':\n"
+        "            # The module can import cleanly while cacert.pem is\n"
+        "            # missing/corrupt (brew Python upgrade, interrupted venv\n"
+        "            # rebuild) - every TLS call then fails (#29866).\n"
+        "            bundle = imported.where()\n"
+        "            if not os.path.isfile(bundle) or os.path.getsize(bundle) < 1024:\n"
+        "                broken.append(mod)\n"
         "    except Exception:\n"
         "        broken.append(mod)\n"
         "print('\\n'.join(broken))\n"
@@ -8532,7 +8987,7 @@ def _detect_broken_lazy_refresh_imports(
         result = subprocess.run(
             [str(venv_python), "-c", check_script],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
             env=env,
         )
@@ -8991,7 +9446,7 @@ def _verify_core_dependencies_installed(
             result = subprocess.run(
                 [str(venv_python), "-c", check_script, *applicable],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 check=False,
                 env=env,
             )
@@ -9713,7 +10168,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["rev-parse", "--is-shallow-repository"],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
         == "true"
     )
@@ -9725,7 +10180,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
@@ -9734,7 +10189,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
             )
             upstream_exists = False
             compare_branch = f"origin/{branch}"
@@ -9748,7 +10203,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         upstream_exists = False
         compare_branch = f"origin/{branch}"
@@ -9773,7 +10228,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
         cwd=PROJECT_ROOT,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
@@ -9784,11 +10239,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # report presence-only (mirrors the banner's _check_via_local_git).
         head_sha = subprocess.run(
             git_cmd + ["rev-parse", "HEAD"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
         target_sha = subprocess.run(
             git_cmd + ["rev-parse", compare_branch],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
+            cwd=PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
         if head_sha and target_sha and head_sha == target_sha:
             print("✓ Already up to date.")
@@ -9803,7 +10258,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
         cwd=PROJECT_ROOT,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         check=True,
     )
     behind = int(rev_result.stdout.strip())
@@ -9864,7 +10319,7 @@ def _ensure_fhs_path_guard() -> None:
                 "command -v hermes",
             ],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -9882,7 +10337,7 @@ def _ensure_fhs_path_guard() -> None:
         if not cfg.is_file():
             continue
         try:
-            existing = cfg.read_text(errors="replace")
+            existing = cfg.read_text(errors="replace", encoding="utf-8")
         except OSError:
             continue
         # Idempotency: skip if any uncommented PATH= line already references
@@ -9905,6 +10360,19 @@ def _ensure_fhs_path_guard() -> None:
         wrote_any = True
     if wrote_any:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
+
+
+def _size_delta_label(saved_mb: float) -> str:
+    """Human label for a before/after database size delta, in MB.
+
+    A negative delta means the file GREW — concurrent session writes during a
+    long optimize can outweigh what the rebuild freed. Printing
+    "reclaimed -163.0 MB" for that reads as data loss, so say "grew by"
+    instead.
+    """
+    if saved_mb >= 0:
+        return f"reclaimed {saved_mb:.1f} MB"
+    return f"grew by {-saved_mb:.1f} MB"
 
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
@@ -9996,13 +10464,67 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     snapshot_id = None
     try:
-        from hermes_cli.backup import create_quick_snapshot
+        from hermes_cli.backup import (
+            _quick_snapshot_root,
+            create_quick_snapshot,
+            verify_sqlite_integrity,
+        )
+
+        # NOTE: this function later does `from hermes_constants import
+        # get_hermes_home`, which makes the name function-local — the
+        # module-level import is shadowed and unbound here. Alias explicitly.
+        from hermes_cli.config import get_hermes_home as _get_home
 
         snapshot_id = create_quick_snapshot(
             label="pre-update",
             keep=_PRE_UPDATE_SNAPSHOT_KEEP,
             max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
+
+        # After the snapshot, verify the source state.db is still intact.
+        # The snapshot was taken via _safe_copy_db (read-only SQLite backup
+        # API), but a concurrent process (antivirus, force-killed gateway
+        # releasing file handles, Windows filter driver) can corrupt the live
+        # file at any point. A silent zeroing at this point would proceed with
+        # the update and exit code 0 — exactly the #68474 symptom.
+        if snapshot_id:
+            _src_path = _get_home() / "state.db"
+            if _src_path.exists():
+                _integrity = verify_sqlite_integrity(
+                    _src_path,
+                    check_header=True,
+                    run_pragma=True,
+                    max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+                )
+                if not _integrity.get("valid"):
+                    _msg = _integrity.get("message", "unknown error")
+                    print(
+                        f"  ⚠ state.db integrity check FAILED after snapshot: {_msg}"
+                    )
+                    # Check if the snapshot itself is valid.
+                    _snap_root = _quick_snapshot_root(_get_home())
+                    _snap_state = _snap_root / snapshot_id / "state.db"
+                    if _snap_state.exists():
+                        _snap_ok = verify_sqlite_integrity(
+                            _snap_state, check_header=True, run_pragma=True
+                        )
+                        if _snap_ok.get("valid"):
+                            print(
+                                "  ✓ Snapshot copy is valid — continuing update."
+                            )
+                            print(
+                                "    If state.db is lost after update it will be auto-restored."
+                            )
+                        else:
+                            print(
+                                "  ✗ Snapshot copy ALSO failed integrity — "
+                                "the source was already corrupted before the backup."
+                            )
+                    else:
+                        print(
+                            "  ⚠ Snapshot does not contain state.db (was skipped or too large)."
+                        )
+                    print()
         if snapshot_id:
             print(f"◆ Pre-update snapshot: {snapshot_id}")
     except Exception as exc:
@@ -10188,7 +10710,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
         result = subprocess.run(
             [str(venv_python), "-c", check],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=60,
             cwd=PROJECT_ROOT,
         )
@@ -10631,7 +11153,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             git_cmd + ["diff", "--name-only"],
             cwd=repo_root,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if diff.returncode != 0:
             return
@@ -10652,7 +11174,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
             git_cmd + ["checkout", "--", *dirty],
             cwd=repo_root,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=False,
         )
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
@@ -10877,7 +11399,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
@@ -10901,7 +11423,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=True,
         )
         current_branch = result.stdout.strip()
@@ -10924,7 +11446,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
             )
             if checkout_result.returncode != 0:
                 # Local checkout doesn't have this branch yet. Try to set
@@ -10935,7 +11457,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                 )
                 if track_result.returncode != 0:
                     # Restore the user's prior branch + stash before bailing
@@ -10966,7 +11488,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=True,
         )
         commit_count = int(result.stdout.strip())
@@ -10992,9 +11514,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     check=False,
                 )
+
+            # "No new commits" does not mean the managed interpreter is safe.
+            # uv can retain the same CPython patch while python-build-standalone
+            # refreshes the embedded SQLite underneath it. Keep the existing
+            # update-boundary hook active on this retry path too.
+            from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+            runtime_repairs = []
+            update_managed_uv(repair_observer=runtime_repairs.append)
+            ensure_uv(repair_observer=runtime_repairs.append)
+            runtime_repaired = next(
+                (result for result in runtime_repairs if result.repaired),
+                None,
+            )
 
             # A current checkout does NOT imply a healthy install: a previous
             # dependency sync may have failed partway (classic on Windows,
@@ -11046,6 +11582,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
                 print("✓ Already up to date!")
+            if runtime_repaired is not None and not _is_windows():
+                print()
+                print(
+                    "⚠ Restart required to finish the managed Python runtime repair."
+                )
+                print(
+                    "  Any running Hermes gateways, Desktop backends, or other "
+                    "long-lived processes still use the previous runtime."
+                )
+                print(
+                    "  Restart each of them before removing the parked venv"
+                    + (
+                        f": {runtime_repaired.backup_venv}"
+                        if runtime_repaired.backup_venv is not None
+                        else "."
+                    )
+                )
             _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
@@ -11064,7 +11617,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 git_cmd + ["pull", "--ff-only", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
@@ -11077,7 +11630,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                 )
                 if reset_result.returncode != 0:
                     print(f"✗ Failed to reset to origin/{branch}.")
@@ -11113,7 +11666,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         git_cmd + ["reset", "--hard", pre_pull_sha],
                         cwd=PROJECT_ROOT,
                         capture_output=True,
-                        text=True,
+                        text=True, encoding="utf-8", errors="replace",
                     )
                     if rollback_result.returncode == 0:
                         print("  ✓ Rollback complete — your install is unchanged.")
@@ -11306,6 +11859,81 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
         print("✓ Code updated!")
 
+        # ── Post-update state.db integrity guard (#68474) ─────────────────
+        # Verify that state.db survived the update intact.  If the live file
+        # is now corrupted (zeroed, missing header, integrity failure),
+        # automatically restore from the pre-update snapshot rather than
+        # letting the user discover silently that their sessions are gone.
+        try:
+            from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
+
+            _state_path = get_hermes_home() / "state.db"
+            if _state_path.exists():
+                _state_ok = verify_sqlite_integrity(
+                    _state_path,
+                    check_header=True,
+                    run_pragma=True,
+                )
+                if _state_ok.get("valid"):
+                    logger.debug(
+                        "Post-update state.db integrity check: %s",
+                        _state_ok.get("message"),
+                    )
+                else:
+                    print()
+                    print(
+                        "⚠ state.db is corrupted after update: "
+                        + _state_ok.get("message", "unknown error")
+                    )
+                    _pre_snap_id = pre_update_snapshot_id
+                    if _pre_snap_id:
+                        _snap_state = (
+                            _quick_snapshot_root(get_hermes_home())
+                            / _pre_snap_id
+                            / "state.db"
+                        )
+                        if _snap_state.exists():
+                            _snap_ok = verify_sqlite_integrity(
+                                _snap_state, check_header=True, run_pragma=True
+                            )
+                            if _snap_ok.get("valid"):
+                                try:
+                                    import shutil as _shutil
+
+                                    _shutil.copy2(_snap_state, _state_path)
+                                    _restored_ok = verify_sqlite_integrity(
+                                        _state_path,
+                                        check_header=True,
+                                        run_pragma=True,
+                                    )
+                                    if _restored_ok.get("valid"):
+                                        print(
+                                            "  ✓ Auto-restored from pre-update "
+                                            f"snapshot ({_pre_snap_id})"
+                                        )
+                                    else:
+                                        print(
+                                            "  ✗ Auto-restore FAILED — restored "
+                                            "copy also failed integrity"
+                                        )
+                                except OSError as _exc:
+                                    print(
+                                        f"  ✗ Auto-restore file copy failed: {_exc}"
+                                    )
+                            else:
+                                print(
+                                    "  ✗ Pre-update snapshot also failed integrity"
+                                )
+                        else:
+                            print(
+                                "  ⚠ Pre-update snapshot does not contain state.db"
+                            )
+                    else:
+                        print("  ⚠ No pre-update snapshot was taken")
+                    print()
+        except Exception as exc:
+            logger.debug("Post-update state.db integrity check failed: %s", exc)
+
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at
         # website/static/api/model-catalog.json, and `git pull` just made it
@@ -11355,6 +11983,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
+            if result.get("relocated"):
+                print(
+                    f"  → {len(result['relocated'])} moved to new upstream paths: "
+                    f"{', '.join(result['relocated'])}"
+                )
             if not result["copied"] and not result.get("updated"):
                 print("  ✓ Skills are up to date")
         except Exception as e:
@@ -11667,7 +12300,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
             try:
-                _exit_code_path.write_text("0")
+                _exit_code_path.write_text("0", encoding="utf-8")
             except OSError:
                 pass
 
@@ -11708,7 +12341,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         _verify = subprocess.run(
                             scope_cmd_ + ["is-active", svc_name_],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=5,
                         )
                         if _verify.stdout.strip() == "active":
@@ -11742,7 +12375,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             "--value",
                         ],
                         capture_output=True,
-                        text=True,
+                        text=True, encoding="utf-8", errors="replace",
                         timeout=5,
                     )
                 except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -11891,7 +12524,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 "--no-pager",
                             ],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=10,
                         )
                     except FileNotFoundError:
@@ -11910,7 +12543,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         check = subprocess.run(
                             scope_cmd + ["is-active", svc_name],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=5,
                         )
                         if check.stdout.strip() != "active":
@@ -11943,7 +12576,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     "--value",
                                 ],
                                 capture_output=True,
-                                text=True,
+                                text=True, encoding="utf-8", errors="replace",
                                 timeout=5,
                             )
                             _main_pid = int((_show.stdout or "").strip() or 0)
@@ -11996,13 +12629,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 subprocess.run(
                                     _manage_cmd + ["reset-failed", svc_name],
                                     capture_output=True,
-                                    text=True,
+                                    text=True, encoding="utf-8", errors="replace",
                                     timeout=10,
                                 )
                                 subprocess.run(
                                     _manage_cmd + ["start", svc_name],
                                     capture_output=True,
-                                    text=True,
+                                    text=True, encoding="utf-8", errors="replace",
                                     timeout=15,
                                 )
                                 # Short poll: the gateway should be up
@@ -12086,13 +12719,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         subprocess.run(
                             _manage_cmd + ["reset-failed", svc_name],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=10,
                         )
                         restart = subprocess.run(
                             _manage_cmd + ["restart", svc_name],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=15,
                         )
                         if restart.returncode == 0:
@@ -12118,13 +12751,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 subprocess.run(
                                     _manage_cmd + ["reset-failed", svc_name],
                                     capture_output=True,
-                                    text=True,
+                                    text=True, encoding="utf-8", errors="replace",
                                     timeout=10,
                                 )
                                 subprocess.run(
                                     _manage_cmd + ["restart", svc_name],
                                     capture_output=True,
-                                    text=True,
+                                    text=True, encoding="utf-8", errors="replace",
                                     timeout=15,
                                 )
                                 if _wait_for_service_active(
@@ -12182,7 +12815,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         check = subprocess.run(
                             ["launchctl", "list", get_launchd_label()],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding="utf-8", errors="replace",
                             timeout=5,
                         )
                         if check.returncode == 0:
@@ -12297,7 +12930,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if gateway_mode:
                     _exit_code_path = get_hermes_home() / ".update_exit_code"
                     try:
-                        _exit_code_path.write_text("1")
+                        _exit_code_path.write_text("1", encoding="utf-8")
                     except OSError:
                         pass
             _warn_incomplete_gateway_fleet_restart(failed_or_stale_units)
@@ -13119,7 +13752,11 @@ def _render_distribution_plan(plan) -> None:
                 env_path = plan.target_dir / ".env"
                 if env_path.is_file():
                     try:
-                        for raw in env_path.read_text().splitlines():
+                        # .env is written as UTF-8 everywhere in the codebase,
+                        # but a Notepad-edited file can carry a BOM — read as
+                        # utf-8-sig so the first key isn't hidden behind
+                        # U+FEFF (#62617).
+                        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
                             line = raw.strip()
                             if not line or line.startswith("#"):
                                 continue
@@ -13127,7 +13764,10 @@ def _render_distribution_plan(plan) -> None:
                             if key == er.name:
                                 already = True
                                 break
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
+                        # UnicodeDecodeError is a ValueError, not an OSError, so
+                        # the old guard let a mis-encoded .env abort the whole
+                        # install preview. Skip the pre-check instead.
                         pass
             status = "✓ set" if already else ("needs setting" if er.required else "—")
             line = f"    • {er.name} ({tag}, {status})"
@@ -13846,7 +14486,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "egress", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "pairing", "pets", "plugins", "portal", "profile",
@@ -14490,6 +15130,37 @@ def main():
     secrets_parser.set_defaults(func=_dispatch_secrets)
 
     # =========================================================================
+    # egress command — iron-proxy outbound credential-injection firewall
+    # =========================================================================
+    # NOTE: this is the OUTBOUND egress firewall (ironsh/iron-proxy).
+    # `hermes proxy` (defined elsewhere in this file) is a separate INBOUND
+    # OAuth-aggregator reverse proxy.  Different direction, different purpose.
+    egress_parser = subparsers.add_parser(
+        "egress",
+        help="Manage the iron-proxy egress credential-injection firewall",
+        description=(
+            "Manage iron-proxy, the optional TLS-intercepting egress firewall "
+            "that swaps proxy tokens for real API credentials before outbound "
+            "requests leave a sandbox.  Disabled by default.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/egress/iron-proxy"
+        ),
+    )
+
+    from hermes_cli import proxy_cli as _proxy_cli
+    _proxy_cli.register_cli(egress_parser)
+
+    def _dispatch_egress(args):  # noqa: ANN001
+        # The egress subparser uses dest='egress_command' to stay disjoint
+        # from the inbound OAuth ``hermes proxy`` subparser (dest='proxy_command').
+        sub = getattr(args, "egress_command", None)
+        if sub is not None and hasattr(args, "func") and args.func is not _dispatch_egress:
+            return args.func(args)
+        egress_parser.print_help()
+        return 0
+
+    egress_parser.set_defaults(func=_dispatch_egress)
+
+    # =========================================================================
     # migrate command
     # =========================================================================
     from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
@@ -14976,7 +15647,7 @@ def main():
                     from hermes_cli.tools_config import _cua_driver_env
                     version = subprocess.run(
                         [path, "--version"],
-                        capture_output=True, text=True, timeout=5,
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
                         env=_cua_driver_env(),
                     ).stdout.strip()
                 except Exception:
@@ -15341,6 +16012,58 @@ def main():
         help="Skip the timestamped backup copy (not recommended)",
     )
 
+    sessions_recover = sessions_subparsers.add_parser(
+        "recover",
+        help="Rebuild canonical session data into a separate clean database",
+        description=(
+            "Offline, non-destructive recovery for a damaged state.db. The "
+            "source database and its WAL/SHM/rollback-journal sidecars are "
+            "copied before SQLite opens anything. Canonical rows are rebuilt "
+            "into a new output database; derived search indexes are recreated "
+            "and the active database is never replaced automatically."
+        ),
+    )
+    sessions_recover.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="Source state.db or preserved backup to inspect/recover",
+    )
+    sessions_recover.add_argument(
+        "--output",
+        type=Path,
+        help="New recovery database path (required unless --inspect-only)",
+    )
+    sessions_recover.add_argument(
+        "--inspect-only",
+        action="store_true",
+        help="Only report canonical table readability; do not create an output database",
+    )
+    sessions_recover.add_argument(
+        "--work-dir",
+        type=Path,
+        help="Existing directory for the disposable source copy (defaults beside the output)",
+    )
+    sessions_recover.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1000,
+        help="Rows committed per recovery batch (default: 1000)",
+    )
+    sessions_recover.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help=(
+            "Best-effort salvage across damaged row ranges; the output remains "
+            "separate and every skipped range is recorded"
+        ),
+    )
+    sessions_recover.add_argument(
+        "--report",
+        type=Path,
+        help="JSON report path (defaults to <output>.recovery.json)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -15348,6 +16071,29 @@ def main():
     )
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+
+    sessions_retitle = sessions_subparsers.add_parser(
+        "retitle-skills",
+        help="Re-title sessions whose auto-title came from a /skill's own text",
+        description=(
+            "Sessions opened with a /skill were auto-titled from the expanded "
+            "message, which embeds the whole skill body — so the title "
+            "describes the SKILL, not the request. This regenerates those "
+            "titles from what the user actually typed. Lists what it would "
+            "change unless --apply is passed."
+        ),
+    )
+    sessions_retitle.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the new titles (default: dry run)",
+    )
+    sessions_retitle.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum sessions to examine (default: 200)",
+    )
 
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
@@ -15372,9 +16118,10 @@ def main():
 
         action = args.sessions_action
 
-        # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
-        # exactly the case where SessionDB() can't open, so it operates on the
-        # raw file path instead.
+        # 'repair' and 'recover' must run BEFORE opening SessionDB(): a
+        # malformed schema is exactly the case where SessionDB() can't open.
+        # Recovery additionally promises never to open the supplied source
+        # directly, so it operates through its own disposable source copy.
         if action == "repair":
             from hermes_state import (
                 DEFAULT_DB_PATH,
@@ -15415,7 +16162,125 @@ def main():
                 if report.get("backup_path"):
                     print(f"  A backup is preserved at: {report['backup_path']}")
                 print("  Keep state.db and the backup; do not delete them.")
+                # Without this pointer the user is at a dead end: in-place
+                # repair has failed and nothing tells them the non-destructive
+                # offline recovery path exists. Lead with --inspect-only so
+                # they confirm the data is readable before writing anything.
+                print("")
+                print("  Next step — offline recovery (never modifies the source):")
+                source_hint = report.get("backup_path") or db_path
+                print(f"    hermes sessions recover --source {source_hint} \\")
+                print("        --inspect-only")
+                print("  If that reports the data is recoverable, rebuild it into")
+                print("  a NEW database (the active one is left untouched):")
+                print(f"    hermes sessions recover --source {source_hint} \\")
+                print("        --output recovered-state.db")
             return
+
+        if action == "recover":
+            import sqlite3 as _sqlite3
+
+            from hermes_cli.session_recovery import (
+                SessionRecoveryError,
+                inspect_session_database,
+                recover_session_database,
+                write_recovery_report,
+            )
+
+            source = args.source
+            output = getattr(args, "output", None)
+            inspect_only = bool(getattr(args, "inspect_only", False))
+            allow_partial = bool(getattr(args, "allow_partial", False))
+            report_path = getattr(args, "report", None)
+            if inspect_only and output is not None:
+                print("Error: --output cannot be used with --inspect-only.")
+                return 2
+            if inspect_only and allow_partial:
+                print("Error: --allow-partial cannot be used with --inspect-only.")
+                return 2
+            if not inspect_only and output is None:
+                print("Error: --output is required unless --inspect-only is used.")
+                return 2
+            if not inspect_only and report_path is None:
+                report_path = output.with_name(output.name + ".recovery.json")
+            if (
+                report_path is not None
+                and os.path.lexists(report_path.expanduser())
+            ):
+                print(f"Error: refusing to overwrite existing report: {report_path}")
+                return 2
+
+            try:
+                if inspect_only:
+                    report = inspect_session_database(
+                        source,
+                        work_dir=getattr(args, "work_dir", None),
+                    )
+                else:
+                    last_progress = {"table": None}
+
+                    def _recovery_progress(info):
+                        table = info.get("table")
+                        copied = int(info.get("copied_rows") or 0)
+                        total = info.get("source_rows")
+                        if table != last_progress["table"]:
+                            if last_progress["table"] is not None:
+                                print()
+                            print(f"  {table}: ", end="", flush=True)
+                            last_progress["table"] = table
+                        suffix = f"/{int(total):,}" if total is not None else ""
+                        print(f"\r  {table}: {copied:,}{suffix}", end="", flush=True)
+
+                    print("Recovering canonical session data into a new database…")
+                    report = recover_session_database(
+                        source,
+                        output,
+                        work_dir=getattr(args, "work_dir", None),
+                        chunk_size=getattr(args, "chunk_size", 1000),
+                        progress_cb=_recovery_progress,
+                        allow_partial=allow_partial,
+                    )
+                    if last_progress["table"] is not None:
+                        print()
+            except (SessionRecoveryError, OSError, _sqlite3.DatabaseError) as exc:
+                print(f"Error: session recovery failed: {exc}")
+                print("The supplied source database was not replaced or deleted.")
+                return 1
+
+            if report_path is not None:
+                try:
+                    written_report = write_recovery_report(report_path, report)
+                except (FileExistsError, OSError) as exc:
+                    print(f"Error: could not write recovery report: {exc}")
+                    return 1
+                print(f"Recovery report: {written_report}")
+            else:
+                print(_json.dumps(report, indent=2, sort_keys=True))
+
+            if inspect_only:
+                return 0 if report.get("recoverable") else 1
+            if report.get("complete"):
+                print(f"✓ Recovered database verified at: {output}")
+                print("  The active session database was not changed.")
+                print("  Review the JSON report before installing this database.")
+                return 0
+            if allow_partial and report.get("verified"):
+                counts = report.get("verification", {}).get("table_counts", {})
+                print(f"✓ Partial recovery output verified at: {output}")
+                print(
+                    "  Recovered "
+                    f"{int(counts.get('sessions') or 0):,} sessions and "
+                    f"{int(counts.get('messages') or 0):,} messages."
+                )
+                print("  The active session database was not changed.")
+                print(
+                    "  This output is incomplete. Review every skipped range "
+                    "and orphan count in the JSON report before installing it."
+                )
+                return 0
+            print("✗ Recovery output did not pass every verification check.")
+            print("  Do not install it. Review the JSON report for partial data or errors.")
+            return 1
 
         try:
             from hermes_state import SessionDB
@@ -15820,10 +16685,10 @@ def main():
                 return
             output_dir = Path(args.output).expanduser() if args.output else get_hermes_home() / "session-exports"
 
-            def _export_one(session_id: str):
+            def _export_one(session_id: str, *, include_lineage: bool = False):
                 data = (
                     db.export_session_lineage(session_id)
-                    if getattr(args, "lineage", "single") == "logical"
+                    if include_lineage
                     else db.export_session(session_id)
                 )
                 if not data:
@@ -15847,36 +16712,93 @@ def main():
                 db.close()
                 return
 
+            lineage_is_logical = getattr(args, "lineage", "single") == "logical"
+
             if args.session_id:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
                     print(f"Session '{args.session_id}' not found.")
                     db.close()
                     return
-                try:
-                    data, exported_path = _export_one(resolved_session_id)
-                except FileExistsError as e:
-                    print(f"Export already exists: {e}. Pass --force to overwrite.")
-                    db.close()
-                    return
-                if not data or not exported_path:
-                    print(f"Session '{args.session_id}' not found.")
-                    db.close()
-                    return
-                message_count = len(data.get("messages") or [])
-                suffix = "" if message_count == 1 else "s"
-                print(f"Exported 1 session ({message_count} message{suffix}) to {exported_path}")
+                delete_target_ids = [resolved_session_id]
                 if args.delete_after_verified:
-                    ok, reason = verify_export_file(exported_path, data)
-                    if not ok:
-                        print(f"Export verification failed; not deleting: {reason}")
+                    delete_target_ids = db.get_session_delete_targets(
+                        resolved_session_id
+                    )
+
+                exported_items = []
+                for target_id in delete_target_ids:
+                    try:
+                        data, exported_path = _export_one(
+                            target_id,
+                            include_lineage=(
+                                target_id == resolved_session_id
+                                and lineage_is_logical
+                            ),
+                        )
+                    except FileExistsError as e:
+                        print(
+                            f"Export already exists: {e}. "
+                            "Pass --force to overwrite."
+                        )
                         db.close()
                         return
+                    if not data or not exported_path:
+                        print(
+                            f"Session '{target_id}' disappeared during export; "
+                            "nothing was deleted."
+                        )
+                        db.close()
+                        return
+                    exported_items.append((data, exported_path))
+
+                message_count = sum(
+                    len(data.get("messages") or [])
+                    for data, _path in exported_items
+                )
+                suffix = "" if message_count == 1 else "s"
+                if len(exported_items) == 1:
+                    print(
+                        f"Exported 1 session ({message_count} message{suffix}) "
+                        f"to {exported_items[0][1]}"
+                    )
+                else:
+                    print(
+                        f"Exported {len(exported_items)} sessions "
+                        f"({message_count} message{suffix}) to {output_dir}"
+                    )
+                if args.delete_after_verified:
+                    for data, exported_path in exported_items:
+                        ok, reason = verify_export_file(exported_path, data)
+                        if not ok:
+                            print(
+                                "Export verification failed; not deleting "
+                                f"session '{data.get('id')}': {reason}"
+                            )
+                            db.close()
+                            return
                     sessions_dir = get_hermes_home() / "sessions"
-                    if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
-                        print(f"Deleted exported session '{resolved_session_id}'.")
+                    if db.delete_session(
+                        resolved_session_id,
+                        sessions_dir=sessions_dir,
+                        expected_delete_ids=delete_target_ids,
+                    ):
+                        delegate_count = len(delete_target_ids) - 1
+                        delegate_suffix = (
+                            ""
+                            if not delegate_count
+                            else f" and {delegate_count} delegate session"
+                            f"{'' if delegate_count == 1 else 's'}"
+                        )
+                        print(
+                            f"Deleted exported session '{resolved_session_id}'"
+                            f"{delegate_suffix}."
+                        )
                     else:
-                        print(f"Exported, but session '{resolved_session_id}' was not deleted because it was not found.")
+                        print(
+                            f"Exported, but session '{resolved_session_id}' was "
+                            "not deleted because its delegate set changed."
+                        )
                 db.close()
                 return
 
@@ -15902,7 +16824,10 @@ def main():
             exported = 0
             for row in candidates:
                 try:
-                    data, exported_path = _export_one(row["id"])
+                    data, exported_path = _export_one(
+                        row["id"],
+                        include_lineage=lineage_is_logical,
+                    )
                 except FileExistsError as e:
                     print(f"Skipping existing export: {e}. Pass --force to overwrite.")
                     continue
@@ -16050,6 +16975,67 @@ def main():
             except ValueError as e:
                 print(f"Error: {e}")
 
+        elif action == "retitle-skills":
+            from agent.skill_commands import describe_skill_invocation
+            from agent.title_generator import generate_title
+
+            limit = max(1, int(getattr(args, "limit", 200) or 200))
+            apply_changes = bool(getattr(args, "apply", False))
+
+            def _is_titlelike(candidate: str) -> bool:
+                """Reject a candidate that isn't a title at all.
+
+                An auxiliary model occasionally answers the prompt instead of
+                titling it and echoes the assistant's output ('$ df -h /'). The
+                live path has no alternative and takes what it gets, but this is
+                a REPAIR — replacing a serviceable title with command output
+                would make things worse, so keep the old one.
+                """
+                return bool(candidate) and candidate[0].isalnum()
+
+            candidates = db.list_skill_scaffolded_sessions(limit=limit)
+            if not candidates:
+                print("No sessions were titled from a /skill invocation.")
+                return
+
+            print(
+                f"{len(candidates)} session(s) opened with a /skill"
+                f"{'' if apply_changes else ' (dry run — pass --apply to write)'}:"
+            )
+            changed = 0
+            for row in candidates:
+                session_id = row["id"]
+                typed = describe_skill_invocation(row["content"]) or ""
+                first_reply = db.get_first_assistant_text(session_id) or ""
+                new_title = generate_title(typed, first_reply)
+                if not new_title or new_title == row["title"]:
+                    continue
+                if not _is_titlelike(new_title):
+                    print(f"  {session_id}\n    kept {row['title']!r} — got {new_title!r}")
+                    continue
+                print(f"  {session_id}\n    {row['title']!r}\n    → {new_title!r}")
+                changed += 1
+                if not apply_changes:
+                    continue
+                try:
+                    db.set_session_title(session_id, new_title)
+                except ValueError:
+                    # Unique-title collision. Dedupe the same way the live
+                    # auto-titler does (base #2, base #3, ...) rather than
+                    # leaving the leaked title in place.
+                    deduped = db.get_next_title_in_lineage(new_title)
+                    try:
+                        db.set_session_title(session_id, deduped)
+                        print(f"    (renamed to {deduped!r} — title was taken)")
+                    except ValueError as e:
+                        print(f"    skipped: {e}")
+                        changed -= 1
+
+            if not changed:
+                print("  every title already reflects the user's request.")
+            elif apply_changes:
+                print(f"✓ Re-titled {changed} session(s).")
+
         elif action == "browse":
             limit = getattr(args, "limit", 500) or 500
             source = getattr(args, "source", None)
@@ -16095,11 +17081,18 @@ def main():
                 if db_path.exists()
                 else 0.0
             )
+            # Same WAL caveat as optimize-storage: after a VACUUM the main file
+            # on disk lags until the WAL is checkpointed back (refused while a
+            # live gateway holds a read-mark), so stat() understates the win and
+            # can go negative. SQLite's page accounting is correct immediately.
+            logical_after = db.logical_size_bytes()
+            if logical_after is not None:
+                after_mb = logical_after / (1024 * 1024)
             saved = before_mb - after_mb
             print(f"Optimized {n} FTS index(es).")
             print(
                 f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
-                f"(reclaimed {saved:.1f} MB)"
+                f"({_size_delta_label(saved)})"
             )
 
         elif action == "optimize-storage":
@@ -16182,11 +17175,21 @@ def main():
             after_mb = (
                 os.path.getsize(db_path) / (1024 * 1024) if db_path.exists() else 0.0
             )
+            # Prefer SQLite's own page accounting over stat(). In WAL mode a
+            # VACUUM's rewrite sits in the -wal file until a checkpoint folds it
+            # back, and that checkpoint is refused while another connection (a
+            # live gateway) holds a read-mark — so the main file on disk still
+            # reads at its pre-VACUUM size and keeps growing. stat()ing it here
+            # reported "reclaimed -3820.1 MB" on a DB that had actually shrunk
+            # 60%. page_count * page_size is correct immediately.
+            logical_after = db.logical_size_bytes()
+            if logical_after is not None:
+                after_mb = logical_after / (1024 * 1024)
             saved = before_mb - after_mb
             print(f"\n✓ Search index optimized.")
             print(
                 f"  Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
-                f"(reclaimed {saved:.1f} MB)"
+                f"({_size_delta_label(saved)})"
             )
             if result.get("vacuumed") is False:
                 print("  (VACUUM was skipped or failed — run "
@@ -16425,9 +17428,15 @@ def main():
         cmd_chat(args)
         return
 
-    # Execute the command
+    # Execute the command.  Propagate the handler's return code as the
+    # process exit code so subcommands that signal failure (e.g.
+    # ``hermes egress start`` refusing when credential_source=bitwarden
+    # is misconfigured) actually exit non-zero.  Handlers that return
+    # None are treated as success (exit 0).
     if hasattr(args, "func"):
-        args.func(args)
+        rc = args.func(args)
+        if isinstance(rc, int) and rc != 0:
+            sys.exit(rc)
     else:
         parser.print_help()
 

@@ -319,6 +319,7 @@ export function PreviewPane({
     return () => setTitlebarToolGroup(TITLEBAR_GROUP_ID, [])
   }, [consoleOpen, consoleState, copy, devtoolsOpen, isWebPreview, setTitlebarToolGroup, toggleDevTools])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!consoleOpen) {
       return
@@ -334,6 +335,7 @@ export function PreviewPane({
     return () => window.cancelAnimationFrame(handle)
   }, [consoleOpen])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (
       !previewServerRestart ||
@@ -392,6 +394,7 @@ export function PreviewPane({
     return () => window.clearTimeout(timer)
   }, [copy.stillWorking, previewServerRestart, restartingServer])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (reloadRequest === lastReloadRequestRef.current) {
       return
@@ -498,6 +501,7 @@ export function PreviewPane({
     }
   }, [appendConsoleEntry, copy, reloadPreview, target.kind, target.url])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
 

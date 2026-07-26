@@ -155,6 +155,16 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
         loop_processed_expiry.set()
 
 
+async def _first_completed(*futures: "asyncio.Future") -> None:
+    """Return when the first of ``futures`` completes.
+
+    Used by the strict cold-start readiness gate to wait on "progress OR
+    polling error", whichever fires first (#67498). Does not cancel the
+    losers — the caller owns their lifecycle.
+    """
+    await asyncio.wait(set(futures), return_when=asyncio.FIRST_COMPLETED)
+
+
 async def _run_abandon_cleanup(on_abandon) -> None:
     """Run the abandonment cleanup coroutine, swallowing any failure.
 
@@ -355,7 +365,7 @@ def _probe_voice_duration_seconds(path: str) -> Optional[int]:
             proc = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "default=noprint_wrappers=1:nokey=1", path],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if proc.returncode == 0:
                 return _coerce_duration_seconds(proc.stdout.strip())
@@ -545,6 +555,10 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# Initial connect is not healthy until the dedicated getUpdates request completes
+# one successful round trip. Unlike reconnect, initial bootstrap must fail closed
+# so GatewayRunner disposes the partial adapter and retries with a fresh PTB app.
+_INITIAL_POLLING_PROGRESS_TIMEOUT = 60.0
 # shutdown()/initialize() on the getUpdates httpx request close and rebuild the
 # connection pool. When a connection is wedged on a stale CLOSE-WAIT socket that
 # close can block forever, hanging _drain_polling_connections() and freezing the
@@ -2129,8 +2143,17 @@ class TelegramAdapter(BasePlatformAdapter):
         *,
         drop_pending_updates: bool,
         error_callback,
-    ) -> None:
-        """Start one generation and verify real getUpdates progress."""
+        abandon_app_on_timeout: bool = False,
+        schedule_verifier: bool = True,
+    ) -> tuple[int, asyncio.Event]:
+        """Start one generation and verify real getUpdates progress.
+
+        Returns the ``(generation, progress_event)`` pair created for this
+        polling generation so callers that must gate on readiness (strict
+        cold start, #67498) can bind to exactly this generation instead of
+        re-reading ``self._polling_progress_event`` — which a concurrent
+        recovery task may have replaced with a newer generation's event.
+        """
         if getattr(self, "_polling_teardown_started", False):
             raise _PollingLifecycleAbort("Telegram polling teardown started")
         generation, progress = self._begin_polling_generation()
@@ -2151,13 +2174,22 @@ class TelegramAdapter(BasePlatformAdapter):
 
         context_token = _POLLING_GENERATION_CONTEXT.set(generation)
         try:
-            await asyncio.wait_for(
+            # asyncio.wait_for can wait forever for cancellation to escape
+            # httpcore/AnyIO shielded scopes (#58236/#67498). Reuse the
+            # proven wall-deadline helper and abandon the partial updater;
+            # caller recovery will dispose/rebuild the whole adapter.
+            await _await_with_thread_deadline(
                 app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=drop_pending_updates,
                     error_callback=_generation_error_callback,
                 ),
                 timeout=_UPDATER_START_TIMEOUT,
+                on_abandon=(
+                    (lambda app=app: _shutdown_abandoned_app(app))
+                    if abandon_app_on_timeout
+                    else None
+                ),
             )
         finally:
             _POLLING_GENERATION_CONTEXT.reset(context_token)
@@ -2165,7 +2197,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_progress_accepting = False
             self._send_path_degraded = True
             raise _PollingLifecycleAbort("Telegram polling teardown started")
-        self._schedule_polling_progress_verifier(generation, progress)
+        if schedule_verifier:
+            self._schedule_polling_progress_verifier(generation, progress)
+        return generation, progress
 
     def _schedule_polling_progress_verifier(
         self, generation: int, progress: asyncio.Event
@@ -2264,12 +2298,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._background_tasks.add(self._polling_error_task)
         self._polling_error_task.add_done_callback(self._background_tasks.discard)
 
-    async def _delete_webhook_best_effort(self) -> bool:
-        """Clear any stale webhook, but never fail polling on a network error.
+    async def _delete_webhook_best_effort(
+        self, *, require_success: bool = False
+    ) -> bool:
+        """Clear stale webhook, optionally failing closed on initial connect.
 
-        Returns True when the webhook was cleared (or there was nothing to do)
-        and False when a transient network error was swallowed so bootstrap can
-        continue to polling; the reconnect ladder recovers from there.
+        Reconnect can recover a transient error in background. Cold startup uses
+        ``require_success`` so GatewayRunner disposes the partial adapter and
+        retries with a fresh PTB Application instead of publishing degraded state.
         """
         if not self._bot:
             return False
@@ -2277,10 +2313,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not callable(delete_webhook):
             return True
         try:
-            await delete_webhook(drop_pending_updates=False)
+            # Same shielded-cancellation class as initialize/start_polling:
+            # never let a wedged duplicate deleteWebhook pin initial connect.
+            await _await_with_thread_deadline(
+                delete_webhook(drop_pending_updates=False),
+                timeout=_UPDATER_START_TIMEOUT,
+            )
             return True
         except Exception as err:
             if self._looks_like_network_error(err):
+                if require_success:
+                    raise OSError(
+                        "Telegram deleteWebhook did not complete during initial connect"
+                    ) from err
                 logger.warning(
                     "[%s] deleteWebhook failed with a recoverable network error; "
                     "continuing to polling so getUpdates/retry can recover: %s",
@@ -2290,17 +2335,57 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             raise
 
-    async def _start_polling_resilient(self, *, drop_pending_updates: bool, error_callback) -> bool:
-        """Start PTB polling; on a transient bootstrap failure, recover in background.
+    async def _start_polling_resilient(
+        self,
+        *,
+        drop_pending_updates: bool,
+        error_callback,
+        require_progress: bool = False,
+    ) -> bool:
+        """Start PTB polling and optionally require real getUpdates readiness.
 
-        Returns True when polling started, False when a transient conflict or
-        network error was scheduled for background recovery instead of raising
-        (keeping the gateway process alive).
+        Reconnects may recover in background. Initial connect sets
+        ``require_progress`` so a bootstrap failure or missing first successful
+        getUpdates response raises; GatewayRunner then disposes this partial
+        adapter and retries with a fresh PTB Application.
         """
         if getattr(self, "_polling_teardown_started", False):
             return False
         if not (self._app and self._app.updater):
             raise RuntimeError("Telegram application/updater not initialized")
+
+        # Strict cold start (#67498): background recovery must not run while
+        # the readiness gate is waiting. A G1 polling error would otherwise
+        # schedule _handle_polling_network_error(), which starts generation
+        # G2 on the same partial application while this coroutine still waits
+        # on G1's event — the cold connect then either times out on G1 despite
+        # G2 succeeding, or G2 "heals" the partial app so GatewayRunner never
+        # disposes it and retries fresh. Instead, capture the first polling
+        # error and fail the cold attempt immediately; GatewayRunner owns
+        # disposal and retry with a fresh adapter.
+        strict_error: list[BaseException] = []
+        strict_error_event = asyncio.Event()
+        strict_gate_open = True
+        effective_callback = error_callback
+        if require_progress:
+            loop = asyncio.get_running_loop()
+
+            def _strict_error_callback(error: Exception) -> None:
+                # PTB registers this callback for the whole polling
+                # generation. After the readiness gate closes (success),
+                # delegate to the real callback so ongoing polling errors
+                # keep flowing into background recovery.
+                if not strict_gate_open:
+                    if error_callback is not None:
+                        error_callback(error)
+                    return
+                if not strict_error:
+                    strict_error.append(error)
+                # PTB invokes error callbacks from the polling task; the
+                # event must be set on the loop to wake the strict waiter.
+                loop.call_soon_threadsafe(strict_error_event.set)
+
+            effective_callback = _strict_error_callback
         try:
             # Same watchdog bound as the reconnect ladders: a wedged httpx
             # connection pool can hang start_polling() forever at bootstrap
@@ -2308,17 +2393,63 @@ class TelegramAdapter(BasePlatformAdapter):
             # TimeoutError (OSError subclass), so the except below classifies
             # it via _looks_like_network_error and schedules background
             # recovery instead of blocking connect() indefinitely.
-            await self._start_polling_once(
+            generation, progress = await self._start_polling_once(
                 self._app,
                 drop_pending_updates=drop_pending_updates,
-                error_callback=error_callback,
+                error_callback=effective_callback,
+                abandon_app_on_timeout=require_progress,
+                # The strict gate below IS the cold-start verifier; the
+                # background verifier would only race it on the partial app.
+                schedule_verifier=not require_progress,
             )
+            if require_progress:
+                # Bind to THIS generation's progress event (returned above),
+                # not self._polling_progress_event — a concurrent task could
+                # have replaced it with a later generation's event.
+                progress_wait = asyncio.ensure_future(progress.wait())
+                error_wait = asyncio.ensure_future(strict_error_event.wait())
+                try:
+                    await _await_with_thread_deadline(
+                        _first_completed(progress_wait, error_wait),
+                        timeout=_INITIAL_POLLING_PROGRESS_TIMEOUT,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise OSError(
+                        "Telegram getUpdates made no progress within "
+                        f"{_INITIAL_POLLING_PROGRESS_TIMEOUT:.0f}s during initial "
+                        "connect — failing startup so the gateway retries with a "
+                        "fresh adapter (#67498)"
+                    ) from exc
+                finally:
+                    for fut in (progress_wait, error_wait):
+                        if not fut.done():
+                            fut.cancel()
+                    await asyncio.gather(
+                        progress_wait, error_wait, return_exceptions=True
+                    )
+                if strict_error and not progress.is_set():
+                    raise OSError(
+                        "Telegram polling errored before first getUpdates "
+                        "success during initial connect: "
+                        f"{_redact_telegram_error_text(strict_error[0])}"
+                    ) from strict_error[0]
+                if not progress.is_set():
+                    raise OSError(
+                        "Telegram getUpdates did not become ready during initial connect"
+                    )
+                # Readiness proven — close the strict gate so any later
+                # polling error flows to the real background-recovery
+                # callback instead of the (now finished) cold-start gate.
+                strict_gate_open = False
+                self._polling_error_callback_ref = error_callback
             return True
         except _PollingLifecycleAbort:
             return False
         except Exception as err:
             if getattr(self, "_polling_teardown_started", False):
                 return False
+            if require_progress:
+                raise
             if self._looks_like_polling_conflict(err):
                 logger.warning(
                     "[%s] Telegram polling bootstrap conflict; gateway stays alive "
@@ -3623,8 +3754,30 @@ class TelegramAdapter(BasePlatformAdapter):
             # fallback-IP chain can't block startup indefinitely.
             _max_connect = 8
             _init_timeout = _env_float("HERMES_TELEGRAM_INIT_TIMEOUT", 30.0)
+            # Total watchdog: ensure the entire connect loop has an upper bound
+            # even if the retry loop itself silently stalls (#67498). This is
+            # the per-attempt timeout PLUS generous margins between attempts so
+            # we never hang past the sum even when all attempts are exhausted.
+            _total_deadline = (
+                asyncio.get_running_loop().time()
+                + _init_timeout * _max_connect
+                + 120.0  # extra margin for between-attempt sleeps + overhead
+            )
             for _attempt in range(_max_connect):
+                rebuild_app = False
                 try:
+                    # Check total watchdog deadline — if we blew past it the
+                    # retry ladder must yield even if no individual attempt
+                    # has raised.
+                    if asyncio.get_running_loop().time() >= _total_deadline:
+                        raise OSError(
+                            f"Telegram initialization timed out after {_max_connect} attempts "
+                            f"({_init_timeout:.0f}s each) — total connect watchdog "
+                            f"deadline ({_init_timeout * _max_connect + 120.0:.0f}s) exceeded. "
+                            f"Check network connectivity to api.telegram.org "
+                            f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT / "
+                            f"HERMES_TELEGRAM_INIT_TIMEOUT to a lower value."
+                        )
                     logger.warning(
                         "[%s] Connecting to Telegram (attempt %d/%d)…",
                         self.name, _attempt + 1, _max_connect,
@@ -3642,6 +3795,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except asyncio.TimeoutError:
+                    rebuild_app = True
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -3656,6 +3810,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
                         )
                 except OSError as init_err:
+                    rebuild_app = True
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -3666,6 +3821,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         raise
                 except Exception as init_err:
+                    rebuild_app = True
                     if not self._looks_like_network_error(init_err):
                         raise
                     if _attempt < _max_connect - 1:
@@ -3677,6 +3833,57 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
+                except BaseException:
+                    # Catch CancelledError and other BaseException subclasses
+                    # that the existing except handlers miss. Log the event so
+                    # the operator can diagnose, then reraise so cancellation
+                    # semantics are preserved (#67498).
+                    # NOTE: placed LAST so Exception handlers above have
+                    # priority — BaseException catches everything including
+                    # Exception.
+                    logger.warning(
+                        "[%s] Connect attempt %d/%d interrupted by %s — propagating",
+                        self.name,
+                        _attempt + 1,
+                        _max_connect,
+                        "CancelledError"
+                        if isinstance(sys.exc_info()[1], asyncio.CancelledError)
+                        else type(sys.exc_info()[1]).__name__,
+                    )
+                    raise
+                finally:
+                    # After a failed attempt the app may be in a partially-
+                    # initialized state (closed transports, half-built handlers).
+                    # Rebuild from the same token/config so the next attempt
+                    # starts with a fresh Application — the old one is discarded
+                    # and will be GC'd (#67498).
+                    if rebuild_app and _attempt < _max_connect - 1:
+                        old_app = self._app
+                        self._app = builder.build()
+                        self._bot = self._app.bot
+                        # Re-register handlers on the new app
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.TEXT & ~filters.COMMAND,
+                            self._handle_text_message
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.COMMAND,
+                            self._handle_command
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                            self._handle_location_message
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                            self._handle_media_message
+                        ))
+                        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+                        # Best-effort discard the old app's resources
+                        try:
+                            await _shutdown_abandoned_app(old_app)
+                        except Exception:
+                            pass
             await self._app.start()
 
             # Decide between webhook and polling mode
@@ -3739,7 +3946,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 # updates. Best-effort: a transient Bot API network error here
                 # must not fail gateway startup — degrade to background polling
                 # recovery instead.
-                await self._delete_webhook_best_effort()
+                await self._delete_webhook_best_effort(
+                    require_success=not is_reconnect
+                )
 
                 loop = asyncio.get_running_loop()
 
@@ -3777,6 +3986,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     # sent while the bot was offline are delivered (#46621).
                     drop_pending_updates=not is_reconnect,
                     error_callback=_polling_error_callback,
+                    require_progress=not is_reconnect,
                 )
                 if not polling_started:
                     logger.warning(
@@ -5073,7 +5283,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
                     )
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            keyboard = InlineKeyboardMarkup([buttons])
+            # Pair into rows (2x2 for the full set) so labels stay readable on
+            # mobile — a single 4-button row truncates to "Allo… / Ses… / …".
+            rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+            keyboard = InlineKeyboardMarkup(rows)
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
@@ -6276,7 +6489,7 @@ class TelegramAdapter(BasePlatformAdapter):
             home = get_hermes_home()
             response_path = home / ".update_response"
             tmp = response_path.with_suffix(".tmp")
-            tmp.write_text(answer)
+            tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
             logger.info("Telegram update prompt answered '%s' by user %s",
                         answer, getattr(query.from_user, "id", "unknown"))

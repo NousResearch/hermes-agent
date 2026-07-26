@@ -39,6 +39,21 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 
+# ── Proxy detection ──────────────────────────────────────────
+# Proxy environment variables that indicate the runtime should
+# delegate DNS to a proxy rather than attempting direct resolution.
+_PROXY_ENV_VARS = (
+    "HTTPS_PROXY", "https_proxy",
+    "HTTP_PROXY", "http_proxy",
+    "ALL_PROXY", "all_proxy",
+)
+
+
+def _proxy_is_configured() -> bool:
+    """Return True when at least one HTTP proxy env var is set."""
+    return any(os.environ.get(v) for v in _PROXY_ENV_VARS)
+
+
 def normalize_url_for_request(url: str) -> str:
     """Return an ASCII-safe HTTP URL for Hermes-owned URL tools.
 
@@ -420,8 +435,29 @@ def is_safe_url(url: str) -> bool:
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except socket.gaierror:
-            # DNS resolution failed — fail closed. If DNS can't resolve it,
-            # the HTTP client will also fail, so blocking loses nothing.
+            # DNS resolution failed.  In sandbox / proxy environments
+            # (NVIDIA OpenShell, Docker + Squid, etc.) the host may
+            # block direct DNS — only HTTP(S) through the proxy is
+            # permitted.  When a proxy is configured, delegate DNS to
+            # the proxy rather than blocking the request outright.
+            # The hostname was already checked against
+            # _BLOCKED_HOSTNAMES above so metadata endpoints remain
+            # blocked regardless.  Literal IPs never qualify — they
+            # need no DNS, so a getaddrinfo failure on one is not a
+            # proxy-environment symptom; keep them on the fail-closed
+            # path (and the blocked-IP floor) instead of delegating.
+            _is_literal_ip = True
+            try:
+                ipaddress.ip_address(hostname)
+            except ValueError:
+                _is_literal_ip = False
+            if not _is_literal_ip and _proxy_is_configured():
+                logger.debug(
+                    "DNS resolution failed for %s — proxy configured, "
+                    "allowing through for proxy-side resolution",
+                    hostname,
+                )
+                return True
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
             return False
 

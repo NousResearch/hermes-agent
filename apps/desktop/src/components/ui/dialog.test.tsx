@@ -2,8 +2,39 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Dialog, DialogContent, DialogTitle, preventCloseButtonAutoFocus } from './dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select'
 
 afterEach(cleanup)
+
+describe('Select portalled inside a Dialog', () => {
+  it('renders the open dropdown inside the dialog DOM subtree, not document.body', () => {
+    // Force the Select open (defaultOpen) to sidestep jsdom's missing
+    // hasPointerCapture on the trigger. The dropdown content must land inside the
+    // dialog content node — that DOM nesting is what keeps focus in the dialog so
+    // dismissing the dropdown no longer closes the dialog.
+    render(
+      <Dialog open>
+        <DialogContent>
+          <DialogTitle>Test dialog</DialogTitle>
+          <Select defaultOpen>
+            <SelectTrigger aria-label="picker">
+              <SelectValue placeholder="pick" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="a">Option A</SelectItem>
+            </SelectContent>
+          </Select>
+        </DialogContent>
+      </Dialog>
+    )
+
+    const dialog = screen.getByRole('dialog')
+    const option = screen.getByText('Option A')
+
+    // The dropdown item is a descendant of the dialog, i.e. portalled into it.
+    expect(dialog.contains(option)).toBe(true)
+  })
+})
 
 describe('DialogContent close button', () => {
   it('closes the dialog when clicked', () => {

@@ -862,10 +862,78 @@ def find_custom_provider_identity(base_url: str) -> Optional[str]:
     return None
 
 
+def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
+    """Map a model id back to the ``custom:<name>`` entry that serves it.
+
+    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
+    / ``custom_providers:`` entry whose ``model`` / ``default_model`` matches,
+    or whose ``models`` catalog (dict or list shape) contains the id.
+    ``None`` when no entry serves the model.
+
+    Companion to :func:`find_custom_provider_identity` (URL reverse-lookup)
+    for the persistence paths where no base_url survived the round-trip: the
+    session row always stores the model name, and a custom endpoint's model
+    ids (e.g. an in-house SFT checkpoint) virtually never collide with
+    catalog models on built-in providers, so the model is the last durable
+    fact that can recover the entry identity.
+    """
+    target = str(model or "").strip().lower()
+    if not target:
+        return None
+    try:
+        config = load_config()
+    except Exception:
+        return None
+
+    def _entry_serves_model(entry: Dict[str, Any]) -> bool:
+        for key in ("model", "default_model"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip().lower() == target:
+                return True
+        models = entry.get("models")
+        if isinstance(models, dict):
+            return any(
+                str(mid).strip().lower() == target for mid in models.keys()
+            )
+        if isinstance(models, list):
+            for item in models:
+                if isinstance(item, str) and item.strip().lower() == target:
+                    return True
+                if isinstance(item, dict):
+                    mid = item.get("id") or item.get("name")
+                    if isinstance(mid, str) and mid.strip().lower() == target:
+                        return True
+        return False
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            if _entry_serves_model(entry):
+                return f"custom:{_normalize_custom_provider_name(str(ep_name))}"
+
+    try:
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if _entry_serves_model(entry):
+            return f"custom:{_normalize_custom_provider_name(name)}"
+
+    return None
+
+
 def canonical_custom_identity(
     *,
     base_url: Optional[str] = None,
     config_provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Optional[str]:
     """Recover a routable ``custom:<name>`` identity for a bare custom provider.
 
@@ -877,17 +945,24 @@ def canonical_custom_identity(
 
     Any code path that persists or restores a session's provider override
     must run the resolved provider through this helper so a bare ``"custom"``
-    is upgraded back to its durable ``custom:<name>`` menu key. Two recovery
-    sources, in priority order:
+    is upgraded back to its durable ``custom:<name>`` menu key. Three
+    recovery sources, in priority order:
 
     1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
        (the one fact that always survives the persistence round-trip when a
        URL was recorded).
-    2. ``config_provider`` — the active ``config.model.provider`` (or its
-       ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When the agent
-       was built without a base_url on the override (the recurring
-       Desktop/TUI regression vector), the configured provider is the only
-       durable identity left, so fall back to it when it names a real entry.
+    2. ``model`` — reverse-lookup the entry that serves the session's model
+       (``model``/``default_model``/``models`` catalog). The session row
+       always stores the model name, so when no base_url survived (the
+       recurring Desktop/TUI regression vector) the model is the last
+       session-scoped fact that can recover the entry — and unlike the
+       config fallback below it stays correct after the user points their
+       global default at a different provider.
+    3. ``config_provider`` — the active ``config.model.provider`` (or its
+       ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When neither
+       a base_url nor a model recovered the entry, the configured provider
+       is the only durable identity left, so fall back to it when it names
+       a real entry.
 
     Returns ``custom:<name>`` when a routable identity is recovered, else
     ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
@@ -899,7 +974,13 @@ def canonical_custom_identity(
         if identity:
             return identity
 
-    # 2. Fall back to the configured provider when it names a real entry.
+    # 2. Reverse-lookup by the session's model name.
+    if model:
+        identity = find_custom_provider_identity_by_model(model)
+        if identity:
+            return identity
+
+    # 3. Fall back to the configured provider when it names a real entry.
     candidate = str(config_provider or "").strip()
     if not candidate:
         try:

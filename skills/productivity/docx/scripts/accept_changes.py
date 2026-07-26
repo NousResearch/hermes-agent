@@ -68,7 +68,7 @@ def accept_changes(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=30,
             check=False,
             env=get_soffice_env(),
@@ -92,7 +92,7 @@ def _setup_libreoffice_macro() -> bool:
     macro_dir = Path(MACRO_DIR)
     macro_file = macro_dir / "Module1.xba"
 
-    if macro_file.exists() and "AcceptAllTrackedChanges" in macro_file.read_text():
+    if macro_file.exists() and "AcceptAllTrackedChanges" in macro_file.read_text(encoding="utf-8"):
         return True
 
     if not macro_dir.exists():
@@ -111,7 +111,7 @@ def _setup_libreoffice_macro() -> bool:
         macro_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        macro_file.write_text(ACCEPT_CHANGES_MACRO)
+        macro_file.write_text(ACCEPT_CHANGES_MACRO, encoding="utf-8")
         return True
     except Exception as e:
         logger.warning(f"Failed to setup LibreOffice macro: {e}")

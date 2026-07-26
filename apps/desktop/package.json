@@ -111,7 +111,7 @@
     "motion": "^12.38.0",
     "nanostores": "^1.3.0",
     "node-pty": "1.1.0",
-    "radix-ui": "^1.4.3",
+    "radix-ui": "^1.6.5",
     "react": "^19.2.5",
     "react-arborist": "^3.5.0",
     "react-dnd-html5-backend": "^14.0.3",

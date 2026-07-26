@@ -1,5 +1,6 @@
 """Tests for browser first-open timeout and timeout diagnostics."""
 
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -11,9 +12,15 @@ import tools.browser_tool as bt
 def _reset_browser_caches():
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
+    bt._active_sessions.clear()
+    bt._session_last_activity.clear()
+    bt._last_active_session_key.clear()
     yield
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
+    bt._active_sessions.clear()
+    bt._session_last_activity.clear()
+    bt._last_active_session_key.clear()
 
 
 class TestOpenCommandTimeout:
@@ -87,6 +94,52 @@ class TestReadCommandOutputFiles:
         stdout, stderr = bt._read_command_output_files(str(stdout_path), str(stderr_path))
         assert stdout == "ok"
         assert stderr == "warn"
+
+
+class TestCommandTimeoutRecovery:
+    def test_timeout_discards_stuck_session(self, monkeypatch, tmp_path):
+        task_id = "stuck-click"
+        session_info = {
+            "session_name": "stuck-session",
+            "bb_session_id": None,
+            "cdp_url": None,
+            "features": {"local": True},
+        }
+        bt._active_sessions[task_id] = session_info
+        bt._session_last_activity[task_id] = 1.0
+        bt._last_active_session_key[task_id] = task_id
+
+        class StuckProcess:
+            returncode = None
+
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired("agent-browser", timeout)
+                self.returncode = -9
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda: "agent-browser")
+        monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _cmd: False)
+        monkeypatch.setattr(bt, "_is_local_mode", lambda: False)
+        monkeypatch.setattr(bt, "_get_session_info", lambda _task_id: session_info)
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        monkeypatch.setattr(bt, "_write_owner_pid", lambda *_args: None)
+        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda value: value)
+        monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: StuckProcess())
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        result = bt._run_browser_command(task_id, "click", ["@e1"], timeout=1)
+
+        assert result["success"] is False
+        assert "timed out" in result["error"].lower()
+        assert task_id not in bt._active_sessions
+        assert task_id not in bt._session_last_activity
+        assert task_id not in bt._last_active_session_key
+        assert not (tmp_path / "agent-browser-stuck-session").exists()
 
 
 class TestBrowserNavigateOpenTimeout:

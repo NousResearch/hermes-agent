@@ -2297,6 +2297,40 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _discard_timed_out_browser_session(
+    task_id: str,
+    session_info: Dict[str, Any],
+    task_socket_dir: str,
+) -> None:
+    """Drop a stuck agent-browser client so the next command reconnects."""
+    with _cleanup_lock:
+        if _active_sessions.get(task_id) is not session_info:
+            return
+        _stop_cdp_supervisor(task_id)
+        _active_sessions.pop(task_id, None)
+        _session_last_activity.pop(task_id, None)
+
+        bare_task_id = _bare_task_id_for_session_key(task_id)
+        if _last_active_session_key.get(bare_task_id) == task_id:
+            _last_active_session_key.pop(bare_task_id, None)
+
+    session_name = str(session_info.get("session_name") or "")
+    if session_name:
+        pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
+        if os.path.isfile(pid_file):
+            try:
+                from tools.process_registry import ProcessRegistry
+
+                daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+                ProcessRegistry._terminate_host_pid(daemon_pid)
+            except (ProcessLookupError, ValueError, PermissionError, OSError):
+                logger.debug(
+                    "Could not kill timed-out browser daemon for %s",
+                    session_name,
+                )
+    shutil.rmtree(task_socket_dir, ignore_errors=True)
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
@@ -2505,6 +2539,7 @@ def _run_browser_command(
             proc.wait()
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
+            _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
             if stderr and stderr.strip():
                 logger.warning(
                     "browser '%s' stderr after timeout: %s",

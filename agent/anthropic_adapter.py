@@ -1334,7 +1334,7 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         # to auth.json or trigger a network refresh from a bare resolve. select()
         # is deliberately NOT used — it runs clear_expired=True, refresh=True,
         # which would violate this read-only contract.
-        entries = pool._available_entries(clear_expired=False, refresh=False)
+        entries, _pending = pool._available_entries(clear_expired=False, refresh=False)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None

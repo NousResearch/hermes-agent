@@ -37,11 +37,30 @@ interface LiveSessionStatusResponse {
   sessions?: LiveSessionStatusItem[]
 }
 
+// Runtime ids this poll has seen live, per gateway profile. A profile only
+// ever reaps what its OWN snapshot previously reported: background profiles are
+// served by different gateways and never appear in this profile's active_list,
+// so an unscoped reap would dark out every other profile's running rows.
+const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
+
 /** Restore sidebar liveness after a renderer/backend reconnect. Stream events
  * normally own these states, but events emitted while Desktop was disconnected
  * cannot be replayed. `session.active_list` is the authoritative in-memory
- * snapshot and does not resume, focus, or otherwise mutate a chat. */
-export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse, nowMs = Date.now()): void {
+ * snapshot and does not resume, focus, or otherwise mutate a chat.
+ *
+ * The snapshot is authoritative about ABSENCE too. A turn that ends while the
+ * websocket is degraded — a remote gateway over a flaky link, a reconnect, a
+ * profile swap — drops out of `_sessions` without Desktop ever seeing the
+ * `running: false` edge, so the row keeps spinning and the busy→idle transition
+ * that paints the green "your turn" dot never fires. Reaping runtimes that
+ * vanish between polls restores both. */
+export function rehydrateLiveSessionStatuses(
+  response: LiveSessionStatusResponse,
+  nowMs = Date.now(),
+  profileKey = 'default'
+): void {
+  const seen = new Set<string>()
+
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
     const storedSessionId = session.session_key?.trim()
@@ -51,6 +70,8 @@ export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse
     if (!runtimeSessionId || !storedSessionId) {
       continue
     }
+
+    seen.add(runtimeSessionId)
 
     const existing = $sessionStates.get()[runtimeSessionId]
 
@@ -87,6 +108,44 @@ export function rehydrateLiveSessionStatuses(response: LiveSessionStatusResponse
 
     setSessionStalled(storedSessionId, isQuiet)
   }
+
+  // A runtime this profile's snapshot reported live LAST poll but not this one
+  // has ended: the gateway reaps a session out of `_sessions` when its turn
+  // completes and its transport goes away. Settle it through the normal publish
+  // path so the busy→idle transition fires — that edge is what clears the
+  // spinner AND marks the row unread ("your turn"). Only ids this profile
+  // previously saw are eligible, so another profile's live rows are untouched.
+  const previouslyLive = liveRuntimeIdsByProfile.get(profileKey)
+
+  if (previouslyLive) {
+    for (const runtimeSessionId of previouslyLive) {
+      if (seen.has(runtimeSessionId)) {
+        continue
+      }
+
+      const existing = $sessionStates.get()[runtimeSessionId]
+
+      if (existing?.busy || existing?.needsInput) {
+        publishSessionState(runtimeSessionId, {
+          ...existing,
+          awaitingResponse: false,
+          busy: false,
+          needsInput: false,
+          streamId: null,
+          turnStartedAt: null
+        })
+      }
+    }
+  }
+
+  liveRuntimeIdsByProfile.set(profileKey, seen)
+}
+
+/** Forget every profile's live-runtime bookkeeping. A gateway wipe already
+ *  drops the session states these ids point at, so a carried-over set would
+ *  only reap runtimes that no longer exist. */
+export function resetLiveRuntimeTracking(): void {
+  liveRuntimeIdsByProfile.clear()
 }
 
 interface BackgroundSyncParams {
@@ -191,7 +250,7 @@ export function useBackgroundSync({
         const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
 
         if (!cancelled) {
-          rehydrateLiveSessionStatuses(response)
+          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events

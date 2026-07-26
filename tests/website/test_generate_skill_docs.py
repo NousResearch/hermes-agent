@@ -233,3 +233,43 @@ def test_main_check_flag_is_read_only_mode(gen_module, monkeypatch):
 
     assert gen_module.main(["--check"]) == 0
     assert calls == [True]
+
+
+def test_generation_prunes_stale_pages_end_to_end(
+    gen_module, tmp_path, monkeypatch
+):
+    """Removed skills must not leave published generated pages behind (#71856)."""
+    docs = tmp_path / "docs"
+    skills_pages = docs / "user-guide" / "skills"
+    stale = skills_pages / "bundled" / "agents" / "agents-removed.md"
+    handwritten = skills_pages / "bundled" / "agents" / "notes.md"
+    for path in (stale, handwritten):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    stale.write_text(_generated_page(gen_module, "stale"), encoding="utf-8")
+    handwritten.write_text("# Maintained by hand\n", encoding="utf-8")
+
+    bundled_catalog = docs / "reference" / "skills-catalog.md"
+    optional_catalog = docs / "reference" / "optional-skills-catalog.md"
+    sidebar = tmp_path / "website" / "sidebars.ts"
+    bundled_catalog.parent.mkdir(parents=True)
+    sidebar.parent.mkdir(parents=True)
+
+    expected_outputs = {
+        bundled_catalog: "bundled\n",
+        optional_catalog: "optional\n",
+        sidebar: "sidebar\n",
+    }
+    monkeypatch.setattr(gen_module, "REPO", tmp_path)
+    monkeypatch.setattr(gen_module, "DOCS", docs)
+    monkeypatch.setattr(gen_module, "SKILLS_PAGES", skills_pages)
+    monkeypatch.setattr(gen_module, "discover_skills", lambda: [])
+    monkeypatch.setattr(
+        gen_module,
+        "build_expected_outputs",
+        lambda entries: (expected_outputs, set()),
+    )
+
+    assert gen_module.generate_skill_docs() == 0
+    assert not stale.exists()
+    assert handwritten.read_text(encoding="utf-8") == "# Maintained by hand\n"

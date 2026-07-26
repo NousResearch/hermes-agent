@@ -757,13 +757,20 @@ def _copy_state_meta_salvage(
     and lose the other; without this check a missing ``key`` raised
     ``ValueError`` from ``columns.index("key")`` and aborted the entire
     partial recovery, and a missing ``value`` would have copied key-only rows
-    while reporting the table complete. ``state_meta`` is optional metadata —
-    recording it as unusable lets ``--allow-partial`` surface the loss as a
-    warning and carry on recovering sessions and messages.
+    while reporting the table complete.
+
+    Status matters here. An unusable-but-PRESENT table reports ``failed``, not
+    ``missing``: verification only escalates ``failed``/``partial`` into a
+    warning + ``loss_detected``, so reporting ``missing`` would silently drop
+    real metadata and still claim ``complete=True``. ``missing`` is reserved
+    for a table that genuinely is not there. Either way ``state_meta`` is
+    optional, so ``--allow-partial`` records the loss and carries on
+    recovering sessions and messages.
     """
     source_columns = _table_columns(source, "state_meta")
     destination_columns = _table_columns(destination, "state_meta")
-    if not {"key", "value"}.issubset(source_columns):
+    if not source_columns:
+        # Genuinely absent from the source — nothing was lost.
         return {
             "mode": "rowid_range_salvage",
             "source_meta_rows": source_rows,
@@ -771,7 +778,20 @@ def _copy_state_meta_salvage(
             "columns": ["key", "value"],
             "excluded_keys": sorted(_GENERATED_META_KEYS),
             "status": "missing",
-            "error": "source state_meta is missing the key/value columns",
+        }
+    if not {"key", "value"}.issubset(source_columns):
+        # Present but unusable: this IS data loss and must be reported.
+        return {
+            "mode": "rowid_range_salvage",
+            "source_meta_rows": source_rows,
+            "copied_rows": 0,
+            "columns": ["key", "value"],
+            "excluded_keys": sorted(_GENERATED_META_KEYS),
+            "status": "failed",
+            "error": (
+                "source state_meta exists but is missing the key/value "
+                f"columns (found: {', '.join(source_columns) or 'none'})"
+            ),
         }
     if not {"key", "value"}.issubset(destination_columns):
         return {

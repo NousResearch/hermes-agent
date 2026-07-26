@@ -96,7 +96,20 @@ interface ModelEditSubmenuProps {
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function ModelEditSubmenu({
+export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
+  // The panel mounts one of these per model row; only the hovered row's
+  // submenu is ever open. Keep this wrapper hook-free and render the body as
+  // a CHILD of SubContent so Radix's Presence gate leaves it unrendered until
+  // the sub actually opens — eagerly running the body's hooks/JSX for every
+  // row made opening the menu itself lag on large catalogs.
+  return (
+    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
+      <ModelEditSubmenuBody {...props} />
+    </DropdownMenuSubContent>
+  )
+}
+
+function ModelEditSubmenuBody({
   effort,
   fastControl,
   isActive,
@@ -213,50 +226,46 @@ export function ModelEditSubmenu({
   const hasFast = fastControl.kind !== 'none'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
 
-  return (
-    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
-      {!hasFast && !reasoning ? (
-        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
-      ) : (
+  return !hasFast && !reasoning ? (
+    <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
+  ) : (
+    <>
+      <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
+      {reasoning ? (
+        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+          {copy.thinking}
+          <Switch
+            checked={thinkingOn}
+            className="ml-auto"
+            onCheckedChange={checked => void patchReasoning(checked ? effortValue || defaultEffort : 'none')}
+            size="xs"
+          />
+        </DropdownMenuItem>
+      ) : null}
+      {hasFast ? (
+        <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
+          {copy.fast}
+          <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
+        </DropdownMenuItem>
+      ) : null}
+      {reasoning ? (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
-          {reasoning ? (
-            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              {copy.thinking}
-              <Switch
-                checked={thinkingOn}
-                className="ml-auto"
-                onCheckedChange={checked => void patchReasoning(checked ? effortValue || defaultEffort : 'none')}
-                size="xs"
-              />
-            </DropdownMenuItem>
-          ) : null}
-          {hasFast ? (
-            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              {copy.fast}
-              <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
-            </DropdownMenuItem>
-          ) : null}
-          {reasoning ? (
-            <>
-              <DropdownMenuSeparator className="mx-0" />
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
-              <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {REASONING_EFFORTS.map(value => (
-                  <DropdownMenuRadioItem
-                    className={dropdownMenuRow}
-                    key={value}
-                    onSelect={event => event.preventDefault()}
-                    value={value}
-                  >
-                    {copy[value]}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </>
-          ) : null}
+          <DropdownMenuSeparator className="mx-0" />
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
+            {REASONING_EFFORTS.map(value => (
+              <DropdownMenuRadioItem
+                className={dropdownMenuRow}
+                key={value}
+                onSelect={event => event.preventDefault()}
+                value={value}
+              >
+                {copy[value]}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
         </>
-      )}
-    </DropdownMenuSubContent>
+      ) : null}
+    </>
   )
 }

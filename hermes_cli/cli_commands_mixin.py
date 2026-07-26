@@ -1642,6 +1642,32 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_init_command(self, cmd: str):
+        """Handle /init — generate or update AGENTS.md from a project scan.
+
+        Mirrors /learn: build a guidance-laden prompt and inject it onto the
+        agent's input queue as a normal user turn. The live agent scans the
+        project with its own read-only tools and writes/updates AGENTS.md via
+        ``write_file``. No engine, no model-tool footprint, works on any
+        terminal backend, and preserves prompt-cache invariants (no system
+        prompt or history mutation).
+        """
+        from hermes_cli.init_command import build_init_prompt_for_cwd
+
+        # Everything after the command word is optional user emphasis.
+        parts = cmd.strip().split(None, 1)
+        extra = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_init_prompt_for_cwd(extra=extra)
+        if "UPDATE the existing AGENTS.md" in msg:
+            print("\n⚡ Updating AGENTS.md from a project scan...")
+        else:
+            print("\n⚡ Generating AGENTS.md from a project scan...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /init needs an active chat session to run.")
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand

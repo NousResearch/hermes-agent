@@ -288,6 +288,35 @@ def _corrupt_middle_table_leaf(
     return leaf_page
 
 
+def test_recovery_refuses_to_snapshot_a_live_database(tmp_path: Path) -> None:
+    """Snapshotting must refuse while a connection to the source is live.
+
+    Copying a database file is an open()/close() on it, and close() cancels
+    every POSIX advisory lock the process holds on that file (see
+    hermes_cli.sqlite_safe_read). Recovery normally runs against an offline
+    file, but the check must exist so this path cannot drift away from
+    hermes_state._backup_db_file, which refuses the same situation.
+    """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
+    source = tmp_path / "live-state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    live = connect_tracked(source, isolation_level=None)
+    try:
+        with pytest.raises(SessionRecoverySafetyError, match="still open"):
+            recover_session_database(source, output, work_dir=tmp_path)
+    finally:
+        live.close()
+
+    assert not output.exists()
+
+    # With the connection closed the same call proceeds normally.
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["verification"]["integrity_check"] == ["ok"]
+
+
 def test_recovery_rebuilds_canonical_data_without_opening_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

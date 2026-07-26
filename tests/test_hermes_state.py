@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -2287,6 +2288,45 @@ class TestVacuum:
         assert second["vacuumed"] is True
         assert vacuum_calls == [True, True]
         assert db.get_meta("last_vacuum") is not None
+
+    def test_wal_size_limit_is_bounded(self, db):
+        """journal_size_limit must be a finite bound, not SQLite's -1 default.
+
+        Contract, not a snapshot: assert the limit is positive (so the WAL is
+        truncated back at checkpoints) rather than pinning the exact byte
+        count, which is a tunable.
+        """
+        mode = db._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode).lower() != "wal":
+            pytest.skip("WAL unavailable on this filesystem")
+        limit = db._conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+        assert limit > 0, "unbounded WAL: state.db-wal never returns disk to the OS"
+
+    def test_vacuum_leaves_wal_truncated(self, db, tmp_path):
+        """VACUUM must not strand a giant WAL beside the database.
+
+        VACUUM rewrites every page through the write-ahead log. Without a
+        checkpoint *after* it, a 3 GB database leaves a 3 GB state.db-wal
+        behind — `sessions optimize` then consumes far more disk than it
+        frees, which is the opposite of its purpose.
+        """
+        mode = db._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode).lower() != "wal":
+            pytest.skip("WAL unavailable on this filesystem")
+
+        db.create_session(session_id="s1", source="cli")
+        for i in range(500):
+            db.append_message(
+                session_id="s1", role="user", content=f"padding message {i} " * 20
+            )
+        db.vacuum()
+
+        wal = Path(str(db.db_path) + "-wal")
+        if wal.exists():
+            limit = db._conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+            assert wal.stat().st_size <= max(limit, 0) or wal.stat().st_size == 0, (
+                f"WAL left at {wal.stat().st_size} bytes after VACUUM"
+            )
 
 
 class TestOptimizeFts:

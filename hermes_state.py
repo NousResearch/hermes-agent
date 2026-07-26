@@ -543,6 +543,11 @@ _WAL_INCOMPAT_MARKERS = (
     "disk i/o error",         # ZFS SHM corruption under concurrent connections
 )
 
+# Upper bound for the write-ahead log. SQLite defaults to -1 (unlimited),
+# which lets state.db-wal keep the high-water mark of the largest-ever
+# transaction forever. See _apply_wal_size_limit().
+_WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
+
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
@@ -739,6 +744,45 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
         except UnicodeDecodeError:
             return None
     return str(mode).strip().lower() if mode is not None else None
+
+
+def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
+    """Bound the WAL so it returns space to the OS after big transactions.
+
+    SQLite's default ``journal_size_limit`` is -1 (unlimited): after a
+    checkpoint the WAL file is *reused in place* and never truncated, so
+    ``state.db-wal`` permanently retains the high-water mark of the largest
+    transaction ever run against it.
+
+    A single bulk operation is enough to strand gigabytes. Observed on a
+    3.0 GB ``state.db``: ``hermes sessions optimize`` (FTS merge + VACUUM)
+    rewrites every page through the WAL, leaving a **3.07 GB**
+    ``state.db-wal`` sitting next to the database indefinitely — the host
+    went from 6.9 GB free to 772 MB (100% full) and stayed there, because
+    nothing shrinks the WAL back down. An explicit
+    ``PRAGMA wal_checkpoint(TRUNCATE)`` reclaimed the full 3.07 GB, which
+    confirms the space was pure slack rather than live data.
+
+    That also makes the maintenance command self-defeating on exactly the
+    databases that need it most: the larger the DB, the larger the WAL it
+    strands, so ``optimize`` can consume more disk than it frees.
+
+    ``journal_size_limit`` makes SQLite truncate the WAL back to the limit
+    at each checkpoint. 64 MiB is comfortably above normal transaction
+    sizes (so steady-state commits never pay a truncate) while capping the
+    stranded slack at a bounded, predictable figure.
+
+    ``hermes_cli/kanban_db.py`` already bounds its WAL growth with
+    ``wal_autocheckpoint=100``; the session store — by far the larger
+    database — had no equivalent.
+
+    Best-effort: never raises. A failure here only costs disk slack, and
+    must not prevent the database from opening.
+    """
+    try:
+        conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
+    except sqlite3.OperationalError as exc:  # pragma: no cover - defensive
+        logger.debug("journal_size_limit not applied: %s", exc)
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
@@ -947,6 +991,7 @@ def apply_wal_with_fallback(
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
+        _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
         return "wal"
@@ -987,6 +1032,7 @@ def apply_wal_with_fallback(
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
+            _apply_wal_size_limit(conn)
             _apply_macos_checkpoint_barrier(conn)
             _enforce_macos_synchronous_full(conn)
             return "wal"
@@ -1035,6 +1081,7 @@ def apply_wal_with_fallback(
                     else ""
                 )
                 if mode == "wal":
+                    _apply_wal_size_limit(conn)
                     _apply_macos_checkpoint_barrier(conn)
                     _enforce_macos_synchronous_full(conn)
                     return "wal"
@@ -1114,6 +1161,7 @@ def _apply_delete_for_wal_reset_bug(
         # Do not TRUNCATE / journal_mode=DELETE while other processes may
         # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
+        _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
         return "wal"
@@ -11089,6 +11137,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except Exception as exc:
                 logger.debug("WAL checkpoint (PASSIVE) before VACUUM failed: %s", exc)
             self._conn.execute("VACUUM")
+            # ...and again afterwards. VACUUM rewrites every page THROUGH the
+            # WAL, so the pre-VACUUM checkpoint above does nothing for the
+            # slack VACUUM itself creates: on a 3.0 GB database it left a
+            # 3.07 GB state.db-wal behind, so `sessions optimize` reported
+            # "reclaimed -11.2 MB" while actually consuming 3 GB of disk and
+            # filling the host to 100%. Truncating here is what makes the
+            # command a net win instead of a net loss on large databases.
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception as exc:
+                logger.debug("WAL checkpoint (TRUNCATE) after VACUUM failed: %s", exc)
         return optimized
 
     def maybe_auto_prune_and_vacuum(

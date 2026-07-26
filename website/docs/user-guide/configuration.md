@@ -1116,6 +1116,7 @@ auxiliary:
     api_key: ""
     timeout: 30
     language: ""
+    emoji_prefix: false        # true = prefix titles with one topical emoji
 
   # Skills hub — skill matching and search
   skills_hub:

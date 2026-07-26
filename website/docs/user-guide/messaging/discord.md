@@ -408,6 +408,16 @@ When enabled, every `@mention` in a regular text channel automatically creates a
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
 
+An auto-created thread is first named from the raw message text, then renamed once after the first reply using the LLM-generated session title. To have that semantic name start with one topical emoji (`🐛 Fixing Python Import Errors`), enable [`auxiliary.title_generation.emoji_prefix`](../configuration.md#auxiliary-models):
+
+```yaml
+auxiliary:
+  title_generation:
+    emoji_prefix: true
+```
+
+This is off by default, and it applies to the session title itself — so the emoji also shows up in `hermes sessions`, the TUI, and Telegram topic names, not only in Discord thread names.
+
 #### `discord.reactions`
 
 **Type:** boolean — **Default:** `true`

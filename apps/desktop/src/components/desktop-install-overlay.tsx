@@ -277,8 +277,6 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
-  const [localStarting, setLocalStarting] = useState(false)
-  const [localStartError, setLocalStartError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -347,11 +345,21 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
   // The choice remains mounted while main hands off to local bootstrap. Once
   // a manifest/failure takes ownership (or a later repair presents a fresh
-  // choice), clear the transient button state so it cannot leak across phases.
-  useEffect(() => {
-    setLocalStarting(false)
-    setLocalStartError(null)
-  }, [state.setupChoice?.activeRoot])
+  // choice), this transient button state must not leak across phases — so it
+  // records the root it was produced under and is read back only under that
+  // same root. Deriving it beats clearing it in an effect: the choice paints
+  // as soon as the first snapshot commits, and a click landing before such an
+  // effect flushed would have its error wiped before it ever rendered.
+  const [localStart, setLocalStart] = useState<{
+    root: string | null
+    starting: boolean
+    error: string | null
+  }>({ root: null, starting: false, error: null })
+
+  const activeRoot = state.setupChoice?.activeRoot ?? null
+  const forActiveRoot = localStart.root === activeRoot
+  const localStarting = forActiveRoot && localStart.starting
+  const localStartError = forActiveRoot ? localStart.error : null
 
   // Mount logic: show whenever a bootstrap is in flight, completed-with-error,
   // or actively running with a manifest. Hide entirely after a successful
@@ -417,8 +425,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-4 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-wait disabled:opacity-60"
               disabled={localStarting}
               onClick={async () => {
-                setLocalStarting(true)
-                setLocalStartError(null)
+                setLocalStart({ root: activeRoot, starting: true, error: null })
 
                 try {
                   const desktop = window.hermesDesktop
@@ -429,8 +436,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
                   await desktop.continueBootstrapLocal()
                 } catch (err) {
-                  setLocalStartError(errorMessage(err))
-                  setLocalStarting(false)
+                  setLocalStart({ root: activeRoot, starting: false, error: errorMessage(err) })
                 }
               }}
               type="button"

@@ -85,6 +85,36 @@ _MAX_DURABLE_PENDING = 1000
 _MAX_DELIVERY_ATTEMPTS = 8
 _DB_LOCK = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Stale-delegation detection (progress-based, on by default)
+# ---------------------------------------------------------------------------
+# A detached runner that wedges before returning (e.g. stuck inside its first
+# model API call — #60203) never reaches its ``finally`` finalizer, so no
+# completion event is ever published: the delegation shows "dispatched"
+# forever and the owning session looks silent until a process restart. We do
+# NOT fix this with a wall-clock timeout — legitimate heavy subagent work
+# (deep reviews, research fan-outs, slow reasoning models) must never be
+# killed for taking long (see delegate_tool.DEFAULT_CHILD_TIMEOUT rationale).
+# Instead a single monitor thread watches per-dispatch PROGRESS (api-call
+# count + current tool, via an injected ``progress_fn``): a child that is
+# advancing is left alone forever; a child with NO progress past the stale
+# threshold is interrupted, given a grace window to unwind and deliver its
+# partial results through the normal finalize path, and only force-finalized
+# with a terminal ``stalled`` event if it never returns.
+#
+# Thresholds mirror the sync-path heartbeat staleness monitor in
+# delegate_tool: idle (not inside a tool) stays tight so a wedged first API
+# call is caught quickly; in-tool is much higher so legitimately slow tools
+# (long terminal commands, big fetches) get time to finish.
+_STALE_CHECK_INTERVAL = 30.0  # seconds between monitor sweeps
+_STALE_IDLE_SECONDS = 450.0  # no progress, no current tool → stalled
+_STALE_IN_TOOL_SECONDS = 1200.0  # no progress while inside a tool → stalled
+_STALL_GRACE_SECONDS = 120.0  # after interrupt, time for the runner to return
+
+_monitor_lock = threading.Lock()
+_monitor_thread: Optional[threading.Thread] = None
+_monitor_stop = threading.Event()
+
 
 def _db_path():
     return get_hermes_home() / "state.db"
@@ -483,10 +513,6 @@ def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _format_timeout_seconds(timeout_seconds: float) -> str:
-    return f"{timeout_seconds:g}"
-
-
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     """Lazily create (or grow) the shared daemon executor.
 
@@ -509,7 +535,10 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 def active_count() -> int:
     """Number of async delegations currently running."""
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") in {"running", "finalizing"})
+        return sum(
+            1 for r in _records.values()
+            if r.get("status") in {"running", "stalling", "finalizing"}
+        )
 
 
 def _new_delegation_id() -> str:
@@ -576,7 +605,7 @@ def dispatch_async_delegation(
     origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
-    timeout_seconds: Optional[float] = None,
+    progress_fn: Optional[Callable[[], tuple]] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -601,6 +630,14 @@ def dispatch_async_delegation(
     interrupt_fn
         Optional callable to signal the child to stop (used on shutdown /
         explicit cancel).
+    progress_fn
+        Optional zero-arg callable returning ``(token, in_tool)`` where
+        ``token`` is any comparable snapshot of the child's progress (api
+        call count + current tool) and ``in_tool`` says whether the child is
+        currently inside a tool call. Sampled by the stale monitor; a frozen
+        token past the stale threshold marks the delegation stuck (see the
+        stale-detection block at the top of this module). When omitted, the
+        delegation is not monitored.
     max_async_children
         Concurrency cap. When at capacity the dispatch is REJECTED (the caller
         should fall back to sync or tell the user) rather than queued, so a
@@ -629,14 +666,19 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
-        "timeout_seconds": timeout_seconds,
+        "progress_fn": progress_fn,
+        # Stale-monitor bookkeeping (see _stale_monitor_loop).
+        "_progress_token": None,
+        "_progress_ts": dispatched_at,
+        "_interrupted_at": None,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
     with _records_lock:
         running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
+            1 for r in _records.values()
+            if r.get("status") in ("running", "stalling")
         )
         if running >= max_async_children:
             return {
@@ -685,7 +727,8 @@ def dispatch_async_delegation(
             "status": "rejected",
             "error": f"Failed to schedule async delegation: {exc}",
         }
-    _start_timeout_watchdog(delegation_id, timeout_seconds, is_batch=False)
+    if progress_fn is not None:
+        _ensure_stale_monitor()
 
     logger.info(
         "Dispatched async delegation %s (session_key=%s): %s",
@@ -711,7 +754,7 @@ def _begin_finalization(
     """Atomically claim terminal delivery while keeping the record active."""
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is None or record.get("status") != "running":
+        if record is None or record.get("status") not in ("running", "stalling"):
             return
         # Stay active until durable persistence and queue publication finish;
         # otherwise process shutdown can kill this daemon worker in the narrow
@@ -720,11 +763,9 @@ def _begin_finalization(
         record["completed_at"] = time.time()
         interrupt_fn = record.get("interrupt_fn")
         record["interrupt_fn"] = None  # drop the closure; child is done
-        timer = record.pop("_timeout_timer", None)
+        record["progress_fn"] = None  # stop stale-monitor sampling
         event_record = dict(record)
 
-    if timer is not None:
-        timer.cancel()
     return event_record, interrupt_fn
 
 
@@ -810,7 +851,7 @@ def dispatch_async_delegation_batch(
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
-    timeout_seconds: Optional[float] = None,
+    progress_fn: Optional[Callable[[], tuple]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -856,11 +897,15 @@ def dispatch_async_delegation_batch(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
-        "timeout_seconds": timeout_seconds,
+        "progress_fn": progress_fn,
+        "_progress_token": None,
+        "_progress_ts": dispatched_at,
+        "_interrupted_at": None,
     }
     with _records_lock:
         running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
+            1 for r in _records.values()
+            if r.get("status") in ("running", "stalling")
         )
         if running >= max_async_children:
             return {
@@ -913,7 +958,8 @@ def dispatch_async_delegation_batch(
             "status": "rejected",
             "error": f"Failed to schedule async delegation batch: {exc}",
         }
-    _start_timeout_watchdog(delegation_id, timeout_seconds, is_batch=True)
+    if progress_fn is not None:
+        _ensure_stale_monitor()
 
     logger.info(
         "Dispatched async delegation batch %s (%d task(s), session_key=%s)",
@@ -989,65 +1035,136 @@ def _push_batch_completion_event(
         )
 
 
-def _start_timeout_watchdog(
-    delegation_id: str,
-    timeout_seconds: Optional[float],
-    *,
-    is_batch: bool,
-) -> None:
-    """Finalize a detached delegation if its worker never returns.
+def _ensure_stale_monitor() -> None:
+    """Start (once) the module-level stale-delegation monitor thread.
 
-    ``delegate_task(background=true)`` returns a handle immediately; the only
-    user-visible result is the completion event this module enqueues later. If
-    the worker thread wedges before returning, the normal ``finally`` block is
-    never reached and users only see a permanent "dispatched" state. A
-    configured timeout must therefore be enforced by the async registry itself,
-    not only inside ``delegate_tool._run_single_child``.
+    One daemon thread serves every dispatch; it exits on its own when no
+    monitorable records remain, and is restarted by the next dispatch that
+    carries a ``progress_fn``.
     """
-    if timeout_seconds is None or timeout_seconds <= 0:
-        return
-
-    timer = threading.Timer(
-        timeout_seconds,
-        _expire_delegation,
-        args=(delegation_id, float(timeout_seconds)),
-        kwargs={"is_batch": is_batch},
-    )
-    timer.daemon = True
-    with _records_lock:
-        record = _records.get(delegation_id)
-        if record is None or record.get("status") != "running":
+    global _monitor_thread
+    with _monitor_lock:
+        if _monitor_thread is not None and _monitor_thread.is_alive():
             return
-        record["timeout_seconds"] = float(timeout_seconds)
-        record["_timeout_timer"] = timer
-    timer.start()
+        _monitor_stop.clear()
+        _monitor_thread = threading.Thread(
+            target=_stale_monitor_loop,
+            name="async-delegate-stale-monitor",
+            daemon=True,
+        )
+        _monitor_thread.start()
 
 
-def _expire_delegation(
-    delegation_id: str,
-    timeout_seconds: float,
-    *,
-    is_batch: bool,
-) -> None:
-    """Timeout a still-running async delegation and emit one completion."""
+def _stale_monitor_loop() -> None:
+    """Sweep running delegations for stalled progress.
+
+    Per sweep, for every running record with a ``progress_fn``:
+
+    - Sample ``(token, in_tool)``. A changed token refreshes the record's
+      progress timestamp — a child that keeps advancing is never touched, no
+      matter how long it runs.
+    - A frozen token past the idle/in-tool threshold marks the record
+      ``stalling``: we call ``interrupt_fn`` so a responsive-but-slow child
+      can unwind and deliver its (partial) result through the normal
+      ``_finalize`` path with full fidelity.
+    - A ``stalling`` record whose runner still hasn't returned after the
+      grace window is force-finalized with one terminal ``stalled`` event so
+      the owning session hears an outcome and the async slot frees. A late
+      runner return after that is ignored by ``_begin_finalization``.
+    """
+    while not _monitor_stop.wait(_STALE_CHECK_INTERVAL):
+        now = time.time()
+        stalled: List[tuple] = []  # (delegation_id, is_batch, quiet_for, in_tool)
+        expired: List[str] = []  # stalling past grace → force-finalize
+        any_monitorable = False
+        with _records_lock:
+            for record in _records.values():
+                status = record.get("status")
+                if status == "stalling":
+                    any_monitorable = True
+                    interrupted_at = record.get("_interrupted_at") or now
+                    if now - interrupted_at >= _STALL_GRACE_SECONDS:
+                        expired.append(record["delegation_id"])
+                    continue
+                if status != "running":
+                    continue
+                progress_fn = record.get("progress_fn")
+                if progress_fn is None:
+                    continue
+                any_monitorable = True
+                try:
+                    token, in_tool = progress_fn()
+                except Exception:
+                    # An unreadable child must not look permanently healthy —
+                    # keep the last timestamp running instead of refreshing it.
+                    token, in_tool = record.get("_progress_token"), False
+                if token != record.get("_progress_token"):
+                    record["_progress_token"] = token
+                    record["_progress_ts"] = now
+                    continue
+                quiet_for = now - (record.get("_progress_ts") or now)
+                limit = (
+                    _STALE_IN_TOOL_SECONDS if in_tool else _STALE_IDLE_SECONDS
+                )
+                if quiet_for >= limit:
+                    record["status"] = "stalling"
+                    record["_interrupted_at"] = now
+                    stalled.append(
+                        (
+                            record["delegation_id"],
+                            bool(record.get("is_batch")),
+                            quiet_for,
+                            in_tool,
+                        )
+                    )
+        for delegation_id, _is_batch, quiet_for, in_tool in stalled:
+            logger.warning(
+                "Async delegation %s made no progress for %.0fs "
+                "(in_tool=%s) — interrupting; grace window %.0fs",
+                delegation_id, quiet_for, in_tool, _STALL_GRACE_SECONDS,
+            )
+            with _records_lock:
+                record = _records.get(delegation_id)
+                fn = record.get("interrupt_fn") if record else None
+            if callable(fn):
+                try:
+                    fn()
+                except Exception as exc:
+                    logger.debug(
+                        "Async delegation %s stall interrupt failed: %s",
+                        delegation_id, exc,
+                    )
+        for delegation_id in expired:
+            _finalize_stalled(delegation_id)
+        if not any_monitorable:
+            return
+
+
+def _finalize_stalled(delegation_id: str) -> None:
+    """Force-finalize a stalling delegation whose runner never returned."""
     claimed = _begin_finalization(delegation_id)
     if claimed is None:
         return
-    event_record, interrupt_fn = claimed
+    event_record, _interrupt_fn = claimed
 
     completed_at = event_record.get("completed_at") or time.time()
     duration = round(
         completed_at - (event_record.get("dispatched_at") or completed_at),
         2,
     )
-    timeout_text = _format_timeout_seconds(timeout_seconds)
     error = (
-        f"Async delegation {delegation_id} timed out after {timeout_text}s "
-        "without producing a completion event. Hermes requested interruption; "
-        "the detached worker may be stuck before or inside the first model API "
-        "call."
+        f"Async delegation {delegation_id} stalled: the detached subagent "
+        "stopped making progress (no new API calls or tool activity), did "
+        "not respond to interruption, and never produced a completion "
+        "event. The worker may be wedged inside a model API call — this is "
+        "a known failure mode of long-lived gateway processes (#60203). "
+        "Re-dispatch the task if it is still needed."
     )
-    if is_batch:
+    logger.error(
+        "Async delegation %s force-finalized as stalled after %.0fs",
+        delegation_id, duration,
+    )
+    if event_record.get("is_batch"):
         _push_batch_completion_event(
             event_record,
             {
@@ -1055,32 +1172,22 @@ def _expire_delegation(
                 "error": error,
                 "total_duration_seconds": duration,
             },
-            "timeout",
+            "stalled",
         )
     else:
         _push_completion_event(
             event_record,
             {
-                "status": "timeout",
+                "status": "stalled",
                 "summary": None,
                 "error": error,
                 "api_calls": 0,
                 "duration_seconds": duration,
-                "exit_reason": "timeout",
+                "exit_reason": "stalled",
             },
-            "timeout",
+            "stalled",
         )
-    _finish_finalization(delegation_id, "timeout")
-
-    if callable(interrupt_fn):
-        try:
-            interrupt_fn()
-        except Exception as exc:
-            logger.debug(
-                "Async delegation %s timeout interrupt failed: %s",
-                delegation_id,
-                exc,
-            )
+    _finish_finalization(delegation_id, "stalled")
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:
@@ -1093,7 +1200,8 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             {
                 k: v
                 for k, v in r.items()
-                if k not in {"interrupt_fn", "_timeout_timer"}
+                if k not in {"interrupt_fn", "progress_fn"}
+                and not k.startswith("_")
             }
             for r in _records.values()
         ]
@@ -1109,7 +1217,8 @@ def interrupt_all(reason: str = "shutdown") -> int:
     count = 0
     with _records_lock:
         targets = [
-            r for r in _records.values() if r.get("status") == "running"
+            r for r in _records.values()
+            if r.get("status") in ("running", "stalling")
         ]
     for r in targets:
         fn = r.get("interrupt_fn")
@@ -1157,7 +1266,7 @@ def interrupt_for_session(
     with _records_lock:
         targets = [
             r for r in _records.values()
-            if r.get("status") == "running"
+            if r.get("status") in ("running", "stalling")
             and (
                 (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
                 or (session_key and str(r.get("session_key") or "") == session_key)
@@ -1184,19 +1293,18 @@ def interrupt_for_session(
 
 
 def _reset_for_tests() -> None:
-    """Test-only: clear all state and tear down the executor."""
-    global _executor, _executor_max_workers
+    """Test-only: clear all state and tear down the executor + monitor."""
+    global _executor, _executor_max_workers, _monitor_thread
     with _executor_lock:
         if _executor is not None:
             _executor.shutdown(wait=False)
         _executor = None
         _executor_max_workers = 0
+    _monitor_stop.set()
+    with _monitor_lock:
+        thread = _monitor_thread
+        _monitor_thread = None
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=2)
     with _records_lock:
-        timers = [
-            timer
-            for record in _records.values()
-            if (timer := record.get("_timeout_timer")) is not None
-        ]
         _records.clear()
-    for timer in timers:
-        timer.cancel()

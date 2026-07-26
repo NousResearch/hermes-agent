@@ -3038,6 +3038,27 @@ def delegate_task(
                 except Exception:
                     pass
 
+        def _batch_progress():
+            # Progress token for the async registry's stale monitor: the
+            # combined (api_call_count, current_tool) of every child. Any
+            # child advancing an iteration or entering/leaving a tool changes
+            # the token; a frozen token past the stale threshold means the
+            # whole detached batch is wedged (e.g. stuck inside the first
+            # model API call — #60203). in_tool=True while ANY child is
+            # inside a tool so legitimately slow tools get the higher
+            # staleness ceiling, mirroring the sync-path heartbeat monitor.
+            parts = []
+            in_tool = False
+            for _c in _child_agents:
+                try:
+                    _summary = _c.get_activity_summary()
+                    _tool = _summary.get("current_tool")
+                    parts.append((_summary.get("api_call_count", 0), _tool))
+                    in_tool = in_tool or bool(_tool)
+                except Exception:
+                    parts.append(None)
+            return tuple(parts), in_tool
+
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
@@ -3057,7 +3078,7 @@ def delegate_task(
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
-            timeout_seconds=_get_child_timeout(),
+            progress_fn=_batch_progress,
         )
 
         if dispatch.get("status") == "dispatched":

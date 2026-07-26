@@ -3512,11 +3512,28 @@ class BasePlatformAdapter(ABC):
         override this for a richer UX.
         """
         if choices:
+            # Multi-select clarifies register their flag on the pending entry;
+            # look it up by id so the signature stays adapter-compatible.
+            _is_multi = False
+            try:
+                from tools import clarify_gateway as _cg
+                with _cg._lock:
+                    _entry = _cg._entries.get(clarify_id)
+                _is_multi = bool(_entry and getattr(_entry, "multi_select", False))
+            except Exception:
+                _is_multi = False
             lines = [f"❓ {question}", ""]
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            if _is_multi:
+                lines.append(
+                    "Multiple selections allowed — reply with the numbers "
+                    "separated by commas or spaces (e.g. \"1, 3\"), the option "
+                    "text, or your own answer."
+                )
+            else:
+                lines.append("Reply with the number, the option text, or your own answer.")
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).

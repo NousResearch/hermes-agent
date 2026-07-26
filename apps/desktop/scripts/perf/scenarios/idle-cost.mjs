@@ -78,13 +78,17 @@ const idleCost = seconds => `
   })()
 `
 
-/** Record frame pacing across an interaction driven from the page, plus WHAT
- *  rendered during it — a slow interaction is almost never the handler, it is
- *  whatever re-renders underneath while the handler runs. */
-const withFrames = body => `
+/** Record frame pacing across an interaction driven from the page.
+ *
+ *  `record` MUST be false for any fps number you intend to believe: the render
+ *  counter walks the whole fiber tree on every commit, so recording during a
+ *  gesture measures the instrumentation as much as the app. Attribution and
+ *  timing therefore run as two separate passes — the observer effect here is
+ *  large enough to hide a 15x render reduction behind an unchanged fps. */
+const withFrames = (body, record = false) => `
   (async () => {
     const rc = window.__RENDER_COUNTS__
-    rc.start()
+    ${record ? 'rc.start()' : ''}
     const frames = []
     let last = performance.now()
     let stop = false
@@ -98,7 +102,7 @@ const withFrames = body => `
     requestAnimationFrame(tick)
     ${body}
     stop = true
-    rc.stop()
+    ${record ? 'rc.stop()' : ''}
     const total = frames.reduce((a, b) => a + b, 0)
     const sorted = [...frames].sort((a, b) => a - b)
     const pct = p => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : 0
@@ -108,8 +112,8 @@ const withFrames = body => `
       worst: sorted.length ? sorted[sorted.length - 1] : 0,
       slow33: frames.filter(f => f > 33).length,
       n: frames.length,
-      commits: rc.commits(),
-      top: rc.report(10)
+      commits: ${record ? 'rc.commits()' : '0'},
+      top: ${record ? 'rc.report(10)' : '[]'}
     })
   })()
 `

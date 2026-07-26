@@ -3810,22 +3810,33 @@ def _configure_vision_backend() -> None:
 def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
     """Provider + model picker for vision, mirroring the ``/model`` surface.
 
-    Lists authenticated providers (same data source as the model switcher),
-    lets the user pick one and then a model from its curated list (or type a
-    custom id), and persists ``auxiliary.vision.provider`` + ``.model``.
+    Provider rows come from ``build_aux_picker_rows()`` — the shared aux-picker
+    substrate — so this picker lists exactly what the ``hermes model`` aux-task
+    picker lists, including the user's own ``providers:`` / ``custom_providers:``
+    endpoints. Lets the user pick a provider and then a model from its curated
+    list (or type a custom id), and persists ``auxiliary.vision.provider`` +
+    ``.model``.
     """
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.inventory import (
+            build_aux_picker_rows,
+            format_aux_picker_entries,
+        )
     except Exception as exc:  # pragma: no cover - import guard
         _print_warning(f"  Could not load provider list: {exc}")
         return
 
+    current_provider = str(vision_cfg.get("provider") or "").strip()
+    current_model = str(vision_cfg.get("model") or "").strip()
+    current_base_url = str(vision_cfg.get("base_url") or "").strip()
+
     try:
-        # Interactive picker: include providers whose credential pool is
-        # entirely rate-limited (exhausted) so the user can still route vision
-        # here — rate limits are per-model and this persists a config used
-        # later. Same rationale as the /model picker (#66584).
-        providers = list_authenticated_providers(max_models=40, for_picker=True)
+        providers = build_aux_picker_rows(
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+            max_models=40,
+        )
     except Exception as exc:
         _print_warning(f"  Could not detect providers: {exc}")
         providers = []
@@ -3837,11 +3848,14 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
         )
         return
 
-    provider_labels = []
-    for p in providers:
-        name = p.get("name") or p.get("slug")
-        total = p.get("total_models", len(p.get("models", [])))
-        provider_labels.append(f"{name}  ({total} models)" if total else str(name))
+    provider_labels = [
+        label
+        for _slug, label, _models in format_aux_picker_entries(
+            providers,
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+        )
+    ]
     provider_labels.append("Cancel")
 
     pidx = _prompt_choice("  Choose vision provider:", provider_labels, 0)

@@ -410,43 +410,17 @@ class _StreamErrorEvent(Exception):
 
 
 # ── Topic Signal Parser ───────────────────────────────────────────
-_TOPIC_SHIFT_RE = re.compile(
-    r"^TOPIC:\s*(?:new\s+)?(.+?)\s*$", re.MULTILINE
-)
-_TOPIC_MATCH_RE = re.compile(
-    r"^TOPIC:\s*(\d+)\s*$", re.MULTILINE
-)
-_TOPIC_SHIFT_THRESHOLD = 1  # single TOPIC: new triggers immediately
-_TOPIC_CONSECUTIVE_THRESHOLD = 1
+_TOPIC_RE = re.compile(r"^TOPIC:\s*(.+?)\s*$", re.MULTILINE)
 
 
-def _parse_topic_signals(content: str) -> tuple[str, Optional[dict], Optional[dict]]:
-    """Extract and strip TOPIC: <id> or TOPIC: new <name> lines from content.
-
-    Returns (cleaned_content, shift_info, match_info) where:
-      shift_info = {"score": 10, "name": str} when TOPIC: new <name>
-      match_info = {"topic_id": int, "score": 10} when TOPIC: <id>
-    """
-    shift_info = None
-    match_info = None
-
-    # Check MATCH first (numeric topic ID)
-    m = _TOPIC_MATCH_RE.search(content)
-    if m:
-        topic_id = int(m.group(1))
-        match_info = {"topic_id": topic_id, "score": 10}
-        content = content[: m.start()] + content[m.end() :]
-
-    # Check SHIFT (named topic, with optional "new" prefix)
-    m = _TOPIC_SHIFT_RE.search(content)
+def _parse_topic(content: str) -> tuple[str, Optional[str]]:
+    """Extract TOPIC: <name> from content. Returns (cleaned_content, topic_name)."""
+    m = _TOPIC_RE.search(content)
     if m:
         name = m.group(1).strip()
-        # Skip if it looks like a number (already handled by MATCH)
-        if not name.isdigit():
-            shift_info = {"score": 10, "name": name}
-            content = content[: m.start()] + content[m.end() :]
-
-    return content.strip(), shift_info, match_info
+        content = content[: m.start()] + content[m.end() :]
+        return content.strip(), name
+    return content.strip(), None
 
 
 class AIAgent:
@@ -1745,30 +1719,40 @@ class AIAgent:
         return False
 
     def _process_topic_signals(self, content: str) -> str:
-        """Parse TOPIC: <id> or TOPIC: new <name> from assistant content.
+        """Parse TOPIC: <name> from assistant content.
 
-        Strips the signal lines. Triggers topic creation/switch immediately.
+        Matches name against existing topics: switch if match, create if new.
         Returns cleaned content.
         """
-        cleaned, shift, match = _parse_topic_signals(content)
-
-        if shift and shift["name"]:
-            self._create_topic_from_shift(shift["name"])
+        cleaned, name = _parse_topic(content)
+        if not name:
             return cleaned
 
-        if match and match["topic_id"]:
-            self._switch_to_topic(match["topic_id"])
+        # Check if name matches an existing topic
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if db and sid:
+            try:
+                existing = db.get_topics(sid)
+                for t in existing:
+                    if t["title"].lower() == name.lower():
+                        if t["id"] != self._active_topic_id:
+                            self._switch_to_topic(t["id"])
+                        return cleaned
+                # No match: create new topic
+                self._create_topic_from_shift(name)
+            except Exception:
+                pass
 
         return cleaned
 
     def _create_topic_from_shift(self, name: str) -> None:
-        """Create a new topic from TOPIC: new <name> signal."""
+        """Create a new topic from TOPIC: <name> signal."""
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
         if not db or not sid:
             return
         try:
-            # Archive current active topic first
             if self._active_topic_id is not None:
                 db.set_active_topic(sid, 0)
             topic_id = db.create_topic(sid, name)

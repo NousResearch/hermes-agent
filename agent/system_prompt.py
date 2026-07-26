@@ -376,13 +376,10 @@ def _build_topic_detection_block(agent: Any) -> str:
 
     # Ask agent to classify the topic as part of its response
     lines.append(
-        "Append exactly one line to every response: TOPIC: <id or new name>"
+        "Append exactly one line to every response: TOPIC: <name>"
     )
     lines.append(
-        "Pick from table above, or 'TOPIC: new <name>' for new subjects."
-    )
-    lines.append(
-        "Follow-ups on same subject reuse the same topic ID. Do NOT skip."
+        "Use the same name for follow-ups on the same subject."
     )
     return "\n".join(lines)
 

@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  currentPickerSelection,
-  displayModelName,
-  formatModelStatusLabel,
-  reasoningEffortLabel
-} from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelStatusLabel } from './model-status-label'
+import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
   it('formats display names consistently', () => {
@@ -34,9 +30,16 @@ describe('model-status-label', () => {
     )
   })
 
-  it('always surfaces the effort (default medium) so the level is visible', () => {
+  it('falls back to the profile default effort, then to medium', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
     expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
+    // No session-level effort → the configured profile default is advertised,
+    // not Hermes' built-in medium.
+    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high' })).toBe('GPT-5.5 · High')
+    // An explicit session effort still wins over the profile default.
+    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high', reasoningEffort: 'low' })).toBe(
+      'GPT-5.5 · Low'
+    )
   })
 
   it('returns just the placeholder name when there is no model', () => {

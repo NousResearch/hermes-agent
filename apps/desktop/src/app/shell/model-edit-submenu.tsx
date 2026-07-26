@@ -13,23 +13,24 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { normalize } from '@/lib/text'
+import {
+  DEFAULT_REASONING_EFFORT,
+  isThinkingEnabled,
+  REASONING_EFFORTS,
+  resolveReasoningEffort
+} from '@/lib/reasoning-effort'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
-import { markComposerSelectionManual, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
+import {
+  $defaultReasoningEffort,
+  markComposerSelectionManual,
+  setCurrentFastMode,
+  setCurrentReasoningEffort
+} from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 
-// Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
+// Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
-const EFFORT_OPTIONS = [
-  { value: 'minimal', labelKey: 'minimal' },
-  { value: 'low', labelKey: 'low' },
-  { value: 'medium', labelKey: 'medium' },
-  { value: 'high', labelKey: 'high' },
-  { value: 'xhigh', labelKey: 'xhigh' },
-  { value: 'max', labelKey: 'max' },
-  { value: 'ultra', labelKey: 'ultra' }
-] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
@@ -111,8 +112,9 @@ export function ModelEditSubmenu({
   const activeSessionId = useStore(view.$runtimeId)
   const touchesPrimary = view.kind === 'primary'
 
-  const effortValue = normalizeEffort(effort)
-  const thinkingOn = isThinkingEnabled(effort)
+  const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
+  const effortValue = resolveReasoningEffort(effort, defaultEffort)
+  const thinkingOn = isThinkingEnabled(effort, defaultEffort)
 
   // Editing always records the model's global preset (keyed by provider::model,
   // not per-surface — a tile edit re-applies to that model everywhere); the
@@ -224,7 +226,7 @@ export function ModelEditSubmenu({
               <Switch
                 checked={thinkingOn}
                 className="ml-auto"
-                onCheckedChange={checked => void patchReasoning(checked ? effortValue || 'medium' : 'none')}
+                onCheckedChange={checked => void patchReasoning(checked ? effortValue || defaultEffort : 'none')}
                 size="xs"
               />
             </DropdownMenuItem>
@@ -240,14 +242,14 @@ export function ModelEditSubmenu({
               <DropdownMenuSeparator className="mx-0" />
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {EFFORT_OPTIONS.map(option => (
+                {REASONING_EFFORTS.map(value => (
                   <DropdownMenuRadioItem
                     className={dropdownMenuRow}
-                    key={option.value}
+                    key={value}
                     onSelect={event => event.preventDefault()}
-                    value={option.value}
+                    value={value}
                   >
-                    {copy[option.labelKey]}
+                    {copy[value]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -257,20 +259,4 @@ export function ModelEditSubmenu({
       )}
     </DropdownMenuSubContent>
   )
-}
-
-function isThinkingEnabled(effort: string): boolean {
-  // Empty = Hermes default (medium) = on; only an explicit "none" is off.
-  return normalize(effort || 'medium') !== 'none'
-}
-
-function normalizeEffort(effort: string): string {
-  const value = normalize(effort || 'medium')
-
-  // Thinking off → no effort selected in the radio group.
-  if (value === 'none') {
-    return ''
-  }
-
-  return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
 }

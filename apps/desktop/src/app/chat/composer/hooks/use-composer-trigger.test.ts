@@ -25,11 +25,11 @@ function mountEditor(text: string) {
   return editor
 }
 
-const item = (command: string): Unstable_TriggerItem => ({
+const item = (command: string, group = 'Skills'): Unstable_TriggerItem => ({
   id: command,
   type: 'slash',
   label: command.slice(1),
-  metadata: { command, display: command, meta: '', group: 'Skills', action: '', rawText: command }
+  metadata: { command, display: command, meta: '', group, action: '', rawText: command }
 })
 
 function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[]) {
@@ -81,6 +81,25 @@ describe('useComposerTrigger — slash anywhere in the prompt', () => {
     // The `/cle` the user typed is replaced by the full command; "please run"
     // in front of it survives untouched.
     expect(composerPlainText(editor)).toBe('please run /clean ')
+  })
+
+  it('offers only skills mid-message, not app commands', () => {
+    // `/model` and `/new` act on the app — meaningless as a reference in prose.
+    const editor = mountEditor('please run /')
+    const { hook } = mountTrigger(editor, [item('/clean'), item('/model', 'Commands'), item('/new', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.triggerItems.map(i => i.label)).toEqual(['clean'])
+  })
+
+  it('still offers the full command set at the start of the prompt', () => {
+    const editor = mountEditor('/')
+    const { hook } = mountTrigger(editor, [item('/clean'), item('/model', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.triggerItems.map(i => i.label)).toEqual(['clean', 'model'])
   })
 
   it('still opens the list for a slash at the start of the prompt', () => {

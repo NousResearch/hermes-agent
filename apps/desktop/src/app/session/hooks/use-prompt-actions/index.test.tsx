@@ -1122,6 +1122,51 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     $queuedPromptsBySession.set({})
   })
 
+  it('binds slash output and the busy queue to the TARGET session, not the foreground selection', async () => {
+    // A tile (⌘T tab, split pane) routes its slash commands through this hook
+    // with an explicit runtime id while the foreground selection names a
+    // different conversation. Binding the output writer to the foreground
+    // selection re-keyed the tile's cache entry onto the primary's stored
+    // session and parked its queued payload on the primary's queue.
+    const tileRuntimeId = 'tile-runtime'
+    const tileStoredId = 'tile-stored'
+
+    $queuedPromptsBySession.set({})
+    publishSessionState(tileRuntimeId, {
+      ...createClientSessionState(tileStoredId),
+      busy: true
+    })
+
+    const boundStoredIds: (null | string | undefined)[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'slash.exec' ? { type: 'send', message: 'run it in the tab' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={(_sessionId, storedSessionId) => boundStoredIds.push(storedSessionId)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="primary-stored"
+      />
+    )
+
+    await handle!.submitText('/audit-only run it in the tab', { sessionId: tileRuntimeId })
+
+    // Every transcript write lands on the tile's own stored session.
+    expect(boundStoredIds).not.toHaveLength(0)
+    expect(new Set(boundStoredIds)).toEqual(new Set([tileStoredId]))
+    // …and the kickoff queues against the tile, never the foreground chat.
+    expect(getQueuedPrompts(tileStoredId).map(entry => entry.text)).toEqual(['run it in the tab'])
+    expect(getQueuedPrompts('primary-stored')).toEqual([])
+
+    dropSessionState(tileRuntimeId)
+    $queuedPromptsBySession.set({})
+  })
+
   it('slash status header carries the command token, not the full invocation', async () => {
     // `/goal <long prose>` used to echo the entire invocation in the mono
     // header AND the goal text again in the backend notice right under it.

@@ -262,7 +262,7 @@ export const ResponseLoadingIndicator: FC = () => {
       ) : localLoad ? (
         <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
       ) : null}
-      <ActivityTimerText seconds={elapsed} />
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }
@@ -374,7 +374,7 @@ export const TurnActivityIndicator: FC = () => {
       ) : localLoad ? (
         <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
       ) : null}
-      <ActivityTimerText seconds={elapsed} />
+      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
     </StatusRow>
   )
 }

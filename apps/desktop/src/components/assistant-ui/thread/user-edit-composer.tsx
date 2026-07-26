@@ -31,6 +31,7 @@ import {
 } from '@/app/chat/composer/inline-refs'
 import {
   composerPlainText,
+  insertComposerContentsAtCaret,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
@@ -38,6 +39,7 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
+import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
 import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
@@ -503,7 +505,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     event.preventDefault()
     rememberInitialDraft()
-    document.execCommand('insertText', false, pastedText)
+
+    // Links land as `@url:` chips, same as the main composer.
+    insertComposerContentsAtCaret(event.currentTarget, linkifyUrls(pastedText))
     syncDraftFromEditor(event.currentTarget)
   }
 
@@ -598,6 +602,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     if (event.key === 'Escape') {
       event.preventDefault()
       aui.composer().cancel()
+
+      return
+    }
+
+    // A typed link finished with a space chips like a pasted one.
+    if (chipTypedUrlOnSpace(event)) {
+      event.preventDefault()
+      rememberInitialDraft()
+      syncDraftFromEditor(event.currentTarget)
 
       return
     }

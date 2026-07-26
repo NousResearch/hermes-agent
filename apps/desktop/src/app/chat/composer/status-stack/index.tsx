@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'rea
 import { useNavigate } from 'react-router-dom'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
+import { clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from '@/app/chat/surface-vars'
 import { AGENTS_ROUTE } from '@/app/routes'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
@@ -197,12 +198,14 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // height never sees it. Publish our own measured height — bucketed like the
   // composer's, to avoid style invalidation churn — so the thread's
   // last-message clearance can add it and the stack never hides messages.
+  // Scoped to THIS chat surface: tiles render their own stack beside the
+  // workspace pane, and a shared global would let the taller one dictate every
+  // thread's padding (see surface-vars.ts).
   useLayoutEffect(() => {
-    const root = document.documentElement
     const el = stackRef.current
 
     if (!visible || !el) {
-      root.style.removeProperty('--status-stack-measured-height')
+      clearSurfaceVar(stackRef.current, STATUS_STACK_VAR)
 
       return
     }
@@ -214,7 +217,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
       if (bucket !== last) {
         last = bucket
-        root.style.setProperty('--status-stack-measured-height', `${bucket}px`)
+        setSurfaceVar(el, STATUS_STACK_VAR, `${bucket}px`)
       }
     }
 
@@ -224,7 +227,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
     return () => {
       observer.disconnect()
-      root.style.removeProperty('--status-stack-measured-height')
+      clearSurfaceVar(el, STATUS_STACK_VAR)
     }
   }, [visible])
 

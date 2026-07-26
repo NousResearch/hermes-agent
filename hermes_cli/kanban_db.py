@@ -1379,6 +1379,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = connect_tracked(
         path,
+        connect_fn=sqlite3.connect,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
     )
@@ -1752,18 +1753,22 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     # This reads the whole DB file to fingerprint it. That is a close()-on-a-
     # database-file hazard (it cancels this process's POSIX advisory locks --
     # see hermes_cli.sqlite_safe_read), so it must only run once the board has
-    # been taken out of service: every caller reaches here on the corrupt/
-    # quarantine path, after the probe connection has been closed. If you add
-    # a caller, make sure no connection to this path is still open.
+    # been taken out of service. Every caller reaches here on the corrupt/
+    # quarantine path after closing its probe connection, but another
+    # SessionDB/kanban connection elsewhere in the process would still be at
+    # risk -- so REFUSE rather than warn-and-proceed. Losing a forensic copy
+    # is strictly better than corrupting the live database we are trying to
+    # rescue.
     from hermes_cli.sqlite_safe_read import has_live_connection
 
     if has_live_connection(resolved):
-        _log.warning(
-            "quarantining %s while a connection to it is still open in this "
-            "process; close it first -- fingerprinting the file cancels the "
-            "process's POSIX locks on it",
+        _log.error(
+            "refusing to quarantine %s: a connection to it is still open in "
+            "this process, and fingerprinting the file would cancel that "
+            "connection's POSIX locks. Close all connections first.",
             resolved,
         )
+        return None
     digest = hashlib.sha256()
     try:
         with resolved.open("rb") as handle:

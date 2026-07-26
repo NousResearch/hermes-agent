@@ -3276,17 +3276,14 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
-        # connect_tracked supplies its own factory; the caller's wins, and it
-        # skips tracking for non-TrackedConnection results.
+        # connect_tracked passes a tracking-augmented factory; drop it and
+        # substitute the double, which connect_tracked will re-augment.
         kwargs.pop("factory", None)
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )
 
-    with _patch(
-        "hermes_cli.sqlite_safe_read.sqlite3.connect",
-        side_effect=wal_blocking_connect,
-    ):
+    with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
         with caplog.at_level("WARNING", logger="hermes_state"):
             conn = kb.connect()
 

@@ -71,6 +71,30 @@ describe('insertInlineRefsIntoEditor', () => {
     expect(editor.querySelector(':scope > div')).toBeNull()
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts` ')
   })
+
+  it('separates a chip from the word the caret sits after', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(document.createTextNode('review'))
+    document.body.append(editor)
+    caretIn(editor)
+
+    expect(insertInlineRefsIntoEditor(editor, ['@file:`src/a.ts`'])).toBe('review @file:`src/a.ts` ')
+
+    editor.remove()
+  })
+
+  it('does not double the space when one is already there', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(document.createTextNode('review '))
+    document.body.append(editor)
+    caretIn(editor)
+
+    expect(insertInlineRefsIntoEditor(editor, ['@file:`src/a.ts`'])).toBe('review @file:`src/a.ts` ')
+
+    editor.remove()
+  })
 })
 
 describe('insertComposerContentsAtCaret', () => {

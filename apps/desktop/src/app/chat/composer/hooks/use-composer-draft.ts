@@ -408,6 +408,7 @@ export function useComposerDraft({
     requestMainFocus,
     sessionIdRef,
     setComposerText,
-    stashAt
+    stashAt,
+    syncDraftFromEditor
   }
 }

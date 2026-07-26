@@ -151,7 +151,13 @@ def _extract_line_deltas(tool_name: str, result: Any) -> tuple[int, int] | None:
     diff = payload.get("diff")
     if not isinstance(diff, str) or not diff.strip():
         return None
-    return _count_diff_lines(diff)
+    added, removed = _count_diff_lines(diff)
+    # A diff that carries no +/- content lines (e.g. a bare hunk header) tells
+    # us nothing — report it as unknown rather than rendering a misleading
+    # "+0 -0" next to a real edit.
+    if added == 0 and removed == 0:
+        return None
+    return added, removed
 
 
 class TurnSummaryCollector:

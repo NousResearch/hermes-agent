@@ -825,6 +825,16 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
+    # Structured stall metadata (#51690) — additive, present only on
+    # stall-monitor finalizations.
+    for _k in (
+        "stalled_after_quiet_seconds",
+        "stall_threshold_seconds",
+        "stall_phase",
+        "stall_grace_seconds",
+    ):
+        if _k in result:
+            evt[_k] = result[_k]
     _persist_completion(evt, result)
     try:
         process_registry.completion_queue.put(evt)
@@ -1024,6 +1034,16 @@ def _push_batch_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
     }
+    # Structured stall metadata (#51690) — additive, present only on
+    # stall-monitor finalizations.
+    for _k in (
+        "stalled_after_quiet_seconds",
+        "stall_threshold_seconds",
+        "stall_phase",
+        "stall_grace_seconds",
+    ):
+        if _k in combined:
+            evt[_k] = combined[_k]
     _persist_completion(evt, combined)
     try:
         process_registry.completion_queue.put(evt)
@@ -1109,6 +1129,13 @@ def _stale_monitor_loop() -> None:
                 if quiet_for >= limit:
                     record["status"] = "stalling"
                     record["_interrupted_at"] = now
+                    # Structured stall context for the terminal event and
+                    # status listings (#51690): how long progress was frozen,
+                    # which threshold applied, and whether the child was
+                    # inside a tool when it went quiet.
+                    record["_stall_quiet_seconds"] = round(quiet_for, 2)
+                    record["_stall_threshold_seconds"] = limit
+                    record["_stall_in_tool"] = bool(in_tool)
                     stalled.append(
                         (
                             record["delegation_id"],
@@ -1152,18 +1179,36 @@ def _finalize_stalled(delegation_id: str) -> None:
         completed_at - (event_record.get("dispatched_at") or completed_at),
         2,
     )
+    quiet_seconds = event_record.get("_stall_quiet_seconds")
+    threshold_seconds = event_record.get("_stall_threshold_seconds")
+    stall_in_tool = event_record.get("_stall_in_tool")
     error = (
         f"Async delegation {delegation_id} stalled: the detached subagent "
-        "stopped making progress (no new API calls or tool activity), did "
-        "not respond to interruption, and never produced a completion "
-        "event. The worker may be wedged inside a model API call — this is "
-        "a known failure mode of long-lived gateway processes (#60203). "
-        "Re-dispatch the task if it is still needed."
+        "stopped making progress (no new API calls, tool activity, or "
+        "streamed tokens), did not respond to interruption, and never "
+        "produced a completion event. The worker may be wedged inside a "
+        "model API call — this is a known failure mode of long-lived "
+        "gateway processes (#60203). Re-dispatch the task if it is still "
+        "needed."
     )
     logger.error(
         "Async delegation %s force-finalized as stalled after %.0fs",
         delegation_id, duration,
     )
+    # Structured stall metadata (#51690): lets parents and UIs distinguish
+    # a stall-monitor kill from other failures without parsing the error
+    # string, mirroring the sync path's timeout_seconds/timed_out_after_
+    # seconds/timeout_phase fields.
+    stall_meta = {
+        "stalled_after_quiet_seconds": quiet_seconds,
+        "stall_threshold_seconds": threshold_seconds,
+        "stall_phase": (
+            "in_tool" if stall_in_tool
+            else "idle" if stall_in_tool is not None
+            else None
+        ),
+        "stall_grace_seconds": _STALL_GRACE_SECONDS,
+    }
     if event_record.get("is_batch"):
         _push_batch_completion_event(
             event_record,
@@ -1171,6 +1216,7 @@ def _finalize_stalled(delegation_id: str) -> None:
                 "results": [],
                 "error": error,
                 "total_duration_seconds": duration,
+                **stall_meta,
             },
             "stalled",
         )
@@ -1184,27 +1230,102 @@ def _finalize_stalled(delegation_id: str) -> None:
                 "api_calls": 0,
                 "duration_seconds": duration,
                 "exit_reason": "stalled",
+                **stall_meta,
             },
             "stalled",
         )
     _finish_finalization(delegation_id, "stalled")
 
 
+def _children_activity_from_token(token: Any, now: float) -> Optional[List]:
+    """Parse a progress token into per-child activity dicts (best-effort).
+
+    delegate_tool's ``_batch_progress`` emits one ``(api_call_count,
+    current_tool, last_activity_ts)`` tuple per child. Foreign token shapes
+    (custom dispatchers) degrade to ``None`` entries rather than raising —
+    the token contract is intentionally opaque to the registry.
+    """
+    try:
+        parts = list(token)
+    except TypeError:
+        return None
+    out: List[Optional[Dict[str, Any]]] = []
+    for part in parts:
+        if isinstance(part, (list, tuple)) and len(part) >= 2:
+            entry: Dict[str, Any] = {
+                "api_calls": part[0],
+                "current_tool": part[1],
+            }
+            if len(part) >= 3 and isinstance(part[2], (int, float)):
+                entry["seconds_since_activity"] = round(
+                    max(0.0, now - float(part[2])), 1
+                )
+            out.append(entry)
+        else:
+            out.append(None)
+    return out
+
+
 def list_async_delegations() -> List[Dict[str, Any]]:
     """Snapshot of async delegations (running + recently completed).
 
-    Safe to call from any thread. Excludes the non-serialisable interrupt_fn.
+    Safe to call from any thread. Excludes the non-serialisable callables
+    and private monitor bookkeeping, but exposes computed live-status
+    fields for UIs (#51690):
+
+    - ``seconds_since_progress``: how long the stale monitor has seen a
+      frozen progress token (running/stalling records).
+    - ``children_activity``: per-child ``{api_calls, current_tool,
+      seconds_since_activity}`` sampled live from the dispatch's
+      ``progress_fn``.
+    - ``stalled_after_quiet_seconds`` / ``stall_threshold_seconds`` /
+      ``stall_in_tool``: stall context once the monitor has tripped.
     """
+    now = time.time()
+    samplers: Dict[str, Callable] = {}
     with _records_lock:
-        return [
-            {
+        items = []
+        for r in _records.values():
+            item = {
                 k: v
                 for k, v in r.items()
                 if k not in {"interrupt_fn", "progress_fn"}
                 and not k.startswith("_")
             }
-            for r in _records.values()
-        ]
+            status = r.get("status")
+            if status in ("running", "stalling"):
+                ts = r.get("_progress_ts")
+                if ts:
+                    item["seconds_since_progress"] = round(now - ts, 1)
+                fn = r.get("progress_fn")
+                if callable(fn):
+                    samplers[r["delegation_id"]] = fn
+            if status in ("stalling", "stalled"):
+                for src, dst in (
+                    ("_stall_quiet_seconds", "stalled_after_quiet_seconds"),
+                    ("_stall_threshold_seconds", "stall_threshold_seconds"),
+                    ("_stall_in_tool", "stall_in_tool"),
+                ):
+                    if r.get(src) is not None:
+                        item[dst] = r.get(src)
+            items.append(item)
+
+    # Sample live activity OUTSIDE the lock — progress_fn reads child-agent
+    # attributes and must never run under _records_lock (a slow or broken
+    # sampler would block every dispatch/finalize in the process).
+    for item in items:
+        fn = samplers.get(item.get("delegation_id"))
+        if fn is None:
+            continue
+        try:
+            token, in_tool = fn()
+        except Exception:
+            continue
+        activity = _children_activity_from_token(token, now)
+        if activity is not None:
+            item["children_activity"] = activity
+        item["in_tool"] = bool(in_tool)
+    return items
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

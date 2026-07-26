@@ -380,6 +380,67 @@ def test_streaming_child_counts_as_alive(monkeypatch):
     assert evt["status"] == "completed"
 
 
+def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
+    """The terminal stalled event must expose machine-readable stall context
+    (#51690) — quiet duration, tripped threshold, phase, grace — mirroring
+    the sync path's timeout_seconds/timed_out_after_seconds/timeout_phase."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+
+    res = ad.dispatch_async_delegation(
+        goal="stall metadata", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+        progress_fn=lambda: ((0, "terminal"), True),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None
+        assert evt["status"] == "stalled"
+        assert evt["stalled_after_quiet_seconds"] >= 0.3  # in-tool threshold
+        assert evt["stall_threshold_seconds"] == ad._STALE_IN_TOOL_SECONDS
+        assert evt["stall_phase"] == "in_tool"
+        assert evt["stall_grace_seconds"] == ad._STALL_GRACE_SECONDS
+    finally:
+        gate.set()
+
+
+def test_list_async_delegations_exposes_live_activity(monkeypatch):
+    """list_async_delegations must expose per-child live activity sampled
+    from progress_fn plus seconds_since_progress, for /agents UIs (#51690)."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
+    gate = threading.Event()
+    base_ts = time.time() - 12.0
+
+    res = ad.dispatch_async_delegation(
+        goal="live listing", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+        progress_fn=lambda: (((3, "web_search", base_ts),), True),
+    )
+    try:
+        time.sleep(0.1)  # let the monitor stamp _progress_ts at least once
+        item = next(
+            d for d in ad.list_async_delegations()
+            if d["delegation_id"] == res["delegation_id"]
+        )
+        assert item["status"] == "running"
+        assert item["in_tool"] is True
+        assert "seconds_since_progress" in item
+        (child,) = item["children_activity"]
+        assert child["api_calls"] == 3
+        assert child["current_tool"] == "web_search"
+        assert 10.0 <= child["seconds_since_activity"] <= 20.0
+        # Callables and private bookkeeping must never leak.
+        assert "progress_fn" not in item
+        assert "interrupt_fn" not in item
+        assert not any(k.startswith("_") for k in item)
+    finally:
+        gate.set()
+
+
 def test_stalled_batch_is_interrupted_then_finalized(monkeypatch):
     _fast_stale_monitor(monkeypatch)
     gate = threading.Event()

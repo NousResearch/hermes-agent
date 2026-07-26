@@ -53,6 +53,7 @@ gateway:
     more:                  "... 他に {count} 件"
     running_processes:     "**実行中のバックグラウンドプロセス:** {count}"
     async_jobs:            "**ゲートウェイ非同期ジョブ:** {count}"
+    background_delegations: "**バックグラウンド委任:** {count}"
     none:                  "アクティブなエージェントや実行中のタスクはありません。"
     state_starting:        "起動中"
     state_running:         "実行中"

@@ -53,6 +53,7 @@ gateway:
     more:                  "... és még {count}"
     running_processes:     "**Futó háttérfolyamatok:** {count}"
     async_jobs:            "**Átjáró aszinkron feladatai:** {count}"
+    background_delegations: "**Háttérdelegálások:** {count}"
     none:                  "Nincsenek aktív ügynökök vagy futó feladatok."
     state_starting:        "indul"
     state_running:         "fut"

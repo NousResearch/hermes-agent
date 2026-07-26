@@ -53,6 +53,7 @@ gateway:
     more:                  "... ve {count} tane daha"
     running_processes:     "**Çalışan arka plan süreçleri:** {count}"
     async_jobs:            "**Gateway asenkron işleri:** {count}"
+    background_delegations: "**Arka plan delegasyonları:** {count}"
     none:                  "Aktif ajan veya çalışan görev yok."
     state_starting:        "başlatılıyor"
     state_running:         "çalışıyor"

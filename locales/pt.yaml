@@ -53,6 +53,7 @@ gateway:
     more:                  "... e mais {count}"
     running_processes:     "**Processos em segundo plano em execução:** {count}"
     async_jobs:            "**Tarefas assíncronas do gateway:** {count}"
+    background_delegations: "**Delegações em segundo plano:** {count}"
     none:                  "Não há agentes ativos nem tarefas em execução."
     state_starting:        "a iniciar"
     state_running:         "em execução"

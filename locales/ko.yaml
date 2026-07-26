@@ -53,6 +53,7 @@ gateway:
     more:                  "... 외 {count}개 더"
     running_processes:     "**실행 중인 백그라운드 프로세스:** {count}"
     async_jobs:            "**게이트웨이 비동기 작업:** {count}"
+    background_delegations: "**백그라운드 위임:** {count}"
     none:                  "활성 에이전트나 실행 중인 작업이 없습니다."
     state_starting:        "시작 중"
     state_running:         "실행 중"

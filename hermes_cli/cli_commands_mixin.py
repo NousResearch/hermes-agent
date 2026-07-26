@@ -286,15 +286,44 @@ class CLICommandsMixin:
             delegations = list_async_delegations()
         except Exception:
             delegations = []
-        running_d = [d for d in delegations if d.get("status") == "running"]
+        running_d = [
+            d for d in delegations
+            if d.get("status") in ("running", "stalling")
+        ]
         if delegations:
             _cprint(f"  Background delegations: {len(running_d)} running")
             for d in delegations:
                 goal = (d.get("goal") or "")[:60]
-                _cprint(
+                status = d.get("status", "?")
+                line = (
                     f"    {d.get('delegation_id', '?')} · "
-                    f"{d.get('status', '?')} · {goal}"
+                    f"{status} · {goal}"
                 )
+                # Live-status detail for in-flight delegations (#51690).
+                if status == "stalling":
+                    quiet = d.get("stalled_after_quiet_seconds")
+                    if quiet is not None:
+                        line += (
+                            f" · no progress {quiet:.0f}s — interrupting"
+                        )
+                elif status in ("running",):
+                    quiet = d.get("seconds_since_progress")
+                    if quiet is not None and quiet >= 60:
+                        line += f" · quiet {quiet:.0f}s"
+                _cprint(line)
+                for i, child in enumerate(d.get("children_activity") or []):
+                    if not isinstance(child, dict):
+                        continue
+                    tool = child.get("current_tool")
+                    doing = f"in {tool}" if tool else "between turns"
+                    part = (
+                        f"      └ child {i + 1}: "
+                        f"{child.get('api_calls', '?')} api calls · {doing}"
+                    )
+                    idle = child.get("seconds_since_activity")
+                    if idle is not None:
+                        part += f" · last activity {idle:.0f}s ago"
+                    _cprint(part)
 
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")

@@ -53,6 +53,7 @@ gateway:
     more:                  "... 還有 {count} 個"
     running_processes:     "**執行中的背景程序：** {count}"
     async_jobs:            "**閘道非同步任務：** {count}"
+    background_delegations: "**背景委派：** {count}"
     none:                  "沒有作用中的代理或執行中的任務。"
     state_starting:        "啟動中"
     state_running:         "執行中"

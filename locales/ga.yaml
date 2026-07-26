@@ -57,6 +57,7 @@ gateway:
     more:                  "... agus {count} eile"
     running_processes:     "**Próisis chúlra ag rith:** {count}"
     async_jobs:            "**Tascanna asincrónacha gateway:** {count}"
+    background_delegations: "**Tarmligin sa chúlra:** {count}"
     none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ag rith."
     state_starting:        "ag tosú"
     state_running:         "ag rith"

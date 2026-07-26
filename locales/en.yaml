@@ -68,6 +68,7 @@ gateway:
     more:                  "... and {count} more"
     running_processes:     "**Running background processes:** {count}"
     async_jobs:            "**Gateway async jobs:** {count}"
+    background_delegations: "**Background delegations:** {count}"
     none:                  "No active agents or running tasks."
     state_starting:        "starting"
     state_running:         "running"

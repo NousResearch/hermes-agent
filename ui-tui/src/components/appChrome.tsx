@@ -5,6 +5,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
 import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import { $isBlocked } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -122,6 +123,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
+  const isBlocked = useStore($isBlocked)
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -130,6 +132,18 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   const { intervalMs, showVerb } = renderIndicator(style, 0)
 
   useEffect(() => {
+    // A blocking overlay (approval, model picker, pager, …) is painted over
+    // the status rule, so every tick below is a re-render nobody can see —
+    // in an Ink TUI that churn reads as the dialog tearing.  Arm nothing
+    // while blocked.  The effect re-runs on unblock and re-seeds `now` from
+    // the wall clock, so the elapsed read-out resumes live rather than
+    // frozen at the moment the overlay opened.
+    if (isBlocked) {
+      return
+    }
+
+    setNow(Date.now())
+
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
     // Verb timer is gated on `showVerb` — `unicode` style hides the verb
@@ -144,7 +158,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, isBlocked, showVerb])
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
@@ -360,13 +374,21 @@ function SpawnHud({ t }: { t: Theme }) {
 
 function SessionDuration({ startedAt }: { startedAt: number }) {
   const [now, setNow] = useState(() => Date.now())
+  const isBlocked = useStore($isBlocked)
 
   useEffect(() => {
+    // Paused while a blocking overlay covers the status rule — see
+    // FaceTicker.  The `setNow` below already re-seeds from the wall clock
+    // on every re-arm, so it doubles as the unblock catch-up.
+    if (isBlocked) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [startedAt])
+  }, [isBlocked, startedAt])
 
   return fmtDuration(now - startedAt)
 }
@@ -375,13 +397,21 @@ function IdleSince({ endedAt }: { endedAt: number }) {
   // Time since the last final agent response. Re-ticks every second like
   // SessionDuration so the read-out stays live while the session idles.
   const [now, setNow] = useState(() => Date.now())
+  const isBlocked = useStore($isBlocked)
 
   useEffect(() => {
+    // Paused while a blocking overlay covers the status rule — see
+    // FaceTicker.  The `setNow` below re-seeds from the wall clock on
+    // unblock so the idle read-out is not frozen when the overlay closes.
+    if (isBlocked) {
+      return
+    }
+
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(id)
-  }, [endedAt])
+  }, [endedAt, isBlocked])
 
   return `✓ ${fmtDuration(now - endedAt)}`
 }

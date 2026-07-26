@@ -344,3 +344,28 @@ def test_turn_summary_config_defaults_present():
     display = DEFAULT_CONFIG["display"]
     assert display["turn_summary"] is True
     assert display["spinner_token_flow"] is True
+
+
+def test_content_free_diff_reports_unknown_not_zero_zero():
+    """A diff with no +/- content lines (bare hunk header) must render as an
+    edit with UNKNOWN deltas, never a misleading '+0 -0'.
+
+    Found by E2E-rendering the collector against realistic tool payloads: the
+    unit suite only fed diffs that had real content lines.
+    """
+    from agent.turn_summary import TurnSummaryCollector
+
+    c = TurnSummaryCollector()
+    c.begin()
+    c.record_tool("patch", result={"success": True, "diff": "@@ -1,3 +1,15 @@"})
+    line = c.render(3.0)
+    assert "edited 1 file" in line
+    assert "+0 -0" not in line
+
+    real = TurnSummaryCollector()
+    real.begin()
+    real.record_tool(
+        "patch",
+        result={"success": True, "diff": "--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+extra\n"},
+    )
+    assert "+2 -1" in real.render(1.0)

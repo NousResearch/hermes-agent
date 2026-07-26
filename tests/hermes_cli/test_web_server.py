@@ -397,6 +397,115 @@ class TestWebServerEndpoints:
         assert data["gateway_pid"] == 4321
         assert data["gateway_state"] == "running"
 
+    def test_get_status_and_messaging_agree_on_cross_container_gateway(
+        self, monkeypatch
+    ):
+        """The two surfaces must never contradict each other about liveness.
+
+        Reported symptom: the dashboard sidebar read "Gateway running" while
+        the Channels page on the same load rendered "The gateway is not
+        running." Cause: /api/status probed GATEWAY_HEALTH_URL and
+        /api/messaging/platforms did not, so a gateway in another container
+        (no local PID file) was live to one endpoint and dead to the other.
+
+        This asserts the RELATIONSHIP — both endpoints resolve liveness the
+        same way — not either endpoint's literal value.
+        """
+        import hermes_cli.web_server as web_server
+
+        # No local PID and no local runtime state: only the health probe can
+        # see the gateway, which is exactly the cross-container deployment.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: None)
+        monkeypatch.setattr(
+            web_server, "get_runtime_status_running_pid", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(
+            web_server,
+            "_probe_gateway_health",
+            lambda: (True, {"pid": 4321, "gateway_state": "running", "platforms": {}}),
+        )
+
+        status_running = self.client.get("/api/status").json()["gateway_running"]
+        platforms = self.client.get("/api/messaging/platforms").json()["platforms"]
+
+        assert status_running is True, "health probe should report the gateway up"
+        assert platforms, "catalog must not be empty or the assertion is vacuous"
+        for platform in platforms:
+            assert platform["gateway_running"] == status_running, (
+                f"{platform['id']}: Channels page says "
+                f"gateway_running={platform['gateway_running']} while the "
+                f"sidebar says {status_running}"
+            )
+
+    def test_get_status_and_messaging_agree_when_gateway_is_down(self, monkeypatch):
+        """Agreement must hold in the negative direction too.
+
+        Guards against "fix" it by hardcoding True somewhere: with every rung
+        declining, both surfaces must report the gateway down.
+        """
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: None)
+        monkeypatch.setattr(
+            web_server, "get_runtime_status_running_pid", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        status_running = self.client.get("/api/status").json()["gateway_running"]
+        platforms = self.client.get("/api/messaging/platforms").json()["platforms"]
+
+        assert status_running is False
+        assert platforms
+        for platform in platforms:
+            assert platform["gateway_running"] == status_running
+
+    def test_messaging_platforms_profile_scopes_gateway_reads(self, monkeypatch):
+        """?profile=<name> must resolve liveness from the profile's own home.
+
+        The gateway status readers resolve process-level paths and ignore the
+        HERMES_HOME contextvar override (#56986), so /api/messaging/platforms
+        has to pass the profile directory explicitly — otherwise it reports a
+        DIFFERENT profile's gateway as this profile's, which hides a real
+        outage behind a false "connected" (issue #71211).
+        """
+        import hermes_cli.web_server as web_server
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        seen = {}
+
+        def _pid(pid_path=None, **kw):
+            seen["pid_path"] = pid_path
+            return None
+
+        def _runtime(path=None):
+            seen["status_path"] = path
+            return None
+
+        def _runtime_pid(runtime=None, *, expected_home=None):
+            seen["expected_home"] = expected_home
+            return None
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", _pid)
+        monkeypatch.setattr(web_server, "get_running_pid", _pid)
+        monkeypatch.setattr(web_server, "read_runtime_status", _runtime)
+        monkeypatch.setattr(web_server, "get_runtime_status_running_pid", _runtime_pid)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/messaging/platforms?profile=worker")
+
+        assert resp.status_code == 200
+        assert seen["pid_path"] == worker_home / "gateway.pid"
+        assert seen["status_path"] == worker_home / "gateway_state.json"
+        assert seen["expected_home"] == worker_home
+
     def test_get_status_unknown_profile_404s(self):
         resp = self.client.get("/api/status?profile=no-such-profile")
         assert resp.status_code == 404

@@ -134,7 +134,9 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
-def _check_dispatcher_presence() -> tuple[bool, str]:
+def _check_dispatcher_presence(
+    hermes_home: Optional[Path] = None,
+) -> tuple[bool, str]:
     """Return ``(running, message)``.
 
     - ``running=True``: a gateway is alive for this HERMES_HOME and its
@@ -149,15 +151,35 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     Defensive against import failures and config-read errors — if the
     probe itself errors, we return ``(True, "")`` so we don't spam
     false warnings (better to miss a warning than to cry wolf).
+
+    ``hermes_home`` scopes the probe to a named profile's directory. The
+    dashboard plugin API passes it because the dashboard backend process can
+    be running under a different HERMES_HOME than the profile the request
+    targets, which otherwise produced a "no gateway is running" warning
+    against a perfectly healthy profile gateway (#71211). CLI callers leave
+    it ``None`` and keep the existing process-level behavior.
     """
     try:
-        from gateway.status import get_running_pid  # type: ignore
+        from gateway.status import resolve_gateway_liveness  # type: ignore
     except Exception:
         return (True, "")  # can't probe — silent
     try:
-        pid = get_running_pid()
+        # Same shared ladder the dashboard status endpoints use, so a
+        # PID-file-less (launch-service-managed) or cross-container gateway
+        # is not misreported as absent. use_cache=False: this is a one-shot
+        # CLI/create-time probe, not a polling loop, and it must observe the
+        # gateway's state right now rather than a cached snapshot.
+        liveness = resolve_gateway_liveness(
+            profile_dir=hermes_home, use_cache=False
+        )
     except Exception:
         return (True, "")  # probe errored — silent
+    if liveness.probe_error:
+        # The resolver swallows per-rung failures so status endpoints never
+        # 500. This caller must still fail OPEN: an unreadable probe means
+        # "can't tell", not "no gateway", and warning on it cries wolf.
+        return (True, "")
+    pid = liveness.pid
 
     # Even if the gateway is up, dispatch_in_gateway may be off.
     try:

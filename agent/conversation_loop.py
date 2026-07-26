@@ -540,15 +540,49 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted Model/Provider lines are stale."""
+    """Return False when the persisted runtime-identity lines are stale."""
 
     def line_value(label: str) -> str:
+        """Last matching line wins.
+
+        Safe ONLY for fields emitted in the volatile tier at the very END of
+        the prompt (Model / Provider / Platform). User-supplied project
+        context (AGENTS.md / CLAUDE.md / .cursorrules) is embedded in the
+        middle context tier, so a last-match scan lets project prose shadow
+        any field emitted EARLIER — see ``host_info_value``.
+        """
         prefix = f"{label}:"
         value = ""
         for line in prompt.splitlines():
             if line.startswith(prefix):
                 value = line[len(prefix):].strip()
         return value
+
+    def host_info_value(label: str) -> str:
+        """Read a field from the prompt's own host-info block.
+
+        The host-info block (``build_environment_hints``) sits in the STABLE
+        tier, ahead of the embedded project context files. A bare scan of the
+        whole prompt would therefore match a user's ``AGENTS.md`` that merely
+        contains a line starting with the same label, comparing runtime state
+        against project prose. That mismatch never clears, so the check would
+        reject the stored prompt on EVERY turn — rebuilding the system prompt
+        each message and destroying the prefix cache for the whole session,
+        which is far worse than the staleness this function guards against.
+
+        Anchor on the ``User home directory:`` line that immediately precedes
+        the working-directory line in that block, and take the FIRST such
+        occurrence, so only Hermes' own emitted block can satisfy the read.
+        """
+        prefix = f"{label}:"
+        lines = prompt.splitlines()
+        for idx, line in enumerate(lines):
+            if not line.startswith("User home directory:"):
+                continue
+            for candidate in lines[idx + 1: idx + 4]:
+                if candidate.startswith(prefix):
+                    return candidate[len(prefix):].strip()
+        return ""
 
     stored_model = line_value("Model")
     current_model = str(getattr(agent, "model", "") or "").strip()
@@ -565,7 +599,7 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     # Compare against resolve_agent_cwd() — the SAME resolver used to build the
     # prompt — so gateway/TUI sessions that set TERMINAL_CWD are not falsely
     # rejected (they would always differ from the launch dir's os.getcwd()).
-    stored_cwd = line_value("Current working directory")
+    stored_cwd = host_info_value("Current working directory")
     if stored_cwd:
         if stored_cwd != str(resolve_agent_cwd()):
             return False

@@ -248,7 +248,13 @@ def _sanitize_node(node: Any, path: str) -> Any:
         if node in _BARE_TYPE_NAMES:
             logger.debug("schema_sanitizer[%s]: replacing bare-string schema %r with {'type': %r}",
                          path, node, node)
-            return _empty_object() if node == "object" else {"type": node}
+            if node == "object":
+                return _empty_object()
+            # A bare-string ``"array"`` must gain ``items`` too, or Gemini
+            # rejects the resulting ``{"type": "array"}`` node (#71804).
+            if node == "array":
+                return {"type": "array", "items": {}}
+            return {"type": node}
         logger.debug("schema_sanitizer[%s]: replacing non-schema string %r "
                      "with empty object schema", path, node)
         return _empty_object()
@@ -298,6 +304,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 out["required"] = valid
             else:
                 del out["required"]
+
+    # Array nodes without ``items``: inject a permissive ``items: {}``.
+    # OpenAI-compatible backends tolerate a bare ``{"type": "array"}``, but
+    # Gemini strictly validates function declarations and 400s the whole
+    # request with ``...items: missing field`` (#71804). An empty ``items``
+    # schema is the minimal, universally-accepted form (any element type).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
     return out
 
 

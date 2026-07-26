@@ -451,6 +451,9 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
             notifier_profile="default",
         )
         kb.complete_task(conn, tid, result="done")
+        # New subs start caught up at the creation-time MAX(task_events.id)
+        # (issue #29905); claiming the completion would advance past this.
+        pre_claim_cursor = int(kb.list_notify_subs(conn, tid)[0]["last_event_id"])
     finally:
         conn.close()
 
@@ -486,7 +489,9 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
     finally:
         conn.close()
     assert len(subs) == 1
-    assert int(subs[0]["last_event_id"]) == 0, "wrong profile must not claim the event"
+    assert int(subs[0]["last_event_id"]) == pre_claim_cursor, (
+        "wrong profile must not claim the event"
+    )
 
 
 @pytest.mark.asyncio

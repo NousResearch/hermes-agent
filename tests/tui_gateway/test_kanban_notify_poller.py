@@ -88,17 +88,23 @@ class TestCollectKanbanNotifications:
     def test_ignores_other_sessions_and_platforms(self):
         tid_other_session = _create_subscribed_task(chat_id="some-other-session")
         tid_gateway = _create_subscribed_task(platform="telegram", chat_id="chat-1")
+        # New subs start caught up at creation time (issue #29905); record the
+        # pre-completion cursors so we can assert they were never claimed.
+        pre_cursors = {
+            tid: _sub_rows(tid)[0]["last_event_id"]
+            for tid in (tid_other_session, tid_gateway)
+        }
         _complete(tid_other_session)
         _complete(tid_gateway)
 
         texts = _collect_kanban_notifications(_session())
 
         assert texts == []
-        # Foreign subscriptions untouched: cursors still 0, rows still there.
+        # Foreign subscriptions untouched: cursors unclaimed, rows still there.
         for tid in (tid_other_session, tid_gateway):
             rows = _sub_rows(tid)
             assert len(rows) == 1
-            assert rows[0]["last_event_id"] == 0
+            assert rows[0]["last_event_id"] == pre_cursors[tid]
 
     def test_no_session_key_is_a_noop(self):
         tid = _create_subscribed_task()

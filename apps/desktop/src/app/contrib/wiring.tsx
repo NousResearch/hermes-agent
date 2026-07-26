@@ -481,14 +481,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
 
-  // New session anchored to a workspace (sidebar "+" on a project/worktree).
-  // Seeds cwd + branch from the clicked workspace; an explicit worktree path
-  // also drills the sidebar into that project so the new lane is visible.
-  // Once a chat is loaded the button opens a TAB instead of replacing it —
-  // see newSessionOpensTab.
+  // New session anchored to a workspace. Seeds cwd + branch from the clicked
+  // workspace; an explicit worktree path also drills the sidebar into that
+  // project so the new lane is visible.
+  //
+  // `openTab` is the sidebar "+" behavior: once a chat is loaded, stack a new
+  // tab instead of replacing it (see newSessionOpensTab). The composer's
+  // "branch off into a new worktree" flow keeps the fresh-draft path — it
+  // prefills the MAIN composer right after, so it has to own that surface.
   const startSessionInWorkspace = useCallback(
-    (path: null | string) => {
-      if (newSessionOpensTab(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
+    (path: null | string, options?: { openTab?: boolean }) => {
+      if (options?.openTab && newSessionOpensTab(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
         void openNewSessionTile('center', { cwd: path, listed: false })
 
         return
@@ -799,7 +802,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     },
     onNavigate: selectSidebarItem,
-    onNewSessionInWorkspace: startSessionInWorkspace,
+    onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
     onNewSessionSplit: dir => void openNewSessionTile(dir),
     onPasteClipboardImage: opts => composer.pasteClipboardImage(opts),
     onPickFiles: () => void composer.pickContextPaths('file'),

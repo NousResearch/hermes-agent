@@ -235,6 +235,6 @@ describe('quickEntryWindowBounds', () => {
   })
 
   it('falls back to the origin without a work area', () => {
-    expect(quickEntryWindowBounds()).toEqual({ height: 132, width: 640, x: 0, y: 0 })
+    expect(quickEntryWindowBounds()).toEqual({ height: 168, width: 640, x: 0, y: 0 })
   })
 })

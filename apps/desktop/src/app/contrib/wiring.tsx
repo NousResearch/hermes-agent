@@ -610,8 +610,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   usePetBridge({ requestGateway, resumeSession, submitText })
 
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
-  // SAME submitText the normal composer uses.
-  useQuickEntryBridge({ submitText })
+  // SAME submit machinery the normal composer uses (current chat / picked
+  // session / new session), and it hears gateway truth from this window.
+  useQuickEntryBridge({ startFreshSessionDraft, submitText })
 
   // Clear a failed turn's red error banner. Errors are renderer-local (never
   // persisted): a bare error placeholder is dropped entirely; a partial-output

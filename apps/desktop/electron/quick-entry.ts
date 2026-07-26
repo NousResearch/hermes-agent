@@ -19,10 +19,10 @@
 const DEFAULT_QUICK_ENTRY_SHORTCUT = 'CommandOrControl+Shift+Space'
 
 // Compact capture surface: wide enough for a sentence, short enough to read as
-// a HUD rather than a second app window. Height is the composer's collapsed
-// height; the renderer never grows the OS window in v1.
+// a HUD rather than a second app window. Height covers the composer row plus
+// the session-target picker row; the renderer never grows the OS window in v1.
 const QUICK_ENTRY_WINDOW_WIDTH = 640
-const QUICK_ENTRY_WINDOW_HEIGHT = 132
+const QUICK_ENTRY_WINDOW_HEIGHT = 168
 
 // Spotlight-ish placement: horizontally centered on the active display, a
 // comfortable fraction down from the top rather than dead center.

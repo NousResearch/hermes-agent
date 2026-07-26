@@ -43,11 +43,22 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   quickEntry: {
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
-    submit: text => ipcRenderer.send('hermes:quick-entry:submit', text),
+    submit: payload => ipcRenderer.send('hermes:quick-entry:submit', payload),
     dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
-    // Main → primary renderer: text captured by the quick window.
+    // Primary renderer → main → quick window: gateway connection state + the
+    // recent-session options the target picker offers. Main caches the latest
+    // payload so a freshly spawned quick window starts from truth.
+    pushState: payload => ipcRenderer.send('hermes:quick-entry:state', payload),
+    // Quick window subscribes to those pushes.
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:quick-entry:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:state', listener)
+    },
+    // Main → primary renderer: a submit captured by the quick window.
     onSubmit: callback => {
-      const listener = (_event, text) => callback(text)
+      const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:quick-entry:submit', listener)
 
       return () => ipcRenderer.removeListener('hermes:quick-entry:submit', listener)

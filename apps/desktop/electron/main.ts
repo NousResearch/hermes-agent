@@ -8683,6 +8683,10 @@ const QUICK_ENTRY_CONFIG_PATH = path.join(app.getPath('userData'), 'quick-entry.
 
 let quickEntryWindow = null
 
+// Latest state push from the primary renderer (connection + recent sessions),
+// replayed to a quick window that spawns after the push happened.
+let quickEntryLastState = null
+
 function readQuickEntrySettings() {
   try {
     return sanitizeQuickEntrySettings(JSON.parse(fs.readFileSync(QUICK_ENTRY_CONFIG_PATH, 'utf8')))
@@ -8769,6 +8773,15 @@ function spawnQuickEntryWindow() {
   win.on('closed', () => {
     if (quickEntryWindow === win) {
       quickEntryWindow = null
+    }
+  })
+
+  // Replay the last known gateway state as soon as the page can hear it — a
+  // freshly spawned quick window must not sit "disconnected" when the primary
+  // renderer already reported a live gateway.
+  win.webContents.on('did-finish-load', () => {
+    if (!win.isDestroyed() && quickEntryLastState) {
+      win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
     }
   })
 
@@ -10180,13 +10193,15 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 })
 
 // Quick window → main → PRIMARY renderer. We never submit here: the renderer
-// owns the one prompt-submit path, and forwarding keeps it that way.
-ipcMain.on('hermes:quick-entry:submit', (_event, text) => {
+// owns the one prompt-submit path, and forwarding keeps it that way. The
+// payload is `{ target, text }` — target routing (current chat / a picked
+// session / new) is the renderer's job too.
+ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
   hideQuickEntryWindow()
 
-  const prompt = typeof text === 'string' ? text.trim() : ''
+  const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
 
-  if (!prompt) {
+  if (!text) {
     return
   }
 
@@ -10198,7 +10213,21 @@ ipcMain.on('hermes:quick-entry:submit', (_event, text) => {
 
   // Deliberately does NOT raise/focus the main window — the user asked to fire
   // a prompt from wherever they were, not to be yanked into the app.
-  mainWindow.webContents.send('hermes:quick-entry:submit', prompt)
+  mainWindow.webContents.send('hermes:quick-entry:submit', {
+    target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
+    text
+  })
+})
+
+// Primary renderer → main → quick window: gateway connection state + the
+// recent-session list for the target picker. Cached so a quick window spawned
+// AFTER the last push still boots from truth instead of "disconnected".
+ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
+  quickEntryLastState = payload ?? null
+
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
+  }
 })
 
 ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())

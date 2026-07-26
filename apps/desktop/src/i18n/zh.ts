@@ -259,6 +259,8 @@ export const zh: Translations = {
       'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
       'view.findInPage': '页面内查找',
+      'view.findNext': '查找下一个',
+      'view.findPrevious': '查找上一个',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',
@@ -294,6 +296,11 @@ export const zh: Translations = {
       'composer.history': '切换弹窗/历史',
       'composer.cancel': '关闭弹窗·取消运行'
     }
+  },
+
+  findInPage: {
+    next: '下一个匹配',
+    previous: '上一个匹配'
   },
 
   language: {

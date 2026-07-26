@@ -268,6 +268,8 @@ export const en: Translations = {
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
       'view.findInPage': 'Find in page',
+      'view.findNext': 'Find next match',
+      'view.findPrevious': 'Find previous match',
       'appearance.toggleMode': 'Toggle light / dark',
       'profile.default': 'Switch to default profile',
       'profile.switch.1': 'Switch to profile 1',
@@ -303,6 +305,11 @@ export const en: Translations = {
       'composer.history': 'Cycle popover / history',
       'composer.cancel': 'Close popover · cancel run'
     }
+  },
+
+  findInPage: {
+    next: 'Next match',
+    previous: 'Previous match'
   },
 
   language: {

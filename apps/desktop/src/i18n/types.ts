@@ -262,6 +262,12 @@ export interface Translations {
     actions: Record<string, string>
   }
 
+  // Find-in-page bar (⌘F). `close` reuses common.close.
+  findInPage: {
+    next: string
+    previous: string
+  }
+
   language: {
     label: string
     description: string

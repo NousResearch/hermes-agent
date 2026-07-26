@@ -142,6 +142,29 @@ _BILLING_ERROR_CODES = frozenset({
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
+# Structured codes whose meaning is defined by a specific provider. Keep these
+# scoped so a coincidentally named code from another backend remains unknown.
+_PROVIDER_ERROR_CODE_REASONS = {
+    "openai": {
+        "server_error": FailoverReason.server_error,
+    },
+    "gemini": {
+        "unavailable": FailoverReason.overloaded,
+        "deadline_exceeded": FailoverReason.timeout,
+        "internal": FailoverReason.server_error,
+    },
+    "anthropic": {
+        "rate_limit_error": FailoverReason.rate_limit,
+        "api_error": FailoverReason.timeout,
+    },
+}
+
+_PROVIDER_ERROR_CODE_ALIASES = {
+    "openai-codex": "openai",
+    "google": "gemini",
+    "google-vertex": "gemini",
+}
+
 # Patterns that indicate rate limiting (transient, will resolve)
 _RATE_LIMIT_PATTERNS = [
     "rate limit",
@@ -805,7 +828,12 @@ def classify_api_error(
     # ── 3. Error code classification ────────────────────────────────
 
     if error_code:
-        classified = _classify_by_error_code(error_code, error_msg, _result)
+        classified = _classify_by_error_code(
+            error_code,
+            error_msg,
+            _result,
+            provider=provider_lower,
+        )
         if classified is not None:
             return classified
 
@@ -1357,7 +1385,11 @@ def _classify_400(
 # ── Error code classification ───────────────────────────────────────────
 
 def _classify_by_error_code(
-    error_code: str, error_msg: str, result_fn,
+    error_code: str,
+    error_msg: str,
+    result_fn,
+    *,
+    provider: str = "",
 ) -> Optional[ClassifiedError]:
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
@@ -1397,6 +1429,20 @@ def _classify_by_error_code(
             retryable=True,
             should_fallback=False,
         )
+
+    provider_key = _PROVIDER_ERROR_CODE_ALIASES.get(provider, provider)
+    provider_reason = _PROVIDER_ERROR_CODE_REASONS.get(provider_key, {}).get(
+        code_lower
+    )
+    if provider_reason == FailoverReason.rate_limit:
+        return result_fn(
+            provider_reason,
+            retryable=True,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+    if provider_reason is not None:
+        return result_fn(provider_reason, retryable=True)
 
     return None
 

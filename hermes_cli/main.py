@@ -12533,7 +12533,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                 print()
                 print("→ Refreshing cua-driver (Computer Use)...")
-                install_cua_driver(upgrade=True)
+                # require_confirmed_update: only run the (multi-minute,
+                # silent) upstream installer when the driver's native
+                # check-update verb positively reports a newer release.
+                # An indeterminate check (offline, rate-limited, old
+                # driver) keeps the installed version — `hermes update`
+                # must stay fast; `hermes computer-use install --upgrade`
+                # remains the force path.
+                install_cua_driver(upgrade=True, require_confirmed_update=True)
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
 

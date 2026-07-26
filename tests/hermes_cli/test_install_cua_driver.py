@@ -126,6 +126,141 @@ class TestInstallCuaDriverUpgrade:
             runner.assert_called_once()
 
 
+class TestRequireConfirmedUpdate:
+    """`hermes update` passes require_confirmed_update=True: the full
+    upstream installer (multi-minute, output captured, plus install.ps1's
+    600s lock window on Windows) may only run when the driver's native
+    ``check-update`` verb positively confirms a newer release. An
+    indeterminate check (old driver, offline, GitHub rate-limited, probe
+    timeout) keeps the installed version and returns fast.
+
+    Explicit `hermes computer-use install --upgrade` keeps the old
+    fall-through (require_confirmed_update=False): a force-refresh should
+    still reinstall when the check can't answer.
+    """
+
+    def _install(self, system, check_state, require_confirmed):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        exe = "cua-driver" + (".exe" if system == "Windows" else "")
+        with patch("platform.system", return_value=system), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/x/" + n
+                          if n in {"cua-driver", "curl", "powershell"} else None), \
+             patch.object(tools_config, "_resolved_cua_driver_cmd",
+                          return_value="/x/" + exe), \
+             patch.object(tools_config, "_cua_install_target_writable",
+                          return_value=True), \
+             patch("tools.computer_use.cua_backend.cua_driver_update_check",
+                   return_value=check_state), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run",
+                   return_value=MagicMock(stdout="cua-driver 0.5.0", returncode=0)), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info") as info:
+            ok = tools_config.install_cua_driver(
+                upgrade=True, require_confirmed_update=require_confirmed
+            )
+        return ok, runner, info
+
+    def test_indeterminate_check_keeps_installed_version(self):
+        ok, runner, info = self._install("Windows", None, require_confirmed=True)
+        assert ok is True
+        runner.assert_not_called()
+        assert any(
+            "keeping the installed version" in call.args[0]
+            for call in info.call_args_list
+        )
+
+    def test_indeterminate_check_points_at_force_path(self):
+        ok, runner, info = self._install("Darwin", None, require_confirmed=True)
+        assert ok is True
+        runner.assert_not_called()
+        assert any(
+            "computer-use install --upgrade" in call.args[0]
+            for call in info.call_args_list
+        )
+
+    def test_confirmed_update_still_runs_installer(self):
+        state = {"current_version": "0.5.0", "latest_version": "0.6.0",
+                 "update_available": True}
+        ok, runner, _ = self._install("Windows", state, require_confirmed=True)
+        assert ok is True
+        runner.assert_called_once()
+
+    def test_up_to_date_short_circuits(self):
+        state = {"current_version": "0.6.0", "latest_version": "0.6.0",
+                 "update_available": False}
+        ok, runner, _ = self._install("Windows", state, require_confirmed=True)
+        assert ok is True
+        runner.assert_not_called()
+
+    def test_explicit_upgrade_still_falls_through_on_indeterminate(self):
+        # `hermes computer-use install --upgrade` (default flag): the old
+        # behaviour — indeterminate check re-runs the installer.
+        ok, runner, _ = self._install("Darwin", None, require_confirmed=False)
+        assert ok is True
+        runner.assert_called_once()
+
+
+class TestUpdateCheckTimeoutDefaults:
+    """cua_driver_update_check: platform-sensitive default timeout.
+
+    8s is fine on POSIX but too tight for Windows first-spawn (Defender /
+    SmartScreen scanning), and a false timeout is what used to trigger the
+    full reinstall fall-through during `hermes update`.
+    """
+
+    def _captured_timeout(self, platform_name):
+        from unittest.mock import MagicMock
+        from tools.computer_use import cua_backend
+
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["timeout"] = kw.get("timeout")
+            m = MagicMock()
+            m.stdout = '{"update_available": false, "current_version": "1.0"}'
+            return m
+
+        with patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                   return_value="/x/cua-driver"), \
+             patch("tools.computer_use.cua_backend.sys.platform", platform_name), \
+             patch("tools.computer_use.cua_backend.subprocess.run",
+                   side_effect=fake_run):
+            cua_backend.cua_driver_update_check()
+        return captured.get("timeout")
+
+    def test_windows_default_is_generous(self):
+        assert self._captured_timeout("win32") == 25.0
+
+    def test_posix_default_unchanged(self):
+        assert self._captured_timeout("linux") == 8.0
+
+    def test_explicit_timeout_wins(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use import cua_backend
+
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["timeout"] = kw.get("timeout")
+            m = MagicMock()
+            m.stdout = "{}"
+            return m
+
+        with patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                   return_value="/x/cua-driver"), \
+             patch("tools.computer_use.cua_backend.subprocess.run",
+                   side_effect=fake_run):
+            cua_backend.cua_driver_update_check(timeout=3.0)
+        assert captured.get("timeout") == 3.0
+
+
 class TestArchProbeRemoval:
     """Regression tests for the deletion of `_check_cua_driver_asset_for_arch`.
 

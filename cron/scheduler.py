@@ -140,6 +140,24 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    if "skipped to prevent unintended spend: global inference config drifted" in lower:
+        if "finite one-shot job is consumed" in lower:
+            remediation = (
+                "This finite one-shot is consumed; create a new one-shot job at "
+                "a future time with an explicit provider and model."
+            )
+        else:
+            job_id = job.get("id") or "<job_id>"
+            remediation = (
+                "Pin it explicitly: "
+                f"`cronjob action=update job_id={job_id} "
+                "provider=<provider> model=<model>`."
+            )
+        return (
+            f"⚠️ Cron '{job_name}' skipped before inference to prevent "
+            f"unintended spend. {remediation}"
+        )
+
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
         reason = "rate limit"
@@ -4192,14 +4210,36 @@ def run_job(
                 _drift.append(f"{_axis} '{_snapshot}' -> '{_current}'")
             if _drift:
                 _changes = "; ".join(_drift)
+                # Lifecycle-aware remediation (#72056, @sashmatash): a finite
+                # one-shot is consumed by this attempted dispatch — telling the
+                # operator to `cronjob action=update` a spent job is a dead
+                # end. Recurring/repeatable jobs get the pin command instead.
+                _repeat = job.get("repeat") if isinstance(job.get("repeat"), dict) else {}
+                _finite_oneshot = (
+                    isinstance(job.get("schedule"), dict)
+                    and job["schedule"].get("kind") == "once"
+                    and _repeat.get("times") == 1
+                )
+                if _finite_oneshot:
+                    _remediation = (
+                        "This finite one-shot job is consumed by this attempted run; "
+                        "create a new one-shot job at a future time with an explicit "
+                        "provider and model."
+                    )
+                else:
+                    _remediation = (
+                        "To run on the new config, pin it explicitly: "
+                        f"`cronjob action=update job_id={job_id} "
+                        "provider=<provider> model=<model>` (or pin the original "
+                        "values to keep them)."
+                    )
                 logger.warning(
                     "Job '%s': SKIPPED — global inference config drifted since "
                     "creation (%s) and this job is unpinned. Skipped to prevent "
-                    "unintended spend. Pin explicitly to proceed: "
-                    "`cronjob action=update job_id=%s provider=<p> model=<m>`.",
+                    "unintended spend. %s",
                     job_id,
                     _changes,
-                    job_id,
+                    _remediation,
                 )
                 # Alert-once (#73506 shape): persist the drift_alerted bit so
                 # only the FIRST drifted tick delivers; run_one_job suppresses
@@ -4220,9 +4260,7 @@ def run_job(
                     f"{_drift_marker} Skipped to prevent unintended spend: global "
                     f"inference config drifted since this job was created "
                     f"({_changes}), and this job is unpinned. No inference call "
-                    f"was made. To run on the new config, pin it explicitly: "
-                    f"`cronjob action=update job_id={job_id} provider=<provider> "
-                    f"model=<model>` (or pin the original values to keep them). "
+                    f"was made. {_remediation} "
                     f"This alert is sent once; the job stays skipped until the "
                     f"config is pinned or restored. See #44585."
                 )

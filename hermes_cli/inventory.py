@@ -228,12 +228,17 @@ def build_model_options_payload(
 
     A normal open (``refresh=False``) is a READ path: provider catalogs come from the disk cache
     only and stale/missing ones warm in the background, so a degraded provider (hanging endpoint,
-    failed auth probe) delays neither the other providers' rows nor the response (#114215)."""
+    failed auth probe) delays neither the other providers' rows nor the response (#114215).
+
+    ``for_picker=True`` keeps providers whose credential pool is entirely rate-limited visible:
+    these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
+    mid-session even though another model under the same provider may still work (same contract
+    as ``/model`` and the aux pickers, #66584 / #66624)."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, for_picker=True,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
         non_blocking_catalogs=not refresh,
     )

@@ -427,8 +427,12 @@ class TestStdinHelpers:
             _python_command(
                 "import sys\n"
                 "print('READY', flush=True)\n"
-                "for line in sys.stdin:\n"
-                "    print('READ:' + line.strip(), flush=True)"
+                "while True:\n"
+                "    byte = sys.stdin.buffer.read(1)\n"
+                "    if not byte:\n"
+                "        print('EOF_RECEIVED', flush=True)\n"
+                "        break\n"
+                "    print(f'BYTE={byte!r}', flush=True)"
             ),
             cwd=str(tmp_path),
             use_pty=True,
@@ -452,18 +456,18 @@ class TestStdinHelpers:
             assert registry.close_stdin(session.id) == expected
             assert registry.poll(session.id)["status"] == "running"
 
-            assert registry.submit_stdin(session.id, "after-close") == {
+            assert registry.write_stdin(session.id, "after-close\r") == {
                 "status": "ok",
                 "bytes_written": 12,
             }
             assert _wait_until(
-                lambda: "READ:after-close"
-                in registry.poll(session.id)["output_preview"]
+                lambda: "BYTE=b'e'" in registry.poll(session.id)["output_preview"]
             )
 
             poll = registry.poll(session.id)
             assert poll["status"] == "running"
-            assert "\x04" not in poll["output_preview"]
+            assert "BYTE=b'\\x04'" not in poll["output_preview"]
+            assert "EOF_RECEIVED" not in poll["output_preview"]
         finally:
             registry.kill_process(session.id)
 

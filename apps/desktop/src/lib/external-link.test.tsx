@@ -112,10 +112,23 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
   })
 
-  it('shows a trailing external-link icon', () => {
+  it('hides the trailing external-link icon by default', () => {
     installDesktopBridge()
 
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    const link = screen.getByRole('link', { name: 'Example link' })
+    expect(link.querySelector('svg')).toBeNull()
+  })
+
+  it('shows a trailing external-link icon when opted in', () => {
+    installDesktopBridge()
+
+    render(
+      <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
+        Example link
+      </ExternalLink>,
+    )
 
     const link = screen.getByRole('link', { name: 'Example link' })
     expect(link.querySelector('svg')).toBeTruthy()

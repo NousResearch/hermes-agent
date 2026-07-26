@@ -550,6 +550,48 @@ class TestRevoke:
         assert "alice" in final
         assert "carol" not in final
 
+    def test_revoke_invalidates_same_user_pending_codes_only(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            approved_code = store.generate_code("telegram", "user1", "Alice")
+
+            limits = store._load_json(store._rate_limit_path())
+            limits["telegram:user1"] = time.time() - RATE_LIMIT_SECONDS - 1
+            store._save_json(store._rate_limit_path(), limits)
+
+            stale_code = store.generate_code("telegram", "user1", "Alice")
+            other_code = store.generate_code("telegram", "user2", "Bob")
+            store.approve_code("telegram", approved_code)
+
+            assert store.revoke("telegram", "user1") is True
+            pending = store.list_pending("telegram")
+
+            assert [entry["user_id"] for entry in pending] == ["user2"]
+            assert store.approve_code("telegram", stale_code) is None
+            assert store.approve_code("telegram", other_code) == {
+                "user_id": "user2",
+                "user_name": "Bob",
+            }
+
+    @pytest.mark.parametrize("approve_via", ["code", "request_id"])
+    def test_revoke_from_other_store_invalidates_codes_for_both_approval_paths(self, tmp_path, approve_via):
+        """The CLI revokes while the dashboard holds its own store: neither the DM'd code nor
+        the admin request id issued before the revoke may re-grant access."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
+                patch("gateway.pairing._sync_allowlist_add"), patch("gateway.pairing._sync_allowlist_remove"):
+            gateway = PairingStore()
+            gateway._approve_user("whatsapp", "15551234567")
+            stale_code = gateway.generate_code("whatsapp", "15551234567@s.whatsapp.net", "Alice")
+            dashboard, cli = PairingStore(), PairingStore()
+            [request] = dashboard.list_pending("whatsapp")
+
+            assert cli.revoke("whatsapp", "15551234567@s.whatsapp.net") is True
+            if approve_via == "code":
+                assert dashboard.approve_code("whatsapp", stale_code) is None
+            else:
+                assert dashboard.approve_request("whatsapp", request["request_id"]) is None
+            assert gateway.is_approved("whatsapp", "15551234567") is False
+
 
 # ---------------------------------------------------------------------------
 # List & clear

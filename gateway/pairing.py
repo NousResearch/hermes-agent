@@ -441,7 +441,7 @@ class PairingStore:
         _sync_allowlist_add(platform, normalized_user_id)
 
     def revoke(self, platform: str, user_id: str) -> bool:
-        """Remove a user from the approved list. Returns True if found."""
+        """Remove a user and invalidate their pending codes. Returns True if found."""
         path = self._approved_path(platform)
         with self._locked():
             approved = self._load_json(path)
@@ -451,6 +451,19 @@ class PairingStore:
             for approved_user_id in matching_ids:
                 del approved[approved_user_id]
             self._save_json(path, approved)
+            # An unexpired code issued before the revoke would otherwise re-grant access
+            # without a fresh request. Same lock as both approval paths, so an in-flight
+            # approval either lands before this (and is revoked) or finds no entry.
+            pending_path = self._pending_path(platform)
+            pending = self._load_json(pending_path)
+            stale = [
+                entry_id for entry_id, entry in pending.items()
+                if isinstance(entry, dict) and _user_ids_match(platform, entry.get("user_id", ""), user_id)
+            ]
+            for entry_id in stale:
+                del pending[entry_id]
+            if stale:
+                self._save_json(pending_path, pending)
             # Keep the allowlist mirror in sync (no-op if added by other means).
             _sync_allowlist_remove(platform, user_id)
             return True

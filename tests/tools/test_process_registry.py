@@ -773,6 +773,32 @@ class TestSpawnEnvSanitization:
         # A failed launch must not be exposed as a running/tracked session.
         assert session.id not in registry._running
 
+    def test_spawn_via_env_wrapper_reaches_env_untransformed(self, registry):
+        # The compound-background rewriter is retired; execute() must receive
+        # the bg wrapper exactly as spawn_via_env built it, with no rewrite
+        # opt-out kwarg (the parameter no longer exists).
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "4321\n", "returncode": 0}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_via_env(env, "echo hello")
+
+        command_str, kwargs = env.commands[0]
+        assert "rewrite_compound_background" not in kwargs
+        assert "nohup" in command_str
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False
@@ -856,21 +882,21 @@ class TestPopenLeakOnSetupFailure:
 # =========================================================================
 
 
-class TestSpawnRewriteCompoundBackground:
-    """Verify that spawn_local rewrites `A && B &` patterns to avoid subshell deadlocks.
+class TestSpawnCommandVerbatim:
+    """The compound-background rewriter is retired (#68948): spawn_local must
+    hand the shell the caller's command byte-identical.
 
-    Issue #68915: when bash parses ``A && B &`` it forks a subshell ``(A && B) &``.
-    If B is a long-running server, the subshell never exits and holds the stdout
-    pipe open, causing a permanent deadlock. The rewriter wraps the tail to
-    ``A && { B & }`` so no subshell fork occurs.
+    The rewriter existed for the ``A && B &`` subshell-wait trap (#68915);
+    that hang was fixed at the process layer in #71008, and the textual
+    rewrite kept corrupting valid bash (backticks, ``${...}``, ``[[``,
+    heredoc payloads -- see tests/tools/test_terminal_compound_background.py).
     """
 
-    def test_compound_and_background_gets_rewritten(self, registry):
-        """A && B & must be rewritten to A && { B & } before Popen."""
-        captured_cmd = []
+    def _spawn_and_capture(self, registry, command):
+        captured = []
 
         def fake_popen(args, **kwargs):
-            captured_cmd.append(args)
+            captured.append(args)
             proc = MagicMock()
             proc.pid = 1111
             proc.stdout = MagicMock()
@@ -883,40 +909,35 @@ class TestSpawnRewriteCompoundBackground:
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch("threading.Thread", return_value=fake_thread), \
              patch.object(registry, "_write_checkpoint"):
-            registry.spawn_local("cd /app && node server.js &>/tmp/srv.log &", cwd="/tmp")
+            session = registry.spawn_local(command, cwd="/tmp")
 
-        assert len(captured_cmd) == 1
-        shell_cmd = captured_cmd[0]
-        # The command passed to Popen should be the REWRITTEN version
-        assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
+        assert len(captured) == 1
+        return session, captured[0][2]
+
+    def test_compound_and_background_not_rewritten(self, registry):
+        cmd = "cd /app && node server.js &>/tmp/srv.log &"
+        session, shell_cmd = self._spawn_and_capture(registry, cmd)
+        assert shell_cmd == f"set +m; {cmd}"
+        assert session.command == cmd
 
     def test_simple_background_preserved(self, registry):
-        """Simple cmd & (no &&) must NOT be rewritten — no subshell bug."""
-        captured_cmd = []
+        cmd = "sleep 5 &"
+        _, shell_cmd = self._spawn_and_capture(registry, cmd)
+        assert shell_cmd == f"set +m; {cmd}"
 
-        def fake_popen(args, **kwargs):
-            captured_cmd.append(args)
-            proc = MagicMock()
-            proc.pid = 2222
-            proc.stdout = MagicMock()
-            return proc
+    def test_backtick_compound_untouched(self, registry):
+        # The exact input class the retired rewriter corrupted into invalid
+        # bash (unmatched backtick, #68948 review).
+        cmd = "echo `A && B` &"
+        _, shell_cmd = self._spawn_and_capture(registry, cmd)
+        assert shell_cmd == f"set +m; {cmd}"
 
-        fake_thread = MagicMock()
-        fake_thread.daemon = False
+    def test_multi_line_command_untouched(self, registry):
+        cmd = "cd /app && python3 -m http.server &\nsleep 1\ncurl http://localhost:8000/"
+        _, shell_cmd = self._spawn_and_capture(registry, cmd)
+        assert shell_cmd == f"set +m; {cmd}"
 
-        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", side_effect=fake_popen), \
-             patch("threading.Thread", return_value=fake_thread), \
-             patch.object(registry, "_write_checkpoint"):
-            registry.spawn_local("sleep 5 &", cwd="/tmp")
-
-        assert len(captured_cmd) == 1
-        shell_cmd = captured_cmd[0][2]
-        # Simple background must remain as-is
-        assert "sleep 5 &" in shell_cmd
-
-    def test_pty_path_uses_rewritten_command(self, registry):
-        """PTY spawn path must also use the rewritten command (issue #68915)."""
+    def test_pty_path_uses_verbatim_command(self, registry):
         mock_pty_proc = MagicMock()
         mock_pty_proc.pid = 5555
 
@@ -936,11 +957,9 @@ class TestSpawnRewriteCompoundBackground:
                 use_pty=True,
             )
 
-        assert mock_pty_module.PtyProcess.spawn.called, \
-            "PTY spawn should have been attempted"
+        assert mock_pty_module.PtyProcess.spawn.called
         pty_args = mock_pty_module.PtyProcess.spawn.call_args[0][0]
-        assert "&& { node server.js & }" in pty_args[2], \
-            f"PTY path should use rewritten command, got: {pty_args[2]}"
+        assert pty_args[2] == "set +m; cd /app && node server.js &"
         assert session.command == "cd /app && node server.js &"
 
 

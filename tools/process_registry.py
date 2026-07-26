@@ -989,15 +989,6 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
-        # Guard against the `A && B &` subshell-wait trap (issue #68915).
-        # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
-        # the stdout pipe open forever when B is a long-running server.
-        # The rewriter wraps it to ``A && { B & }`` so no subshell fork.
-        # Lazy import avoids circular dependency (terminal_tool imports this).
-        from tools.terminal_tool import _rewrite_compound_background as _rewrite_bg
-
-        safe_command = _rewrite_bg(command)
-
         session = ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
@@ -1018,7 +1009,7 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+                pty_argv = [user_shell, "-lic", f"set +m; {command}"]
 
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
@@ -1101,7 +1092,7 @@ class ProcessRegistry:
         # kills only the worker instead of taking down the whole gateway
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
-        shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
+        shell_argv = [user_shell, "-lic", f"set +m; {command}"]
         in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()
@@ -1260,7 +1251,6 @@ class ProcessRegistry:
             result = env.execute(
                 bg_command,
                 timeout=timeout,
-                rewrite_compound_background=False,
             )
             output = result.get("output", "").strip()
             # Try to extract the PID from the output

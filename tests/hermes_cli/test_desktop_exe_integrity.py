@@ -122,9 +122,8 @@ def test_expected_machines_unknown_host_is_permissive():
 
 # ─── _windows_native_machine ────────────────────────────────────────────────
 
-# winnt.h PROCESSOR_ARCHITECTURE_* — mirrors hermes_cli.main constants.
-_SYSINFO_AMD64 = 9
-_SYSINFO_ARM64 = 12
+# MACHINE_ATTRIBUTES.UserEnabled — mirrors hermes_cli.main.
+_USER_ENABLED = 0x00000001
 
 
 class _SettableFunc:
@@ -147,14 +146,16 @@ class _FakeKernel32:
         native_pe_machine: int,
         *,
         wow64_ok: bool = True,
-        system_info_arch: int | None = None,
+        user_runnable: set | None = None,
     ):
         self._native_pe = native_pe_machine
         self._wow64_ok = wow64_ok
-        self._system_info_arch = system_info_arch
+        self._user_runnable = user_runnable
         self.GetCurrentProcess = _SettableFunc(lambda: -1)
         self.IsWow64Process2 = _SettableFunc(self._is_wow64_process2)
-        self.GetNativeSystemInfo = _SettableFunc(self._get_native_system_info)
+        self.GetMachineTypeAttributes = _SettableFunc(
+            self._get_machine_type_attributes
+        )
 
     def _is_wow64_process2(self, _handle, process_ref, native_ref):
         if not self._wow64_ok:
@@ -163,22 +164,26 @@ class _FakeKernel32:
         native_ref._obj.value = self._native_pe
         return 1
 
-    def _get_native_system_info(self, info_ref):
-        if self._system_info_arch is None:
-            raise AttributeError("GetNativeSystemInfo unavailable in this fake")
-        info_ref._obj.wProcessorArchitecture = self._system_info_arch
+    def _get_machine_type_attributes(self, machine, attributes_ref):
+        if self._user_runnable is None:
+            raise AttributeError("GetMachineTypeAttributes unavailable in this fake")
+        if machine not in self._user_runnable:
+            attributes_ref._obj.value = 0
+            return 0
+        attributes_ref._obj.value = _USER_ENABLED
+        return 0
 
 
 def _fake_windll(
     native_pe_machine: int,
     *,
     wow64_ok: bool = True,
-    system_info_arch: int | None = None,
+    user_runnable: set | None = None,
 ):
     kernel32 = _FakeKernel32(
         native_pe_machine,
         wow64_ok=wow64_ok,
-        system_info_arch=system_info_arch,
+        user_runnable=user_runnable,
     )
 
     def _windll(name, *args, **kwargs):
@@ -218,11 +223,10 @@ def test_native_machine_binds_current_process_handle_restype(monkeypatch):
     assert kernel32.IsWow64Process2.argtypes is not None
 
 
-def test_native_machine_system_info_fallback_when_iswow64_fails(monkeypatch):
-    """Residual #71218 failure: IsWow64Process2 returns FALSE (e.g. invalid
-    handle) while PROCESSOR_ARCHITECTURE still lies as AMD64. GetNativeSystemInfo
-    must still report the real ARM64 host so the integrity gate accepts the
-    correctly-built ARM64 Hermes.exe."""
+def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch):
+    """GetMachineTypeAttributes answers "can this host load PE machine X?"
+    directly, so a WoA host that reports AMD64 everywhere else still accepts an
+    ARM64 exe."""
     import ctypes
 
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
@@ -231,14 +235,28 @@ def test_native_machine_system_info_fallback_when_iswow64_fails(monkeypatch):
     with patch.object(
         ctypes,
         "WinDLL",
-        _fake_windll(PE_ARM64, wow64_ok=False, system_info_arch=_SYSINFO_ARM64),
+        _fake_windll(
+            PE_ARM64, wow64_ok=False, user_runnable={PE_ARM64, PE_AMD64}
+        ),
         create=True,
     ), patch("platform.machine", return_value="AMD64"):
-        assert cli_main._windows_native_machine() == "ARM64"
+        assert cli_main._expected_windows_pe_machines() == {PE_ARM64, PE_AMD64}
+
+
+def test_expected_machines_falls_back_when_attributes_api_missing(monkeypatch):
+    """Pre-Windows-11 hosts have no GetMachineTypeAttributes — the name-based
+    mapping must still drive the gate."""
+    import ctypes
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    with patch.object(
+        ctypes, "WinDLL", _fake_windll(PE_ARM64, user_runnable=None), create=True
+    ), patch("platform.machine", return_value="AMD64"):
+        assert cli_main._expected_windows_pe_machines() == {PE_ARM64, PE_AMD64}
 
 
 def test_native_machine_env_fallback_without_api(monkeypatch):
-    """Pre-1511 Windows 10: no IsWow64Process2 / GetNativeSystemInfo → env."""
+    """Pre-1511 Windows 10: no IsWow64Process2 → env."""
     import ctypes
 
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
@@ -286,11 +304,12 @@ def test_integrity_gate_accepts_arm64_exe_from_emulated_x64_process(monkeypatch,
         assert cli_main._desktop_exe_integrity_error(exe) is None
 
 
-def test_integrity_gate_accepts_arm64_when_iswow64_fails_but_system_info_ok(
+def test_integrity_gate_accepts_arm64_when_iswow64_fails_but_attributes_ok(
     monkeypatch, tmp_path
 ):
-    """End-to-end residual WoA shape: IsWow64Process2 fails, env lies as AMD64,
-    GetNativeSystemInfo reports ARM64, ARM64 Hermes.exe must pass the gate."""
+    """End-to-end residual WoA shape: IsWow64Process2 fails and env lies as
+    AMD64, but GetMachineTypeAttributes reports ARM64 as user-runnable, so the
+    ARM64 Hermes.exe must pass the gate."""
     import ctypes
 
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
@@ -300,7 +319,9 @@ def test_integrity_gate_accepts_arm64_when_iswow64_fails_but_system_info_ok(
     with patch.object(
         ctypes,
         "WinDLL",
-        _fake_windll(PE_ARM64, wow64_ok=False, system_info_arch=_SYSINFO_ARM64),
+        _fake_windll(
+            PE_ARM64, wow64_ok=False, user_runnable={PE_ARM64, PE_AMD64}
+        ),
         create=True,
     ), patch("platform.machine", return_value="AMD64"):
         assert cli_main._desktop_exe_integrity_error(exe) is None

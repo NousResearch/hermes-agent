@@ -528,9 +528,18 @@ def apply_wal_with_fallback(
     log one WARNING explaining why.
 
     On SQLite builds that still contain the WAL-reset corruption bug
-    (issue #69784), refuse to enable WAL on fresh / non-WAL databases
-    (prefer DELETE).  If the on-disk DB is already WAL, keep WAL and warn
-    — never live-downgrade under possible concurrent openers.
+    (issue #69784), Hermes previously refused WAL and forced DELETE on
+    fresh databases.  That mitigation is REVERTED: measured against
+    Hermes' own multi-process write paths, DELETE is the mode that
+    corrupts (a bare open()/close() on the DB file cancels this process's
+    POSIX advisory locks -- including a running VACUUM's EXCLUSIVE lock --
+    and DELETE-mode rollback journals have no second line of defence).
+    WAL survived the same harness cleanly.  Upstream also rates the
+    WAL-reset race at or below the background rate of SSD failure and
+    could not reproduce it without patching SQLite to force the window,
+    whereas the lock-cancellation path reproduces on demand.  The real fix
+    is to never open() a live database file -- see
+    ``hermes_cli.sqlite_safe_read``.
 
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
@@ -542,12 +551,12 @@ def apply_wal_with_fallback(
     both databases get identical fallback behavior.
 
     Never downgrades to DELETE if the on-disk DB header reports WAL — see
-    _on_disk_journal_mode.  That holds for both the NFS path and the
-    WAL-reset vulnerability path.
+    _on_disk_journal_mode.
     """
-    # Vulnerable SQLite: do not enable WAL on new/non-WAL files.
+    # Vulnerable SQLite still gets WAL: see the docstring. We warn once so
+    # the operator can upgrade the runtime, but we do NOT force DELETE.
     if is_sqlite_wal_reset_vulnerable():
-        return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
+        _log_wal_reset_bug_once(db_label, kept_wal=True)
 
     # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
@@ -625,8 +634,9 @@ def _log_wal_reset_bug_once(
             return
         _wal_reset_bug_warned_paths.add(db_label)
     action = (
-        "is already in WAL mode — leaving WAL in place (no live "
-        "downgrade under concurrent openers)"
+        "keeping WAL — WAL is the safer mode here (forcing DELETE was "
+        "reverted; DELETE is what corrupts under Hermes' concurrent "
+        "writers)"
         if kept_wal
         else "using journal_mode=DELETE instead of enabling WAL"
     )
@@ -1576,8 +1586,33 @@ class CompressionSessionBusyError(RuntimeError):
     """A non-owner tried to write while compression owns the session."""
 
 
-def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100) -> bool:
+def _track_live_connection(db_path: Path) -> None:
+    """Register a live connection so byte-probes of this file are refused.
+
+    See ``hermes_cli.sqlite_safe_read``: once a connection exists, any
+    ``open()``/``close()`` on the same file cancels this process's POSIX
+    advisory locks on it -- including a VACUUM's EXCLUSIVE lock.
+    """
+    try:
+        from hermes_cli.sqlite_safe_read import track_connection
+
+        track_connection(db_path)
+    except Exception:
+        pass
+
+
+def is_zeroed_state_db(
+    path: Path, *, probe_bytes: int = 100, force: bool = False
+) -> bool:
     """Detect the #68474 zeroed state.db signature (size>0, NUL header).
+
+    Byte-level probe, so it is only safe BEFORE any connection to *path*
+    exists in this process: ``close()`` cancels every POSIX advisory lock the
+    process holds on the file, which can pull the EXCLUSIVE lock out from
+    under a running VACUUM and corrupt the database. The read is routed
+    through ``read_header_bytes_preopen``, which refuses (returning False
+    here) once a connection is live. Pass ``force=True`` only for offline
+    files -- quarantined copies, snapshots, archives.
 
     Prefer ``hermes_cli.backup.is_zeroed_sqlite_file`` when available; this
     local copy keeps SessionDB openable without importing the CLI package
@@ -1586,7 +1621,7 @@ def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100) -> bool:
     try:
         from hermes_cli.backup import is_zeroed_sqlite_file
 
-        return is_zeroed_sqlite_file(path, probe_bytes=probe_bytes)
+        return is_zeroed_sqlite_file(path, probe_bytes=probe_bytes, force=force)
     except Exception:
         pass
     try:
@@ -1595,11 +1630,11 @@ def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100) -> bool:
         return False
     if size <= 0:
         return False
-    try:
-        with open(path, "rb") as fh:
-            head = fh.read(max(16, probe_bytes))
-    except OSError:
-        return False
+    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+
+    head = read_header_bytes_preopen(
+        path, length=max(16, probe_bytes), force=force
+    )
     if not head or head.startswith(b"SQLite format 3"):
         return False
     return all(byte == 0 for byte in head)
@@ -1801,6 +1836,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                _track_live_connection(self.db_path)
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1848,6 +1884,7 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                _track_live_connection(self.db_path)
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
@@ -2431,6 +2468,12 @@ class SessionDB:
                     logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
+                try:
+                    from hermes_cli.sqlite_safe_read import untrack_connection
+
+                    untrack_connection(self.db_path)
+                except Exception:
+                    pass
 
     # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
     #

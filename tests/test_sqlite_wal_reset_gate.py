@@ -58,16 +58,30 @@ class TestIsSqliteWalResetVulnerable:
 
 
 class TestApplyWalWalResetGate:
-    def test_fresh_db_uses_delete_when_vulnerable(self, tmp_path, monkeypatch, caplog):
+    def test_fresh_db_gets_wal_even_when_vulnerable(self, tmp_path, monkeypatch, caplog):
+        """Forcing DELETE on vulnerable SQLite was reverted.
+
+        Measured against Hermes' own concurrent write paths, DELETE is the
+        mode that corrupts: a bare open()/close() on the DB file cancels this
+        process's POSIX advisory locks (including a running VACUUM's EXCLUSIVE
+        lock) and a rollback journal has no second line of defence. WAL
+        survived the same harness. We still warn so the operator can upgrade
+        the runtime, but we no longer steer them into the failing mode.
+        """
         monkeypatch.setattr(
             hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
         with caplog.at_level("WARNING", logger="hermes_state"):
             mode = apply_wal_with_fallback(conn, db_label="fresh.db")
-        assert mode == "delete"
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
-        assert any("instead of enabling WAL" in r.getMessage() for r in caplog.records)
+        assert mode == "wal"
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        # The operator is still told to upgrade the runtime...
+        assert any("WAL-reset" in r.getMessage() for r in caplog.records)
+        # ...but we never announce a downgrade to DELETE.
+        assert not any(
+            "instead of enabling WAL" in r.getMessage() for r in caplog.records
+        )
         conn.close()
 
     def test_existing_wal_left_alone_when_vulnerable(
@@ -95,7 +109,7 @@ class TestApplyWalWalResetGate:
             assert mode == "wal"
             assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
             assert conn.execute("SELECT x FROM t").fetchone()[0] == 42
-            assert any("already in WAL mode" in r.getMessage() for r in caplog.records)
+            assert any("WAL-reset" in r.getMessage() for r in caplog.records)
             # Must not attempt a live journal_mode flip.
             assert not any(
                 "instead of enabling WAL" in r.getMessage() for r in caplog.records

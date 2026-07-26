@@ -479,10 +479,36 @@ def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> 
 
 
 def _is_curator_managed_record(record: Any) -> bool:
-    """Return True when a usage record opts a skill into curator management."""
+    """Return True when a usage record opts a skill into curator management.
+
+    NAMING (issue #67140): the on-disk field is ``created_by``, which reads
+    like provenance but is consumed as a **curator-management opt-in policy
+    flag**. The two are not the same question:
+
+    * provenance = "who authored this file" — historical fact, and for records
+      written before the marker existed it is simply unrecoverable.
+    * management = "may autonomous curation mutate/archive this" — a policy
+      decision the user can change at any time via ``hermes curator adopt``.
+
+    ``created_by: "agent"`` therefore means "curator-managed", NOT "proof the
+    agent wrote it". The field name is retained because it is already on disk
+    in every user's ``.usage.json``; renaming it would strand those records.
+    Read it as policy, and prefer ``is_curator_managed()`` at call sites so the
+    intent is unambiguous.
+    """
     if not isinstance(record, dict):
         return False
     return record.get("created_by") == "agent" or record.get("agent_created") is True
+
+
+def is_curator_managed(skill_name: str) -> bool:
+    """Whether *skill_name* is opted into curator management.
+
+    Policy-intent alias for the ``created_by``-marker check, so call sites read
+    as the question they are actually asking (see ``_is_curator_managed_record``
+    for why the stored field name says "created_by").
+    """
+    return _is_curator_managed_record(load_usage().get(skill_name))
 
 
 def list_unmanaged_skill_names() -> List[str]:

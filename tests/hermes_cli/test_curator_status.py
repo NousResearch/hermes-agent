@@ -342,3 +342,47 @@ def test_adopt_subcommand_is_registered():
     assert named.skill == ["alpha", "beta"]
     assert named.all_unmanaged is False
 
+
+def test_list_unmanaged_subcommand_is_registered():
+    import argparse
+
+    import hermes_cli.curator as curator_cli
+
+    parser = argparse.ArgumentParser()
+    curator_cli.register_cli(parser)
+    args = parser.parse_args(["list-unmanaged"])
+    assert args.func is curator_cli._cmd_list_unmanaged
+
+
+def test_list_unmanaged_itemizes_and_explains(curator_status_env):
+    """`status` gives the count; this gives the names plus WHY each is
+    unmanaged, so the user can decide what to adopt."""
+    env = curator_status_env
+    env["make_skill"]("legacy-one")
+    env["make_skill"]("managed-one")
+    env["skill_usage"].mark_agent_created("managed-one")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = env["curator_cli"]._cmd_list_unmanaged(Namespace())
+    out = buf.getvalue()
+
+    assert rc == 0
+    assert "legacy-one" in out
+    assert "managed-one" not in out
+    assert "no marker" in out or "created_by:null" in out
+    assert "curator adopt" in out
+
+
+def test_list_unmanaged_reports_clean_state(curator_status_env):
+    env = curator_status_env
+    env["make_skill"]("managed-one")
+    env["skill_usage"].mark_agent_created("managed-one")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = env["curator_cli"]._cmd_list_unmanaged(Namespace())
+
+    assert rc == 0
+    assert "no unmanaged skills" in buf.getvalue()
+

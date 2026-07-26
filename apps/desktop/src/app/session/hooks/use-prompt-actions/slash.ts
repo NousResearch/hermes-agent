@@ -285,7 +285,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          await submitPromptText(message)
+          // Submit into the session this command was resolved against — the
+          // same pair the output writer and the busy gate above already use.
+          // Bare `submitPromptText(message)` let submit re-resolve from
+          // `activeSessionIdRef`, which names the FOREGROUND chat: a `/work`
+          // typed into a fresh ⌘T tab loaded the skill in that tab, printed
+          // "⚡ loading skill" there, then fired its kickoff as a user message
+          // into whatever conversation was on screen. Every other target the
+          // dispatcher serves (tile, background queue drain, a session created
+          // by this very call) had the same leak.
+          await submitPromptText(message, { sessionId, storedSessionId })
         }
 
         try {

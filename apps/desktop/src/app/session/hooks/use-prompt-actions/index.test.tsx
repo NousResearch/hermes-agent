@@ -1167,6 +1167,56 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     $queuedPromptsBySession.set({})
   })
 
+  it("sends a skill's kickoff into the TAB that invoked it, not the foreground chat", async () => {
+    // `/work` in a fresh ⌘T tab: slash.exec returns a skill dispatch whose
+    // `message` is the kickoff prompt. The dispatcher resolved the tab as its
+    // target, printed "⚡ loading skill" there — then submitted the kickoff
+    // with no target at all, so submit re-resolved from activeSessionIdRef and
+    // fired it as a user message into whatever conversation was on screen.
+    const tabRuntimeId = 'tab-runtime'
+    const tabStoredId = 'tab-stored'
+
+    $queuedPromptsBySession.set({})
+    publishSessionState(tabRuntimeId, createClientSessionState(tabStoredId))
+
+    const submitted: (Record<string, unknown> | undefined)[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return (
+        method === 'slash.exec'
+          ? { type: 'skill', name: 'work', message: 'Load the work skill, then: fix the tab bug' }
+          : {}
+      ) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="foreground-runtime"
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="foreground-stored"
+      />
+    )
+
+    await handle!.submitText('/work fix the tab bug', { sessionId: tabRuntimeId })
+
+    expect(submitted).toEqual([
+      expect.objectContaining({
+        session_id: tabRuntimeId,
+        text: 'Load the work skill, then: fix the tab bug'
+      })
+    ])
+
+    dropSessionState(tabRuntimeId)
+    $queuedPromptsBySession.set({})
+  })
+
   it('slash status header carries the command token, not the full invocation', async () => {
     // `/goal <long prose>` used to echo the entire invocation in the mono
     // header AND the goal text again in the backend notice right under it.

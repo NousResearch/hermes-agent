@@ -486,6 +486,38 @@ def test_deleted_sibling_worktree_folds_into_parent_home_checkout():
     assert len(main["sessions"]) == 2
 
 
+def test_deleted_sibling_worktree_subdir_folds_into_parent_home_checkout():
+    # Same as above, but the session's cwd is a SUBDIR of the deleted worktree
+    # (an agent that cd-ed into `<repo>-<suffix>/apps/desktop`). The leaf name
+    # ("desktop") shares nothing with the repo, so the sibling probe has to walk
+    # the ancestors — otherwise the dead path is minted as its own project.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-guiperf/apps/desktop"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    project = tree["projects"][0]
+    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    assert len(project["repos"][0]["groups"][0]["sessions"]) == 2
+
+
+def test_sibling_probe_is_bounded():
+    # Each miss costs a git invocation, and this runs per session, so a deeply
+    # nested unresolvable cwd must not fan out into an unbounded probe storm.
+    probed = []
+
+    def resolve(cwd):
+        probed.append(cwd)
+        return None
+
+    assert pt._probe_sibling_worktree("/a-b-c/d-e-f/g-h-i/j-k-l", resolve) == ""
+    assert len(probed) <= pt._MAX_SIBLING_PROBES
+
+
 def test_colliding_repo_basenames_disambiguate_labels():
     resolve = _resolver(
         {

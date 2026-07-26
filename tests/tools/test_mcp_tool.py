@@ -6,6 +6,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import sys
 import threading
@@ -124,6 +125,71 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+
+
+class TestMCPParallelSafetyProvenance:
+    def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+
+        first = SimpleNamespace(session=object(), _registered_tool_names=[])
+        second = SimpleNamespace(session=object(), _registered_tool_names=[])
+
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_parallel = set(mcp_tool._parallel_safe_servers)
+            mcp_tool._servers.clear()
+            mcp_tool._servers.update({"foo-bar": first, "foo_bar": second})
+            mcp_tool._parallel_safe_servers.clear()
+
+        try:
+            monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+            monkeypatch.setattr(
+                mcp_tool, "_filter_suspicious_mcp_servers", lambda servers: servers
+            )
+            mcp_tool.register_mcp_servers(
+                {
+                    "foo-bar": {"supports_parallel_tool_calls": True},
+                    "foo_bar": {"supports_parallel_tool_calls": False},
+                }
+            )
+            with mcp_tool._lock:
+                assert "foo-bar" in mcp_tool._parallel_safe_servers
+                assert "foo_bar" not in mcp_tool._parallel_safe_servers
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._parallel_safe_servers.clear()
+                mcp_tool._parallel_safe_servers.update(saved_parallel)
+
+    def test_tool_provenance_keeps_exact_raw_server_names(self):
+        import tools.mcp_tool as mcp_tool
+
+        first_tool = "mcp__foo_bar__first"
+        second_tool = "mcp__foo_bar__second"
+        with mcp_tool._lock:
+            saved_map = dict(mcp_tool._mcp_tool_server_names)
+            saved_parallel = set(mcp_tool._parallel_safe_servers)
+            mcp_tool._mcp_tool_server_names.clear()
+            mcp_tool._parallel_safe_servers.clear()
+            mcp_tool._parallel_safe_servers.add("foo-bar")
+
+        try:
+            mcp_tool._track_mcp_tool_server(first_tool, "foo-bar")
+            mcp_tool._track_mcp_tool_server(second_tool, "foo_bar")
+
+            assert mcp_tool.is_mcp_tool_parallel_safe(first_tool) is True
+            assert mcp_tool.is_mcp_tool_parallel_safe(second_tool) is False
+            assert mcp_tool.get_registered_mcp_server_names() == {
+                "foo-bar",
+                "foo_bar",
+            }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._mcp_tool_server_names.clear()
+                mcp_tool._mcp_tool_server_names.update(saved_map)
+                mcp_tool._parallel_safe_servers.clear()
+                mcp_tool._parallel_safe_servers.update(saved_parallel)
 
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
@@ -1087,6 +1153,103 @@ class TestDiscoverAndRegister:
         _servers.pop("srv", None)
 
 
+    def test_same_server_normalization_collision_skips_all_ambiguous_tools(self, caplog):
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("read-file"),
+                _make_mcp_tool("read_file"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        config = {"tools": {"resources": False, "prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        assert registered == ["mcp__srv__safe_tool"]
+        assert registry.get_entry("mcp__srv__read_file") is None
+        assert registry.get_entry("mcp__srv__safe_tool") is not None
+        assert any(
+            "name normalization collision" in record.message
+            and "tool 'read-file'" in record.message
+            and "tool 'read_file'" in record.message
+            for record in caplog.records
+        )
+
+    def test_cross_server_normalization_collision_preserves_first_owner(self, caplog):
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        first = _make_mock_server(
+            "foo-bar",
+            session=MagicMock(),
+            tools=[_make_mcp_tool("search")],
+        )
+        second = _make_mock_server(
+            "foo_bar",
+            session=MagicMock(),
+            tools=[_make_mcp_tool("search")],
+        )
+        config = {"tools": {"resources": False, "prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            first_registered = _register_server_tools("foo-bar", first, config)
+            second_registered = _register_server_tools("foo_bar", second, config)
+
+        assert first_registered == ["mcp__foo_bar__search"]
+        assert second_registered == []
+        entry = registry.get_entry("mcp__foo_bar__search")
+        assert entry is not None
+        assert entry.toolset == "mcp-foo-bar"
+        assert any(
+            "already owned by MCP toolset 'mcp-foo-bar'" in record.message
+            for record in caplog.records
+        )
+
+    def test_raw_tool_collision_with_generated_utility_skips_both(self, caplog):
+        from tools.mcp_tool import _register_server_tools
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = _make_mock_server(
+            "srv",
+            session=MagicMock(),
+            tools=[
+                _make_mcp_tool("list_resources"),
+                _make_mcp_tool("safe_tool"),
+            ],
+        )
+        server.initialize_result = SimpleNamespace(
+            capabilities=SimpleNamespace(resources=object(), prompts=None)
+        )
+        config = {"tools": {"prompts": False}}
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            registered = _register_server_tools("srv", server, config)
+
+        assert "mcp__srv__list_resources" not in registered
+        assert registry.get_entry("mcp__srv__list_resources") is None
+        assert "mcp__srv__safe_tool" in registered
+        assert "mcp__srv__read_resource" in registered
+        assert any(
+            "tool 'list_resources'" in record.message
+            and "generated utility 'list_resources'" in record.message
+            for record in caplog.records
+        )
+
 # ---------------------------------------------------------------------------
 # MCPServerTask (run / start / shutdown)
 # ---------------------------------------------------------------------------
@@ -1194,6 +1357,49 @@ class TestMCPServerTask:
                 "mcp__srv__list_prompts",
                 "mcp__srv__get_prompt",
             }
+
+    def test_refresh_removes_old_tool_when_new_list_becomes_ambiguous(self, caplog):
+        """A newly ambiguous list must not leave the old handler callable."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+
+        registry = ToolRegistry()
+        server = MCPServerTask("srv")
+        server._config = {"tools": {"resources": False, "prompts": False}}
+        server._tools = [_make_mcp_tool("read_file")]
+        server._registered_tool_names = ["mcp__srv__read_file"]
+        server.session = MagicMock()
+        server.session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(
+                tools=[
+                    _make_mcp_tool("read_file"),
+                    _make_mcp_tool("read-file"),
+                ]
+            )
+        )
+        registry.register(
+            name="mcp__srv__read_file",
+            toolset="mcp-srv",
+            schema={
+                "name": "mcp__srv__read_file",
+                "description": "Old",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+
+        with patch("tools.registry.registry", registry), \
+             patch("tools.mcp_tool._track_mcp_tool_server"), \
+             patch("tools.mcp_tool._forget_mcp_tool_server"), \
+             caplog.at_level(logging.ERROR, logger="tools.mcp_tool"):
+            asyncio.run(server._refresh_tools())
+
+        assert registry.get_entry("mcp__srv__read_file") is None
+        assert server._registered_tool_names == []
+        assert any(
+            "name normalization collision" in record.message
+            for record in caplog.records
+        )
 
     def test_schedule_tools_refresh_keeps_task_until_done(self):
         """Background refresh tasks are strongly referenced and then discarded."""
@@ -4197,8 +4403,8 @@ class TestMCPBuiltinCollisionGuard:
 
         _servers.pop("minimax", None)
 
-    def test_mcp_tool_allowed_when_collision_is_another_mcp(self):
-        """Collision between two MCP toolsets is allowed (last wins)."""
+    def test_mcp_tool_rejected_when_collision_is_another_mcp(self):
+        """Cross-server MCP collisions preserve the existing owner."""
         from tools.registry import ToolRegistry
         from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
@@ -4230,9 +4436,13 @@ class TestMCPBuiltinCollisionGuard:
                 _discover_and_register_server("srv", {"command": "test", "args": []})
             )
 
-        # MCP-to-MCP collision is allowed — the new server wins.
-        assert "mcp__srv__do_thing" in registered
-        assert mock_registry.get_toolset_for_tool("mcp__srv__do_thing") == "mcp-srv"
+        # Cross-server MCP collisions fail closed: the existing owner stays active.
+        assert "mcp__srv__do_thing" not in registered
+        entry = mock_registry.get_entry("mcp__srv__do_thing")
+        assert entry is not None
+        assert entry.toolset == "mcp-old"
+        assert entry.schema["description"] == "From another MCP server"
+        assert mock_registry.get_toolset_for_tool("mcp__srv__do_thing") == "mcp-old"
 
         _servers.pop("srv", None)
 

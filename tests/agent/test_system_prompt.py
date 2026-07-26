@@ -189,34 +189,65 @@ class TestTelegramRichMessagesHint:
     """Verify that TELEGRAM_RICH_MESSAGES_HINT is conditionally included."""
 
     def test_base_hint_without_rich_messages(self, monkeypatch):
-        """When rich_messages is False (default), only the base hint is used."""
+        """When rich_messages is False, only the base hint is used."""
         agent = _make_agent(platform="telegram")
-        # Mock config to return rich_messages: false (default)
         with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
             mock_cfg.return_value = {
-                "platforms": {"telegram": {"extra": {"rich_messages": False}}}
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
             }
             stable = _stable_prompt(agent)
-        # Base hint should be present
         assert "Standard Markdown is automatically converted" in stable
-        # Rich-messages extension should NOT be present
         assert "lean into it" not in stable
         assert "task lists" not in stable
 
     def test_rich_hint_with_rich_messages_enabled(self, monkeypatch):
-        """When rich_messages is True, the rich-messages extension is appended."""
+        """When rich_messages is True in gateway.platforms, the extension
+        is appended (the canonical/primary location)."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": True}}}}
+            }
+            stable = _stable_prompt(agent)
+        assert "lean into it" in stable
+        assert "task lists" in stable
+        assert "math/formulas" in stable
+
+    def test_rich_hint_from_top_level_platforms(self):
+        """Top-level ``platforms.telegram.extra.rich_messages`` is merged
+        alongside gateway.platforms, so it works on its own."""
         agent = _make_agent(platform="telegram")
         with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
             mock_cfg.return_value = {
                 "platforms": {"telegram": {"extra": {"rich_messages": True}}}
             }
             stable = _stable_prompt(agent)
-        # Base hint should be present
-        assert "Standard Markdown is automatically converted" in stable
-        # Rich-messages extension should be present
         assert "lean into it" in stable
         assert "task lists" in stable
-        assert "math/formulas" in stable
+
+    def test_top_level_overrides_gateway_rich_messages(self):
+        """Top-level ``platforms.telegram.extra`` wins over gateway.platforms
+        at the leaf, matching the adapter's merge precedence."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}},
+                "platforms": {"telegram": {"extra": {"rich_messages": True}}},
+            }
+            stable = _stable_prompt(agent)
+        assert "lean into it" in stable
+
+    def test_gateway_extra_other_keys_does_not_block_top_level_rich_messages(self):
+        """When gateway.platforms.telegram.extra has other keys but not
+        rich_messages, the top-level rich_messages still activates."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"disable_link_previews": True}}}},
+                "platforms": {"telegram": {"extra": {"rich_messages": True}}},
+            }
+            stable = _stable_prompt(agent)
+        assert "lean into it" in stable
 
     def test_base_hint_without_config(self, monkeypatch):
         """When config has no telegram section, only base hint is used."""

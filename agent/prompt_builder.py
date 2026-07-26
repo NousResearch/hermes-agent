@@ -954,7 +954,8 @@ PLATFORM_HINTS = {
 }
 
 # Telegram rich-messages extension — only injected when the user has opted in
-# to ``platforms.telegram.extra.rich_messages: true``.  The base
+# to ``gateway.platforms.telegram.extra.rich_messages: true`` (or the
+# top-level ``platforms.telegram.extra.rich_messages``).  The base
 # PLATFORM_HINTS["telegram"] covers MarkdownV2-compatible constructs; this
 # extension adds the Bot API 10.1 rich-Markdown guidance (tables, task lists,
 # collapsible details, math, etc.).

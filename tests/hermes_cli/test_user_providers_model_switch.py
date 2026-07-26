@@ -390,6 +390,9 @@ def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypa
     """User providers: api.openai.com with no models list uses native curated fallback."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # No models: list → un-narrowed → section 3 probes; simulate the keyless
+    # probe failing (401) so the curated fallback is exercised hermetically.
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: None)
 
     user_providers = {
         "openai-direct": {
@@ -413,6 +416,9 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     """When no models array is provided, should fall back to default_model."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # default_model-only entries are un-narrowed, so section 3 probes the
+    # live endpoint; simulate it being unreachable to test the fallback.
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: None)
     
     user_providers = {
         "simple-provider": {
@@ -554,6 +560,9 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
     """
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # Singular ``model:``-only entries are un-narrowed → section 3 now probes
+    # them; stub the probe so the test stays hermetic (endpoints are fake).
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: None)
 
     shared_entries = [
         ("endpoint-a", "http://a.local/v1"),
@@ -1169,6 +1178,53 @@ def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
     assert probed["api_key"] == ""
     assert probed["kwargs"] == {"headers": None}
     row = next(p for p in providers if p["slug"] == "local-llamacpp")
+    assert row["models"] == ["live-model-1", "live-model-2", "live-model-3"]
+    assert row["total_models"] == 3
+
+
+def test_section3_probes_no_key_endpoint_with_singular_default_model(monkeypatch):
+    """A providers: entry with no api_key and only a singular ``default_model``
+    (no explicit ``models:`` list) must still probe /v1/models — the singular
+    field is just the active selection, not the user narrowing the endpoint.
+
+    Regression for #40554 / PR #68984 (@vigilancetech-com): section 3 derived
+    ``has_explicit_models`` from the merged models list, so the lone
+    ``default_model`` entry suppressed live discovery and the /model picker
+    showed a one-line menu for local no-auth endpoints.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    probed = {}
+
+    def _fake_fetch(api_key, api_url, **kwargs):
+        probed["called"] = True
+        probed["api_key"] = api_key
+        return ["live-model-1", "live-model-2", "live-model-3"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    user_providers = {
+        "local-ollama": {
+            "name": "Local Ollama",
+            "api": "http://localhost:11434/v1",
+            "default_model": "llama3",
+            # No api_key, no models: list — singular default only.
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="local-ollama",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert probed.get("called") is True, (
+        "singular default_model must not suppress live discovery"
+    )
+    assert probed["api_key"] == ""
+    row = next(p for p in providers if p["slug"] == "local-ollama")
     assert row["models"] == ["live-model-1", "live-model-2", "live-model-3"]
     assert row["total_models"] == 3
 

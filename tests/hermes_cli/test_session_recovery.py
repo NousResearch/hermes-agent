@@ -315,6 +315,7 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
 
     inside_copy = threading.Event()
     release_copy = threading.Event()
+    connect_attempted = threading.Event()
     connection_opened = threading.Event()
     errors: list[str] = []
     real_copy2 = recovery_module.shutil.copy2
@@ -333,6 +334,10 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
             errors.append(f"copy failed: {exc}")
 
     def do_connect():
+        # Signal immediately before the blocking call so a timed "still
+        # blocked" assertion cannot pass merely because this thread had not
+        # been scheduled yet.
+        connect_attempted.set()
         try:
             conn = connect_tracked(source, isolation_level=None, timeout=30.0)
             connection_opened.set()
@@ -348,7 +353,9 @@ def test_snapshot_blocks_connections_opened_during_the_copy(
         assert inside_copy.wait(30), "copy never reached the patched operation"
 
         connector.start()
-        # While the copy holds the lifecycle lock the connection must not open.
+        assert connect_attempted.wait(30), "connector thread never started"
+        # The connector is at the lock. While the copy holds it, the
+        # connection must not open.
         assert not connection_opened.wait(1.0), (
             "connect_tracked() completed while raw copy descriptors were open "
             "— the guard is not holding the lifecycle lock across the copy"

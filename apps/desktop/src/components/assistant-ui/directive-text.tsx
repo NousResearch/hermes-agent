@@ -171,6 +171,17 @@ const HERMES_DIRECTIVE_RE = new RegExp(
   'g'
 )
 
+// A skill referenced mid-prose (`clean this up with /clean`). The composer
+// inserts it as a pill, so the sent message renders it as one too rather than
+// flattening back to raw text. Only matches after whitespace — a leading `/`
+// is a command invocation, which never reaches a rendered message as text.
+//
+// Unlike the composer's caret-anchored trigger, this scans finished text, so
+// it must reject a token that continues into a path: `/usr/local/bin` would
+// otherwise chip as `/usr`. `(?![\w-]*\/)` requires the token to end at
+// something other than another slash.
+const SLASH_SKILL_RE = /(?<=\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
+
 const TRAILING_PUNCTUATION_RE = /[,.;!?]+$/
 
 function unwrapRefValue(raw: string): string {
@@ -269,7 +280,14 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
         label: shortLabel(match[1] as HermesRefType, id),
         id
       }
-    })
+    }),
+    ...Array.from(text.matchAll(SLASH_SKILL_RE)).map(match => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+      type: 'skill',
+      label: match[1],
+      id: `/${match[1]}`
+    }))
   ]
     .filter(match => match.id)
     .sort((a, b) => a.start - b.start)
@@ -369,6 +387,8 @@ export function DirectiveContent({ text }: { text: string }) {
           <Fragment key={`t-${index}`}>{segment.text}</Fragment>
         ) : segment.type === 'image' ? null : segment.type === 'session' ? (
           <SessionRefChip key={`m-${index}-${segment.id}`} label={segment.label} value={segment.id} />
+        ) : segment.type === 'skill' ? (
+          <SlashChip key={`m-${index}-${segment.id}`} kind="skill" label={segment.label} value={segment.id} />
         ) : (
           <DirectiveChip id={segment.id} key={`m-${index}-${segment.id}`} label={segment.label} type={segment.type} />
         )
@@ -504,6 +524,28 @@ export const SessionRefLink: FC<{
     </a>
   )
 }
+
+/** A skill referenced inside a sent message — the rendered twin of the
+ *  composer's slash pill, so a picked skill stays a chip after send. */
+const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ kind, label, value }) => (
+  <span className={slashChipClass(kind)} data-slot="aui_slash-chip" title={value}>
+    <svg
+      className="size-3 shrink-0 opacity-80"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      {SLASH_ICON_PATHS[kind].map(d => (
+        <path d={d} key={d} />
+      ))}
+    </svg>
+    <span className="truncate">{label}</span>
+  </span>
+)
 
 /** Inert by default; `onClick` promotes the chip to a real button (session
  *  refs, which open the session they name). */

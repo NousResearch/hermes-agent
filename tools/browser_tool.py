@@ -3142,6 +3142,47 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _discard_timed_out_browser_session(
+    task_id: str,
+    session_info: Dict[str, Any],
+    task_socket_dir: str,
+) -> None:
+    """Drop a stuck client generation without losing cloud cleanup state."""
+    with _cleanup_lock:
+        if _active_sessions.get(task_id) is not session_info:
+            return
+        _stop_cdp_supervisor(task_id)
+        if session_info.get("bb_session_id") or session_info.get("cdp_url"):
+            import uuid
+            replacement = dict(session_info)
+            replacement["session_name"] = f"h_{uuid.uuid4().hex[:10]}"
+            replacement.pop("_first_nav", None)
+            _active_sessions[task_id] = replacement
+        else:
+            _active_sessions.pop(task_id, None)
+            _session_last_activity.pop(task_id, None)
+
+        bare_task_id = _bare_task_id_for_session_key(task_id)
+        if _last_active_session_key.get(bare_task_id) == task_id:
+            _last_active_session_key.pop(bare_task_id, None)
+
+    session_name = str(session_info.get("session_name") or "")
+    if session_name:
+        pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
+        if os.path.isfile(pid_file):
+            try:
+                from tools.process_registry import ProcessRegistry
+
+                daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+                if not _verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name):
+                    return
+                ProcessRegistry._terminate_host_pid(daemon_pid)
+            except (ProcessLookupError, ValueError, PermissionError, OSError):
+                logger.debug("Could not kill timed-out browser daemon for %s", session_name)
+                return
+    shutil.rmtree(task_socket_dir, ignore_errors=True)
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
@@ -3215,6 +3256,9 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+    # Cleanup stops the supervisor before closing the backend; keep it stopped.
+    if command != "close" and session_info.get("cdp_url"):
+        _ensure_cdp_supervisor(task_id)
 
     # Build the command with the appropriate backend flag.
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
@@ -3353,6 +3397,7 @@ def _run_browser_command(
             proc.wait()
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
+            _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
             if stderr and stderr.strip():
                 logger.warning(
                     "browser '%s' stderr after timeout: %s",

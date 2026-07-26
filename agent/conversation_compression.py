@@ -671,7 +671,17 @@ class _CompressionLockLeaseRefresher:
         # by the TTL the acquirer set — the lock can never be held past its TTL
         # by a stuck refresher.
         consecutive_failures = 0
-        while not self._stop.wait(self._refresh_interval_seconds):
+        # First refresh happens immediately, not one interval late. Everything
+        # between try_acquire() and start() (the rotation-ownership lookup, the
+        # durable-breaker re-read, thread startup) is charged against the very
+        # first lease, so on a short TTL under load the lock could already be
+        # expired — and reclaimable by a competing path — before tick #1.
+        first = True
+        while first or not self._stop.wait(self._refresh_interval_seconds):
+            if first:
+                first = False
+                if self._stop.is_set():
+                    break
             try:
                 refreshed = self._db.refresh_compression_lock(
                     self._session_id,

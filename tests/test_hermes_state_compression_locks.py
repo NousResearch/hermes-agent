@@ -105,6 +105,11 @@ def test_non_expired_lock_is_held(db: SessionDB) -> None:
 def test_non_expired_lock_from_dead_pid_is_reclaimed(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # PID probing is POSIX-only by design (see
+    # test_windows_uses_ttl_only_without_pid_probe). Pin the platform so this
+    # exercises the probe branch on Windows dev machines too, instead of
+    # silently asserting the nt early-return.
+    monkeypatch.setattr(hermes_state.os, "name", "posix")
     dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
     assert db.try_acquire_compression_lock(
         "sess1", dead_holder, ttl_seconds=300
@@ -129,7 +134,13 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
 def test_dead_pid_reclaim_via_os_kill_fallback_when_psutil_missing(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Scaffold-phase installs (no psutil) fall back to os.kill(pid, 0)."""
+    """Scaffold-phase installs (no psutil) fall back to os.kill(pid, 0).
+
+    POSIX-only path: on Windows ``os.kill(pid, 0)`` is not a probe (sig 0 is
+    CTRL_C_EVENT, bpo-14484), so the production code early-returns there. Pin
+    the platform to keep this branch covered on Windows dev machines.
+    """
+    monkeypatch.setattr(hermes_state.os, "name", "posix")
     dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
     assert db.try_acquire_compression_lock(
         "sess1", dead_holder, ttl_seconds=300
@@ -236,27 +247,60 @@ def test_unstructured_holder_waits_for_ttl(
     ) is False
 
 
-def test_windows_uses_ttl_only_without_pid_probe(
+def test_windows_reclaims_dead_holder_via_psutil_probe(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """psutil.pid_exists is safe on Windows, so nt hosts do reclaim dead holders.
+
+    The os.kill(pid, 0) footgun (bpo-14484) only affects the no-psutil
+    fallback, not this path — see the companion test below. Gating the whole
+    function on nt used to strand every crashed holder for the full 300s TTL.
+    """
     holder = "pid=424242:tid=1:agent=abc:nonce=windows"
     assert db.try_acquire_compression_lock(
         "sess1", holder, ttl_seconds=300
     ) is True
     monkeypatch.setattr(hermes_state.os, "name", "nt")
+    probed: list[int] = []
+
+    def _pid_exists(pid: int) -> bool:
+        probed.append(pid)
+        return False  # holder process is gone
+
     monkeypatch.setattr(
-        hermes_state,
-        "psutil",
-        SimpleNamespace(
-            pid_exists=lambda _pid: pytest.fail(
-                "Windows must stay TTL-only — no PID probe"
-            )
-        ),
+        hermes_state, "psutil", SimpleNamespace(pid_exists=_pid_exists)
     )
     monkeypatch.setattr(
         hermes_state.os,
         "kill",
-        lambda *_args: pytest.fail("Windows must not use os.kill as a PID probe"),
+        lambda *_args: pytest.fail("Windows must never use os.kill as a PID probe"),
+    )
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is True
+    assert probed == [424242]
+
+
+def test_windows_without_psutil_stays_ttl_only(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scaffold installs on nt keep the lease: os.kill(pid, 0) is not a probe.
+
+    On Windows signal 0 maps to CTRL_C_EVENT (bpo-14484) and can kill the
+    target's console group, so with psutil absent the only safe answer is
+    "assume alive" and let the TTL expire the lease.
+    """
+    holder = "pid=424242:tid=1:agent=abc:nonce=windows"
+    assert db.try_acquire_compression_lock(
+        "sess1", holder, ttl_seconds=300
+    ) is True
+    monkeypatch.setattr(hermes_state.os, "name", "nt")
+    monkeypatch.setattr(hermes_state, "psutil", None)
+    monkeypatch.setattr(
+        hermes_state.os,
+        "kill",
+        lambda *_args: pytest.fail("Windows must never use os.kill as a PID probe"),
     )
 
     assert db.try_acquire_compression_lock(

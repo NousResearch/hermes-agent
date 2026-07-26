@@ -275,6 +275,71 @@ def _read_manifest(plugin_dir: Path) -> dict:
         return {}
 
 
+def _smoke_test_plugin_load(plugin_dir: Path) -> Optional[str]:
+    """Best-effort load check run at install time.
+
+    Imports the plugin's ``__init__.py`` and calls its ``register(ctx)`` with
+    a throwaway stub context (no-op registrars) so we catch import errors and
+    broken ``register()`` implementations *before* the user discovers the
+    plugin is dead at gateway start — where the same failure is only logged as
+    a warning and silently skipped.
+
+    Returns an error string if the load/register fails, or ``None`` if it
+    succeeded. A plugin with no ``__init__.py`` (declarative-only, e.g. a
+    model catalog) is treated as OK (``None``). This is a soft check: a failure
+    is reported but does NOT block install, matching the existing policy that
+    ``requires_env``/manifest warnings don't abort the install.
+
+    The stub context mirrors the real ``PluginContext`` registrar surface
+    (register_tool / register_hook / register_middleware / register_command)
+    with no-ops, so ``register()`` runs without mutating the live tool
+    registry.
+    """
+    init_file = plugin_dir / "__init__.py"
+    if not init_file.exists():
+        return None
+
+    import importlib.util
+    import types
+
+    module_name = f"_hermes_plugin_smoke_{plugin_dir.name}"
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, init_file)
+        if spec is None or spec.loader is None:
+            return f"cannot build import spec for {init_file}"
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    except Exception as exc:  # ImportError, SyntaxError, etc.
+        return f"import failed: {type(exc).__name__}: {exc}"
+
+    register_fn = getattr(module, "register", None)
+    if register_fn is None:
+        # No register() — declarative plugin, nothing to exercise.
+        return None
+
+    captured: dict = {}
+
+    def _noop_register(**kwargs):
+        captured[kwargs.get("name")] = kwargs
+
+    stub_ctx = types.SimpleNamespace(
+        register_tool=_noop_register,
+        register_hook=lambda *a, **k: None,
+        register_middleware=lambda *a, **k: None,
+        register_command=lambda *a, **k: None,
+        manifest={"name": plugin_dir.name},
+    )
+    try:
+        register_fn(stub_ctx)
+    except Exception as exc:
+        return f"register() raised: {type(exc).__name__}: {exc}"
+    finally:
+        sys.modules.pop(module_name, None)
+    return None
+
+
+
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 
@@ -600,6 +665,16 @@ def cmd_install(
         console.print(
             f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
             f"or __init__.py. It may not be a valid Hermes plugin.",
+        )
+
+    # Best-effort load check: catch a plugin whose __init__/register() is
+    # broken so the user sees it at install time, not as a silent skip at
+    # gateway start.
+    load_check = _smoke_test_plugin_load(target)
+    if load_check:
+        console.print(
+            f"[yellow]Warning:[/yellow] {installed_name} installed but its "
+            f"load check failed: {load_check}",
         )
 
     _prompt_plugin_env_vars(installed_manifest, console)
@@ -1810,11 +1885,19 @@ def dashboard_install_plugin(
     if ap.exists():
         hint = str(ap)
 
+    # Best-effort load check: catch a plugin that imports/registers broken
+    # so the dashboard can surface it instead of reporting a silent success
+    # that only fails at gateway start (where it's logged and skipped).
+    load_check = _smoke_test_plugin_load(target)
+    if load_check:
+        warnings.append(f"load check failed: {load_check}")
+
     return {
         "ok": True,
         "plugin_name": installed_name,
         "warnings": warnings,
         "missing_env": missing_env,
+        "load_check": load_check,
         "after_install_path": hint,
         "enabled": enable,
     }

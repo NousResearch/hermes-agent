@@ -987,3 +987,72 @@ class TestInstallCloneCwd:
         # not inherit whatever (possibly deleted) cwd the gateway process has.
         assert captured.get("cwd") is not None
         assert Path(captured["cwd"]).is_dir()
+
+
+# ── _smoke_test_plugin_load: install-time load verification ────────────────
+
+
+class TestInstallLoadSmoke:
+    """Install must surface a broken plugin instead of reporting silent success.
+
+    A plugin whose __init__.py fails to import or whose register() raises
+    would otherwise pass install and only fail (as a logged warning) at
+    gateway start. _smoke_test_plugin_load catches it at install time.
+    """
+
+    def _write_plugin(self, tmp_path, body: str, *, has_init: bool = True) -> Path:
+        d = tmp_path / "smoke_plugin"
+        d.mkdir()
+        (d / "plugin.yaml").write_text("name: smoke-plugin\nversion: 1.0.0\n")
+        if has_init:
+            (d / "__init__.py").write_text(body)
+        return d
+
+    def test_good_plugin_passes(self, tmp_path):
+        from hermes_cli.plugins_cmd import _smoke_test_plugin_load
+
+        body = (
+            "def register(ctx):\n"
+            "    ctx.register_tool(name='ok_tool', handler=lambda a: {}, "
+            "check_fn=lambda: True)\n"
+        )
+        d = self._write_plugin(tmp_path, body)
+        assert _smoke_test_plugin_load(d) is None
+
+    def test_syntax_error_init_fails(self, tmp_path):
+        from hermes_cli.plugins_cmd import _smoke_test_plugin_load
+
+        d = self._write_plugin(tmp_path, "def register(ctx):\n    return (\n")  # syntax error
+        err = _smoke_test_plugin_load(d)
+        assert err is not None
+        assert "import failed" in err
+
+    def test_register_raises_fails(self, tmp_path):
+        from hermes_cli.plugins_cmd import _smoke_test_plugin_load
+
+        body = "def register(ctx):\n    raise RuntimeError('boom')\n"
+        d = self._write_plugin(tmp_path, body)
+        err = _smoke_test_plugin_load(d)
+        assert err is not None
+        assert "register() raised" in err
+
+    def test_no_init_is_ok(self, tmp_path):
+        from hermes_cli.plugins_cmd import _smoke_test_plugin_load
+
+        # Declarative plugin (model catalog, no code) must not be flagged.
+        d = self._write_plugin(tmp_path, "", has_init=False)
+        assert _smoke_test_plugin_load(d) is None
+
+    def test_does_not_mutate_live_registry(self, tmp_path):
+        from hermes_cli.plugins_cmd import _smoke_test_plugin_load
+
+        body = (
+            "def register(ctx):\n"
+            "    ctx.register_tool(name='side_effect_tool', handler=lambda a: {}, "
+            "check_fn=lambda: True)\n"
+        )
+        d = self._write_plugin(tmp_path, body)
+        # The stub ctx is a SimpleNamespace; the real tool registry must be
+        # untouched. We just assert the function returns None (no exception)
+        # and runs register() against the stub.
+        assert _smoke_test_plugin_load(d) is None

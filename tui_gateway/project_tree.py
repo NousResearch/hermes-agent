@@ -151,20 +151,40 @@ def _placement(
     }
 
 
+def _parent_dir(path: str) -> str:
+    """The containing directory of ``path`` (``""`` once the root is passed)."""
+    stripped = re.sub(r"[/\\]+$", "", path or "")
+    return re.sub(r"[/\\]+$", "", re.sub(r"[^/\\]+$", "", stripped))
+
+
 def _probe_sibling_worktree(cwd: str, resolve: Resolve) -> str:
     """The parent repo root of a deleted ``<repo>-<suffix>`` worktree, else ``""``.
 
     A deleted worktree dir can't be probed, so walk back up its name — trimming
     one ``-<segment>`` at a time — and return the first sibling that resolves.
-    Probes are bounded and served from the shared git-probe cache.
-    """
-    parts = base_name(cwd).split("-")
-    floor = max(0, len(parts) - 1 - _MAX_SIBLING_PROBES)
 
-    for i in range(len(parts) - 1, floor, -1):
-        info = resolve(_with_base_name(cwd, "-".join(parts[:i])))
-        if info and info.get("repo_root"):
-            return (info["repo_root"] or "").strip()
+    The session's cwd is frequently a SUBDIR of the deleted worktree (an agent
+    that ``cd``-ed into ``<repo>-<suffix>/apps/desktop``), whose basename shares
+    nothing with the repo. So the trim is applied to each ANCESTOR, deepest
+    first, not just to the leaf — otherwise the probe silently no-ops and the
+    dead path gets minted as its own top-level project. Probes are bounded in
+    total (each costs a git invocation) and served from the shared probe cache.
+    """
+    probes = 0
+    path = re.sub(r"[/\\]+$", "", cwd or "")
+
+    while path and probes < _MAX_SIBLING_PROBES:
+        parts = base_name(path).split("-")
+
+        for i in range(len(parts) - 1, 0, -1):
+            if probes >= _MAX_SIBLING_PROBES:
+                break
+            probes += 1
+            info = resolve(_with_base_name(path, "-".join(parts[:i])))
+            if info and info.get("repo_root"):
+                return (info["repo_root"] or "").strip()
+
+        path = _parent_dir(path)
 
     return ""
 

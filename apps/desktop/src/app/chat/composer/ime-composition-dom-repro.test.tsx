@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import { useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent, useRef, useState } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 // No global setupFiles registers auto-cleanup, so unmount between tests —
@@ -104,5 +104,153 @@ describe('composer IME composition — send button visibility (#39614)', () => {
       })
       expect(hasPayload).toBe(false)
     }
+  })
+})
+
+// --- Dropped compositionend recovery (self-heal) ---
+
+// Minimal harness mirroring the composer's composition + blur recovery wiring.
+function RecoveryHarness({
+  onStuck,
+  onSubmitBlocked,
+}: {
+  onStuck?: (stuck: boolean) => void
+  onSubmitBlocked?: (blocked: boolean) => void
+}) {
+  const composingRef = useRef(false)
+  const [, bump] = useState(0)
+  const reRender = () => bump(n => n + 1)
+
+  const handleInput = (event: FormEvent<HTMLDivElement>) => {
+    // Self-heal (mirrors index.tsx handleEditorInput).
+    if (composingRef.current && !(event.nativeEvent as InputEvent).isComposing) {
+      composingRef.current = false
+      reRender()
+    }
+
+    if (composingRef.current) {
+      return
+    }
+  }
+
+  const handleBlur = () => {
+    // Self-heal (mirrors index.tsx onBlur).
+    if (composingRef.current) {
+      composingRef.current = false
+      reRender()
+    }
+  }
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Self-heal (mirrors index.tsx handleEditorKeyDown).
+    if (composingRef.current && !event.nativeEvent.isComposing) {
+      composingRef.current = false
+      reRender()
+    }
+  }
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault()
+
+    onSubmitBlocked?.(composingRef.current)
+  }
+
+  // Report the stuck ref after each render.
+  onStuck?.(composingRef.current)
+
+  return (
+    <form data-testid="form" onSubmit={handleSubmit}>
+      <div
+        contentEditable
+        data-testid="editor"
+        onBlur={handleBlur}
+        onCompositionEnd={() => {
+          composingRef.current = false
+          reRender()
+        }}
+        onCompositionStart={() => {
+          composingRef.current = true
+          reRender()
+        }}
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        suppressContentEditableWarning
+      />
+      <button type="submit" data-testid="send">
+        Send
+      </button>
+    </form>
+  )
+}
+
+describe('composer dropped compositionend recovery', () => {
+  afterEach(cleanup)
+
+  it('self-heals a stuck composingRef on blur (direct Send click path)', async () => {
+    let stuck = false
+    let blocked = false
+    const { getByTestId } = render(
+      <RecoveryHarness onStuck={s => (stuck = s)} onSubmitBlocked={b => (blocked = b)} />
+    )
+    const editor = getByTestId('editor')
+
+    // Start composition, but never deliver compositionend.
+    await act(async () => {
+      fireEvent.compositionStart(editor)
+    })
+    expect(stuck).toBe(true)
+
+    // Blur (simulates clicking Send). The onBlur self-heal must clear the ref,
+    // otherwise the following onSubmit would see composingRef=true and block.
+    await act(async () => {
+      fireEvent.blur(editor)
+    })
+    expect(stuck).toBe(false)
+
+    // Submit — must NOT be blocked.
+    await act(async () => {
+      fireEvent.submit(getByTestId('form'))
+    })
+    expect(blocked).toBe(false)
+  })
+
+  it('self-heals a stuck composingRef on input with isComposing=false', async () => {
+    let stuck = false
+    const { getByTestId } = render(<RecoveryHarness onStuck={s => (stuck = s)} />)
+    const editor = getByTestId('editor')
+
+    // Start composition, skip compositionend.
+    await act(async () => {
+      fireEvent.compositionStart(editor)
+    })
+    expect(stuck).toBe(true)
+
+    // A plain input event (non-IME) carries isComposing=false, which the
+    // handleInput self-heal catches.
+    await act(async () => {
+      const inputEvent = new InputEvent('input', { bubbles: true, isComposing: false })
+      editor.dispatchEvent(inputEvent)
+    })
+    expect(stuck).toBe(false)
+  })
+
+  it('self-heals a stuck composingRef on keydown with isComposing=false', async () => {
+    let stuck = false
+    const { getByTestId } = render(<RecoveryHarness onStuck={s => (stuck = s)} />)
+    const editor = getByTestId('editor')
+
+    // Start composition, skip compositionend.
+    await act(async () => {
+      fireEvent.compositionStart(editor)
+    })
+    expect(stuck).toBe(true)
+
+    // A keyboard event from a non-IME key (e.g. Enter, Backspace) carries
+    // isComposing=false — the handleKeyDown self-heal catches this the same
+    // way handleEditorKeyDown does in the real composer.
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: 'Enter', isComposing: false })
+    })
+    expect(stuck).toBe(false)
   })
 })

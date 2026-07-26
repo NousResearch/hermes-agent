@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -928,3 +929,61 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+
+# ── _install_plugin_core: git clone cwd independence ───────────────────────
+
+
+class TestInstallCloneCwd:
+    """The git clone must run in a stable cwd, not the (possibly deleted)
+    process CWD / TMPDIR.
+
+    Regression guard for the dashboard install failure where the gateway was
+    launched from a purged temp dir (macOS /var/folders/.../T) and git clone
+    died with "Unable to read current working directory". Passing an explicit
+    cwd to subprocess.run keeps the clone independent of the process CWD.
+    """
+
+    def test_clone_uses_explicit_cwd(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        # A local source repo to clone.
+        repo_root = tmp_path / "monorepo"
+        repo_root.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", str(repo_root)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-q", "--allow-empty", "-m", "x"],
+            check=True,
+            capture_output=True,
+        )
+        # plugin.yaml so the clone is recognized as a plugin.
+        (repo_root / "plugin.yaml").write_text("name: cwd-guard\nversion: 1.0.0\n")
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        captured = {}
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            if cmd and cmd[0] == shutil.which("git") and "clone" in cmd:
+                captured["cwd"] = kwargs.get("cwd")
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        pc._install_plugin_core(f"file://{repo_root}", force=False)
+
+        # The clone must have been told to run in a concrete, existing dir —
+        # not inherit whatever (possibly deleted) cwd the gateway process has.
+        assert captured.get("cwd") is not None
+        assert Path(captured["cwd"]).is_dir()

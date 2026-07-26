@@ -13365,6 +13365,70 @@ def _(rid, params: dict) -> dict:
                 agent.verbose_logging = nv == "verbose"
         return _ok(rid, {"key": key, "value": nv})
 
+    if key == "focus":
+        # Focus view — display-only reduced-output mode (/focus). Composes with
+        # the tool_progress machinery rather than duplicating it: enabling it
+        # pins tool_progress to "off" (the same value /verbose off uses) after
+        # stashing the configured mode, and disabling it restores that mode.
+        # Nothing about the request payload changes.
+        from hermes_cli.focus_view import (
+            FOCUS_TOOL_PROGRESS_MODE,
+            normalize_tool_progress_mode,
+            resolve_focus_arg,
+        )
+
+        cfg_f = _load_cfg()
+        _display_f = cfg_f.get("display")
+        d_f: dict = _display_f if isinstance(_display_f, dict) else {}
+        cur_focus = bool(d_f.get("focus_view", False))
+        action, target = resolve_focus_arg(str(value or ""), cur_focus)
+        if action == "usage":
+            return _err(rid, 4002, f"unknown focus value: {value} (use on|off|status)")
+        if action == "status" or target is None:
+            return _ok(
+                rid,
+                {
+                    "key": key,
+                    "value": "on" if cur_focus else "off",
+                    "tool_progress": _load_tool_progress_mode(),
+                },
+            )
+
+        if target:
+            saved = normalize_tool_progress_mode(
+                (d_f.get("focus_saved_tool_progress") or _load_tool_progress_mode())
+                if cur_focus
+                else _load_tool_progress_mode()
+            )
+            _write_config_key("display.focus_saved_tool_progress", saved)
+            _write_config_key("display.tool_progress", FOCUS_TOOL_PROGRESS_MODE)
+            effective = FOCUS_TOOL_PROGRESS_MODE
+        else:
+            saved = normalize_tool_progress_mode(
+                d_f.get("focus_saved_tool_progress") or "all"
+            )
+            _write_config_key("display.tool_progress", saved)
+            effective = saved
+        _write_config_key("display.focus_view", bool(target))
+
+        if session:
+            session["focus_view"] = bool(target)
+            session["tool_progress_mode"] = effective
+            agent_f = session.get("agent")
+            if agent_f is not None:
+                try:
+                    agent_f.tool_progress_mode = effective
+                except Exception:
+                    pass
+        return _ok(
+            rid,
+            {
+                "key": key,
+                "value": "on" if target else "off",
+                "tool_progress": effective,
+            },
+        )
+
     if key in {"approval_mode", "approvals.mode"}:
         raw = str(value or "").strip().lower()
         if raw not in _APPROVAL_MODES:
@@ -14552,6 +14616,13 @@ def _(rid, params: dict) -> dict:
             display.get("tui_statusbar", "top") if isinstance(display, dict) else "top"
         )
         return _ok(rid, {"value": _coerce_statusbar(raw)})
+    if key == "focus":
+        display = _load_cfg().get("display")
+        on = bool(display.get("focus_view", False)) if isinstance(display, dict) else False
+        return _ok(
+            rid,
+            {"value": "on" if on else "off", "tool_progress": _load_tool_progress_mode()},
+        )
     if key == "mouse":
         display = _load_cfg().get("display")
         return _ok(rid, {"value": _display_mouse_tracking(display)})
@@ -15432,6 +15503,49 @@ def _(rid, params: dict) -> dict:
             )
         except Exception as exc:
             return _err(rid, 5030, f"moa unavailable: {exc}")
+
+    if name == "focus":
+        # /focus is display-only. Route it through the same config.set branch the
+        # Ink TUI slash command uses so both surfaces share one state machine and
+        # one persistence path. Returns a plain notice line for the transcript.
+        from hermes_cli.focus_view import (
+            format_focus_status,
+            format_focus_toggle_message,
+            resolve_focus_arg,
+        )
+
+        _display_focus = _load_cfg().get("display")
+        _d_focus: dict = _display_focus if isinstance(_display_focus, dict) else {}
+        _cur_focus = bool(_d_focus.get("focus_view", False))
+        _action, _target = resolve_focus_arg(arg, _cur_focus)
+        if _action == "usage":
+            return _err(rid, 4004, "usage: /focus [on|off|status]")
+        if _action == "status":
+            _saved = _d_focus.get("focus_saved_tool_progress") or _load_tool_progress_mode()
+            return _ok(
+                rid,
+                {"type": "exec", "output": format_focus_status(_cur_focus, _saved)},
+            )
+        _res = _methods["config.set"](
+            rid,
+            {
+                "key": "focus",
+                "value": "on" if _target else "off",
+                "session_id": params.get("session_id", ""),
+            },
+        )
+        if "error" in _res:
+            return _res
+        _payload = _res.get("result") or {}
+        return _ok(
+            rid,
+            {
+                "type": "exec",
+                "output": format_focus_toggle_message(
+                    bool(_target), _payload.get("tool_progress") or "all"
+                ),
+            },
+        )
 
     if name == "retry":
         if not session:

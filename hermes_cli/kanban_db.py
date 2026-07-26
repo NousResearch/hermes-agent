@@ -8925,12 +8925,18 @@ def _hermes_path_argv(path: str) -> list[str]:
 
     Windows batch shims (`.cmd` / `.bat`) are not safe as argv[0] for
     worker launches because the argument vector includes task-derived
-    values. Prefer the interpreter-bound module form whenever the resolved
-    executable is only a shell shim.
+    values. The current interpreter's venv shim can also depend on commands
+    missing from a service's PATH. Prefer the interpreter-bound module form
+    for either shim.
     """
-    if _IS_WINDOWS and _is_windows_batch_shim(path):
+    resolved = _absolute_hermes_path(path)
+    current_bin = os.path.dirname(os.path.abspath(sys.executable))
+    if (_IS_WINDOWS and _is_windows_batch_shim(resolved)) or (
+        os.path.basename(resolved) == "hermes"
+        and os.path.dirname(resolved) == current_bin
+    ):
         return _module_hermes_argv()
-    return [_absolute_hermes_path(path)]
+    return [resolved]
 
 
 def _resolve_hermes_argv() -> list[str]:

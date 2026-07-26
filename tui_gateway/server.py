@@ -13691,7 +13691,12 @@ def _discover_repos_payload(
                 agg = _agg(root)
                 if entry.get("label"):
                     agg["label"] = entry["label"]
-                agg["last_active"] = max(agg["last_active"], float(entry.get("last_seen") or 0))
+                # NOTE: `last_seen` is when the disk scan last saw the directory,
+                # not when the user last worked in it. Folding it into
+                # `last_active` stamped every scanned repo with the scan time —
+                # i.e. "just now" — so a git checkout with zero Hermes sessions
+                # outranked the repos the user actually works in. Activity stays
+                # session-derived; a repo with no sessions has no activity.
 
         if conn is not None:
             _read(conn)

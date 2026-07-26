@@ -24,10 +24,12 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $connection } from '@/store/session'
+import { $connection, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
+import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import {
@@ -43,8 +45,48 @@ import {
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
 import { type SubmitTextOptions } from '../session/hooks/use-prompt-actions/utils'
+import { upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
+
+/**
+ * List a tile's session in the sidebar/tab strip on its first send.
+ *
+ * A ⌘T tab's session is created UNLISTED (see `openNewSessionTile`), so it has
+ * no `$sessions` row until its first turn persists and a refresh surfaces it —
+ * for that whole first exchange the tab and the sidebar read "New session".
+ * ⌘N has no such gap: its session is created per-send and seeded with the
+ * user's text as the row preview. Seeding the same way here names the session
+ * within the first message; the server's auto-title supersedes it once the turn
+ * completes.
+ *
+ * No-ops on empty text and on a session that is already listed, so re-sends
+ * never clobber a real title with a raw message preview.
+ */
+export function listTileSessionRow(deps: {
+  cwd?: string
+  model?: string
+  preview: string
+  runtimeId: string
+  sessions: readonly SessionInfo[]
+  storedSessionId: string
+}): boolean {
+  const preview = deps.preview.trim()
+
+  if (!preview || deps.sessions.some(session => sessionMatchesStoredId(session, deps.storedSessionId))) {
+    return false
+  }
+
+  upsertOptimisticSession(
+    { info: { cwd: deps.cwd, model: deps.model }, session_id: deps.runtimeId, stored_session_id: deps.storedSessionId },
+    deps.storedSessionId,
+    null,
+    preview
+  )
+  broadcastSessionsChanged()
+
+  return true
+}
 
 interface SessionTileActionsArgs {
   runtimeId: string
@@ -89,6 +131,23 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
   const readState = useCallback(() => $sessionStates.get()[runtimeIdRef.current], [])
   const readMessages = useCallback(() => readState()?.messages ?? [], [readState])
+
+  // A ⌘T tab's session is unlisted until its first turn persists — seed the
+  // row from the user's first message so the tab and sidebar name it right
+  // away (see listTileSessionRow).
+  const listTileSession = useCallback((preview: string) => {
+    const runtimeId = runtimeIdRef.current
+    const state = $sessionStates.get()[runtimeId]
+
+    listTileSessionRow({
+      cwd: state?.cwd,
+      model: state?.model,
+      preview,
+      runtimeId,
+      sessions: $sessions.get(),
+      storedSessionId: storedIdRef.current
+    })
+  }, [])
 
   // Tile-side attachment staging: same upload rules as the primary submit
   // (skip synced/pathless, byte-upload files+images), against the tile scope.
@@ -163,6 +222,8 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       const visibleText = rawText.trim()
       const attachments = options?.attachments ?? scope.attachments.$attachments.get()
 
+      listTileSession(visibleText)
+
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
         await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
@@ -172,7 +233,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return await submitPromptText(rawText, options)
     },
-    [scope.attachments.$attachments, submitPromptText]
+    [listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
   const appendSystemNote = useCallback(

@@ -3894,3 +3894,126 @@ class TestInsightsToolCallIndex:
         assert "WHERE" in sql
         assert "role = 'assistant'" in sql
         assert "tool_calls IS NOT NULL" in sql
+class TestFtsRebuildFinishWithoutTrigram:
+    """An FTS index that the runtime cannot maintain must not wedge the store.
+
+    Two independent failure sites shared one root shape: code that writes to
+    ``messages_fts_trigram`` without first checking the table is actually
+    present. It is legitimately absent whenever the trigram index is
+    unavailable (SQLite build without the tokenizer), and it can also be left
+    absent by an interrupted migration or a partially-applied schema change.
+    """
+
+    @staticmethod
+    def _seed(db_path, n=60):
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            for i in range(n):
+                seeded.append_message(
+                    "s1",
+                    role=("user" if i % 3 == 0
+                          else "assistant" if i % 3 == 1 else "tool"),
+                    content=f"sentinel payload {i} zebra",
+                )
+            high_water = seeded._conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages"
+            ).fetchone()[0]
+        finally:
+            seeded.close()
+        return high_water
+
+    def test_rebuild_finish_skips_trigram_when_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """optimize_fts_storage() completes when the trigram index is absent.
+
+        ``fts_rebuild_step()`` already guards its backfill INSERT on
+        ``_trigram_available``; ``_fts_rebuild_finish()``'s boundary sweep did
+        not, so finishing a deferred rebuild on a trigram-less runtime raised
+        ``no such table: messages_fts_trigram`` and aborted the whole
+        optimization. The base index must still be swept and the markers
+        cleared.
+        """
+        db_path = tmp_path / "state.db"
+        high_water = self._seed(db_path)
+
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_state.sqlite3.connect", connect_without_trigram
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._trigram_available is False
+            # A trigram-less runtime leaves no trigram index on disk.
+            db._conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+            db._conn.commit()
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            # Put the DB in the pending-deferred-rebuild state.
+            for key, value in (
+                ("fts_rebuild_high_water", str(high_water)),
+                ("fts_rebuild_progress", str(high_water)),
+            ):
+                db._conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value),
+                )
+            db._conn.commit()
+
+            # Pre-fix this raised OperationalError("no such table: ...").
+            db._fts_rebuild_finish()
+
+            # The sweep ran to completion: markers cleared…
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.get_meta("fts_rebuild_progress") is None
+            # …and the base index is still usable (the fix must not disable
+            # real search to dodge the error).
+            assert db.search_messages("zebra")
+        finally:
+            db.close()
+
+    def test_optimize_fts_storage_succeeds_without_trigram(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: the public optimize entry point returns ok=True."""
+        db_path = tmp_path / "state.db"
+        high_water = self._seed(db_path)
+
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_state.sqlite3.connect", connect_without_trigram
+        )
+        db = SessionDB(db_path=db_path)
+        try:
+            db._conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+            db._conn.commit()
+            assert db._trigram_available is False
+            for key, value in (
+                ("fts_rebuild_high_water", str(high_water)),
+                ("fts_rebuild_progress", "0"),
+            ):
+                db._conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value),
+                )
+            db._conn.commit()
+
+            result = db.optimize_fts_storage(vacuum=False)
+            assert result["ok"] is True
+            assert db.get_meta("fts_rebuild_high_water") is None
+            assert db.search_messages("zebra")
+        finally:
+            db.close()

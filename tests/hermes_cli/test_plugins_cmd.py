@@ -989,6 +989,135 @@ class TestInstallCloneCwd:
         assert Path(captured["cwd"]).is_dir()
 
 
+# ── malformed manifest name -> clean error (not raw TypeError) ─────────────
+
+
+class TestInstallMalformedName:
+    """A malformed plugin.yaml `name` must fail with a clean error.
+
+    Regression: a non-string name (list/int) used to crash
+    _sanitize_plugin_name with a raw TypeError instead of a PluginOperationError.
+    """
+
+    def _make_repo(self, tmp_path, name_value: object) -> str:
+        import subprocess
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", str(repo_root)],
+            check=True,
+            capture_output=True,
+        )
+        (repo_root / "plugin.yaml").write_text(
+            f"name: {name_value!r}\nversion: 1.0.0\n"
+            if not isinstance(name_value, str)
+            else f"name: {name_value}\nversion: 1.0.0\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "add", "-A"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-q", "--allow-empty", "-m", "x"],
+            check=True,
+            capture_output=True,
+        )
+        return f"file://{repo_root}"
+
+    def test_list_name_raises_clean_error(self, tmp_path, monkeypatch):
+        from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.plugins_cmd._plugins_dir", lambda: plugins_dir
+        )
+        with pytest.raises(PluginOperationError) as exc:
+            _install_plugin_core(self._make_repo(tmp_path, ["a", "b"]), force=True)
+        assert "must be a string" in str(exc.value)
+
+    def test_int_name_raises_clean_error(self, tmp_path, monkeypatch):
+        from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.plugins_cmd._plugins_dir", lambda: plugins_dir
+        )
+        with pytest.raises(PluginOperationError) as exc:
+            _install_plugin_core(self._make_repo(tmp_path, 123), force=True)
+        assert "must be a string" in str(exc.value)
+
+
+# ── smoke test skipped for disabled installs (no plugin-code execution) ────
+
+
+class TestInstallSmokeSkippedWhenDisabled:
+    """A disabled install must not import/run plugin code via the load check.
+
+    The install-time load check imports the plugin's __init__ and calls
+    register(), executing arbitrary plugin code. For an explicitly disabled
+    install (enable=False) we must not run it.
+    """
+
+    def _make_good_repo(self, tmp_path) -> str:
+        import subprocess
+
+        repo_root = tmp_path / "goodrepo"
+        repo_root.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", str(repo_root)],
+            check=True,
+            capture_output=True,
+        )
+        (repo_root / "plugin.yaml").write_text("name: good-plugin\nversion: 1.0.0\n")
+        (repo_root / "__init__.py").write_text(
+            "def register(ctx):\n    ctx.register_tool(name='t', handler=lambda a: {})\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "add", "-A"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-q", "--allow-empty", "-m", "x"],
+            check=True,
+            capture_output=True,
+        )
+        return f"file://{repo_root}"
+
+    def test_disabled_install_skips_smoke(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        calls = []
+        monkeypatch.setattr(
+            pc, "_smoke_test_plugin_load", lambda d: calls.append(d) or None
+        )
+        res = pc.dashboard_install_plugin(self._make_good_repo(tmp_path), force=True, enable=False)
+        assert calls == [], "smoke test must not run for disabled install"
+        assert res["load_check"] is None
+        assert res["enabled"] is False
+
+    def test_enabled_install_runs_smoke(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        calls = []
+        monkeypatch.setattr(
+            pc, "_smoke_test_plugin_load", lambda d: calls.append(d) or None
+        )
+        res = pc.dashboard_install_plugin(self._make_good_repo(tmp_path), force=True, enable=True)
+        assert len(calls) == 1, "smoke test must run for enabled install"
+        assert res["enabled"] is True
+
+
 # ── _smoke_test_plugin_load: install-time load verification ────────────────
 
 

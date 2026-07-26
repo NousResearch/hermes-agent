@@ -571,6 +571,15 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
 
+        # The plugin name must be a string; a malformed manifest (e.g.
+        # `name: [a, b]` or `name: 123`) would otherwise crash _sanitize_plugin_name
+        # with a raw TypeError instead of a clean install error.
+        if not isinstance(plugin_name, str):
+            raise PluginOperationError(
+                f"Plugin manifest name must be a string, got "
+                f"{type(plugin_name).__name__}: {plugin_name!r}",
+            )
+
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -669,8 +678,11 @@ def cmd_install(
 
     # Best-effort load check: catch a plugin whose __init__/register() is
     # broken so the user sees it at install time, not as a silent skip at
-    # gateway start.
-    load_check = _smoke_test_plugin_load(target)
+    # gateway start. Skip it when the plugin is explicitly installed disabled
+    # (enable=False) — running it imports and calls register() on arbitrary
+    # plugin code, so we avoid executing plugin code the user chose not to
+    # enable. For enable=True or interactive install we still run it.
+    load_check = _smoke_test_plugin_load(target) if enable is not False else None
     if load_check:
         console.print(
             f"[yellow]Warning:[/yellow] {installed_name} installed but its "
@@ -1888,7 +1900,10 @@ def dashboard_install_plugin(
     # Best-effort load check: catch a plugin that imports/registers broken
     # so the dashboard can surface it instead of reporting a silent success
     # that only fails at gateway start (where it's logged and skipped).
-    load_check = _smoke_test_plugin_load(target)
+    # Skip it when the plugin is installed disabled (enable=False) — running
+    # it imports and calls register() on arbitrary plugin code, so we avoid
+    # executing plugin code the user chose not to enable.
+    load_check = _smoke_test_plugin_load(target) if enable else None
     if load_check:
         warnings.append(f"load check failed: {load_check}")
 

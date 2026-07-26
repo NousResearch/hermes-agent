@@ -7253,6 +7253,59 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
 
 
+def test_starved_refresher_revives_its_own_unclaimed_lease(db, monkeypatch):
+    """A live owner past its own TTL must be able to revive an unclaimed row.
+
+    Ownership is decided by ``holder`` alone, deliberately NOT by
+    ``expires_at``. A refresher starved by a GC pause or a slow write can tick
+    after its own lease notionally expired; while nobody else has claimed the
+    row, that owner is still the owner. Requiring ``expires_at >= now`` made
+    the stall permanent — every later refresh matched 0 rows, so the owner kept
+    compressing and rotating with no lease at all, which is exactly the
+    unprotected window a competing path can fork the session lineage in.
+    """
+    db.create_session("s1", "cli")
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+
+    # Starved well past the 10s TTL, but the row is still holder-a's.
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1050.0)
+    assert db.refresh_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+    revived_expires = db._conn.execute(
+        "SELECT expires_at FROM compression_locks WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()[0]
+    assert revived_expires == 1060.0
+
+    # Reviving must not hand the lease to anyone else.
+    assert db.refresh_compression_lock("s1", "holder-b", ttl_seconds=10.0) is False
+
+
+def test_refresh_cannot_resurrect_a_lock_already_reclaimed(db, monkeypatch):
+    """Once a competitor owns the row, the old holder's refresh must fail.
+
+    The guard is the ``holder`` match, not the clock: a reclaim replaces
+    ``holder``, so the previous owner's UPDATE matches nothing.
+    """
+    db.create_session("s1", "cli")
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+
+    # holder-a's lease lapses and holder-b legitimately reclaims it.
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1020.0)
+    assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+    # holder-a coming back late must NOT steal it back.
+    assert db.refresh_compression_lock("s1", "holder-a", ttl_seconds=10.0) is False
+    current = db._conn.execute(
+        "SELECT holder FROM compression_locks WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()[0]
+    assert current == "holder-b"
+
+
 # =========================================================================
 # compact_rows — lightweight column projection (issue #47414)
 # =========================================================================

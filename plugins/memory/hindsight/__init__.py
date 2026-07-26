@@ -141,7 +141,7 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
         )
         return
     # setdefault: an explicit env var the operator set wins over config.
-    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, str(seconds))
+    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:

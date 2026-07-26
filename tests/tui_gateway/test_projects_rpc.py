@@ -295,6 +295,30 @@ def test_scan_time_is_not_treated_as_session_activity(tmp_path):
     assert active["last_active"] > idle["last_active"]
 
 
+def test_terminal_session_persists_its_launch_cwd():
+    """A terminal session's cwd IS its workspace, so the row must record it.
+
+    The user cd'd into that directory before running hermes. Dropping it left
+    the row with no cwd and no git_repo_root, so the sidebar could never place
+    the session under its project.
+    """
+    for source in ("tui", "cli"):
+        assert server._persisted_session_cwd(
+            {"source": source, "cwd": "/somewhere/a-repo"}
+        ) == "/somewhere/a-repo"
+
+
+def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
+    # The desktop launches from wherever the bundle was opened, so an unpicked
+    # cwd is an artifact — those chats belong under "No workspace".
+    assert server._persisted_session_cwd({"source": "desktop", "cwd": "/opt/whatever"}) is None
+
+    # An explicit pick is always honored, desktop included.
+    assert server._persisted_session_cwd(
+        {"source": "desktop", "cwd": "/picked/repo", "explicit_cwd": True}
+    ) == "/picked/repo"
+
+
 def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
     repo = tmp_path / "cached-repo"
     repo.mkdir()

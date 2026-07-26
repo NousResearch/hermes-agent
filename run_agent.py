@@ -1842,7 +1842,7 @@ class AIAgent:
 
     def _ensure_topic_for_session(self) -> None:
         """Create first topic if none exists. Called outside write lock."""
-        if self._active_topic_id is not None:
+        if getattr(self, "_active_topic_id", None) is not None:
             return
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
@@ -2416,7 +2416,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                _row_topic_id = self._active_topic_id
+                _row_topic_id = getattr(self, "_active_topic_id", None)
                 if _row_topic_id is None and role == "user":
                     _row_topic_id = self._auto_create_first_topic(
                         msg.get("content", "")

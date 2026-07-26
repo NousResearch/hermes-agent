@@ -1551,10 +1551,22 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
 
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "first prompt"},
-        {"context": "Searching files for resume", "name": "search_files", "role": "tool"},
+        {"context": "resume", "name": "search_files", "role": "tool"},
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
     ]
+
+
+def test_tool_ctx_sends_an_arg_preview_not_a_phrased_label():
+    # Clients phrase their own verb around this string: the TUI renders
+    # `Terminal("<ctx>")` and the desktop prepends "Running"/"Ran". Sending a
+    # pre-phrased label made both stutter ("Ran Running sleep 70 + 2 commands")
+    # and stood in for the real command in the desktop's `$` transcript.
+    assert server._tool_ctx("terminal", {"command": 'sleep 70; echo "a"; echo "b"'}) == (
+        "sleep 70 + 2 commands"
+    )
+    assert server._tool_ctx("read_file", {"path": "/tmp/demo/package.json"}) == "package.json"
+    assert server._tool_ctx("web_search", {"query": "weather in NYC"}) == "weather in NYC"
 
 
 def test_history_to_messages_keeps_reasoning_only_assistant_turn():

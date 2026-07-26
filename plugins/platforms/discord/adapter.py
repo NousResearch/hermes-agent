@@ -1395,23 +1395,54 @@ class DiscordAdapter(BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel) and (
             message.mentions or raw_self_mention
         ):
-            other_bots_mentioned = any(
-                mentioned.bot and mentioned != self._client.user
-                for mentioned in message.mentions
+            self_user = self._client.user if self._client is not None else None
+            other_bot_mentions = [
+                mentioned for mentioned in message.mentions
+                if mentioned.bot and mentioned != self_user
+            ]
+            other_bots_mentioned = bool(other_bot_mentions)
+
+            # Free-response membership is needed by BOTH guards below, so
+            # resolve it once up front instead of only inside the
+            # ignore_no_mention branch.
+            parent_id = None
+            if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                parent_id = str(message.channel.parent_id)
+            free_channels = self._discord_free_response_channels()
+            channel_keys = self._discord_channel_keys(message, parent_id)
+            is_free_response_channel = (
+                "*" in free_channels or bool(channel_keys & free_channels)
             )
+
+            # Another bot is mentioned and we are not. Stay silent — UNLESS
+            # this channel explicitly opted into free-response behavior, where
+            # Hermes is meant to respond without being mentioned at all.
+            # Free-response channels routinely carry quoted bot mentions from
+            # migration notes and prior context; suppressing on those dropped
+            # messages the channel was configured to answer. A message that
+            # *begins* with another bot's mention is still the direct-address
+            # case, so it remains suppressed.
             if other_bots_mentioned and not raw_self_mention:
-                return False, False
+                if not is_free_response_channel:
+                    return False, False
+                stripped_content = (message.content or "").lstrip()
+                if any(
+                    stripped_content.startswith(f"<@{mentioned.id}>")
+                    or stripped_content.startswith(f"<@!{mentioned.id}>")
+                    for mentioned in other_bot_mentions
+                ):
+                    return False, False
+
             ignore_no_mention = os.getenv(
                 "DISCORD_IGNORE_NO_MENTION", "true"
             ).lower() in {"true", "1", "yes"}
-            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                parent_id = None
-                if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                    parent_id = str(message.channel.parent_id)
-                free_channels = self._discord_free_response_channels()
-                channel_keys = self._discord_channel_keys(message, parent_id)
-                if "*" not in free_channels and not (channel_keys & free_channels):
-                    return False, False
+            if (
+                ignore_no_mention
+                and not raw_self_mention
+                and not other_bots_mentioned
+                and not is_free_response_channel
+            ):
+                return False, False
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:

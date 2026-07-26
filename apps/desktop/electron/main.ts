@@ -14,6 +14,7 @@ import {
   clipboard,
   dialog,
   net as electronNet,
+  globalShortcut,
   ipcMain,
   Menu,
   nativeImage,
@@ -141,6 +142,7 @@ import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
@@ -8665,6 +8667,198 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
+// ── Quick Entry ─────────────────────────────────────────────────────────────
+//
+// A global shortcut summons a small frameless always-on-top composer from
+// anywhere, so a prompt can be fired without raising the whole app. The window
+// carries NO gateway connection: it hands its text to us, we forward it to the
+// PRIMARY renderer, and that renderer submits through the same prompt path the
+// normal composer uses (see store/quick-entry + hooks/use-quick-entry-bridge).
+//
+// Main owns the OS registration and the persisted preference (it must restore
+// the shortcut on a cold launch without the renderer ever visiting Settings),
+// same authority split as keep-awake. Registration failure is surfaced, never
+// swallowed: a chord another app already owns comes back as `error: 'taken'`.
+const QUICK_ENTRY_CONFIG_PATH = path.join(app.getPath('userData'), 'quick-entry.json')
+
+let quickEntryWindow = null
+
+function readQuickEntrySettings() {
+  try {
+    return sanitizeQuickEntrySettings(JSON.parse(fs.readFileSync(QUICK_ENTRY_CONFIG_PATH, 'utf8')))
+  } catch {
+    // Missing / unreadable / malformed → shipped defaults (enabled, default chord).
+    return sanitizeQuickEntrySettings(undefined)
+  }
+}
+
+function writeQuickEntrySettings(settings) {
+  try {
+    fs.mkdirSync(path.dirname(QUICK_ENTRY_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(QUICK_ENTRY_CONFIG_PATH, JSON.stringify(settings, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[quick-entry] write failed: ${error.message}`)
+  }
+}
+
+function quickEntryUrl() {
+  if (DEV_SERVER) {
+    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=quick#/`
+  }
+
+  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=quick#/`
+}
+
+function spawnQuickEntryWindow() {
+  const cursor = screen.getCursorScreenPoint()
+  const display = screen.getDisplayNearestPoint(cursor)
+  const bounds = quickEntryWindowBounds(display?.workArea)
+
+  const win = new BrowserWindow({
+    ...bounds,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
+    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
+    // capture window never becomes the app's cmd-tab anchor.
+    skipTaskbar: !IS_MAC,
+    hasShadow: true,
+    alwaysOnTop: true,
+    type: IS_MAC ? 'panel' : undefined,
+    hiddenInMissionControl: IS_MAC,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: PRELOAD_PATH,
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      devTools: true
+    }
+  })
+
+  win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
+  win.setHiddenInMissionControl?.(true)
+
+  try {
+    win.setVisibleOnAllWorkspaces(
+      true,
+      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
+    )
+  } catch {
+    // Not supported everywhere — best effort.
+  }
+
+  // Opts out of global UI zoom for the same reason as the pet overlay: it sizes
+  // its own OS window and a zoomed composer would overflow it.
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
+
+  // Hide on blur. The window must never hold the user's focus captive — losing
+  // focus is the cheapest, least surprising dismiss (matches Spotlight).
+  win.on('blur', () => {
+    if (!win.isDestroyed()) {
+      win.hide()
+    }
+  })
+
+  win.on('closed', () => {
+    if (quickEntryWindow === win) {
+      quickEntryWindow = null
+    }
+  })
+
+  win.loadURL(quickEntryUrl())
+
+  return win
+}
+
+// Move the (already-open) window to the display the cursor is on, so the chord
+// summons it where the user is looking rather than where they last were.
+function repositionQuickEntryWindow(win) {
+  try {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    win.setBounds(quickEntryWindowBounds(display?.workArea))
+  } catch (error) {
+    rememberLog(`[quick-entry] reposition failed: ${error.message}`)
+  }
+}
+
+function showQuickEntryWindow() {
+  if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
+    quickEntryWindow = spawnQuickEntryWindow()
+    quickEntryWindow.once('ready-to-show', () => {
+      if (!quickEntryWindow?.isDestroyed()) {
+        quickEntryWindow.show()
+        quickEntryWindow.focus()
+      }
+    })
+
+    return
+  }
+
+  repositionQuickEntryWindow(quickEntryWindow)
+  quickEntryWindow.show()
+  quickEntryWindow.focus()
+  // Re-summoned: tell the renderer to clear any stale draft and refocus.
+  quickEntryWindow.webContents.send('hermes:quick-entry:shown')
+}
+
+function hideQuickEntryWindow() {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.hide()
+  }
+}
+
+// The chord toggles: pressing it while the composer is up puts it away, so one
+// gesture does exactly one thing in both directions.
+function toggleQuickEntryWindow() {
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed() && quickEntryWindow.isVisible()) {
+    hideQuickEntryWindow()
+
+    return
+  }
+
+  showQuickEntryWindow()
+}
+
+const quickEntryShortcut = createQuickEntryShortcut(globalShortcut, toggleQuickEntryWindow)
+
+function applyQuickEntrySettings(settings) {
+  const state = quickEntryShortcut.apply(settings)
+
+  if (!settings.enabled) {
+    // Turning the feature off must not leave an orphan always-on-top window.
+    if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+      quickEntryWindow.close()
+    }
+
+    quickEntryWindow = null
+  }
+
+  if (state.error === 'taken') {
+    rememberLog(`[quick-entry] shortcut ${state.shortcut} is already taken by another application`)
+  } else if (state.error === 'invalid') {
+    rememberLog(`[quick-entry] shortcut ${state.shortcut} is not a valid accelerator`)
+  }
+
+  return { ...state, enabled: settings.enabled }
+}
+
+function closeQuickEntryWindow() {
+  quickEntryShortcut.dispose()
+
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.close()
+  }
+
+  quickEntryWindow = null
+}
+
 function createWindow() {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
@@ -9954,6 +10148,61 @@ ipcMain.on('hermes:keep-awake', (_event, on) => {
   }
 })
 
+// Quick Entry: the renderer reads the live registration state on settings mount
+// and writes the preference back. Main is authoritative — it owns the OS
+// accelerator — so both handlers return the state that ACTUALLY resulted,
+// including `registered: false` + `error: 'taken'` when another app owns the
+// chord. See electron/quick-entry.ts + store/quick-entry.
+ipcMain.handle('hermes:quick-entry:settings:get', async () => {
+  const settings = readQuickEntrySettings()
+  const state = quickEntryShortcut.current()
+
+  // Ground truth is what the last apply produced; the shortcut we report is the
+  // live one (a saved-but-rejected chord still shows what the user asked for).
+  return {
+    enabled: settings.enabled,
+    error: state.error,
+    registered: state.registered,
+    shortcut: settings.enabled ? state.shortcut : settings.shortcut
+  }
+})
+
+ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
+  const current = readQuickEntrySettings()
+  const next = sanitizeQuickEntrySettings({
+    enabled: patch?.enabled === undefined ? current.enabled : patch.enabled === true,
+    shortcut: typeof patch?.shortcut === 'string' && patch.shortcut.trim() ? patch.shortcut : current.shortcut
+  })
+
+  writeQuickEntrySettings(next)
+
+  return applyQuickEntrySettings(next)
+})
+
+// Quick window → main → PRIMARY renderer. We never submit here: the renderer
+// owns the one prompt-submit path, and forwarding keeps it that way.
+ipcMain.on('hermes:quick-entry:submit', (_event, text) => {
+  hideQuickEntryWindow()
+
+  const prompt = typeof text === 'string' ? text.trim() : ''
+
+  if (!prompt) {
+    return
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    rememberLog('[quick-entry] dropped a submit: no primary window to route it to')
+
+    return
+  }
+
+  // Deliberately does NOT raise/focus the main window — the user asked to fire
+  // a prompt from wherever they were, not to be yanked into the app.
+  mainWindow.webContents.send('hermes:quick-entry:submit', prompt)
+})
+
+ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
+
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
@@ -11025,6 +11274,10 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
+  // Quick Entry's global chord — registered on ready so a cold launch restores
+  // it without the renderer visiting Settings. A failed registration is logged
+  // here and surfaced in Settings via the IPC state (never silent).
+  applyQuickEntrySettings(readQuickEntrySettings())
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -11102,6 +11355,10 @@ app.on('before-quit', event => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+
+  // Same for the Quick Entry composer — and release its global accelerator so a
+  // quitting Hermes never keeps another app's chord hostage.
+  closeQuickEntryWindow()
 
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {

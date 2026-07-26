@@ -661,6 +661,61 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     assert seen == [str(profile_home)]
 
 
+def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path):
+    """Agent construction must install the selected profile's secret scope.
+
+    Without it, get_secret() falls through to process os.environ, so a session
+    "switched" to profile X resolves credentials from the LAUNCH profile's
+    .env (#67605 item 2).
+    """
+    import threading
+
+    from agent.secret_scope import current_secret_scope
+
+    profile_home = tmp_path / "profiles" / "grace"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text(
+        "PROXMOX_TOKEN=grace-secret\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default"))
+
+    scopes = []
+    built = threading.Event()
+
+    def _fake_make_agent(*args, **kwargs):
+        scope = current_secret_scope()
+        scopes.append(dict(scope) if scope else None)
+        built.set()
+        return type("Agent", (), {"model": "test"})()
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(
+        "tui_gateway.entry.ensure_mcp_discovery_started", lambda: None
+    )
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+
+    ready = threading.Event()
+    sid = "test-secret-sid"
+    session = {
+        "agent_ready": ready,
+        "session_key": "test-secret-key",
+        "profile_home": str(profile_home),
+    }
+
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session)
+        assert built.wait(timeout=2)
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert scopes == [{"PROXMOX_TOKEN": "grace-secret"}]
+
+
 def test_profile_configured_cwd_reads_target_profile(tmp_path):
     """A profile's own terminal.cwd is read from its config.yaml."""
     project = tmp_path / "proj"

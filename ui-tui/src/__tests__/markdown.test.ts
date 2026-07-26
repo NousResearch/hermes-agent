@@ -2,11 +2,33 @@ import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
 import React from 'react'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+afterEach(() => {
+  __resetLinkTitleCache()
+  vi.unstubAllGlobals()
+})
+
+// Stub the network and warm the shared title cache, so a subsequent render
+// has the resolved title available synchronously.
+const stubFetchedTitle = (url: string, title: string) => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(
+      new Response(`<html><head><title>${title}</title></head></html>`, {
+        headers: { 'content-type': 'text/html' },
+        status: 200
+      })
+    )
+  )
+
+  return fetchLinkTitle(url)
+}
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
 const BEL = String.fromCharCode(7)
@@ -266,19 +288,37 @@ describe('Md link labels', () => {
     expect(rendered).not.toContain('https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure')
   })
 
-  it('keeps explicit markdown labels as the immediate fallback', () => {
+  it('keeps the authored markdown label even when a page title resolves', async () => {
+    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+
+    // Warm the shared cache so `useLinkTitle` would have a title to render
+    // synchronously — the label must still win.
+    await stubFetchedTitle(url, 'El Yunque Rainforest Adventure | Expedia')
+
     const lines = renderPlain(
       React.createElement(
         Box,
         { width: 80 },
-        React.createElement(Md, {
-          t: DEFAULT_THEME,
-          text: '[Trip details](https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure)'
-        })
+        React.createElement(Md, { t: DEFAULT_THEME, text: `[Trip details](${url})` })
       )
     )
 
-    expect(lines.join('\n')).toContain('Trip details')
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Trip details')
+    expect(rendered).not.toContain('El Yunque Rainforest Adventure | Expedia')
+  })
+
+  it('still resolves titles for links whose label is just the URL', async () => {
+    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
+
+    await stubFetchedTitle(url, 'Rainforest Adventure Tour')
+
+    const lines = renderPlain(
+      React.createElement(Box, { width: 120 }, React.createElement(Md, { t: DEFAULT_THEME, text: `[${url}](${url})` }))
+    )
+
+    expect(lines.join('\n')).toContain('Rainforest Adventure Tour')
   })
 })
 

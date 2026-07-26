@@ -1,7 +1,10 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
+
+import pytest
 
 
 from model_tools import (
@@ -31,6 +34,168 @@ class TestHandleFunctionCall:
         assert "totally_fake_tool_xyz" in result["error"]
 
 
+    def test_snapshot_dispatch_uses_captured_entry_after_releasing_agent_lock(
+        self,
+        monkeypatch,
+    ):
+        """The final registry route is immutable and executes outside the lock."""
+        import model_tools
+        from tools import mcp_tool
+
+        agent = SimpleNamespace(
+            _tool_snapshot_epoch=7,
+            _memory_provider_tool_names=set(),
+            _context_engine_tool_names=set(),
+        )
+        entry = SimpleNamespace(
+            schema={
+                "name": "snapshot_tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        )
+        agent._tool_registry_routes = {"snapshot_tool": entry}
+        dispatch_calls = []
+
+        monkeypatch.setattr(
+            model_tools.registry,
+            "entry_is_current",
+            lambda name, candidate: name == "snapshot_tool" and candidate is entry,
+        )
+
+        def _dispatch_entry(name, captured_entry, args, **kwargs):
+            acquired = mcp_tool._agent_tools_lock.acquire(timeout=1)
+            assert acquired, "handler dispatch retained the agent snapshot lock"
+            mcp_tool._agent_tools_lock.release()
+            dispatch_calls.append((name, captured_entry, args, kwargs))
+            return "captured-result"
+
+        monkeypatch.setattr(
+            model_tools.registry,
+            "dispatch_entry",
+            _dispatch_entry,
+        )
+        monkeypatch.setattr(
+            model_tools.registry,
+            "dispatch",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("live registry dispatch must not be used")
+            ),
+        )
+
+        result = handle_function_call(
+            "snapshot_tool",
+            {"value": 1},
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            tool_snapshot_agent=agent,
+            expected_tool_snapshot_epoch=7,
+        )
+
+        assert result == "captured-result"
+        assert dispatch_calls == [
+            (
+                "snapshot_tool",
+                entry,
+                {"value": 1},
+                {
+                    "task_id": None,
+                    "session_id": None,
+                    "user_task": None,
+                },
+            ),
+        ]
+
+    def test_snapshot_dispatch_change_reaches_bounded_retry(self, monkeypatch):
+        """A stale registry route must not be converted to a generic tool error."""
+        import model_tools
+        from agent.tool_executor import ToolSnapshotChangedError
+
+        agent = SimpleNamespace(
+            _tool_snapshot_epoch=8,
+            _memory_provider_tool_names=set(),
+            _context_engine_tool_names=set(),
+            _tool_registry_routes={},
+        )
+        monkeypatch.setattr(
+            model_tools.registry,
+            "dispatch",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("stale route must not use live dispatch")
+            ),
+        )
+
+        with pytest.raises(
+            ToolSnapshotChangedError,
+            match="before registry handler start",
+        ):
+            handle_function_call(
+                "snapshot_tool",
+                {},
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                tool_snapshot_agent=agent,
+                expected_tool_snapshot_epoch=7,
+            )
+
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_invoke_hook.call_args_list == [
+            call(
+                "pre_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                middleware_trace=[],
+            ),
+            call(
+                "post_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+                middleware_trace=[],
+            ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+            ),
+        ]
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must

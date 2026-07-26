@@ -26,6 +26,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -95,6 +96,44 @@ const TOOL_SECTION_SURFACE_CLASS =
 const TOOL_EXPANDED_SHELL_CLASS = 'rounded-[0.3125rem] border border-(--ui-stroke-tertiary)'
 
 const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.7rem] leading-relaxed')
+
+// Raw args/result dump — reference material, so a notch smaller than a body.
+const TOOL_PAYLOAD_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.65rem] leading-relaxed')
+
+/**
+ * Technical-mode raw payload, behind a chevron disclosure.
+ *
+ * Collapsed by default — in technical mode every tool row carries one, and
+ * expanding them all buries the transcript. Uses `DisclosureCaret` rather than
+ * a native `<details>`, whose marker is a browser-drawn triangle matching
+ * nothing else here.
+ */
+function ToolPayloadDisclosure({ args, result }: { args: unknown; result: unknown }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    // `py-0.5` tops up the parent's `p-1.5` to an even block on both edges.
+    <div className="max-w-full py-0.5">
+      <button
+        aria-expanded={open}
+        className={cn(
+          TOOL_SECTION_LABEL_CLASS,
+          'mb-0 flex items-center gap-1 bg-transparent transition-colors hover:text-(--ui-text-secondary)'
+        )}
+        onClick={() => setOpen(value => !value)}
+        type="button"
+      >
+        <DisclosureCaret className="text-(--ui-text-tertiary)" open={open} size="0.625rem" />
+        Tool payload
+      </button>
+      {open && (
+        <pre className={cn(TOOL_PAYLOAD_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
+          {technicalTrace(args, result)}
+        </pre>
+      )}
+    </div>
+  )
+}
 
 interface ToolStatusCopy {
   statusDone: string
@@ -616,19 +655,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (
-            <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-              {technicalTrace(part.args, part.result)}
-            </pre>
-          )}
-          {toolViewMode === 'technical' && isFileEdit && view.inlineDiff && (
-            <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0 cursor-pointer')}>Tool payload</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {technicalTrace(part.args, part.result)}
-              </pre>
-            </details>
-          )}
+          {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
       )}
     </div>

@@ -93,10 +93,9 @@ function sessionRow(page: Page) {
   return page.locator('[data-slot="sidebar"] button').filter({ hasText: CAPTION }).first()
 }
 
-// A ⌘T-style tab can put several chat surfaces on the page at once, so
-// transcript queries target the ACTIVE (most recently mounted) surface rather
-// than the first match, which would read the wrong session.
-const SURFACE = '[data-composer-target]'
+// Inactive tabs stay mounted under a data-pane-hidden ancestor. Match the
+// renderer's keep-alive visibility policy instead of relying on DOM order.
+const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
 
 function activeViewportText(surfaceSelector: string): string {
   const surfaces = document.querySelectorAll(surfaceSelector)

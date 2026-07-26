@@ -1990,6 +1990,16 @@ DEFAULT_CONFIG = {
         # tool name. Applies to CLI spinner + gateway/desktop tool-progress.
         # Custom/plugin/MCP tools always fall back to the raw preview.
         "friendly_tool_labels": True,
+        # CLI-only post-turn accounting line printed after each interactive turn:
+        # "⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands".
+        # Observed from the tool-progress feed the CLI already receives; never
+        # printed in quiet/non-interactive paths or in gateway/messaging
+        # surfaces (those have their own runtime footer).
+        "turn_summary": True,
+        # CLI-only: append cumulative turn output tokens to the live spinner
+        # timer ("⚡ Reading file  ( 2.3s · ↓ 1.2k tok)"). Updates as each API
+        # call in the turn reports usage.
+        "spinner_token_flow": True,
         # How gateway tool-progress is grouped on platforms that support message
         # editing: "accumulate" (default) edits one bubble in place; "separate"
         # sends one message per tool (the pre-v0.9 behavior, noisier). Only

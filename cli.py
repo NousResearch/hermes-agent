@@ -4158,6 +4158,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Per-turn accounting (display.turn_summary / display.spinner_token_flow).
+        # Both are CLI-only, display-only chrome. The collector rides the
+        # tool-progress feed this class already receives, so no agent-loop
+        # bookkeeping is involved.
+        self._turn_summary_enabled = bool(CLI_CONFIG["display"].get("turn_summary", True))
+        self._spinner_token_flow_enabled = bool(
+            CLI_CONFIG["display"].get("spinner_token_flow", True)
+        )
+        self._turn_summary_collector = None
+        self._turn_summary_start = 0.0
+        self._turn_token_baseline = 0
+        # True only while an interactive (run()-loop) turn is in flight. Single
+        # query, -Q, and gateway paths never set it, which is what keeps the
+        # summary line out of non-interactive surfaces.
+        self._interactive_turn = False
+
         # Submitted multiline user-message preview (display.user_message_preview in config.yaml)
         _ump = CLI_CONFIG["display"].get("user_message_preview", {})
         if not isinstance(_ump, dict):
@@ -5295,6 +5311,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         txt = getattr(self, "_spinner_text", "")
         if not txt:
             return ""
+        flow = self._spinner_token_flow()
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
             elapsed = time.monotonic() - t0
@@ -5306,8 +5323,99 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 # Keep width stable before the 60s rollover as well.
                 elapsed_str = f"{elapsed:5.1f}s"
+            if flow:
+                return f"  {txt}  ({elapsed_str} · {flow})"
             return f"  {txt}  ({elapsed_str})"
+        if flow:
+            return f"  {txt}  ({flow})"
         return f"  {txt}"
+
+    # ── Per-turn accounting (display.turn_summary / spinner_token_flow) ──
+    #
+    # Both features are CLI-only chrome. The tally is observed from the
+    # tool-progress callback this class already receives on every tool call,
+    # so nothing is threaded through the agent loop. Token flow reads the
+    # agent's cumulative session counters (bumped per API call in
+    # agent/conversation_loop.py) and subtracts a per-turn baseline.
+
+    def _spinner_token_flow(self) -> str:
+        """Cumulative output tokens for the running turn, for the spinner."""
+        if not getattr(self, "_spinner_token_flow_enabled", False):
+            return ""
+        if not getattr(self, "_agent_running", False):
+            return ""
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return ""
+        try:
+            from agent.turn_summary import format_token_flow
+
+            produced = (getattr(agent, "session_output_tokens", 0) or 0) - (
+                getattr(self, "_turn_token_baseline", 0) or 0
+            )
+            return format_token_flow(produced)
+        except Exception:
+            return ""
+
+    def _turn_summary_is_active(self) -> bool:
+        """Whether the per-turn summary line should render for this surface.
+
+        Gated off for: the config key, quiet/tool-progress-off mode, and any
+        non-interactive path (single query, ``-Q``, gateway/messaging) — those
+        surfaces either want machine-readable output or carry their own footer.
+        """
+        if not getattr(self, "_turn_summary_enabled", False):
+            return False
+        if getattr(self, "tool_progress_mode", "all") == "off":
+            return False
+        agent = getattr(self, "agent", None)
+        if agent is not None and getattr(agent, "quiet_mode", False):
+            return False
+        if not getattr(self, "_interactive_turn", False):
+            return False
+        return True
+
+    def _turn_summary_begin(self) -> None:
+        """Start per-turn accounting for the turn that is about to run."""
+        try:
+            from agent.turn_summary import TurnSummaryCollector
+
+            collector = getattr(self, "_turn_summary_collector", None)
+            if collector is None:
+                collector = TurnSummaryCollector()
+                self._turn_summary_collector = collector
+            collector.begin()
+            self._turn_summary_start = time.monotonic()
+            agent = getattr(self, "agent", None)
+            self._turn_token_baseline = (
+                getattr(agent, "session_output_tokens", 0) or 0
+            ) if agent is not None else 0
+        except Exception:
+            self._turn_summary_collector = None
+
+    def _turn_summary_record(self, function_name, result, is_error: bool) -> None:
+        """Feed one completed tool call into the active tally."""
+        collector = getattr(self, "_turn_summary_collector", None)
+        if collector is None:
+            return
+        try:
+            collector.record_tool(function_name, result=result, is_error=bool(is_error))
+        except Exception:
+            pass
+
+    def _turn_summary_emit(self) -> None:
+        """Print the post-turn accounting line, when enabled for this surface."""
+        collector = getattr(self, "_turn_summary_collector", None)
+        if collector is None or not self._turn_summary_is_active():
+            return
+        try:
+            started = getattr(self, "_turn_summary_start", 0.0) or 0.0
+            elapsed = max(0.0, time.monotonic() - started) if started else 0.0
+            line = collector.render(elapsed)
+            if line:
+                _cprint(f"  {_DIM}{line}{_RST}")
+        except Exception:
+            logger.debug("Turn summary render failed", exc_info=True)
 
     # ── Petdex mascot (base-CLI pet pane) ───────────────────────────────
     #
@@ -11301,6 +11409,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
+            # Per-turn accounting: this feed already sees every tool call with
+            # its result, so the summary line needs no agent-loop state.
+            self._turn_summary_record(
+                function_name, kwargs.get("result"), kwargs.get("is_error", False)
+            )
             # Print stacked scrollback line for "new" / "all" / "verbose" modes.
             # "verbose" was previously omitted here, so non-streaming model
             # calls (MoA aggregator, copilot-acp) rendered each tool only into
@@ -15957,8 +16070,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._interactive_turn = True
                     self._pet_turn_error = False
                     self._pet_reasoning = False
+                    self._turn_summary_begin()
                     app.invalidate()  # Refresh status line
 
                     try:
@@ -15971,6 +16086,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self._last_scrollback_tool = ""
                         self._pet_reasoning = False
                         self._pet_react_turn_end()
+                        # Post-turn accounting line (display.turn_summary).
+                        # Emitted after the response box, before the prompt
+                        # returns, so it reads as a footer for the turn.
+                        self._turn_summary_emit()
+                        self._interactive_turn = False
 
                         app.invalidate()  # Refresh status line
 

@@ -1524,6 +1524,8 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
+  spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
@@ -1531,6 +1533,33 @@ display:
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
+
+### Per-turn summary and spinner token flow
+
+`display.turn_summary` (default `true`) prints one dim accounting line after each **interactive CLI** turn, summarising what that turn actually did:
+
+```
+⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands
+```
+
+The tally is observed from the tool-progress feed the CLI already receives, so it costs nothing extra. Details:
+
+- Wall time is the turn's real duration (`2m05s` past the one-minute mark).
+- Tool calls are grouped by verb (`edited`, `read`, `ran`, `searched`, …) with correct pluralisation; plugin/MCP tools without a curated verb collapse into `called N tools`.
+- `+X -Y` line deltas appear only when the tool result already reports a diff (currently `patch`). Hermes never shells out to git to compute them, so a `write_file` edit is counted without a delta.
+- **Failed tool calls are not counted** — a denied write never renders as a successful edit (see the [file-mutation verifier](#file-mutation-verifier) for the complementary warning).
+- Long turns cap at four verb segments plus a `+N more` tail so the line never wraps.
+- A fast turn with no tool calls prints nothing at all.
+
+`display.spinner_token_flow` (default `true`) appends the running turn's cumulative output tokens to the CLI spinner's live timer:
+
+```
+  ⚡ Reading cli.py  (  2.3s · ↓ 1.2k tok)
+```
+
+The count is per-turn (session totals are baselined at turn start) and updates as each API call in the turn reports usage. Nothing renders before the first usage report lands, so you never see a misleading `↓ 0 tok`.
+
+Both keys are display-only and CLI-only: they are suppressed in quiet mode, when `display.tool_progress` is `off`, in single-query/`-Q` batch runs, and in gateway/messaging surfaces (those use `display.runtime_footer` instead). Set either key to `false` to turn it off.
 
 ### File-mutation verifier
 

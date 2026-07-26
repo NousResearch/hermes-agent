@@ -136,10 +136,8 @@ def test_kill_all_backward_compat_and_exclude_ids(registry):
 
 
 def _python_command(source: str) -> str:
-    """Build a shell-safe Python command for the platform under test."""
-    executable = sys.executable if sys.platform == "win32" else "python3"
-
-    return f"{shlex.quote(executable)} -c {shlex.quote(source)}"
+    """Build a command for the shell used by ``spawn_local``."""
+    return shlex.join([sys.executable, "-c", source])
 
 
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
@@ -633,7 +631,7 @@ class TestStdinHelpers:
         supported path.
         """
         session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
+            _python_command("import sys; print(sys.stdin.read().strip())"),
             cwd=str(tmp_path),
             use_pty=True,
         )
@@ -661,18 +659,19 @@ class TestStdinHelpers:
         finally:
             registry.kill_process(session.id)
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="requires the native Windows PTY backend",
-    )
+    @pytest.mark.windows_only
     def test_close_stdin_windows_real_pty_remains_writable(self, registry, tmp_path):
         """Unsupported EOF leaves a native Windows PTY child unchanged."""
         session = registry.spawn_local(
             _python_command(
                 "import sys\n"
                 "print('READY', flush=True)\n"
-                "for line in sys.stdin:\n"
-                "    print('READ:' + line.strip(), flush=True)"
+                "while True:\n"
+                "    byte = sys.stdin.buffer.read(1)\n"
+                "    if not byte:\n"
+                "        print('EOF_RECEIVED', flush=True)\n"
+                "        break\n"
+                "    print(f'BYTE={byte!r}', flush=True)"
             ),
             cwd=str(tmp_path),
             use_pty=True,
@@ -696,18 +695,18 @@ class TestStdinHelpers:
             assert registry.close_stdin(session.id) == expected
             assert registry.poll(session.id)["status"] == "running"
 
-            assert registry.submit_stdin(session.id, "after-close") == {
+            assert registry.write_stdin(session.id, "after-close\r") == {
                 "status": "ok",
                 "bytes_written": 12,
             }
             assert _wait_until(
-                lambda: "READ:after-close"
-                in registry.poll(session.id)["output_preview"]
+                lambda: "BYTE=b'e'" in registry.poll(session.id)["output_preview"]
             )
 
             poll = registry.poll(session.id)
             assert poll["status"] == "running"
-            assert "\x04" not in poll["output_preview"]
+            assert "BYTE=b'\\x04'" not in poll["output_preview"]
+            assert "EOF_RECEIVED" not in poll["output_preview"]
         finally:
             registry.kill_process(session.id)
 

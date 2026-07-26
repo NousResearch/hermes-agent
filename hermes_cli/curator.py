@@ -36,6 +36,35 @@ def _fmt_ts(ts: Optional[str]) -> str:
     return f"{secs // 86400}d ago"
 
 
+def _print_unmanaged_summary() -> None:
+    """Report curation-eligible skills that carry no provenance marker.
+
+    A skill only becomes curator-managed once ``created_by: agent`` lands on
+    its usage record, which happens ONLY for background-review creations.
+    Skills predating that marker, plus every foreground
+    ``skill_manage(create)``, are eligible but unmanaged — no automatic
+    transition ever considers them. Printing just the managed count made a
+    large library look fully curated while a big slice was untouchable.
+    """
+    from tools import skill_usage
+
+    try:
+        unmanaged = skill_usage.unmanaged_report()
+    except Exception:
+        return
+    if not unmanaged:
+        return
+    legacy = sum(1 for r in unmanaged if not r.get("has_provenance_key"))
+    foreground = len(unmanaged) - legacy
+    print(f"\nunmanaged (no provenance marker): {len(unmanaged)} total")
+    print(f"  pre-dates marker    {legacy}")
+    print(f"  foreground-created  {foreground}")
+    print(
+        "  never auto-staled or archived — "
+        "`hermes curator adopt <name>` hands one over"
+    )
+
+
 def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
@@ -85,6 +114,7 @@ def _cmd_status(args) -> int:
     rows = skill_usage.curated_report()
     if not rows:
         print("\nno curator-managed skills")
+        _print_unmanaged_summary()
         return 0
 
     by_state = {"active": [], "stale": [], "archived": []}
@@ -110,6 +140,9 @@ def _cmd_status(args) -> int:
 
     if pinned:
         print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
+
+    # Surface the curation blind spot on the managed path too.
+    _print_unmanaged_summary()
 
     # Show top 5 least-recently-active skills. Views and edits are activity too:
     # curator should not report a skill as "never used" right after skill_view()
@@ -278,6 +311,62 @@ def _cmd_unpin(args) -> int:
     skill_usage.set_pinned(args.skill, False)
     print(f"curator: unpinned '{args.skill}'")
     return 0
+
+
+def _cmd_adopt(args) -> int:
+    """Hand unmanaged skills to the curator by explicit user declaration.
+
+    Provenance cannot be inferred from telemetry: a high patch count proves
+    the agent MAINTAINS a skill, not that it AUTHORED it (the agent edits
+    user-written skills on the user's behalf constantly). So adoption is never
+    automatic — the user names what they're handing over, or passes
+    ``--all-unmanaged`` to hand over every eligible skill at once.
+    """
+    from tools import skill_usage
+
+    names = list(getattr(args, "skill", None) or [])
+    adopt_all = bool(getattr(args, "all_unmanaged", False))
+    if adopt_all:
+        if names:
+            print("curator: pass either skill names or --all-unmanaged, not both")
+            return 1
+        names = skill_usage.list_unmanaged_skill_names()
+        if not names:
+            print("curator: no unmanaged skills to adopt")
+            return 0
+    if not names:
+        print("curator: name a skill to adopt, or pass --all-unmanaged")
+        return 1
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        print(f"curator: would adopt {len(names)} skill(s) (dry run):")
+        for n in names:
+            print(f"  + {n}")
+        return 0
+
+    # Bulk adoption is a real lifecycle change (adopted skills become
+    # archivable), so confirm unless the caller opted out.
+    if adopt_all and not bool(getattr(args, "yes", False)):
+        print(f"curator: adopt {len(names)} unmanaged skill(s) into curator management?")
+        print("  they become eligible for automatic staleness + archival")
+        try:
+            reply = input("  proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = ""
+        if reply not in {"y", "yes"}:
+            print("curator: aborted")
+            return 1
+
+    failed = 0
+    for n in names:
+        ok, msg = skill_usage.adopt_skill(n)
+        print(f"curator: {msg}")
+        if not ok:
+            failed += 1
+    if len(names) > 1:
+        print(f"curator: adopted {len(names) - failed}/{len(names)}")
+    return 1 if failed else 0
 
 
 def _cmd_restore(args) -> int:
@@ -626,6 +715,28 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_unpin = subs.add_parser("unpin", help="Unpin a skill")
     p_unpin.add_argument("skill", help="Skill name")
     p_unpin.set_defaults(func=_cmd_unpin)
+
+    p_adopt = subs.add_parser(
+        "adopt",
+        help="Hand unmanaged skills to the curator (provenance is a user declaration)",
+    )
+    p_adopt.add_argument(
+        "skill", nargs="*",
+        help="Skill name(s) to adopt. Omit when using --all-unmanaged.",
+    )
+    p_adopt.add_argument(
+        "--all-unmanaged", action="store_true",
+        help="Adopt every curation-eligible skill that has no provenance marker",
+    )
+    p_adopt.add_argument(
+        "--dry-run", action="store_true",
+        help="List what would be adopted without writing anything",
+    )
+    p_adopt.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation prompt for --all-unmanaged",
+    )
+    p_adopt.set_defaults(func=_cmd_adopt)
 
     p_restore = subs.add_parser("restore", help="Restore an archived skill")
     p_restore.add_argument("skill", help="Skill name")

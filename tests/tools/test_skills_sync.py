@@ -906,6 +906,87 @@ class TestSyncSkills:
         assert result["optional_provenance_backfilled"] == []
         assert not (skills_dir / ".hub" / "lock.json").exists()
 
+    def test_backfills_optional_provenance_for_relocated_skill(self, tmp_path):
+        """Upstream recategorization must not blind provenance repair.
+
+        When a skill was installed at ``mlops/chroma`` and upstream later moved
+        it to ``mlops/vector-databases/chroma``, the repo-derived install path
+        no longer exists in the active tree. A path-only lookup skips it
+        forever, so `hermes skills repair-optional` can never fix it. The
+        recorded install_path must be the ACTUAL location, not the repo's.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "mlops" / "vector-databases" / "chroma"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text("---\nname: chroma\n---\n# Chroma\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # Installed under the OLD category path.
+        active = skills_dir / "mlops" / "chroma"
+        active.mkdir(parents=True)
+        (active / "SKILL.md").write_text("---\nname: chroma\n---\n# Chroma\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = sync_skills(quiet=True)
+
+        assert result["optional_provenance_backfilled"] == ["chroma"]
+        data = json.loads((skills_dir / ".hub" / "lock.json").read_text())
+        entry = data["installed"]["chroma"]
+        assert entry["source"] == "official"
+        assert entry["install_path"] == "mlops/chroma"
+
+    def test_relocated_backfill_still_requires_identical_content(self, tmp_path):
+        """The name fallback must not weaken the content check.
+
+        Finding the skill by name is only a locator; a locally-edited copy is
+        still the user's and must not be claimed as official.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "mlops" / "vector-databases" / "chroma"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text("---\nname: chroma\n---\n# upstream\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        active = skills_dir / "mlops" / "chroma"
+        active.mkdir(parents=True)
+        (active / "SKILL.md").write_text("---\nname: chroma\n---\n# LOCALLY EDITED\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = sync_skills(quiet=True)
+
+        assert result["optional_provenance_backfilled"] == []
+
+    def test_relocated_backfill_refuses_ambiguous_names(self, tmp_path):
+        """Two installed dirs sharing a name give no basis to pick one.
+
+        Guessing would write official provenance onto the wrong skill, so the
+        fallback must decline rather than choose.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        optional_skill = optional / "cat" / "dupe"
+        optional_skill.mkdir(parents=True)
+        (optional_skill / "SKILL.md").write_text("---\nname: dupe\n---\n# D\n")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        for parent in ("x", "y"):
+            d = skills_dir / parent / "dupe"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("---\nname: dupe\n---\n# D\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._get_optional_dir", return_value=optional):
+                result = sync_skills(quiet=True)
+
+        assert result["optional_provenance_backfilled"] == []
+
     def test_repair_official_optional_restores_reorganized_skill_with_backup(self, tmp_path):
         bundled = self._setup_bundled(tmp_path)
         optional = tmp_path / "optional-skills"

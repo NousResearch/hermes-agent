@@ -16072,6 +16072,29 @@ def main():
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
 
+    sessions_retitle = sessions_subparsers.add_parser(
+        "retitle-skills",
+        help="Re-title sessions whose auto-title came from a /skill's own text",
+        description=(
+            "Sessions opened with a /skill were auto-titled from the expanded "
+            "message, which embeds the whole skill body — so the title "
+            "describes the SKILL, not the request. This regenerates those "
+            "titles from what the user actually typed. Lists what it would "
+            "change unless --apply is passed."
+        ),
+    )
+    sessions_retitle.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the new titles (default: dry run)",
+    )
+    sessions_retitle.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum sessions to examine (default: 200)",
+    )
+
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
         help="Interactive session picker — browse, search, and resume sessions",
@@ -16951,6 +16974,67 @@ def main():
                     print(f"Session '{args.session_id}' not found.")
             except ValueError as e:
                 print(f"Error: {e}")
+
+        elif action == "retitle-skills":
+            from agent.skill_commands import describe_skill_invocation
+            from agent.title_generator import generate_title
+
+            limit = max(1, int(getattr(args, "limit", 200) or 200))
+            apply_changes = bool(getattr(args, "apply", False))
+
+            def _is_titlelike(candidate: str) -> bool:
+                """Reject a candidate that isn't a title at all.
+
+                An auxiliary model occasionally answers the prompt instead of
+                titling it and echoes the assistant's output ('$ df -h /'). The
+                live path has no alternative and takes what it gets, but this is
+                a REPAIR — replacing a serviceable title with command output
+                would make things worse, so keep the old one.
+                """
+                return bool(candidate) and candidate[0].isalnum()
+
+            candidates = db.list_skill_scaffolded_sessions(limit=limit)
+            if not candidates:
+                print("No sessions were titled from a /skill invocation.")
+                return
+
+            print(
+                f"{len(candidates)} session(s) opened with a /skill"
+                f"{'' if apply_changes else ' (dry run — pass --apply to write)'}:"
+            )
+            changed = 0
+            for row in candidates:
+                session_id = row["id"]
+                typed = describe_skill_invocation(row["content"]) or ""
+                first_reply = db.get_first_assistant_text(session_id) or ""
+                new_title = generate_title(typed, first_reply)
+                if not new_title or new_title == row["title"]:
+                    continue
+                if not _is_titlelike(new_title):
+                    print(f"  {session_id}\n    kept {row['title']!r} — got {new_title!r}")
+                    continue
+                print(f"  {session_id}\n    {row['title']!r}\n    → {new_title!r}")
+                changed += 1
+                if not apply_changes:
+                    continue
+                try:
+                    db.set_session_title(session_id, new_title)
+                except ValueError:
+                    # Unique-title collision. Dedupe the same way the live
+                    # auto-titler does (base #2, base #3, ...) rather than
+                    # leaving the leaked title in place.
+                    deduped = db.get_next_title_in_lineage(new_title)
+                    try:
+                        db.set_session_title(session_id, deduped)
+                        print(f"    (renamed to {deduped!r} — title was taken)")
+                    except ValueError as e:
+                        print(f"    skipped: {e}")
+                        changed -= 1
+
+            if not changed:
+                print("  every title already reflects the user's request.")
+            elif apply_changes:
+                print(f"✓ Re-titled {changed} session(s).")
 
         elif action == "browse":
             limit = getattr(args, "limit", 500) or 500

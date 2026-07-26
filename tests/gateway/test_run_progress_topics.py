@@ -59,6 +59,25 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
+    """Capture native image batches without contacting a platform API."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.image_batches = []
+
+    async def send_multiple_images(
+        self, chat_id, images, metadata=None, human_delay=0.0
+    ) -> None:
+        self.image_batches.append(
+            {
+                "chat_id": chat_id,
+                "images": images,
+                "metadata": metadata,
+            }
+        )
+
+
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
     """Adapter with a tiny platform limit to exercise progress rollover."""
 
@@ -779,6 +798,33 @@ class QueuedCommentaryAgent:
         }
 
 
+class QueuedMediaAgent:
+    """Return an explicit image attachment before a queued follow-up."""
+
+    calls = 0
+    media_path = None
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            final_response = f"first response\nMEDIA:{type(self).media_path}"
+            if self.stream_delta_callback:
+                self.stream_delta_callback("first response")
+        else:
+            final_response = "follow-up processed"
+            if self.stream_delta_callback:
+                self.stream_delta_callback(final_response)
+        return {
+            "final_response": final_response,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class QueuedSilenceAgent:
     """First turn is intentionally silent; queued follow-up still runs."""
 
@@ -1273,6 +1319,84 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_first_response_media(monkeypatch, tmp_path):
+    """Queued follow-ups must preserve explicit attachments from the first turn."""
+    media_path = tmp_path / "queued-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-media",
+        pending_text="queued follow-up",
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    assert {
+        "sent_texts": [call["content"] for call in adapter.sent],
+        "image_batches": adapter.image_batches,
+    } == {
+        "sent_texts": ["first response"],
+        "image_batches": [
+            {
+                "chat_id": "discord-thread",
+                "images": [(media_path.as_uri(), "")],
+                "metadata": {"thread_id": "discord-thread"},
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_delivers_streamed_first_response_media(
+    monkeypatch, tmp_path,
+):
+    """Streaming first-turn text must not suppress its explicit attachment."""
+    media_path = tmp_path / "queued-streamed-first-response.png"
+    media_path.write_bytes(b"not-a-real-png-but-a-real-file")
+    QueuedMediaAgent.calls = 0
+    QueuedMediaAgent.media_path = media_path
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedMediaAgent,
+        session_id="sess-queued-streamed-media",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.DISCORD,
+        chat_id="discord-thread",
+        chat_type="group",
+        thread_id="discord-thread",
+        adapter_cls=MediaCaptureProgressAdapter,
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert isinstance(adapter, MediaCaptureProgressAdapter)
+    all_text = [call["content"] for call in adapter.sent + adapter.edits]
+    assert all("MEDIA:" not in text for text in all_text)
+    assert adapter.image_batches == [
+        {
+            "chat_id": "discord-thread",
+            "images": [(media_path.as_uri(), "")],
+            "metadata": {"thread_id": "discord-thread"},
+        }
+    ]
 
 
 @pytest.mark.asyncio

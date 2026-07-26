@@ -503,26 +503,44 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
-# Per-session variables that the gateway bridges freshly onto every command's
-# process environment (via tools/environments/local._inject_session_context_env,
-# reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
-# the shared bash session snapshot: a single long-lived backend serves many
-# concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
-# collapse the terminal to one "default" environment), so ``export -p`` dumping
-# the FIRST session's HERMES_SESSION_ID into the snapshot makes every LATER
-# session ``source`` that stale value and see a FOREIGN session's identity —
-# overriding the correct per-command Popen env (issue: cross-session
-# HERMES_SESSION_ID leak via the shared snapshot). Stripping them from the
-# snapshot is safe because they are re-injected on every command; a snapshot
-# should only carry the user's own shell state (PATH, functions, exports they
-# set), not Hermes' per-turn session identity.
+# Invocation-scoped Hermes variables that describe *who is running this one
+# command* — not reusable shell state — and are therefore freshly supplied on
+# every command's process environment rather than authored by the user. They
+# must NEVER be persisted into the shared bash session snapshot, because a
+# single long-lived backend serves many concurrent turns (the messaging
+# gateway, TUI, desktop/web dashboard all collapse the terminal to one
+# "default" environment) and re-``source``s the snapshot before each command.
+# Persisting any of them makes a LATER, unrelated turn ``source`` a stale value
+# and be misidentified. Two families:
 #
-# Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
-# with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
-# as the Python-side contract for the exclusion set; the dump path unsets by
-# name/prefix instead of grepping declare lines (see below / issue #71296).
+#   * ``HERMES_SESSION_*`` / ``HERMES_UI_SESSION_ID`` /
+#     ``HERMES_CRON_AUTO_DELIVER_*`` — bridged per command by
+#     tools/environments/local._inject_session_context_env (reading
+#     gateway.session_context._VAR_MAP). Left in the snapshot, the FIRST
+#     session's identity leaks into every later session (cross-session
+#     HERMES_SESSION_ID leak).
+#   * ``HERMES_DELEGATED_CHILD_CONTEXT`` and ``HERMES_KANBAN_*`` — the
+#     delegate_task lineage marker and Kanban dispatcher-ownership vars
+#     (agent/delegation_context.py). A delegated child shares the parent's
+#     cached "default" environment, so ``export -p`` would serialize its
+#     ``HERMES_DELEGATED_CHILD_CONTEXT=1`` into the snapshot; a later ordinary
+#     (non-delegated) command then sources the stale marker and is treated as a
+#     delegated child — e.g. Kanban mutation guards deny legitimate ops
+#     (issue #71941).
+#
+# Stripping them is safe because they are re-supplied on every command that
+# legitimately owns them; a snapshot should only carry the user's own shell
+# state (PATH, functions, exports they set), not Hermes' per-turn identity or
+# lineage.
+#
+# Kept in sync with gateway.session_context._VAR_MAP and agent.delegation_context
+# (DELEGATED_CHILD_ENV_MARKER + KANBAN_ENV_KEYS): every owned name starts with one
+# of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests as the
+# Python-side contract for the exclusion set; the dump path unsets by name/prefix
+# instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
-    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION)"
+    "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|HERMES_CRON_SESSION"
+    "|HERMES_DELEGATED_CHILD_CONTEXT|HERMES_KANBAN_)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -573,6 +591,7 @@ def _export_dump_excluding_session_vars(
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
         "AI_AGENT HERMES_AGENT "
+        "${!HERMES_DELEGATED_CHILD_CONTEXT*} ${!HERMES_KANBAN_*} "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "

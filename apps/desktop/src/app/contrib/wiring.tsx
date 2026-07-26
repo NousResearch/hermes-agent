@@ -222,7 +222,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     setMessages
   })
 
-  const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
+  const { connectionRef, gateway, gatewayRef, requestGateway } = useGatewayRequest()
 
   const {
     loadMoreMessagingForPlatform,
@@ -943,13 +943,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         />
       )}
       <ModelPickerOverlay
-        gateway={gatewayRef.current || undefined}
+        gateway={gateway || undefined}
         onSelect={selectModel}
         profile={activeGatewayProfile}
       />
       <SessionPickerOverlay onResume={resumeSession} />
       <ModelVisibilityOverlay
-        gateway={gatewayRef.current || undefined}
+        gateway={gateway || undefined}
         onOpenProviders={openProviderSettings}
         profile={activeGatewayProfile}
       />
@@ -965,7 +965,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {settingsOpen && (
         <Suspense fallback={null}>
           <SettingsView
-            gateway={gatewayRef.current}
+            gateway={gateway}
             onClose={closeOverlayToPreviousRoute}
             onConfigSaved={() => {
               void refreshHermesConfig()

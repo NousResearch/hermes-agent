@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-sync'
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
@@ -52,6 +53,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
   // $unreadFinishedSessionIds is separate, so wipe it explicitly.
   clearAllSessionStates()
+  resetLiveRuntimeTracking()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()

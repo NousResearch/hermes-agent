@@ -11,11 +11,11 @@ import {
   directiveIconElement,
   directiveIconSvg,
   formatRefValue,
+  refChipLabel,
   slashChipClass,
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
-import { sessionRefFallbackLabel } from '@/lib/session-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
@@ -33,10 +33,6 @@ export function unquoteRef(raw: string) {
   const quoted = (head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")
 
   return quoted ? raw.slice(1, -1) : raw.replace(/[,.;!?]+$/, '')
-}
-
-export function refLabel(id: string) {
-  return id.split(/[\\/]/).filter(Boolean).pop() || id
 }
 
 /** Always-quote variant of formatRefValue — chips need a fence even for safe values. */
@@ -60,9 +56,9 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
 
-  const label = displayLabel || (kind === 'session' ? sessionRefFallbackLabel(id) : refLabel(id))
+  const label = displayLabel || refChipLabel(kind, id)
 
-  return `<span contenteditable="false" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
+  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -72,12 +68,13 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   const label = document.createElement('span')
 
   chip.contentEditable = 'false'
+  chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
   chip.className = DIRECTIVE_CHIP_CLASS
   label.className = 'truncate'
-  label.textContent = displayLabel || (kind === 'session' ? sessionRefFallbackLabel(id) : refLabel(id))
+  label.textContent = displayLabel || refChipLabel(kind, id)
   chip.append(directiveIconElement(kind), label)
 
   return chip

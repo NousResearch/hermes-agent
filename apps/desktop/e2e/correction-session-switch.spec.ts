@@ -21,11 +21,9 @@ const INFERENCE_SWITCH_TRIGGER = 'E2E_INFERENCE_SWITCH_TRIGGER'
 const INFERENCE_PROMPT = `${INFERENCE_SWITCH_TRIGGER}: original inference prompt must remain singular.`
 const INFERENCE_CORRECTION = `${INFERENCE_SWITCH_TRIGGER}: correction sent while inference is live.`
 
-// A ⌘T-style tab can put several chat surfaces on the page at once, so every
-// locator here is scoped to the ACTIVE one (the most recently mounted surface)
-// rather than `.first()` / a bare document query, which would silently target
-// the wrong session's composer or transcript.
-const SURFACE = '[data-composer-target]'
+// Inactive tabs stay mounted under a data-pane-hidden ancestor. Match the
+// renderer's keep-alive visibility policy instead of relying on DOM order.
+const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
 
 function activeSurface(page: Page) {
   return page.locator(SURFACE).last()
@@ -102,7 +100,9 @@ async function transcriptMessageOrder(page: Page): Promise<string[]> {
     const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) return []
 
-    return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"]'))
+    return Array.from(
+      viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"], [data-role="system"]'),
+    )
       .map(message => message.textContent?.trim() ?? '')
       .filter(Boolean)
   }, SURFACE)
@@ -150,7 +150,12 @@ async function reopenInferenceSession(page: Page): Promise<void> {
 }
 
 function relevantOrder(messages: string[]): string[] {
-  return messages.filter(message => message.includes(ORIGINAL_PROMPT) || message.includes(CORRECTION))
+  return messages.flatMap(message => {
+    if (message.includes(ORIGINAL_PROMPT)) return [ORIGINAL_PROMPT]
+    if (message.includes(CORRECTION)) return [CORRECTION]
+
+    return []
+  })
 }
 
 function steerTurnOrder(messages: string[]): string[] {

@@ -3478,6 +3478,45 @@ print(','.join(scripts))
 
     Write-Success "All dependencies installed"
 }
+
+function Repair-ManagedRuntime {
+    if ($NoVenv) {
+        return
+    }
+
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPythonExe)) {
+        throw "Cannot verify managed SQLite runtime: $venvPythonExe is missing"
+    }
+
+    Write-Info "Verifying managed Python/SQLite runtime..."
+    $repairScript = @'
+import sys
+from pathlib import Path
+
+import hermes_cli.main  # Register the Windows venv-holder detector.
+from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+result = repair_vulnerable_runtime(sys.argv[1], project_root=Path(sys.argv[2]))
+if result.status not in {"safe", "repaired"}:
+    detail = result.detail or "runtime safety could not be established"
+    print(f"Managed SQLite runtime verification failed: {detail}", file=sys.stderr)
+    raise SystemExit(1)
+'@
+    Invoke-NativeWithRelaxedErrorAction {
+        & $venvPythonExe -I -c $repairScript $UvCmd $InstallDir
+    }
+    $repairExitCode = $LASTEXITCODE
+    if ($repairExitCode -ne 0) {
+        throw "Managed Python/SQLite runtime is not safe"
+    }
+
+    # The repair may atomically replace the venv. Pin later uv invocations to
+    # the newly installed live interpreter rather than this stage's old process.
+    $env:UV_PYTHON = $venvPythonExe
+    Write-Success "Managed Python/SQLite runtime verified"
+}
+
 function Install-HermesCommandLaunchers {
     param(
         [Parameter(Mandatory=$true)] [string]$Root,

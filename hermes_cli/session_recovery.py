@@ -825,13 +825,76 @@ def _copy_state_meta_salvage(
     return result
 
 
+def _reconstruct_missing_sessions(
+    destination: sqlite3.Connection,
+) -> dict[str, Any]:
+    """Recreate placeholder session rows for salvaged orphaned messages.
+
+    When the ``sessions`` b-tree is damaged worse than ``messages``, salvage
+    can recover the conversation text while recovering few or none of the
+    session rows that own it. Deleting those messages as "orphans" throws away
+    the only readable copy of the user's data — the exact opposite of what
+    ``--allow-partial`` is for. A real report (July 2026) copied 20,817 of
+    20,824 messages and then removed every one of them, producing an output
+    with 0 sessions and 0 messages.
+
+    Instead, synthesize a minimal session row per orphaned ``session_id``
+    (only ``id``/``source``/``started_at`` are NOT NULL) so the messages stay
+    reachable and foreign keys hold. ``started_at`` is taken from the earliest
+    surviving message so ordering stays sane. Rows are marked with
+    ``source='recovered'`` and a ``title`` that says so, because a fabricated
+    session must never be mistaken for an original.
+    """
+    result: dict[str, Any] = {"sessions_reconstructed": 0, "messages_retained": 0}
+    if not _table_columns(destination, "sessions"):
+        return result
+    if not _table_columns(destination, "messages"):
+        return result
+
+    orphaned = destination.execute(
+        "SELECT m.session_id, MIN(m.timestamp), COUNT(*) "
+        "FROM messages AS m "
+        "WHERE m.session_id IS NOT NULL AND NOT EXISTS ("
+        "SELECT 1 FROM sessions WHERE sessions.id = m.session_id) "
+        "GROUP BY m.session_id"
+    ).fetchall()
+    if not orphaned:
+        return result
+
+    for session_id, first_timestamp, message_count in orphaned:
+        started_at = float(first_timestamp) if first_timestamp is not None else 0.0
+        destination.execute(
+            "INSERT OR IGNORE INTO sessions "
+            "(id, source, started_at, title, message_count) "
+            "VALUES (?, 'recovered', ?, ?, ?)",
+            (
+                session_id,
+                started_at,
+                "[recovered] session metadata was unreadable",
+                int(message_count),
+            ),
+        )
+        result["sessions_reconstructed"] += 1
+        result["messages_retained"] += int(message_count)
+    return result
+
+
 def _cleanup_partial_orphans(
     destination: sqlite3.Connection,
 ) -> dict[str, Any]:
-    """Remove references to sessions that could not be salvaged."""
+    """Reconcile references to sessions that could not be salvaged.
+
+    Messages are never discarded for lack of a session row: their owning
+    session is reconstructed as a placeholder first (see
+    :func:`_reconstruct_missing_sessions`). Only rows that remain orphaned
+    after that — and rows in tables carrying no recoverable user content —
+    are removed.
+    """
 
     result: dict[str, Any] = {
         "sessions_parent_cleared": 0,
+        "sessions_reconstructed": 0,
+        "messages_retained": 0,
         "messages_removed": 0,
         "session_model_usage_removed": 0,
         "compression_locks_removed": 0,
@@ -839,6 +902,12 @@ def _cleanup_partial_orphans(
     }
     destination.execute("BEGIN IMMEDIATE")
     try:
+        # Rebuild owners BEFORE any orphan deletion so salvaged conversation
+        # text is never dropped for want of a session row.
+        rebuilt = _reconstruct_missing_sessions(destination)
+        result["sessions_reconstructed"] = rebuilt["sessions_reconstructed"]
+        result["messages_retained"] = rebuilt["messages_retained"]
+
         parent_count = int(
             destination.execute(
                 "SELECT COUNT(*) FROM sessions AS child "
@@ -890,8 +959,15 @@ def _cleanup_partial_orphans(
     except BaseException:
         destination.execute("ROLLBACK")
         raise
-    result["total_removed_or_relinked"] = sum(
-        int(value) for value in result.values()
+    # Only destructive/relinking actions belong in this total. The
+    # reconstruction counters describe data RETAINED, so summing them here
+    # would report saving the user's messages as if it were losing them.
+    result["total_removed_or_relinked"] = (
+        int(result["sessions_parent_cleared"])
+        + int(result["messages_removed"])
+        + int(result["session_model_usage_removed"])
+        + int(result["compression_locks_removed"])
+        + int(result["telegram_dm_topic_bindings_removed"])
     )
     return result
 
@@ -1018,6 +1094,20 @@ def _verify_recovered_database(
             if orphan_count:
                 verification["warnings"].append(
                     f"{orphan_count} orphaned reference(s) were removed or relinked"
+                )
+                verification["loss_detected"] = True
+            rebuilt_sessions = int(
+                orphan_cleanup.get("sessions_reconstructed") or 0
+            )
+            if rebuilt_sessions:
+                retained = int(orphan_cleanup.get("messages_retained") or 0)
+                # Not a clean recovery: the conversation text survived but its
+                # session metadata did not, so these rows are placeholders.
+                verification["warnings"].append(
+                    f"{rebuilt_sessions} session(s) could not be salvaged and "
+                    f"were reconstructed as placeholders to retain "
+                    f"{retained} message(s); their metadata (title, model, "
+                    "timestamps, cost) is lost"
                 )
                 verification["loss_detected"] = True
 

@@ -3,6 +3,7 @@
 
 import coldStart from './cold-start.mjs'
 import firstToken from './first-token.mjs'
+import idleCost from './idle-cost.mjs'
 import keystroke from './keystroke.mjs'
 import multitab from './multitab.mjs'
 import profileSwitch from './profile-switch.mjs'
@@ -20,6 +21,7 @@ export const SCENARIOS = {
   [transcript.name]: transcript,
   [multitab.name]: multitab,
   [renderChurn.name]: renderChurn,
+  [idleCost.name]: idleCost,
   [coldStart.name]: coldStart,
   [firstToken.name]: firstToken,
   [submit.name]: submit,

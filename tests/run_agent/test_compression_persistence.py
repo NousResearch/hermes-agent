@@ -451,6 +451,22 @@ class TestStoredPromptCwdDrift:
         agent.provider = provider
         return agent
 
+    @staticmethod
+    def _host_block(cwd: str) -> str:
+        """A stored prompt fragment shaped like the real host-info block.
+
+        ``build_environment_hints`` always emits ``User home directory:``
+        immediately before the working-directory line, and the staleness check
+        anchors on that pair so user project files can't shadow the real value.
+        Fixtures must therefore include the anchor or they stop exercising the
+        cwd path at all.
+        """
+        return (
+            "Host: Linux (6.16.0)\n"
+            "User home directory: /home/tester\n"
+            f"Current working directory: {cwd}\n"
+        )
+
     def test_stored_prompt_stale_when_cwd_differs(self):
         """Different cwd should force a prompt rebuild."""
         from unittest.mock import patch
@@ -458,8 +474,8 @@ class TestStoredPromptCwdDrift:
 
         agent = self._make_agent()
         stored_prompt = (
-            "Current working directory: /project/old\n"
-            "Model: test/model\n"
+            self._host_block("/project/old")
+            + "Model: test/model\n"
             "Provider: openrouter\n"
         )
 
@@ -476,14 +492,73 @@ class TestStoredPromptCwdDrift:
         agent = self._make_agent()
         current_cwd = "/project/current"
         stored_prompt = (
-            f"Current working directory: {current_cwd}\n"
-            "Model: test/model\n"
+            self._host_block(current_cwd)
+            + "Model: test/model\n"
             "Provider: openrouter\n"
         )
 
         with patch("os.getcwd", return_value=current_cwd):
             assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
                 "Expected True when stored cwd matches current cwd"
+            )
+
+    def test_project_context_cannot_force_a_rebuild(self):
+        """🔴 CACHE INVARIANT: user project text must never invalidate the prompt.
+
+        The prompt embeds AGENTS.md / CLAUDE.md / .cursorrules in the context
+        tier, which sits AFTER the host-info block. A whole-prompt scan for
+        ``Current working directory:`` therefore matched the user's own file
+        and compared runtime state against project prose. That mismatch never
+        clears, so the check rejected the stored prompt on EVERY turn —
+        rebuilding the system prompt each message and destroying the prefix
+        cache for the entire session. Strictly worse than the staleness this
+        check exists to catch.
+        """
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        current_cwd = "/project/current"
+        stored_prompt = (
+            self._host_block(current_cwd)
+            + "\n# AGENTS.md\n\n"
+            "Our deploy convention:\n\n"
+            "Current working directory: /srv/decoy\n\n"
+            "Always run make before pushing.\n\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("os.getcwd", return_value=current_cwd):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                "A project file that merely MENTIONS 'Current working "
+                "directory:' must not invalidate the prompt — that would "
+                "rebuild every turn and break the prefix cache"
+            )
+
+    def test_project_context_cannot_mask_real_drift(self):
+        """The inverse: project text must not fake a match either.
+
+        A stored prompt built in /project/old whose embedded AGENTS.md happens
+        to name the NEW cwd must still be rejected — otherwise project prose
+        could suppress genuine drift detection.
+        """
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = (
+            self._host_block("/project/old")
+            + "\n# AGENTS.md\n\n"
+            "Current working directory: /project/new\n\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("os.getcwd", return_value="/project/new"):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+                "Embedded project text naming the new cwd must not mask real "
+                "drift in the host-info block"
             )
 
     def test_stored_prompt_stale_when_runtime_surface_differs(self):
@@ -531,8 +606,8 @@ class TestStoredPromptCwdDrift:
         agent = self._make_agent()
         with tempfile.TemporaryDirectory() as term_cwd:
             stored_prompt = (
-                f"Current working directory: {term_cwd}\n"
-                "Model: test/model\n"
+                self._host_block(term_cwd)
+                + "Model: test/model\n"
                 "Provider: openrouter\n"
             )
             with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
@@ -549,8 +624,8 @@ class TestStoredPromptCwdDrift:
         agent = self._make_agent()
         with tempfile.TemporaryDirectory() as term_cwd, tempfile.TemporaryDirectory() as other_cwd:
             stored_prompt = (
-                f"Current working directory: {other_cwd}\n"
-                "Model: test/model\n"
+                self._host_block(other_cwd)
+                + "Model: test/model\n"
                 "Provider: openrouter\n"
             )
             with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):

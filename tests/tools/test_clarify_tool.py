@@ -443,3 +443,81 @@ class TestClarifyToolMultiSelect:
             callback=mock_callback,
         )
         assert len(choices_passed) == MAX_CHOICES
+
+
+class TestInvokeCallbackDispatch:
+    """_invoke_callback uses signature inspection, never a TypeError retry."""
+
+    def test_internal_typeerror_not_swallowed_or_retried(self):
+        """A compatible callback that raises TypeError internally must be
+        invoked exactly once and its error surfaced — not retried with the
+        legacy 2-arg form (which would prompt the user twice)."""
+        from tools.clarify_tool import _invoke_callback
+        calls = []
+
+        def bad_callback(question, choices, multi_select=False):
+            calls.append(1)
+            raise TypeError("internal bug")
+
+        import pytest
+        with pytest.raises(TypeError, match="internal bug"):
+            _invoke_callback(bad_callback, "Q?", ["a"], True)
+        assert len(calls) == 1
+
+    def test_legacy_two_arg_callback_supported(self):
+        from tools.clarify_tool import _invoke_callback
+        seen = {}
+
+        def legacy(question, choices):
+            seen["args"] = (question, choices)
+            return "ok"
+
+        assert _invoke_callback(legacy, "Q?", ["a"], True) == "ok"
+        assert seen["args"] == ("Q?", ["a"])
+
+    def test_var_keyword_callback_receives_flag(self):
+        from tools.clarify_tool import _invoke_callback
+        seen = {}
+
+        def kw_cb(question, choices, **kwargs):
+            seen.update(kwargs)
+            return "ok"
+
+        _invoke_callback(kw_cb, "Q?", ["a"], True)
+        assert seen.get("multi_select") is True
+
+
+class TestRegistryMultiSelectPassThrough:
+    """The registered tool handler must forward multi_select from tool args."""
+
+    def test_handler_passes_multi_select(self):
+        from tools.registry import registry
+        entry = registry.get_entry("clarify")
+        seen = {}
+
+        def cb(question, choices, multi_select=False):
+            seen["multi"] = multi_select
+            return "a, b"
+
+        result = json.loads(entry.handler(
+            {"question": "Pick", "choices": ["a", "b"], "multi_select": True},
+            callback=cb,
+        ))
+        assert seen["multi"] is True
+        assert result["user_response"] == ["a", "b"]
+
+    def test_handler_default_single_select(self):
+        from tools.registry import registry
+        entry = registry.get_entry("clarify")
+        seen = {}
+
+        def cb(question, choices, multi_select=False):
+            seen["multi"] = multi_select
+            return "a"
+
+        result = json.loads(entry.handler(
+            {"question": "Pick", "choices": ["a", "b"]},
+            callback=cb,
+        ))
+        assert seen["multi"] is False
+        assert result["user_response"] == "a"

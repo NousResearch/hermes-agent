@@ -57,12 +57,30 @@ def _flatten_choice(c) -> str:
 
 
 def _invoke_callback(callback, question, choices, multi_select):
-    """Invoke the platform callback, passing multi_select if supported."""
+    """Invoke the platform callback, passing multi_select if supported.
+
+    Uses signature inspection (not a ``TypeError`` retry) to decide whether
+    the callback accepts the ``multi_select`` keyword — a retry-on-TypeError
+    approach would re-invoke a *compatible* callback that raised TypeError
+    internally, potentially prompting the user twice.
+    """
+    import inspect
+
+    accepts_multi = False
     try:
+        sig = inspect.signature(callback)
+        params = sig.parameters
+        accepts_multi = "multi_select" in params or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+    except (TypeError, ValueError):
+        # Builtins / C callables without introspectable signatures:
+        # be conservative and use the legacy 2-arg form.
+        accepts_multi = False
+
+    if accepts_multi:
         return callback(question, choices, multi_select=multi_select)
-    except TypeError:
-        # Callback does not accept the multi_select keyword; fall back
-        return callback(question, choices)
+    return callback(question, choices)
 
 
 def _parse_multi_select_response(raw_response) -> List[str]:

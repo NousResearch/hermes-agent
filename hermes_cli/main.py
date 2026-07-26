@@ -7138,6 +7138,92 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
         return False
 
 
+def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
+    """Return the exact argv of a running process, when recoverable.
+
+    Linux: reads ``/proc/<pid>/cmdline`` (NUL-separated, lossless).
+    macOS: falls back to ``ps -o command=`` + shlex (best effort — quoting
+    is reconstructed, but hermes launch commands don't embed exotic args).
+    Windows: returns ``None``; taskkill /F gives no graceful window and the
+    desktop app manages its own backend there.
+    """
+    if sys.platform == "win32":
+        return None
+    try:
+        cmdline_path = f"/proc/{pid}/cmdline"
+        if os.path.exists(cmdline_path):
+            with open(cmdline_path, "rb") as f:
+                raw = f.read()
+            argv = [
+                part.decode("utf-8", errors="replace")
+                for part in raw.split(b"\x00")
+                if part
+            ]
+            return argv or None
+        # macOS (no /proc): best-effort via ps.
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        command = (result.stdout or "").strip()
+        if not command:
+            return None
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = command.split()
+        return argv or None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+    """Best-effort respawn of manually-started dashboards after ``hermes update``.
+
+    Spawns each recovered argv detached (new session, output to the profile's
+    ``logs/dashboard-restart.log``).  Returns the commands that failed to
+    spawn; the caller prints the manual hint for those.
+    """
+    from hermes_constants import get_hermes_home
+
+    respawned: list[list[str]] = []
+    failed: list[tuple[list[str], str]] = []
+    log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    for command in commands:
+        try:
+            # Keep restarted dashboards headless; reopening a browser after a
+            # background update is noisy and fails in SSH/headless sessions.
+            if "dashboard" in command and "--no-open" not in command:
+                command = [*command, "--no-open"]
+            with open(log_path, "ab") as log_f:
+                subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+            respawned.append(command)
+        except (OSError, ValueError) as exc:
+            failed.append((command, str(exc)))
+
+    for command in respawned:
+        print(f"    ✓ restarted: {shlex.join(command)}")
+    for command, err_msg in failed:
+        print(f"    ✗ failed to restart ({shlex.join(command)}): {err_msg}")
+    return [command for command, _ in failed]
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
     *,
@@ -7198,14 +7284,23 @@ def _kill_stale_dashboard_processes(
 
     # Before killing, snapshot systemd cgroup info for each PID so we can
     # restart supervised services after the kill (the cgroup disappears
-    # along with the process).  Only meaningful on Linux.
+    # along with the process).  Only meaningful on Linux, and only when the
+    # caller asked for restarts (the `hermes update` path) — `--stop` must
+    # stay a stop, not a restart.
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
-    if sys.platform != "win32":
+    pid_cmdline: dict[int, list[str]] = {}
+    if restart_managed and sys.platform != "win32":
         for pid in pids:
             cg_path = _get_pid_cgroup_path(pid)
             pid_cgroup[pid] = cg_path
             pid_service[pid] = _get_systemd_service_for_pid(pid)
+            if not pid_service[pid]:
+                # Manually-started process: preserve its exact argv so we
+                # can respawn it after the update (#40449, #68934).
+                cmdline = _dashboard_cmdline_for_pid(pid)
+                if cmdline:
+                    pid_cmdline[pid] = cmdline
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -7273,35 +7368,47 @@ def _kill_stale_dashboard_processes(
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
 
-    # Restart systemd-supervised processes that we just killed.
-    # Without this, a remote backend (hermes serve) brought down by
-    # systemctl kill / Restart=on-failure won't auto-relaunch after
-    # the clean SIGTERM, and the Desktop never reconnects (#68934).
+    # Restart what we just killed (update path only).  Two categories:
+    #  - systemd-supervised PIDs: restart the owning unit.  Without this, a
+    #    remote backend (hermes serve) under Restart=on-failure never comes
+    #    back after our clean SIGTERM, and the Desktop can't reconnect (#68934).
+    #  - manually-started PIDs: respawn the argv captured before the kill
+    #    (#40449) — detached, headless, logged to logs/dashboard-restart.log.
     restarted_services: list[str] = []
-    if killed:
+    unrecovered: list[int] = []
+    if killed and restart_managed:
         failed_restarts: list[tuple[str, str]] = []
         seen_services: set[str] = set()
+        respawn_cmds: list[list[str]] = []
         for pid in killed:
-            cg_path = pid_cgroup.get(pid)
-            if not cg_path:
-                continue
             svc_name = pid_service.get(pid)
-            if not svc_name or svc_name in seen_services:
-                continue
-            seen_services.add(svc_name)
-            if _try_restart_systemd_service(svc_name, cg_path):
-                restarted_services.append(svc_name)
+            if svc_name:
+                if svc_name in seen_services:
+                    continue
+                seen_services.add(svc_name)
+                if _try_restart_systemd_service(svc_name, pid_cgroup.get(pid)):
+                    restarted_services.append(svc_name)
+                else:
+                    failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
+            elif pid in pid_cmdline:
+                respawn_cmds.append(pid_cmdline[pid])
             else:
-                failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
+                unrecovered.append(pid)
 
-        if restarted_services:
-            for svc in restarted_services:
-                print(f"    ✓ restarted systemd service {svc}")
-        if failed_restarts:
-            for svc, err in failed_restarts:
-                print(f"    ⚠ {svc}: {err}")
+        for svc in restarted_services:
+            print(f"    ✓ restarted systemd service {svc}")
+        for svc, err in failed_restarts:
+            print(f"    ⚠ {svc}: {err}")
 
-    if killed and not restarted_services:
+        if respawn_cmds:
+            failed_cmds = _respawn_dashboard_processes(respawn_cmds)
+            if failed_cmds:
+                unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
+
+        if failed_restarts or unrecovered:
+            print("  Restart anything not auto-restarted when you're ready:")
+            print("    hermes dashboard --port <port>")
+    elif killed:
         print("  Restart the dashboard when you're ready:")
         print("    hermes dashboard --port <port>")
 

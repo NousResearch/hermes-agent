@@ -1401,7 +1401,7 @@ def compress_context(
     # parent_session_id child, no
     # `name #N` renumber, no contextvar/env/logging re-sync, no memory/context-
     # engine session-switch. The conversation keeps one durable id for life,
-    # eliminating the session-rotation bug cluster. Default False during rollout.
+    # eliminating the session-rotation bug cluster. Default True (2107b86024).
     in_place = bool(getattr(agent, "compression_in_place", False))
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.

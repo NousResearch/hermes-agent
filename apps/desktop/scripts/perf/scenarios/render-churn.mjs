@@ -107,6 +107,43 @@ const drive = (chunk, intervalMs, totalTokens) => `
   })()
 `
 
+/** Wait until the renderer stops committing on its own, so the recording window
+ *  captures STREAMING cost and not whatever boot/hydration work happened to
+ *  still be in flight. Returns `quiet:N` once commits hold still for `quietMs`.
+ *
+ *  If it returns `timeout:...` the app never went idle at all — with tiles
+ *  marked busy and NO driver running, that means something is ticking on its
+ *  own. The report of what rendered during the wait is attached so the culprit
+ *  is named rather than guessed at. */
+const quiesce = (quietMs, timeoutMs) => `
+  (async () => {
+    const rc = window.__RENDER_COUNTS__
+    rc.start()
+    const deadline = Date.now() + ${timeoutMs}
+    const startedAt = Date.now()
+    let last = -1
+    let stableSince = Date.now()
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 100))
+      const n = rc.commits()
+      if (n !== last) { last = n; stableSince = Date.now(); continue }
+      if (Date.now() - stableSince >= ${quietMs}) { rc.stop(); return 'quiet:' + n }
+    }
+    const idle = {
+      commits: last,
+      seconds: (Date.now() - startedAt) / 1000,
+      top: rc.report(8),
+      // Who OWNS the update? The component whose own hook state changed with
+      // no changed props is the root of a churn cascade; everything under it
+      // is collateral. Naming it is the difference between fixing the cause
+      // and memoizing a symptom.
+      owners: rc.report(200).filter(r => r.stateChanged > 0 && r.propsChanged === 0).slice(0, 8)
+    }
+    rc.stop()
+    return 'timeout:' + JSON.stringify(idle)
+  })()
+`
+
 const START = `
   (() => {
     window.__RENDER_COUNTS__.start()
@@ -173,9 +210,11 @@ export default {
       await sleep(350)
     }
 
-    await sleep(1000)
-    // Start recording AFTER mount so the numbers are steady-state streaming
-    // cost, not one-off mount cost.
+    // Let the app go quiet before recording, so boot/hydration commits that
+    // happen to still be in flight don't land in the streaming window. This is
+    // what makes runs comparable — a fixed sleep let 2-4x of hydration churn
+    // leak in depending on machine load.
+    const settle = await cdp.eval(quiesce(600, 15000))
     await cdp.eval(START)
     await cdp.eval(drive(chunk, intervalMs, tokens))
     await sleep(tokens * intervalMs + 1500)
@@ -208,6 +247,9 @@ export default {
       detail: {
         tiles,
         tokens,
+        // 'quiet:N' = the app went idle before recording (comparable run).
+        // 'timeout:N' = it never did, so boot churn is mixed into the numbers.
+        settle,
         sidebar: sidebarRows,
         topRenders: data.renders.slice(0, 15),
         topAtoms: data.atoms.slice(0, 15)

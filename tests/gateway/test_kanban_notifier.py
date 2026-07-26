@@ -174,6 +174,44 @@ def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypa
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
 
 
+def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
+    """A sub stamped with the gateway's own named profile uses self.adapters.
+
+    Regression for #71340: on a standalone (non-multiplex) gateway running a
+    named profile, _authorization_adapter() used to treat the active name as a
+    multiplex secondary, find no _profile_adapters entry, fail closed, and
+    rewind the claim forever — silent zero-delivery.
+    """
+    db_path = tmp_path / "actionable-block.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    reason = "AGE-39 — https://linear.example/AGE-39 — publishing verified."
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="approval", assignee="publisher")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            notifier_profile="main",
+        )
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "main"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    message = adapter.sent[0]["text"]
+    assert tid in message
+    assert "blocked" in message
+
+
 def test_kanban_db_path_is_test_isolated_from_real_home():
     hermes_home = Path(kb.kanban_home())
     production_db = Path.home() / ".hermes" / "kanban.db"

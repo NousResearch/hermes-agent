@@ -1,4 +1,4 @@
-import { type ComponentProps, type ReactNode, useState } from 'react'
+import { type ComponentProps, memo, type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -95,7 +95,19 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
   )
 }
 
-function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+/** Memoized: `useStatusbarItems` rebuilds the item array whenever ANY of its
+ *  inputs change, but each individual item object is usually identical across
+ *  those rebuilds. Without this, one changed item (the running timer, say)
+ *  re-rendered every other item in the bar — measured at 1,446 wasted renders
+ *  of 2,174 during a five-tab streaming run. `navigate` is stable for the
+ *  router's lifetime, so item identity is the only real input. */
+const StatusbarItemView = memo(function StatusbarItemView({
+  item,
+  navigate
+}: {
+  item: StatusbarItem
+  navigate: ReturnType<typeof useNavigate>
+}) {
   const [menuOpen, setMenuOpen] = useState(false)
 
   // Render escape hatch: the contribution owns its own chrome/state/tooltip.
@@ -230,4 +242,4 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
       </button>
     </Tip>
   )
-}
+})

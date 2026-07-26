@@ -2158,7 +2158,11 @@ def run_conversation(
 
                     # Inject TOPIC instruction into current user message
                     if isinstance(api_msg.get("content"), str):
-                        api_msg["content"] += "\n\n(Append exactly: TOPIC: <name>)"
+                        api_msg["content"] += (
+                            "\n\n(Append: TOPIC: <general-subject>."
+                            " Use short names like 'git', 'cooking', 'docker'."
+                            " Same subject = same name.)"
+                        )
             elif (
                 isinstance(_api_content, str)
                 and _api_content

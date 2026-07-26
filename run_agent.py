@@ -1734,8 +1734,11 @@ class AIAgent:
         if db and sid:
             try:
                 existing = db.get_topics(sid)
+                name_lower = name.lower()
                 for t in existing:
-                    if t["title"].lower() == name.lower():
+                    t_lower = t["title"].lower()
+                    # Exact match or one contains the other
+                    if t_lower == name_lower or t_lower in name_lower or name_lower in t_lower:
                         if t["id"] != self._active_topic_id:
                             self._switch_to_topic(t["id"])
                         return cleaned

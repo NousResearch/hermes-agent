@@ -1766,6 +1766,10 @@ class AIAgent:
             self._topic_shift_counter += 1
             if shift["name"]:
                 self._topic_shift_candidate_name = shift["name"]
+        elif shift is None:
+            # No signal emitted: treat as staying on same topic (counter=0)
+            self._topic_shift_counter = 0
+            self._topic_shift_candidate_name = None
         else:
             self._topic_shift_counter = 0
             self._topic_shift_candidate_name = None

@@ -217,15 +217,22 @@ export function ModelPickerDialog(props: Props) {
   // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
   // typing a model name surfaces its provider (preserves the prior behaviour
   // where a model match also revealed its provider).
-  const filteredProviders = useMemo(
-    () =>
-      fuzzyRank(
-        providers,
-        trimmedQuery,
-        (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
-      ).map((r) => r.item),
-    [providers, trimmedQuery],
-  );
+  //
+  // With no query, float providers that actually have models to the top
+  // (stable within each group). A fresh install lists ~40 providers and only
+  // a couple are configured — burying "OpenRouter · 37 models" under a wall
+  // of "0 models" rows made the picker feel broken.
+  const filteredProviders = useMemo(() => {
+    const ranked = fuzzyRank(
+      providers,
+      trimmedQuery,
+      (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
+    ).map((r) => r.item);
+    if (trimmedQuery) return ranked;
+    const withModels = ranked.filter((p) => (p.models ?? []).length > 0);
+    const withoutModels = ranked.filter((p) => (p.models ?? []).length === 0);
+    return [...withModels, ...withoutModels];
+  }, [providers, trimmedQuery]);
 
   // A query that matched the SELECTED provider by name/slug (not its models)
   // located that provider — it shouldn't also hide that provider's models

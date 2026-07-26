@@ -726,12 +726,16 @@ class GatewaySlashCommandsMixin:
         (between turns), then the SessionStore/SessionDB metadata for a gauge
         even when no agent is resident. Falls back to a transcript estimate only
         as a last resort.
+
+        ``/context all`` appends the expanded per-skill / per-toolset cost
+        listings (requires a resident agent).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
 
         source = event.source
         session_key = self._session_key_for_source(source)
         session_entry = await self.async_session_store.get_or_create_session(source)
+        expanded = event.get_command_args().strip().lower() in {"all", "full", "details"}
 
         # Try running agent first (mid-turn), then cached agent (between turns).
         agent = self._running_agents.get(session_key)
@@ -860,6 +864,18 @@ class GatewaySlashCommandsMixin:
             else:
                 lines.append("")
                 lines.append(t("gateway.context.detail_after_first"))
+
+            # Per-category estimated breakdown (+ optional expanded listings).
+            # Same chars/4 engine the desktop popover and /usage use; plain
+            # text (no glyph grid — monospace isn't guaranteed on messaging
+            # platforms). Fail-open: rendering errors never break /context.
+            if has_agent:
+                breakdown = await asyncio.to_thread(
+                    self._context_breakdown_block, agent, source, expanded
+                )
+                if breakdown:
+                    lines.append("")
+                    lines.extend(breakdown)
 
             return "\n".join(lines)
 
@@ -4535,6 +4551,43 @@ class GatewaySlashCommandsMixin:
             lines.append(f"Manage billing on the portal: {view.topup_url}")
             lines.append("Top up and manage billing in the browser — your balance updates here after.")
         return "\n".join(lines)
+
+    def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
+        """Render the /context per-category block (plain text, no grid).
+
+        Estimated (chars/4) — same engine as the desktop popover and /usage.
+        ``expanded`` appends the per-skill / per-toolset listings from the
+        prompt-size attribution mechanism. Runs in a thread (sync store reads);
+        returns [] and never raises so /context stays robust.
+        """
+        try:
+            from agent.context_breakdown import (
+                compute_context_details,
+                compute_session_context_breakdown,
+                render_context_breakdown_lines,
+            )
+
+            history: list[dict] = []
+            try:
+                entry = self.session_store.get_or_create_session(source)
+                history = self.session_store.load_transcript(entry.session_id) or []
+            except Exception:
+                history = []
+
+            payload = compute_session_context_breakdown(agent, history)
+            if not (payload.get("categories") or []):
+                return []
+
+            details = None
+            if expanded:
+                try:
+                    details = compute_context_details(agent)
+                except Exception:
+                    details = {"skills": [], "toolsets": []}
+
+            return render_context_breakdown_lines(payload, details=details, grid=False)
+        except Exception:
+            return []
 
     def _context_breakdown_lines(self, agent, source) -> list[str]:
         """Render the per-category context breakdown for /usage.

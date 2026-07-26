@@ -969,3 +969,124 @@ async def test_context_command_no_data():
     result = await runner._handle_context_command(_make_event("/context"))
 
     assert "No context data available yet" in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_includes_category_breakdown():
+    """/context with a live agent appends the per-category estimated
+    breakdown (plain text, no glyph grid) and the /context all hint."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-5",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    agent = _stub_agent()
+    runner._running_agents[session_entry.session_key] = agent
+
+    fake_payload = {
+        "categories": [
+            {"id": "system_prompt", "label": "System prompt", "tokens": 9_000},
+            {"id": "tool_definitions", "label": "Tool definitions", "tokens": 21_000},
+        ],
+        "context_max": 200_000,
+        "context_percent": 24,
+        "context_used": 47_231,
+        "estimated_total": 30_000,
+        "model": "openai/gpt-test",
+    }
+    from unittest.mock import patch as _patch
+    with _patch(
+        "agent.context_breakdown.compute_session_context_breakdown",
+        return_value=fake_payload,
+    ):
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Estimated usage by category" in result
+    assert "System prompt" in result
+    assert "9,000 tokens" in result
+    assert "Tool definitions" in result
+    assert "Use /context all" in result
+    # No glyph grid on the gateway (plain-text variant)
+    assert "· · ·" not in result
+
+
+@pytest.mark.asyncio
+async def test_context_all_appends_expanded_listings():
+    """/context all appends per-toolset and per-skill cost listings."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-6",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    agent = _stub_agent()
+    runner._running_agents[session_entry.session_key] = agent
+
+    fake_payload = {
+        "categories": [
+            {"id": "skills", "label": "Skills", "tokens": 2_000},
+        ],
+        "context_max": 200_000,
+        "context_percent": 24,
+        "context_used": 47_231,
+        "estimated_total": 2_000,
+        "model": "openai/gpt-test",
+    }
+    fake_details = {
+        "skills": [
+            {"name": "hermes-agent", "index_tokens": 30, "skill_md_tokens": 2_500},
+        ],
+        "toolsets": [
+            {"toolset": "terminal", "tool_count": 4, "schema_tokens": 5_100},
+        ],
+    }
+    from unittest.mock import patch as _patch
+    with _patch(
+        "agent.context_breakdown.compute_session_context_breakdown",
+        return_value=fake_payload,
+    ), _patch(
+        "agent.context_breakdown.compute_context_details",
+        return_value=fake_details,
+    ):
+        result = await runner._handle_context_command(_make_event("/context all"))
+
+    assert "Toolsets by schema cost" in result
+    assert "terminal" in result and "5,100 tokens" in result
+    assert "Skills by cost" in result
+    assert "hermes-agent" in result
+    # Expanded view drops the hint
+    assert "Use /context all" not in result
+
+
+@pytest.mark.asyncio
+async def test_context_breakdown_failure_never_breaks_command():
+    """A breakdown engine crash degrades gracefully — the gauge still renders."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-7",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    agent = _stub_agent()
+    runner._running_agents[session_entry.session_key] = agent
+
+    from unittest.mock import patch as _patch
+    with _patch(
+        "agent.context_breakdown.compute_session_context_breakdown",
+        side_effect=RuntimeError("boom"),
+    ):
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "🧠 **Context Window**" in result
+    assert "In use: 47,231 / 200,000 (24%)" in result
+    assert "Estimated usage by category" not in result

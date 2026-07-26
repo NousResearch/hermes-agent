@@ -153,25 +153,27 @@ const autolinkUrl = (raw: string) =>
 const defaultLinkLabel = (url: string) =>
   url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
 
-const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+// A label only counts as authored if it says something the URL doesn't:
+// `[https://example.com](https://example.com)` and `<https://example.com>`
+// are bare links wearing markdown syntax, so they still want a page title.
+const pickAuthoredLabel = (label: string | undefined, target: string): string | undefined => {
   const trimmed = label?.trim()
 
-  if (!trimmed) {
-    return undefined
-  }
-
-  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+  return trimmed && normalizeExternalUrl(trimmed) !== target ? trimmed : undefined
 }
 
 interface ResolvedLinkProps {
-  fallbackLabel?: string
+  authoredLabel?: string
   t: Theme
   url: string
 }
 
-function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+// Title resolution is a fallback for links with no text of their own, not an
+// override — replacing `[Read the RFC](url)` with the page title throws away
+// better wording than we can derive, and mangles labels like `#71706`.
+function ResolvedLink({ authoredLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(authoredLabel ? null : url)
+  const display = authoredLabel || fetched || defaultLinkLabel(url)
 
   return (
     <Link url={url}>
@@ -185,7 +187,7 @@ function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
 const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
   const target = normalizeExternalUrl(rawUrl)
 
-  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+  return <ResolvedLink authoredLabel={pickAuthoredLabel(label, target)} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>

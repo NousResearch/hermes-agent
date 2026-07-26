@@ -204,10 +204,32 @@ export function ProfileRail() {
     }
   }
 
-  // Re-pull the running profile + list on mount so a profile created elsewhere
-  // shows up; cheap and best-effort.
+  // Re-pull the running profile + list on mount, and again whenever the window
+  // regains focus/visibility -- a profile created, deleted, or renamed by
+  // another surface (Manage Profiles, another window, the CLI) leaves this
+  // rail's cached $profiles stale until something re-fetches it. Without this,
+  // a deleted profile's square lingered in the rail until the user happened to
+  // open Manage Profiles (whose own refresh() call was the only other reader).
+  // Cheap and best-effort, matching the focus/visibilitychange refresh pattern
+  // used elsewhere in the sidebar (see refreshProjects/refreshProjectTree).
   useEffect(() => {
     void refreshActiveProfile()
+
+    const onActive = () => {
+      if (document.visibilityState === 'hidden') {
+        return
+      }
+
+      void refreshActiveProfile()
+    }
+
+    window.addEventListener('focus', onActive)
+    document.addEventListener('visibilitychange', onActive)
+
+    return () => {
+      window.removeEventListener('focus', onActive)
+      document.removeEventListener('visibilitychange', onActive)
+    }
   }, [])
 
   // Open the create dialog when the `profile.create` hotkey fires (the dialog

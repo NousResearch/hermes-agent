@@ -1364,6 +1364,13 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
 
     backend_tokens = {"serve", "dashboard", "gateway"}
     hermes_markers = ("hermes_cli.main", "hermes-gateway", "tui_gateway")
+    # Matches python / python3 / python3.12 / pythonw(.exe) — the interpreter
+    # basenames a `#!/…/python3` console-script shim gets exec'd through when
+    # something (e.g. Electron's `findOnPath('hermes')` resolution) spawns the
+    # shim by handing the interpreter its path explicitly instead of running
+    # the shim directly. In that shape the OS-reported argv[0] is the
+    # interpreter, not "hermes", so the checks below would otherwise miss it.
+    _python_interpreter_re = re.compile(r"^python[\d.]*w?(\.exe)?$")
     pids: list[int] = []
 
     for proc in psutil.process_iter(["pid", "name", "username", "cmdline"]):
@@ -1379,8 +1386,10 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
             if not argv:
                 continue
 
-            # Must be a Hermes process: either an entrypoint marker in argv, or
-            # a resolved executable named `hermes`.
+            # Must be a Hermes process: either an entrypoint marker in argv, a
+            # resolved executable named `hermes`, or a python interpreter
+            # directly exec'ing a `hermes`-named console-script shim (argv[0]
+            # is the interpreter, argv[1] is the shim's path).
             joined = " ".join(argv)
             exe_name = os.path.basename(argv[0]).lower()
             is_hermes = (
@@ -1388,6 +1397,9 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
                 or exe_name == "hermes"
                 or exe_name.startswith("hermes")
             )
+            if not is_hermes and len(argv) >= 2 and _python_interpreter_re.match(exe_name):
+                script_name = os.path.basename(str(argv[1])).lower()
+                is_hermes = script_name == "hermes" or script_name.startswith("hermes")
             if not is_hermes:
                 continue
 

@@ -318,6 +318,55 @@ class TestDeleteProfile:
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
         assert pids == [101]
 
+    def test_backend_scan_matches_shebang_exec_of_hermes_shim(self, profile_env, monkeypatch):
+        """A `hermes` console-script shim spawned directly (e.g. Electron's
+        findOnPath('hermes') resolution) reports argv[0] as the interpreter
+        (python3) and argv[1] as the shim's path -- not "hermes" -- because
+        the OS execs the shebang. The scanner must still recognize it so
+        profile delete doesn't leave a zombie Desktop-spawned backend behind
+        (issue: deleting a Desktop profile kept reappearing after relaunch).
+        """
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            # Shebang-exec'd shim bound to coder → matched despite argv[0]
+            # being the python interpreter, not "hermes".
+            FakeProc(201, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "coder", "serve",
+                            "--host", "127.0.0.1", "--port", "0"]),
+            # Same shape but a different profile → skipped.
+            FakeProc(202, ["/usr/bin/python3", "/Users/x/.local/bin/hermes", "--profile", "other", "serve"]),
+            # Non-hermes script run by python3 → skipped.
+            FakeProc(203, ["/usr/bin/python3", "/Users/x/some_script.py", "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert pids == [201]
+
 
 # ===================================================================
 # TestListProfiles

@@ -333,6 +333,15 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/software-development/software-development-test-driven-development',
                   ],
                 },
+                {
+                  type: 'category',
+                  label: 'web-development',
+                  key: 'skills-bundled-web-development',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/web-development/web-development-publish-site',
+                  ],
+                },
               ],
             },
             {

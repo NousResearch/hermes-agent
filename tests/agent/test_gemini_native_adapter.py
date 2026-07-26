@@ -122,6 +122,48 @@ def test_build_native_request_uses_original_function_name_for_tool_result():
     assert tool_response["name"] == "get_weather"
 
 
+
+def test_build_native_request_prefers_call_name_over_unwrapped_result_name():
+    """Gemini must receive the bridge call name, not the internal MCP name."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "tool_call",
+                            "arguments": (
+                                '{"name": "mcp__github__create_issue", '
+                                '"arguments": {"title": "Regression"}}'
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "mcp__github__create_issue",
+                "tool_name": "mcp__github__create_issue",
+                "tool_call_id": "call_1",
+                "content": '{"number": 123}',
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    function_call = request["contents"][0]["parts"][0]["functionCall"]
+    function_response = request["contents"][1]["parts"][0]["functionResponse"]
+    assert function_call["name"] == "tool_call"
+    assert function_response["name"] == function_call["name"]
+
+
 def test_parallel_tool_results_merge_into_one_user_content():
     """Gemini requires strict user/model alternation; two consecutive `user`
     contents are rejected with HTTP 400. Parallel tool calls produce two tool

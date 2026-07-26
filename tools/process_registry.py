@@ -43,6 +43,16 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+# Windows equivalents of the POSIX select() reader path. Kept as module
+# attributes on every platform so non-Windows CI can monkeypatch them and
+# exercise the Windows reader contract (same pattern as _subprocess_compat).
+if _IS_WINDOWS:
+    import msvcrt
+    import _winapi
+else:  # pragma: no cover - names exist for patching only
+    msvcrt = None
+    _winapi = None
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -1320,8 +1330,21 @@ class ProcessRegistry:
         interval and stop draining shortly after the direct child exits, even
         if the pipe hasn't EOF'd — mirroring the foreground fix in
         ``tools/environments/base.py::_wait_for_process`` (#8340). Windows
-        pipes don't support select(); the blocking path is kept there and the
-        lazy reconcile in poll()/wait() remains the safety net.
+        pipes don't support select(), so the same loop runs on
+        ``PeekNamedPipe`` there (works on anonymous pipes): read only when
+        bytes are available, otherwise check whether the direct child is gone
+        and stop after a short idle grace. Streams without a real OS fd
+        (mocked stdout in unit tests, adapters) still fall back to the
+        historical blocking loop.
+
+        Known limits, shared with the POSIX select() branch rather than
+        introduced here: the child check only runs on idle cycles, so a
+        grandchild that keeps the pipe continuously readable delays exit
+        detection for as long as it writes; and a reader-level failure
+        (invalid fd/handle mid-loop) ends draining and falls through to the
+        shared reap-and-finish path below. Decoupling child lifecycle from
+        output draining would fix both on every platform and is left to a
+        follow-up.
         """
         first_chunk = True
         # Incremental decoder: raw pipe reads can split a multibyte UTF-8
@@ -1353,11 +1376,11 @@ class ProcessRegistry:
 
             raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
 
-            # Resolve a real OS fd for the select() path. Mocked streams
-            # (unit tests, adapters) may lack fileno() — fall back to the
-            # historical blocking loop for those.
+            # Resolve a real OS fd for the child-exit-aware paths. Mocked
+            # streams (unit tests, adapters) may lack fileno() — fall back to
+            # the historical blocking loop for those.
             fd = None
-            if raw_read is not None and not _IS_WINDOWS:
+            if raw_read is not None:
                 fileno = getattr(stdout, "fileno", None)
                 try:
                     candidate = fileno() if callable(fileno) else None
@@ -1366,7 +1389,16 @@ class ProcessRegistry:
                 if isinstance(candidate, int) and candidate >= 0:
                     fd = candidate
 
-            if fd is not None:
+            # Windows: resolve the pipe HANDLE for PeekNamedPipe. Failure
+            # (closed fd, exotic stream) degrades to the blocking loop.
+            peek_handle = None
+            if fd is not None and _IS_WINDOWS and msvcrt is not None and _winapi is not None:
+                try:
+                    peek_handle = msvcrt.get_osfhandle(fd)
+                except OSError:
+                    peek_handle = None
+
+            if fd is not None and not _IS_WINDOWS:
                 import select as _select
 
                 idle_after_exit = 0
@@ -1389,6 +1421,51 @@ class ProcessRegistry:
                         # buffered tail, then stop — otherwise we would wait
                         # forever on a pipe held open by an orphaned
                         # grandchild (issue #68915).
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+            elif peek_handle is not None:
+                # Windows twin of the select() loop above. PeekNamedPipe
+                # reports buffered bytes without blocking, so read1() below
+                # only runs when it cannot park the thread. Same #68915
+                # semantics: stop shortly after the direct child exits even
+                # though a grandchild still holds the pipe write-end.
+                idle_after_exit = 0
+                while True:
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError, BrokenPipeError):
+                        break  # all writers closed and buffer drained
+                    if n_avail > 0:
+                        raw = raw_read(4096)
+                        if not raw:
+                            break  # true EOF — all writers closed
+                        _append_chunk(raw.decode("utf-8", errors="replace"))
+                        idle_after_exit = 0
+                        continue  # drain buffered output without sleeping
+                    # Pipe idle right now. select() atomically "waits up to
+                    # 0.2s AND observes"; peek can't, so mirror it as
+                    # wait-then-re-peek: a tail landing during the sleep is
+                    # read BEFORE the idle verdict, and each idle count has a
+                    # full 0.2s window in front of it — the same ~0.6s grace
+                    # as POSIX for both an already-exited child and one that
+                    # exits mid-loop.
+                    time.sleep(0.2)
+                    try:
+                        n_avail = _winapi.PeekNamedPipe(peek_handle)[0]
+                    except (OSError, ValueError, BrokenPipeError):
+                        break
+                    if n_avail > 0:
+                        raw = raw_read(4096)
+                        if not raw:
+                            break
+                        _append_chunk(raw.decode("utf-8", errors="replace"))
+                        idle_after_exit = 0
+                        continue
+                    if proc.poll() is not None:
+                        # Stop shortly after the direct child exits instead
+                        # of waiting forever on a grandchild-held pipe
+                        # (issue #68915).
                         idle_after_exit += 1
                         if idle_after_exit >= 3:
                             break

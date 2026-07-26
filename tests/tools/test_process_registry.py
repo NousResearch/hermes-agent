@@ -2303,6 +2303,280 @@ class TestSystemdCgroupIsolation:
         )
 
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
+    def test_reader_still_streams_full_output_to_eof(self, registry):
+        """No-orphan case: the reader must still capture ALL output through
+        true EOF (the early-exit path must not race away buffered tail)."""
+        script = (
+            "for i in 1 2 3 4 5; do echo line-$i; done; "
+            "sleep 0.3; echo tail-after-sleep"
+        )
+        proc = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            preexec_fn=os.setsid,
+        )
+        s = _make_session(sid="proc_orphan_fulldrain")
+        s.process = proc
+        s.pid = proc.pid
+        registry._running[s.id] = s
+
+        registry._reader_loop(s)
+
+        assert s.exited is True
+        assert s.exit_code == 0
+        for i in range(1, 6):
+            assert f"line-{i}" in s.output_buffer
+        assert "tail-after-sleep" in s.output_buffer
+
+
+# =========================================================================
+# Reader loop, Windows branch: PeekNamedPipe instead of select() (#68948)
+# =========================================================================
+
+class _FakeWinStdout:
+    """stdout stand-in exposing the buffered raw interface + a real-int fd."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.read1_calls = 0
+
+        outer = self
+
+        class _Buffer:
+            def read1(self, n):
+                outer.read1_calls += 1
+                if outer._chunks:
+                    return outer._chunks.pop(0)
+                return b""
+
+        self.buffer = _Buffer()
+
+    def fileno(self):
+        return 7
+
+
+class TestReaderLoopWindowsPeekBranch:
+    """The select() branch cannot run on Windows pipes, so the reader mirrors
+    it on PeekNamedPipe. A ``skipif win32`` twin would be dead code on the
+    Linux-only CI, so these tests fake ``msvcrt``/``_winapi`` and flip
+    ``_IS_WINDOWS`` to exercise the Windows contract everywhere (same
+    approach as the _subprocess_compat tests)."""
+
+    class _TimeProxy:
+        """time-module stand-in scoped to process_registry: records the
+        arguments the reader passes to sleep() so tests can pin the 0.2s
+        cadence itself, not just coarse wall-clock bounds."""
+
+        def __init__(self, real, log):
+            self._real = real
+            self._log = log
+
+        def sleep(self, seconds):
+            self._log.append(seconds)
+            self._real.sleep(seconds)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def _patch_windows(self, monkeypatch, peek_results, tmp_path):
+        """Install fake msvcrt/_winapi; ``peek_results`` items are either
+        (n_avail, n_left) tuples or exceptions to raise, last one sticky.
+        Also repoints the import-time CHECKPOINT_PATH: _move_to_finished()
+        writes a checkpoint, and without the redirect these tests would
+        overwrite the developer's real processes.json. Returns the list the
+        sleep spy appends to."""
+        import tools.process_registry as pr_mod
+
+        monkeypatch.setattr(pr_mod, "CHECKPOINT_PATH", tmp_path / "processes.json")
+
+        sleeps: list = []
+        monkeypatch.setattr(pr_mod, "time", self._TimeProxy(pr_mod.time, sleeps))
+
+        fake_msvcrt = MagicMock()
+        fake_msvcrt.get_osfhandle.return_value = 1234
+
+        results = list(peek_results)
+
+        def _peek(handle):
+            assert handle == 1234
+            item = results.pop(0) if len(results) > 1 else results[0]
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        fake_winapi = MagicMock()
+        fake_winapi.PeekNamedPipe.side_effect = _peek
+
+        monkeypatch.setattr(pr_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr_mod, "msvcrt", fake_msvcrt)
+        monkeypatch.setattr(pr_mod, "_winapi", fake_winapi)
+        return sleeps
+
+    def test_reader_exits_when_pipe_stays_open_after_child_exit(
+        self, registry, monkeypatch, tmp_path
+    ):
+        """Windows #68915 semantics: the direct child is gone, a grandchild
+        still holds the pipe (peek forever reports 0 bytes) — the reader must
+        stop after the idle grace instead of parking in a blocking read."""
+        sleeps = self._patch_windows(monkeypatch, [(0, 0)], tmp_path)
+
+        import tools.process_registry as pr_mod
+
+        proc = MagicMock()
+        proc.stdout = _FakeWinStdout([])
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        proc.returncode = 0
+
+        s = _make_session(sid="proc_win_peek_orphan")
+        s.process = proc
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+
+        done = threading.Event()
+
+        def _run():
+            registry._reader_loop(s)
+            done.set()
+
+        started = time.monotonic()
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        assert done.wait(timeout=10.0), (
+            "_reader_loop parked on a grandchild-held pipe on the Windows "
+            "branch — session.exited would never flip on its own"
+        )
+        elapsed = time.monotonic() - started
+        assert s.exited is True
+        assert s.exit_code == 0
+        assert s.completion_reason == "exited"
+        assert s.id in registry._finished
+        # The autonomous completion event is the point of the exit-aware
+        # reader — assert it actually fired.
+        item = registry.completion_queue.get_nowait()
+        assert item["type"] == "completion"
+        assert item["session_id"] == s.id
+        # The whole point of peeking: never call read1() while no bytes are
+        # reported, because that call is what blocks forever.
+        assert proc.stdout.read1_calls == 0
+        # Pin the polling cadence to the POSIX select() branch: three idle
+        # windows, each a real 0.2s sleep followed by a re-peek (2 peeks per
+        # window). The sleep spy pins the interval itself — a 0.6s sleep
+        # would pass any coarse wall-clock bound — and the elapsed floor
+        # stays as the busy-loop guard (dropped sleeps finish in
+        # microseconds).
+        assert pr_mod._winapi.PeekNamedPipe.call_count == 6
+        assert sleeps == [0.2, 0.2, 0.2]
+        assert elapsed >= 0.5
+
+    def test_reader_keeps_same_grace_when_child_exits_mid_loop(
+        self, registry, monkeypatch, tmp_path
+    ):
+        """running→exited transition: while the child is alive the loop just
+        waits (no idle counting); after it exits, exactly the same three
+        0.2s windows run as in the already-exited case."""
+        sleeps = self._patch_windows(monkeypatch, [(0, 0)], tmp_path)
+
+        polls = {"n": 0}
+
+        def _poll():
+            polls["n"] += 1
+            return None if polls["n"] == 1 else 0
+
+        proc = MagicMock()
+        proc.stdout = _FakeWinStdout([])
+        proc.poll.side_effect = _poll
+        proc.wait.return_value = 0
+        proc.returncode = 0
+
+        s = _make_session(sid="proc_win_peek_transition")
+        s.process = proc
+        registry._running[s.id] = s
+
+        done = threading.Event()
+
+        def _run():
+            registry._reader_loop(s)
+            done.set()
+
+        threading.Thread(target=_run, daemon=True).start()
+        assert done.wait(timeout=10.0)
+        assert s.exited is True
+        # One alive observation (a full window, no idle count) plus the
+        # three idle windows: four 0.2s sleeps, never more.
+        assert sleeps == [0.2, 0.2, 0.2, 0.2]
+
+    def test_reader_drains_buffered_tail_then_stops_on_broken_pipe(
+        self, registry, monkeypatch, tmp_path
+    ):
+        """Buffered output is drained through read1() while peek reports
+        bytes; a broken pipe (all writers closed, buffer empty) is EOF."""
+        self._patch_windows(
+            monkeypatch, [(5, 0), OSError(109, "broken pipe")], tmp_path
+        )
+
+        proc = MagicMock()
+        proc.stdout = _FakeWinStdout([b"tail\n"])
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        proc.returncode = 0
+
+        s = _make_session(sid="proc_win_peek_tail")
+        s.process = proc
+        registry._running[s.id] = s
+
+        registry._reader_loop(s)
+
+        assert s.exited is True
+        assert "tail" in s.output_buffer
+        assert proc.stdout.read1_calls == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="Windows-only: real PeekNamedPipe on a Git Bash pipe")
+class TestReaderLoopWindowsIntegration:
+    """Real-process twin of TestReaderLoopOrphanedPipe for Windows, driven
+    through spawn_local like the terminal tool does. The redirected compound
+    background (``true && B >/dev/null 2>&1 &``) is the shape where the
+    intermediate ``(A && B)`` subshell holds the reader's pipe while B runs
+    detached — before the peek branch this parked the reader until B died."""
+
+    def test_spawn_local_completes_despite_redirected_compound_background(
+        self, registry, monkeypatch, tmp_path
+    ):
+        import tools.process_registry as pr_mod
+
+        # Redirect the import-time checkpoint path for the WHOLE test: the
+        # reader thread calls _write_checkpoint via _move_to_finished after
+        # spawn_local returns, so a with-scoped patch would not cover it.
+        monkeypatch.setattr(pr_mod, "CHECKPOINT_PATH", tmp_path / "processes.json")
+        s = registry.spawn_local("true && sleep 15 >/dev/null 2>&1 &")
+        try:
+            # Lifecycle observation only — no poll()/wait() calls, so the
+            # lazy _reconcile_local_exit safety net cannot mask the reader.
+            deadline = time.time() + 8
+            while time.time() < deadline and not s.exited:
+                time.sleep(0.1)
+            assert s.exited is True, (
+                "spawn_local session never completed on its own while a "
+                "redirected background grandchild outlived the direct child"
+            )
+            assert s.exit_code == 0
+            # exited flips BEFORE _move_to_finished writes the checkpoint;
+            # join the reader so that write lands while CHECKPOINT_PATH is
+            # still monkeypatched, not after teardown restored the real one.
+            s._reader_thread.join(timeout=5)
+            assert not s._reader_thread.is_alive()
+        finally:
+            try:
+                if s.process is not None and s.process.poll() is None:
+                    s.process.kill()
+            except Exception:
+                pass
 
 
 class TestNotificationRedaction:

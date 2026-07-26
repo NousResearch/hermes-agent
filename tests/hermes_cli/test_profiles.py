@@ -367,6 +367,95 @@ class TestDeleteProfile:
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
         assert pids == [201]
 
+    def test_backend_scan_rejects_unrelated_hermes_prefixed_script(self, profile_env, monkeypatch):
+        """A user's own script that happens to start with "hermes" (e.g.
+        hermes-notes.py, hermes-unrelated-tool) must NOT be misidentified as
+        the console-script shim just because argv[0] is a python interpreter
+        and argv[1]'s basename starts with "hermes" -- only the actual known
+        console-script entry points (hermes, hermes-agent, hermes-acp) count.
+        """
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            # Looks like the shim by prefix alone, but is the user's own
+            # unrelated tool -- must be rejected, not killed by profile delete.
+            FakeProc(301, ["/usr/bin/python3", "/Users/x/scripts/hermes-notes.py",
+                            "--profile", "coder", "serve"]),
+            FakeProc(302, ["/usr/bin/python3", "/Users/x/scripts/hermes-unrelated-tool",
+                            "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert pids == []
+
+    def test_backend_scan_matches_all_known_console_script_shims(self, profile_env, monkeypatch):
+        """The other two real console-script entry points (hermes-agent,
+        hermes-acp -- see pyproject.toml [project.scripts]) must also be
+        recognized via the shebang-exec path, not just the primary "hermes"
+        shim.
+        """
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+
+        class FakeProc:
+            def __init__(self, pid, cmdline, username="me"):
+                self.pid = pid
+                self.info = {"pid": pid, "name": "python3", "username": username, "cmdline": cmdline}
+
+            def parent(self):
+                return None
+
+            def username(self):
+                return "me"
+
+            def environ(self):
+                return {}
+
+        self_pid = os.getpid()
+        procs = [
+            FakeProc(401, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-agent",
+                            "--profile", "coder", "serve"]),
+            FakeProc(402, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-acp",
+                            "--profile", "coder", "serve"]),
+        ]
+
+        fake_psutil = types.SimpleNamespace(
+            process_iter=lambda attrs=None: iter(procs),
+            Process=lambda pid=None: FakeProc(self_pid, []),
+            NoSuchProcess=Exception,
+            AccessDenied=Exception,
+            ZombieProcess=Exception,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+        pids = profiles._profile_bound_backend_pids("coder", profile_dir)
+        assert set(pids) == {401, 402}
+
 
 # ===================================================================
 # TestListProfiles

@@ -1371,6 +1371,12 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
     # the shim directly. In that shape the OS-reported argv[0] is the
     # interpreter, not "hermes", so the checks below would otherwise miss it.
     _python_interpreter_re = re.compile(r"^python[\d.]*w?(\.exe)?$")
+    # The actual console-script entry points this project ships (see
+    # pyproject.toml [project.scripts]) -- used to validate argv[1] against
+    # a known shim identity rather than a loose prefix match, since argv[1]
+    # can be ANY user-invoked python script path when argv[0] is a bare
+    # interpreter.
+    _HERMES_CONSOLE_SCRIPT_NAMES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
     pids: list[int] = []
 
     for proc in psutil.process_iter(["pid", "name", "username", "cmdline"]):
@@ -1398,8 +1404,19 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
                 or exe_name.startswith("hermes")
             )
             if not is_hermes and len(argv) >= 2 and _python_interpreter_re.match(exe_name):
+                # Match against the actual known console-script entry points
+                # (pyproject.toml [project.scripts]: hermes, hermes-agent,
+                # hermes-acp) rather than a bare `startswith("hermes")` --
+                # that looser check is fine for a directly-resolved executable
+                # name (argv[0] IS the interpreter there, so a false match is
+                # rare), but here argv[1] can be ANY user-invoked python
+                # script path, and a bare prefix match would misidentify an
+                # unrelated script the user happens to name e.g.
+                # "hermes-notes.py" or "hermes-unrelated-tool" as the shim,
+                # making it killable by profile delete.
                 script_name = os.path.basename(str(argv[1])).lower()
-                is_hermes = script_name == "hermes" or script_name.startswith("hermes")
+                script_stem = script_name.rsplit(".", 1)[0] if "." in script_name else script_name
+                is_hermes = script_stem in _HERMES_CONSOLE_SCRIPT_NAMES
             if not is_hermes:
                 continue
 

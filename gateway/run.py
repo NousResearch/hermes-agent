@@ -8710,11 +8710,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ", ".join(p.value for p in self._failed_platforms),
             )
         # Track the reconnect watcher task so _ensure_reconnect_watcher_running
-        # can detect if it dies and respawn it (#70344).
-        self._reconnect_watcher_task = asyncio.create_task(
-            self._platform_reconnect_watcher()
+        # can detect if it dies and respawn it (#70344). Spawned via
+        # _spawn_supervised (not a bare asyncio.create_task) so an exception
+        # escaping the watcher's OUTER while-loop -- not just the per-platform
+        # inner try/except -- is caught, logged, and auto-restarted with
+        # backoff instead of silently killing the watcher forever. Without
+        # this, a platform already queued in _failed_platforms when the
+        # watcher dies stays stranded indefinitely: _ensure_reconnect_watcher_running()
+        # only gets called from a NEW fatal-error arrival, so if no other
+        # platform ever fails afterward, nothing ever notices the watcher is
+        # dead (#71758 -- reported as 17.5h of silent downtime for a platform
+        # whose transient upstream outage had long since recovered).
+        self._reconnect_watcher_task = self._spawn_supervised(
+            self._platform_reconnect_watcher, "platform_reconnect_watcher"
         )
-        self._background_tasks.add(self._reconnect_watcher_task)
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
@@ -9297,11 +9306,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Reconnect watcher task is dead (done=%s) — respawning",
             task.done() if task is not None else "N/A",
         )
-        self._reconnect_watcher_task = asyncio.create_task(
-            self._platform_reconnect_watcher()
+        self._reconnect_watcher_task = self._spawn_supervised(
+            self._platform_reconnect_watcher, "platform_reconnect_watcher"
         )
-        if getattr(self, "_background_tasks", None) is not None:
-            self._background_tasks.add(self._reconnect_watcher_task)
 
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.
@@ -9333,7 +9340,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for platform in list(self._failed_platforms.keys()):
                 if not self._running:
                     return
-                info = self._failed_platforms[platform]
+                info = self._failed_platforms.get(platform)
+                if info is None:
+                    # Removed concurrently (e.g. a manual /platform resume,
+                    # or a reconnect that succeeded via a different path)
+                    # between the snapshot above and this lookup. Not an
+                    # error -- just nothing to do for it this pass.
+                    continue
                 # Skip paused platforms entirely — they need explicit
                 # /platform resume to come back.
                 if info.get("paused"):

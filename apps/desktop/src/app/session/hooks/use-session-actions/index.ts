@@ -476,13 +476,14 @@ export function useSessionActions({
    *  list (Cursor-style draft tab); it surfaces on the next refresh once the
    *  first message persists a turn. "Open in split" keeps the listed behavior. */
   const openNewSessionTile = useCallback(
-    async (dir: TileDock = 'right', options?: { listed?: boolean }) => {
+    async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean }) => {
       const listed = options?.listed ?? true
 
       try {
-        // Fresh tile → the resolved new-session cwd (project/default), not the
-        // primary composer's live cwd.
-        const params = await desktopSessionCreateParams(resolveNewSessionCwd().trim())
+        // Fresh tile → the caller's workspace when one was named (the sidebar
+        // "+" on a project/worktree lane), else the resolved new-session cwd
+        // (project/default) — never the primary composer's live cwd.
+        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 

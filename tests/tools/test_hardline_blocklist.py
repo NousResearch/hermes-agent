@@ -648,3 +648,92 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# Absolute-path invocations must not defeat the floor. _CMDPOS only accepted
+# "start | separator | subshell opener | sudo/env-style wrappers" before the
+# command word, so spelling the binary by path — the natural form on systems
+# where PATH is unreliable, and the default an LLM produces for Windows
+# tools — returned (False, None) for every hardline pattern. Regression set
+# pins both directions: path-spelled commands at command position are
+# blocked, the same strings as data arguments stay allowed.
+_ABS_PATH_BLOCK = [
+    "/sbin/shutdown -h now",
+    "/usr/sbin/reboot",
+    "/sbin/halt",
+    "/sbin/init 6",
+    "/bin/rm -rf /",
+    "sudo /sbin/shutdown -h now",
+    "env LC_ALL=C /sbin/reboot",
+    "echo done; /sbin/shutdown -h now",
+    "true && /usr/sbin/poweroff",
+    r"C:\Windows\System32\shutdown.exe /s /t 0",
+    "C:/Windows/System32/shutdown.exe /s /t 0",
+    r'"C:\Program Files\Git\usr\bin\rm.exe" -rf /',
+    r"C:\Windows\System32\shutdown.EXE /s",
+    # path-spelled wrapper chains resolve in the single projection pass
+    "/usr/bin/sudo /sbin/shutdown -h now",
+    "/usr/bin/env /usr/bin/sudo /sbin/shutdown -h now",
+    "exec /sbin/reboot",
+    "( /sbin/shutdown -h now )",
+    "/sbin/telinit 6",
+    "./shutdown -h now",
+    "shutdown.exe /s",
+    # composed spellings reduce through the same collapsing as r\m detection
+    "'/sbin/'shutdown -h now",
+    "/sbin/shut\\down -h now",
+    # a payload's executable can be path-spelled too
+    "bash -c '/sbin/shutdown -h now'",
+    "exec bash -c '/bin/rm -rf /'",
+    # group/substitution closers stay outside the projected word
+    "(/sbin/reboot)",
+    "$(/sbin/reboot)",
+    "`/sbin/reboot`",
+    "{ /sbin/reboot; }",
+    "env -u FOO /sbin/reboot",
+]
+
+_ABS_PATH_ALLOW = [
+    "echo /sbin/shutdown",
+    "ls -la /sbin/shutdown",
+    "grep 'shutdown' /var/log/syslog",
+    "stat /usr/sbin/reboot",
+    r"stat C:\Windows\System32\shutdown.exe",
+    "cat /bin/rm",
+    'echo "/sbin/init 6"',
+    "md5sum /sbin/halt",
+    # basename must match the pattern word exactly, not a near-miss
+    "/usr/local/bin/rebooter --dry-run",
+    "./deploy.sh shutdown",
+    "cat /etc/init.d/reboot",
+    # a bare assignment prefix is data — projecting its value manufactured
+    # a False->True flip in the first cut of this fix (Sol round 2)
+    "X=/sbin/shutdown echo ok",
+    # a wrapper option's operand is data, not the command word
+    "env --chdir /tmp/reboot /bin/echo ok",
+    "env --chdir /tmp/reboot echo ok",
+    "env --argv0 /tmp/reboot /bin/echo ok",
+    # `}` is not a shell metacharacter: it can end a legitimate word
+    "/tmp/reboot}",
+]
+
+
+@pytest.mark.parametrize("command", _ABS_PATH_BLOCK)
+def test_abs_path_invocation_is_hardline_blocked(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"absolute-path spelling bypassed the floor: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+@pytest.mark.parametrize("command", _ABS_PATH_ALLOW)
+def test_abs_path_as_data_is_not_hardline(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"path-as-data false positive: {command!r} (got: {desc})"
+
+
+def test_abs_path_hardline_not_bypassed_by_yolo(clean_session, monkeypatch):
+    """The floor must hold for path-spelled commands under yolo too."""
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    result = check_all_command_guards("/sbin/shutdown -h now", "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True

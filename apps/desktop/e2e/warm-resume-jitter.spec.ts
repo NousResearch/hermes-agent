@@ -49,6 +49,7 @@ const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
 // Inactive tabs stay mounted under a data-pane-hidden ancestor. Match the
 // renderer's keep-alive visibility policy instead of relying on DOM order.
 const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
+const ALL_SURFACES = '[data-composer-target]'
 /** 32 messages (16 user/assistant pairs) — enough DOM churn for detection. */
 const MESSAGE_COUNT = 32
 /** Seeded PRNG so the generated content is deterministic across runs. */
@@ -160,16 +161,29 @@ test.afterAll(async () => {
  *   after the initial paint, catching key-based reconciles that don't
  *   add/remove nodes.
  */
-async function installRenderCounter(page: import('@playwright/test').Page): Promise<void> {
-  await page.evaluate((surfaceSelector: string) => {
-    const surfaces = document.querySelectorAll(surfaceSelector)
-    const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
+async function installRenderCounter(
+  page: import('@playwright/test').Page,
+  transcriptText?: string,
+): Promise<void> {
+  await page.evaluate(([visibleSelector, allSelector, expected]: [string, string, string | undefined]) => {
+    const surfaces = [...document.querySelectorAll(expected ? allSelector : visibleSelector)]
+    const surface = expected
+      ? surfaces.find(candidate =>
+          (candidate.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
+        )
+      : surfaces.at(-1)
+    const viewport = surface?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) {
       throw new Error('Thread viewport not found before warm resume')
     }
 
     const state = { bursts: 0, mutations: 0, timeline: [] as number[], stopped: false, reconciles: 0 }
-    ;(window as unknown as { __RENDER_COUNT__: typeof state }).__RENDER_COUNT__ = state
+    const debugWindow = window as unknown as {
+      __RENDER_COUNT__: typeof state
+      __RENDER_VIEWPORT__: Element
+    }
+    debugWindow.__RENDER_COUNT__ = state
+    debugWindow.__RENDER_VIEWPORT__ = viewport
 
     let currentBatch = 0
     let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -231,7 +245,7 @@ async function installRenderCounter(page: import('@playwright/test').Page): Prom
         hasMessages = true
       }
     }, 2)
-  }, SURFACE)
+  }, [SURFACE, ALL_SURFACES, transcriptText] as [string, string, string | undefined])
 }
 
 /** Wait until the ACTIVE chat surface's transcript contains `text`. */
@@ -298,6 +312,30 @@ async function readRenderCount(page: import('@playwright/test').Page): Promise<{
   })
 }
 
+async function observedViewportIsActive(page: import('@playwright/test').Page): Promise<boolean> {
+  return page.evaluate((surfaceSelector: string) => {
+    const surfaces = document.querySelectorAll(surfaceSelector)
+    const activeViewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
+    const observedViewport = (window as unknown as { __RENDER_VIEWPORT__?: Element }).__RENDER_VIEWPORT__
+
+    return activeViewport === observedViewport
+  }, SURFACE)
+}
+
+/** A kept-alive tab must become visible without rebuilding its transcript. */
+function assertNoRepaint(result: { bursts: number; mutations: number; timeline: number[]; reconciles: number } | null): void {
+  expect(result, 'MutationObserver should have recorded render data').toBeTruthy()
+  expect(
+    result!.bursts,
+    `Expected no additive render bursts for a kept-alive tab, but got ${result!.bursts}. ` +
+      `Mutation timeline: ${JSON.stringify(result!.timeline)}.`,
+  ).toBe(0)
+  expect(
+    result!.reconciles,
+    `Expected no transcript reconciles for a kept-alive tab, but got ${result!.reconciles}.`,
+  ).toBe(0)
+}
+
 /** Assert the render counter shows exactly one paint with no re-renders. */
 function assertNoJitter(result: { bursts: number; mutations: number; timeline: number[]; reconciles: number } | null): void {
   expect(result, 'MutationObserver should have recorded render data').toBeTruthy()
@@ -314,7 +352,7 @@ function assertNoJitter(result: { bursts: number; mutations: number; timeline: n
   ).toBe(0)
 }
 
-test('tab reactivation paints the transcript exactly once (no jitter)', async ({}, testInfo) => {
+test('tab reactivation preserves the mounted transcript without repainting', async ({}, testInfo) => {
   const page = fixture!.page
 
   // Wait for the sidebar to populate with our seeded session.
@@ -335,22 +373,24 @@ test('tab reactivation paints the transcript exactly once (no jitter)', async ({
   // Wait for the session to fully settle (cold-path RPC + reconciliation).
   await page.waitForTimeout(2_000)
 
-  // Observe the loaded transcript before "+" hides it. The old test attached
-  // after the switch and watched the empty draft instead of this session.
-  await installRenderCounter(page)
+  // Stack a new tab, then observe the seeded transcript while it is hidden.
+  // Installing after the switch isolates reactivation from mutations caused
+  // while the new tab was being created.
   await openNewSessionTab(page, FIRST_USER_MSG)
-
   await page.waitForTimeout(500)
+  await installRenderCounter(page, FIRST_USER_MSG)
 
-  // Step 3: Click back, settle, and assert one paint with no second reconcile.
+  // Step 3: Click back and verify the same kept-alive viewport becomes active
+  // without rebuilding or reconciling its transcript.
   await sessionRow.click()
 
   await waitForActiveTranscriptText(page, FIRST_USER_MSG)
   await page.waitForTimeout(2_000)
+  expect(await observedViewportIsActive(page), 'Reactivation should reveal the observed kept-alive viewport').toBe(true)
 
   const result = await readRenderCount(page)
   await page.screenshot({ path: testInfo.outputPath('warm-resume-idle.png') })
-  assertNoJitter(result)
+  assertNoRepaint(result)
 })
 
 test('warm-route resume after background inference completes (no jitter)', async ({}, testInfo) => {

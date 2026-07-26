@@ -466,6 +466,26 @@ def test_broad_default_non_git_cwd_stays_unscoped():
     assert detached["id"] not in tree["scoped_session_ids"]
 
 
+def test_deleted_sibling_worktree_folds_into_parent_home_checkout():
+    # A deleted <repo>-<suffix> worktree leaves its session with an unresolvable
+    # cwd and no persisted root. It joins the parent's trunk lane — no dead-path
+    # lane, no phantom project.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-session-links"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = tree["projects"][0]
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    main = project["repos"][0]["groups"][0]
+    assert main["isMain"] and main["path"] == "/www/hermes-agent"
+    assert len(main["sessions"]) == 2
+
+
 def test_colliding_repo_basenames_disambiguate_labels():
     resolve = _resolver(
         {

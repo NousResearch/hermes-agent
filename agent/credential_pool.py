@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
+from agent.redact import redact_sensitive_text
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
@@ -423,6 +424,13 @@ def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[st
         value = error_context.get(key)
         if isinstance(value, str) and value.strip():
             normalized[key] = value.strip()
+    if "message" in normalized:
+        # Redact API keys and tokens from error messages before persisting.
+        # Upstream providers sometimes echo back the key in error responses
+        # (e.g. "Invalid API key: sk-ant-..."); without redaction
+        # _mark_exhausted stores the raw message in last_error_message and
+        # to_dict() flushes it to auth.json on disk (GH-71994).
+        normalized["message"] = redact_sensitive_text(normalized["message"])
     reset_at = (
         error_context.get("reset_at")
         or error_context.get("resets_at")

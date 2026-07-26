@@ -5034,10 +5034,14 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
+        "clarify_callback": lambda q, c, multi_select=False: _block(
             "clarify.request",
             sid,
-            {"question": q, "choices": c},
+            # multi_select is a pass-through hint: renderers with checkbox
+            # support can honor it; older renderers ignore the extra field
+            # and stay single-select (a single answer still parses as a
+            # one-element list on the tool side).
+            {"question": q, "choices": c, "multi_select": bool(multi_select)},
             timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the

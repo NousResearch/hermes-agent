@@ -5556,26 +5556,15 @@ _PE_MACHINE_NAMES = {
     _PE_MACHINE_ARM64: "ARM64",
 }
 
-# SYSTEM_INFO.wProcessorArchitecture values (winnt.h). Used by
-# GetNativeSystemInfo as a second OS-native probe when IsWow64Process2 is
-# unavailable or fails under a mistyped ctypes HANDLE.
-_PROCESSOR_ARCHITECTURE_INTEL = 0
-_PROCESSOR_ARCHITECTURE_ARM = 5
-_PROCESSOR_ARCHITECTURE_AMD64 = 9
-_PROCESSOR_ARCHITECTURE_ARM64 = 12
-
 _PE_MACHINE_TO_NAME = {
     _PE_MACHINE_ARM64: "ARM64",
     _PE_MACHINE_AMD64: "AMD64",
     _PE_MACHINE_I386: "X86",
 }
 
-_SYSTEM_INFO_ARCH_TO_NAME = {
-    _PROCESSOR_ARCHITECTURE_ARM64: "ARM64",
-    _PROCESSOR_ARCHITECTURE_AMD64: "AMD64",
-    _PROCESSOR_ARCHITECTURE_INTEL: "X86",
-    _PROCESSOR_ARCHITECTURE_ARM: "ARM",
-}
+# MACHINE_ATTRIBUTES bits (processthreadsapi.h). UserEnabled means the host
+# can run user-mode code of that machine type — natively or under emulation.
+_MACHINE_ATTRIBUTE_USER_ENABLED = 0x00000001
 
 
 def _windows_native_machine_from_iswow64() -> Optional[str]:
@@ -5615,39 +5604,37 @@ def _windows_native_machine_from_iswow64() -> Optional[str]:
     return _PE_MACHINE_TO_NAME.get(native_machine.value)
 
 
-def _windows_native_machine_from_native_system_info() -> Optional[str]:
-    """GetNativeSystemInfo — truthful under x64-on-ARM64 when IsWow64 fails.
+def _windows_user_runnable_pe_machines() -> Optional[set]:
+    """PE machines this host can run in user mode, via GetMachineTypeAttributes.
 
-    Unlike ``PROCESSOR_ARCHITECTURE`` (process/emulation view) this reports
-    the OS-native architecture, so it covers the residual #71218 failure mode
-    where ``IsWow64Process2`` returns FALSE and the env-var fallback would
-    otherwise lie as AMD64.
+    This asks the question the integrity gate actually cares about — "can this
+    Windows host load a PE of machine X?" — instead of inferring it from a
+    host-architecture name. It is also the only documented API that reports
+    AMD64-on-ARM64 emulation support; ``IsWow64GuestMachineSupported`` only
+    answers for 32-bit guests.
+
+    Returns None when the API is unavailable (pre-Windows-11 build 22000) or
+    reports nothing runnable, so callers fall back to name-based detection.
     """
     import ctypes
     from ctypes import wintypes
 
-    class _SYSTEM_INFO(ctypes.Structure):
-        _fields_ = [
-            ("wProcessorArchitecture", wintypes.WORD),
-            ("wReserved", wintypes.WORD),
-            ("dwPageSize", wintypes.DWORD),
-            ("lpMinimumApplicationAddress", ctypes.c_void_p),
-            ("lpMaximumApplicationAddress", ctypes.c_void_p),
-            ("dwActiveProcessorMask", ctypes.c_size_t),
-            ("dwNumberOfProcessors", wintypes.DWORD),
-            ("dwProcessorType", wintypes.DWORD),
-            ("dwAllocationGranularity", wintypes.DWORD),
-            ("wProcessorLevel", wintypes.WORD),
-            ("wProcessorRevision", wintypes.WORD),
-        ]
-
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetNativeSystemInfo.argtypes = [ctypes.POINTER(_SYSTEM_INFO)]
-    kernel32.GetNativeSystemInfo.restype = None
+    kernel32.GetMachineTypeAttributes.argtypes = [
+        wintypes.USHORT,
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    kernel32.GetMachineTypeAttributes.restype = ctypes.c_long
 
-    info = _SYSTEM_INFO()
-    kernel32.GetNativeSystemInfo(ctypes.byref(info))
-    return _SYSTEM_INFO_ARCH_TO_NAME.get(info.wProcessorArchitecture)
+    runnable = set()
+    for machine in (_PE_MACHINE_ARM64, _PE_MACHINE_AMD64, _PE_MACHINE_I386):
+        attributes = ctypes.c_int(0)
+        # HRESULT: zero is success, any nonzero value is a failure.
+        if kernel32.GetMachineTypeAttributes(machine, ctypes.byref(attributes)):
+            continue
+        if attributes.value & _MACHINE_ATTRIBUTE_USER_ENABLED:
+            runnable.add(machine)
+    return runnable or None
 
 
 def _windows_native_machine() -> str:
@@ -5661,26 +5648,26 @@ def _windows_native_machine() -> str:
     (#69179 follow-up report). Probe order:
 
     1. ``IsWow64Process2`` with a correctly-typed current-process HANDLE
-       (#71218 + HANDLE-truncation fix).
-    2. ``GetNativeSystemInfo`` — still OS-native when (1) fails under
-       x64-on-ARM64 emulation (env vars alone cannot cover that case).
-    3. ``PROCESSOR_ARCHITEW6432`` / ``PROCESSOR_ARCHITECTURE`` — WOW64
-       (32-bit) hosts and pre-1511 Windows 10 without the newer APIs.
-    4. ``platform.machine()``.
+       (#71218 + HANDLE-truncation fix). This is the only API that tells the
+       truth from an x64 process emulated on ARM64.
+    2. ``PROCESSOR_ARCHITEW6432`` / ``PROCESSOR_ARCHITECTURE`` — WOW64
+       (32-bit) hosts and pre-1511 Windows 10 without the newer API.
+    3. ``platform.machine()``.
+
+    Note ``GetNativeSystemInfo`` is deliberately NOT used: Microsoft documents
+    that it "also returns emulated processor details when run from an app
+    under emulation", so on the very WoA hosts this function exists to serve
+    it reports AMD64 — no better than the env-var rung below it.
     """
     if sys.platform == "win32":
-        for probe in (
-            _windows_native_machine_from_iswow64,
-            _windows_native_machine_from_native_system_info,
-        ):
-            try:
-                name = probe()
-            except (OSError, AttributeError, TypeError, ValueError):
-                # API missing (pre-1511), DLL load failure in tests, or a
-                # mistyped ctypes binding — try the next probe.
-                name = None
-            if name:
-                return name
+        try:
+            name = _windows_native_machine_from_iswow64()
+        except (OSError, AttributeError, TypeError, ValueError):
+            # API missing (pre-1511), DLL load failure in tests, or a
+            # mistyped ctypes binding — fall through to the env vars.
+            name = None
+        if name:
+            return name
         env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get(
             "PROCESSOR_ARCHITECTURE"
         )
@@ -5694,12 +5681,23 @@ def _windows_native_machine() -> str:
 def _expected_windows_pe_machines() -> set:
     """PE machine values the current Windows host can natively load.
 
-    AMD64 hosts run x64 and (via WOW64) x86. ARM64 hosts run ARM64 and
-    (Windows 11 emulation) x64. 32-bit x86 hosts run only x86. Unknown
-    machines return the permissive full set so the integrity gate can never
-    brick launch on exotic hosts. Host detection uses the OS-native machine
-    (see ``_windows_native_machine``), not the process architecture.
+    Preferred source is ``GetMachineTypeAttributes``, which answers this
+    question directly (including AMD64-on-ARM64 emulation) instead of
+    inferring it from an architecture name.
+
+    Fallback is name-based: AMD64 hosts run x64 and (via WOW64) x86. ARM64
+    hosts run ARM64 and (Windows 11 emulation) x64. 32-bit x86 hosts run only
+    x86. Unknown machines return the permissive full set so the integrity gate
+    can never brick launch on exotic hosts. Host detection uses the OS-native
+    machine (see ``_windows_native_machine``), not the process architecture.
     """
+    if sys.platform == "win32":
+        try:
+            runnable = _windows_user_runnable_pe_machines()
+        except (OSError, AttributeError, TypeError, ValueError):
+            runnable = None
+        if runnable:
+            return runnable
     machine = _windows_native_machine().upper()
     if machine in ("AMD64", "X86_64", "X64"):
         return {_PE_MACHINE_AMD64, _PE_MACHINE_I386}

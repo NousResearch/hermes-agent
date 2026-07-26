@@ -348,8 +348,7 @@
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
        plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.
-       Both inputs are republished per chat surface (see surface-vars.ts), and the calc is re-declared there so
-       each surface resolves against its OWN measurements — a tile's tall stack must not pad another thread. */
+       These are the defaults; each chat surface re-declares the calc against its own measurements (see below). */
     --status-stack-measured-height: 0px;
     --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 

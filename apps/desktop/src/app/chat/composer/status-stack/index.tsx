@@ -198,14 +198,12 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // height never sees it. Publish our own measured height — bucketed like the
   // composer's, to avoid style invalidation churn — so the thread's
   // last-message clearance can add it and the stack never hides messages.
-  // Scoped to THIS chat surface: tiles render their own stack beside the
-  // workspace pane, and a shared global would let the taller one dictate every
-  // thread's padding (see surface-vars.ts).
+  // Scoped to THIS surface: tiles render their own stack (see surface-vars.ts).
   useLayoutEffect(() => {
     const el = stackRef.current
 
     if (!visible || !el) {
-      clearSurfaceVar(stackRef.current, STATUS_STACK_VAR)
+      clearSurfaceVar(el, STATUS_STACK_VAR)
 
       return
     }

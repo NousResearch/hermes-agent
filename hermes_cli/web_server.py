@@ -5774,11 +5774,22 @@ def _dependency_importable(dep: str) -> bool:
     import_name = _memory_provider_import_name(dep)
     if not import_name:
         return False
+    # Probing a module executes its module body. At least one memory backend
+    # (``hindsight_api.config``, pulled in by ``hindsight``) runs
+    # ``load_dotenv(find_dotenv(usecwd=True), override=True)`` at import time,
+    # rewriting this process's environment from whatever ``.env`` sits above
+    # the cwd. A capability probe must not inherit side effects like that, so
+    # restore ``os.environ`` if the import changed it.
+    snapshot = dict(os.environ)
     try:
         __import__(import_name)
         return True
     except ImportError:
         return False
+    finally:
+        if dict(os.environ) != snapshot:
+            os.environ.clear()
+            os.environ.update(snapshot)
 
 
 def _trim_setup_output(value: Optional[str], limit: int = 4000) -> str:

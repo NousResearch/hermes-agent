@@ -1831,16 +1831,30 @@ class AIAgent:
             existing = db.get_topics(sid)
             if existing:
                 return existing[0]["id"] if existing[0]["state"] == "active" else None
-            # Derive topic name from first message (first 40 chars)
             name = first_message[:40].strip() if first_message else "new session"
             if not name:
                 name = "new session"
             topic_id = db.create_topic(sid, name)
             self._active_topic_id = topic_id
-            db.update_topic_message_count(topic_id, 0)
             return topic_id
         except Exception:
             return None
+
+    def _ensure_topic_for_session(self) -> None:
+        """Create first topic if none exists. Called outside write lock."""
+        if self._active_topic_id is not None:
+            return
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        try:
+            existing = db.get_topics(sid)
+            if not existing:
+                topic_id = db.create_topic(sid, "new session")
+                self._active_topic_id = topic_id
+        except Exception:
+            pass
 
     def _is_ollama_glm_backend(self) -> bool:
         """Detect Ollama-hosted GLM models affected by stop misreports.
@@ -2066,8 +2080,11 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
+        """
+        # Ensure a topic exists before persisting messages
+        self._ensure_topic_for_session()
 
-        Trailing empty-response scaffolding is dropped from the live list in
+        # Trailing empty-response scaffolding is dropped from the live list in
         place (it is ephemeral junk the real transcript should shed). The
         persist user-message *override* is NOT applied here — it is resolved
         inside ``_flush_messages_to_session_db`` and written only to the DB row,

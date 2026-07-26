@@ -23,6 +23,16 @@ function installDesktopBridge(partial: Partial<Window['hermesDesktop']> = {}) {
   } as unknown as Window['hermesDesktop']
 }
 
+const FORGEJO_URL = 'https://forgejo.home.example/homelab/homelab-ops/issues/101'
+
+function installTitleBridge(title: string) {
+  const bridge = vi.fn().mockResolvedValue(title)
+
+  installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+  return bridge
+}
+
 afterEach(() => {
   __resetLinkTitleCache()
   vi.restoreAllMocks()
@@ -153,6 +163,39 @@ describe('external link helpers', () => {
     await waitFor(() => {
       expect(link.textContent).toBe('From Fajardo Full Day Cordillera Islands Catamaran Tour')
     })
+  })
+
+  it('treats not-found fetched titles as unusable', async () => {
+    const bridge = installTitleBridge('Page not found - Forgejo')
+
+    await expect(fetchLinkTitle(FORGEJO_URL)).resolves.toBe('')
+    expect(bridge).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an authored fallbackLabel ahead of a fetched title, and skips the fetch', async () => {
+    const bridge = installTitleBridge('Kinkolino Forgejo')
+
+    // Chat markdown passes authored link text as `fallbackLabel`, not `label`.
+    render(<PrettyLink fallbackLabel="FJ #101" href={FORGEJO_URL} />)
+
+    const link = screen.getByTitle(FORGEJO_URL)
+
+    await waitFor(() => {
+      expect(link.textContent).toContain('FJ #101')
+    })
+    expect(link.textContent).not.toContain('Kinkolino Forgejo')
+    expect(bridge).not.toHaveBeenCalled()
+  })
+
+  it('still resolves a title when no label was authored', async () => {
+    const bridge = installTitleBridge('Homelab Ops Issue 101')
+
+    render(<PrettyLink href={FORGEJO_URL} />)
+
+    await waitFor(() => {
+      expect(screen.getByTitle(FORGEJO_URL).textContent).toContain('Homelab Ops Issue 101')
+    })
+    expect(bridge).toHaveBeenCalledTimes(1)
   })
 
   it('normalizes scheme-less links before opening', () => {

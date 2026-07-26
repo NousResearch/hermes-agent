@@ -11153,6 +11153,104 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             server._sessions.pop(k, None)
 
 
+def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_path):
+    """The branched agent must be built under the parent profile's secrets.
+
+    session.branch already binds the parent's HERMES_HOME and state.db, but the
+    secret scope is what makes get_secret() resolve that profile's .env. Without
+    it the build falls through to process os.environ — the LAUNCH profile's
+    credentials — which is exactly the cross-profile resolution #67605 fixed for
+    session.create / session.resume.
+    """
+    import threading
+
+    from agent.secret_scope import current_secret_scope
+
+    profile_home = tmp_path / "profiles" / "mlperf"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text(
+        "PROXMOX_TOKEN=mlperf-secret\n", encoding="utf-8"
+    )
+    seen: dict = {"msgs": []}
+
+    class ProfileDB:
+        def __init__(self, db_path=None):
+            pass
+
+        def get_session_title(self, _key):
+            return "parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} (branch)"
+
+        def create_session(self, new_key, **kwargs):
+            seen["created"] = new_key
+
+        def append_message(self, **kwargs):
+            seen["msgs"].append(kwargs)
+
+        def set_session_title(self, key, title):
+            return True
+
+        def get_session(self, key):
+            return {"id": key, "cwd": str(tmp_path)}
+
+        def update_session_cwd(self, *a, **k):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+            self.session_id = None
+
+    parent = {
+        "session_key": "parent-key",
+        "history": [{"role": "user", "content": "hi"}],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "cols": 80,
+        "profile_home": str(profile_home),
+        "source": "tui",
+        "agent": FakeAgent(),
+        "created_at": 1.0,
+        "last_active": 1.0,
+        "cwd": str(tmp_path),
+    }
+    server._sessions["parent"] = parent
+    monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
+    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+
+    def _fake_make_agent(*a, **k):
+        scope = current_secret_scope()
+        seen["scope"] = dict(scope) if scope else None
+        return FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_session_cwd", lambda s: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.branch",
+                "params": {"session_id": "parent", "name": "forked"},
+            }
+        )
+        assert "result" in resp, resp
+        assert seen.get("scope") == {"PROXMOX_TOKEN": "mlperf-secret"}
+    finally:
+        for k in list(server._sessions):
+            server._sessions.pop(k, None)
+
+
 def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
     """Post-turn pending_title must land in the session profile store."""
     profile_home = tmp_path / "profiles" / "mlperf"

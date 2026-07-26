@@ -9946,6 +9946,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self,
         session_id: str,
         compacted_messages: List[Dict[str, Any]],
+        topic_id: Optional[int] = None,
         model_config_patch: Optional[Dict[str, Any]] = None,
         watermark: Optional[int] = None,
         lock_holder: Optional[str] = None,
@@ -10024,14 +10025,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # Concurrent tail: active rows that arrived after the watermark.
             # Snapshot their ids and tool_calls now — the clone below needs a
             # stable id list, and the tool-call count keeps sessions.* honest.
+            # Topic-scoped compaction re-sequences only this topic's tail
+            # rows; other topics' concurrent rows stay untouched.
             tail_ids: list[int] = []
             tail_tool_calls = 0
             if watermark is not None:
+                tail_where = "session_id = ? AND active = 1 AND id > ?"
+                tail_params: list = [session_id, int(watermark)]
+                if topic_id is not None:
+                    tail_where += " AND topic_id = ?"
+                    tail_params.append(topic_id)
                 for row in conn.execute(
-                    "SELECT id, tool_calls FROM messages "
-                    "WHERE session_id = ? AND active = 1 AND id > ? "
+                    f"SELECT id, tool_calls FROM messages "
+                    f"WHERE {tail_where} "
                     "ORDER BY id",
-                    (session_id, int(watermark)),
+                    tail_params,
                 ).fetchall():
                     tail_ids.append(int(row["id"]))
                     raw = row["tool_calls"]
@@ -10042,17 +10050,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         except (TypeError, ValueError):
                             pass
 
-            # Soft-archive the live turns: active=0 hides them from the live
-            # context load, compacted=1 marks them as "summarized away" (vs
-            # rewind/undo's active=0+compacted=0, which means "user took it
-            # back"). search_messages includes compacted=1 rows by default so
-            # the pre-compaction transcript stays discoverable; live-context
+            # Soft-archive the live turns for this topic (or all if
+            # topic_id=None): active=0 hides them from the live context load,
+            # compacted=1 marks them as "summarized away" (vs rewind/undo's
+            # active=0+compacted=0, which means "user took it back").
+            # search_messages includes compacted=1 rows by default so the
+            # pre-compaction transcript stays discoverable; live-context
             # loads (active=1 only) still exclude them. Tail originals are
             # archived too — their clones (below) carry the live copy.
+            where = "session_id = ? AND active = 1"
+            params: list = [session_id]
+            if topic_id is not None:
+                where += " AND topic_id = ?"
+                params.append(topic_id)
             conn.execute(
-                "UPDATE messages SET active = 0, compacted = 1 "
-                "WHERE session_id = ? AND active = 1",
-                (session_id,),
+                f"UPDATE messages SET active = 0, compacted = 1 WHERE {where}",
+                params,
             )
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, compacted_messages

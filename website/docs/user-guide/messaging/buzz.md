@@ -54,6 +54,45 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
 
+## Recommended default settings
+
+When wiring up Buzz, set these defaults in `config.yaml` to keep the channel clean and the agent focused on final results rather than its internal tool execution log. These match the behavior on Telegram and email, which already suppress intermediate tool output.
+
+```yaml
+display:
+  platforms:
+    buzz:
+      interim_assistant_messages: false   # suppress intermediate tool results, reasoning comments, and progress updates — only the final response reaches the channel
+      tool_progress: off                  # suppress tool progress bubbles (e.g., "Running terminal command...", "Reading file...")
+gateway:
+  platforms:
+    buzz:
+      enabled: true
+      extra:
+        relay_url: https://mycommunity.communities.buzz.xyz
+        channels:                         # channel UUIDs to watch (empty = all joined)
+          - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
+        home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
+        poll_interval: 4                  # seconds between inbound poll sweeps (default 4 — balances latency vs. relay load)
+        cli_path: ""                      # buzz binary (default: PATH, then ~/bin/buzz)
+        credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
+        allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
+        require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
+```
+
+**Why these defaults:**
+
+- `interim_assistant_messages: false` — prevents intermediate tool results, reasoning comments, and progress updates from being posted as separate messages to the channel. Only the final response goes to the channel.
+- `tool_progress: off` — suppresses tool progress bubbles (e.g., "Running terminal command...", "Reading file..."). Keeps the channel focused on actual results, not process.
+- `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
+- `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
+- `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
+
+**Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
+
+**Exception:** If you want users to see tool progress (e.g., for long-running operations), set `tool_progress: all` — but `interim_assistant_messages` should still be `false` to avoid spamming with every tool result.
+
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.

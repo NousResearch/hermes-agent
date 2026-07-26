@@ -107,6 +107,33 @@ By default the allow-list is empty, which means every community member who menti
 
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
 
+## Multi-agent: one gateway, N Buzz members
+
+When the gateway runs the multi-agent registry (`gateway.agents`), each agent can carry its **own** Buzz identity — its own Nostr key, its own workspace membership, its own mention gate, its own DM inbox — all from a single gateway process:
+
+```yaml
+gateway:
+  agents:
+    chip:
+      home_dir: ~/.hermes/agents/chip
+      buzz:
+        nsec_env: CHIP_BUZZ_NSEC     # NAME of the env var holding chip's key
+    scout:
+      home_dir: ~/.hermes/agents/scout
+      buzz:
+        nsec_env: SCOUT_BUZZ_NSEC
+        require_mention: false        # per-agent override
+```
+
+Rules:
+
+- `nsec_env` names an environment variable — the key value itself never appears in `config.yaml`. It is resolved from the process environment (or gateway secret scope) first, then from the agent's own `<home_dir>/.env`. There is **no fallback** to the shared `BUZZ_PRIVATE_KEY`: if the named variable is missing, that agent's connection stays down rather than impersonating another identity.
+- Every other key in the agent's `buzz:` block (`channels`, `home_channel`, `require_mention`, `poll_interval`, `allowed_users`, `relay_url`, `cli_path`) overrides the shared `gateway.platforms.buzz.extra` defaults for that agent only. For these per-agent connections the agent's block also wins over global `BUZZ_*` env vars (one process hosts N connections, so a global var can only be a default).
+- Routing is by identity: a channel message that @mentions chip dispatches to chip; a DM sent to scout's key dispatches to scout. Replies always leave from the identity that was addressed.
+- Two agents (or an agent and the shared platform connection) resolving the **same** key are refused at startup — one key cannot be two workspace members.
+
+The shared `gateway.platforms.buzz` block remains optional: you can run agents-only (no shared connection), shared-only (legacy single identity), or both side by side.
+
 ## Run the gateway
 
 ```bash

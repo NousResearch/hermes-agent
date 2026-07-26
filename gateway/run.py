@@ -5774,6 +5774,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # sites are untouched when multiplexing is off (this dict is empty).
         # Populated by _start_secondary_profile_adapters().
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Per-agent platform identities (see gateway/agent_platforms.py):
+        # adapters owned by a single agent from the AgentProfile registry,
+        # keyed by agent_id then Platform. Empty unless agents declare a
+        # platform block (e.g. agents.<id>.buzz.nsec_env), so the ~93
+        # existing self.adapters[...] sites are untouched by default.
+        self._agent_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # (agent_id, Platform) -> AgentPlatformBinding for every DECLARED
+        # binding (connected or not). authz_mixin._adapter_for_source fails
+        # closed on entries here: an agent that owns its own identity never
+        # falls back to the shared platform adapter for replies.
+        self._agent_bindings: Dict[tuple, Any] = {}
+        # (agent_id, Platform) -> reconnect task guard (mirrors
+        # _profile_failed_platforms for multiplexed profiles).
+        self._agent_failed_platforms: Dict[tuple, asyncio.Task] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -11242,6 +11256,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # From this point onward every adapter retry is non-evicting.
             self._platform_lock_takeover_on_start = False
 
+        # Per-agent platform identities: one extra connection per agent that
+        # declares its own platform credential (agents.<id>.buzz.nsec_env).
+        # No-op when no agent declares one. See gateway/agent_platforms.py.
+        try:
+            connected_count += await self._start_agent_platform_adapters()
+        except Exception as e:
+            logger.error("Per-agent adapter startup failed: %s", e, exc_info=True)
+
         # A platform we skipped on the primary for a missing credential was
         # supposed to be picked up by a secondary profile that owns the token.
         # If none did, the platform is enabled in config.yaml yet silently
@@ -12978,6 +13000,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _amap.clear()
             if hasattr(self, "_profile_adapters"):
                 self._profile_adapters.clear()
+
+            # Disconnect per-agent adapters (agent platform identities).
+            for _aid, _amap in list(getattr(self, "_agent_adapters", {}).items()):
+                for platform, adapter in list(_amap.items()):
+                    await self._bounded_adapter_teardown(adapter, platform)
+                _amap.clear()
+            if hasattr(self, "_agent_adapters"):
+                self._agent_adapters.clear()
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
@@ -13629,6 +13659,295 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(self.config, "multiplex_profiles", False):
             return self._make_default_profile_message_handler()
         return self._handle_message
+
+
+    # ── Per-agent platform identities (gateway/agent_platforms.py) ────────
+
+    async def _start_agent_platform_adapters(self) -> int:
+        """Bring up one adapter per (agent, platform) credential binding.
+
+        Returns the number of per-agent adapters that connected. No-op
+        (returns 0) unless at least one agent in the registry declares a
+        platform block (e.g. ``agents.<id>.buzz.nsec_env``).
+
+        Each adapter is a full, independent platform connection carrying that
+        agent's own identity: inbound events are stamped with the owning
+        ``agent_id`` (connection identity IS the routing decision) and
+        replies go back out the same connection via the transport ref kept
+        on the source. Same-credential collisions — with the shared primary
+        adapter or between two agents — are refused: one key cannot be two
+        workspace members, and two pollers on one key would race per-message.
+        """
+        from gateway.agent_platforms import (
+            build_agent_platform_bindings,
+            resolve_binding_secret,
+            secret_fingerprint,
+        )
+
+        registry = getattr(self, "_agent_registry", None) or {}
+        bindings, problems = build_agent_platform_bindings(registry, self.config)
+        for problem in problems:
+            logger.warning("agent-platform: %s", problem)
+        if not bindings:
+            return 0
+
+        # Seed the same-credential guard with every primary adapter's
+        # fingerprint (token-style creds AND the Buzz private key attr).
+        claimed: Dict[tuple, str] = {}
+        for _plat, _ad in self.adapters.items():
+            fp = self._adapter_credential_fingerprint(_ad)
+            if fp is not None:
+                claimed[(_plat, fp)] = "<primary>"
+            _pk = getattr(_ad, "_private_key", None)
+            _pk_fp = secret_fingerprint(_pk) if isinstance(_pk, str) else None
+            if _pk_fp is not None:
+                claimed[(_plat, _pk_fp)] = "<primary>"
+
+        connected = 0
+        for binding in bindings:
+            platform = binding.platform
+            # Register the binding before connecting so _adapter_for_source
+            # fails closed (no shared-adapter fallback) even while the
+            # connection is still coming up or has failed.
+            self._agent_bindings[(binding.agent_id, platform)] = binding
+
+            secret = resolve_binding_secret(binding)
+            if not secret:
+                logger.error(
+                    "agent '%s': %s credential %r is not resolvable (checked "
+                    "the process env/secret scope and %s) — skipping this "
+                    "agent's %s connection",
+                    binding.agent_id,
+                    platform.value,
+                    binding.secret_env,
+                    binding.env_file or "<no agent .env>",
+                    platform.value,
+                )
+                continue
+            fp = secret_fingerprint(secret)
+            del secret  # value no longer needed; adapter re-resolves by name
+            owner = claimed.get((platform, fp))
+            if owner is not None:
+                logger.error(
+                    "agent '%s' and %s resolve the same %s key — refusing the "
+                    "duplicate connection (one key cannot be two workspace "
+                    "members). Give each agent its own credential.",
+                    binding.agent_id,
+                    "the primary adapter" if owner == "<primary>" else f"agent '{owner}'",
+                    platform.value,
+                )
+                continue
+            claimed[(platform, fp)] = binding.agent_id
+
+            try:
+                adapter = self._create_adapter(platform, binding.config)
+            except Exception as e:
+                logger.error(
+                    "agent '%s': _create_adapter('%s') raised %s",
+                    binding.agent_id, platform.value, e, exc_info=True,
+                )
+                continue
+            if not adapter:
+                logger.warning(
+                    "agent '%s': no adapter for platform '%s' — is the plugin "
+                    "installed?",
+                    binding.agent_id, platform.value,
+                )
+                continue
+
+            self._configure_agent_adapter(adapter, binding.agent_id, platform)
+
+            try:
+                success = await self._connect_initial_adapter_with_timeout(
+                    adapter, platform
+                )
+                if success:
+                    self._agent_adapters.setdefault(binding.agent_id, {})[
+                        platform
+                    ] = adapter
+                    connected += 1
+                    logger.info(
+                        "✓ %s connected (agent: %s)",
+                        platform.value, binding.agent_id,
+                    )
+                else:
+                    logger.warning(
+                        "✗ %s failed to connect (agent: %s)",
+                        platform.value, binding.agent_id,
+                    )
+                    await self._safe_adapter_disconnect(adapter, platform)
+                    if getattr(adapter, "fatal_error_retryable", True):
+                        self._schedule_agent_adapter_reconnect(
+                            binding.agent_id, platform
+                        )
+            except Exception as e:
+                logger.error(
+                    "✗ %s error (agent: %s): %s",
+                    platform.value, binding.agent_id, e,
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                self._schedule_agent_adapter_reconnect(binding.agent_id, platform)
+        return connected
+
+    def _configure_agent_adapter(
+        self,
+        adapter: BasePlatformAdapter,
+        agent_id: str,
+        platform: Platform,
+    ) -> None:
+        """Install handlers for a per-agent adapter.
+
+        Uses the shared ``_handle_message`` directly: ``set_routing_context``
+        below stamps every inbound event with the owning ``agent_id``, and
+        ``_handle_message`` already binds the matching AgentProfile
+        ContextVar from ``source.agent_id``.
+        """
+        adapter.set_message_handler(self._handle_message)
+        adapter.set_fatal_error_handler(
+            self._make_agent_fatal_error_handler(agent_id, platform)
+        )
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        _set_reaction = getattr(adapter, "set_reaction_handler", None)
+        if callable(_set_reaction):
+            _set_reaction(self._handle_reaction_event)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter.set_authorization_check(self._make_adapter_auth_check(platform))
+        adapter._busy_text_mode = self._busy_text_mode
+        # Connection identity IS the routing decision: a message that arrived
+        # on this adapter was addressed to this agent's platform identity
+        # (mention of ITS name or DM to ITS key). The gateway routes table is
+        # deliberately not installed here — a generic {platform: buzz} route
+        # must not steal messages away from the member they were addressed
+        # to. The select_agent plugin hook still runs (explicit override).
+        adapter.set_routing_context(
+            routes=[], default_agent=agent_id, gateway=self
+        )
+
+    def _make_agent_fatal_error_handler(
+        self, agent_id: str, platform: Platform
+    ) -> Callable[[BasePlatformAdapter], Awaitable[None]]:
+        """Route a per-agent adapter fatal error to that agent's slot."""
+        async def _handler(adapter: BasePlatformAdapter) -> None:
+            await self._handle_agent_adapter_fatal_error(
+                agent_id, platform, adapter
+            )
+
+        return _handler
+
+    async def _handle_agent_adapter_fatal_error(
+        self,
+        agent_id: str,
+        platform: Platform,
+        adapter: BasePlatformAdapter,
+    ) -> None:
+        """Remove a failed per-agent adapter without touching other slots."""
+        agent_map = getattr(self, "_agent_adapters", {}).get(agent_id)
+        if not isinstance(agent_map, dict) or agent_map.get(platform) is not adapter:
+            logger.debug(
+                "Ignoring stale fatal error from %s adapter (agent: %s)",
+                platform.value, agent_id,
+            )
+            return
+        agent_map.pop(platform, None)
+        await self._safe_adapter_disconnect(adapter, platform)
+        if not self._running:
+            return
+        logger.error(
+            "Fatal %s adapter error for agent %s (%s)",
+            platform.value,
+            agent_id,
+            adapter.fatal_error_code or "unknown",
+        )
+        if adapter.fatal_error_retryable:
+            self._schedule_agent_adapter_reconnect(agent_id, platform)
+
+    def _schedule_agent_adapter_reconnect(
+        self, agent_id: str, platform: Platform
+    ) -> None:
+        """Schedule one reconnect task per (agent, platform) slot."""
+        if not self._running:
+            return
+        key = (agent_id, platform)
+        existing = self._agent_failed_platforms.get(key)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._run_agent_adapter_reconnect(agent_id, platform),
+            name=f"agent-reconnect:{agent_id}:{platform.value}",
+        )
+        self._agent_failed_platforms[key] = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(
+            lambda t, k=key: self._agent_failed_platforms.pop(k, None)
+            if self._agent_failed_platforms.get(k) is t
+            else None
+        )
+
+    async def _run_agent_adapter_reconnect(
+        self, agent_id: str, platform: Platform
+    ) -> None:
+        """Reconnect a per-agent adapter with backoff, from its binding.
+
+        The adapter is always recreated from the stored
+        ``AgentPlatformBinding`` so the credential is re-resolved BY NAME
+        under the agent's own scope — never rebuilt from another agent's or
+        the primary profile's credentials.
+        """
+        binding = self._agent_bindings.get((agent_id, platform))
+        if binding is None:
+            return
+        attempts = 0
+        while self._running:
+            attempts += 1
+            backoff = _reconnect_backoff(attempts)
+            logger.info(
+                "%s reconnect retry in %ds (agent: %s)",
+                platform.value, backoff, agent_id,
+            )
+            await asyncio.sleep(backoff)
+            if not self._running:
+                return
+            agent_map = self._agent_adapters.setdefault(agent_id, {})
+            if platform in agent_map:
+                return  # A newer connect already won the slot.
+            adapter = None
+            try:
+                adapter = self._create_adapter(platform, binding.config)
+                if adapter is None:
+                    return
+                self._configure_agent_adapter(adapter, agent_id, platform)
+                success = await self._connect_adapter_with_timeout(
+                    adapter, platform, is_reconnect=True
+                )
+                if success and self._running:
+                    if platform not in agent_map:
+                        agent_map[platform] = adapter
+                        logger.info(
+                            "✓ %s reconnected (agent: %s)",
+                            platform.value, agent_id,
+                        )
+                        return
+                    await self._safe_adapter_disconnect(adapter, platform)
+                    return
+                await self._safe_adapter_disconnect(adapter, platform)
+                if (
+                    getattr(adapter, "has_fatal_error", False)
+                    and not getattr(adapter, "fatal_error_retryable", True)
+                ):
+                    return
+            except asyncio.CancelledError:
+                if adapter is not None:
+                    await self._safe_adapter_disconnect(adapter, platform)
+                raise
+            except Exception:
+                if adapter is not None:
+                    await self._safe_adapter_disconnect(adapter, platform)
+                logger.debug(
+                    "%s reconnect attempt failed (agent: %s)",
+                    platform.value, agent_id, exc_info=True,
+                )
 
     @staticmethod
     def _adapter_credential_claim(

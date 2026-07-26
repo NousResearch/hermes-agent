@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium (デフォルト)"
     level_disabled:            "none (無効)"
+    busy_mid_turn:             "⏳ エージェントは **{level}** の推論レベルで実行中です — ターンの途中で `/reasoning` はレベルを変更できません。変更するには、現在の応答を待つか、先に `/stop` を使用してください。"
     scope_session:             "セッションのオーバーライド"
     scope_global:              "グローバル設定"
     status:                    "🧠 **推論設定**\n\n**強度:** `{level}`\n**スコープ:** {scope}\n**表示:** {display}\n\n_使い方:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

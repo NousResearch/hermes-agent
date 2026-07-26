@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium (기본값)"
     level_disabled:            "none (비활성화됨)"
+    busy_mid_turn:             "⏳ 에이전트가 **{level}** 추론 수준으로 실행 중입니다 — 턴 도중에는 `/reasoning`으로 수준을 변경할 수 없습니다. 변경하려면 현재 응답을 기다리거나 먼저 `/stop`을 사용하세요."
     scope_session:             "세션 재정의"
     scope_global:              "전역 설정"
     status:                    "🧠 **추론 설정**\n\n**노력:** `{level}`\n**범위:** {scope}\n**표시:** {display}\n\n_사용법:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

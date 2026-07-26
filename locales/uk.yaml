@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium (за замовчуванням)"
     level_disabled:            "none (вимкнено)"
+    busy_mid_turn:             "⏳ Агент працює з рівнем міркування **{level}** — `/reasoning` не може змінити рівень під час ходу. Щоб змінити його, дочекайтеся поточної відповіді або спочатку скористайтеся `/stop`."
     scope_session:             "перевизначення сеансу"
     scope_global:              "глобальна конфігурація"
     status:                    "🧠 **Налаштування мислення**\n\n**Зусилля:** `{level}`\n**Область:** {scope}\n**Показ:** {display}\n\n_Використання:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

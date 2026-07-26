@@ -74,9 +74,7 @@ const ThinkingDisclosure: FC<{
   const isPreview = pending && userOpen === null
 
   // While the preview is live, pin the scroll container to the bottom on
-  // every content growth so the latest tokens are always visible. Combined
-  // with the top mask in styles.css, this reads as text settling in from
-  // below while older lines fade out at the top.
+  // every content growth so the latest tokens are always visible.
   useEffect(() => {
     if (!isPreview) {
       return
@@ -134,7 +132,7 @@ const ThinkingDisclosure: FC<{
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus).
             'mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1',
-            isPreview && 'thinking-preview max-h-40'
+            isPreview && 'max-h-40'
           )}
           ref={scrollRef}
         >

@@ -342,7 +342,7 @@ def _build_topic_detection_block(agent: Any) -> str:
     topics exist yet. Placed at the end of the system prompt so changes
     only invalidate the last few lines of the prefix cache.
     """
-    db = getattr(agent, "db", None)
+    db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not db or not session_id:
         return ""

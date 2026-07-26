@@ -638,6 +638,15 @@ export const zhHant = defineLocale({
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
     },
+    quickEntry: {
+      enabledTitle: '快速輸入',
+      enabledDesc: '用全域快速鍵在任何地方喚出一個小輸入框，無需開啟 Hermes 即可送出提示。',
+      shortcutTitle: '快速輸入快速鍵',
+      shortcutDesc: '至少需要一個修飾鍵，例如 CommandOrControl+Shift+Space。',
+      active: '快速鍵已生效。',
+      takenBy: '此快速鍵已被其他應用程式占用，請換一個。',
+      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。'
+    },
     credentials: {
       pasteKey: '貼上金鑰',
       pasteLabelKey: label => `貼上 ${label} 金鑰`,

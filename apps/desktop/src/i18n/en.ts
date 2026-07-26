@@ -551,6 +551,16 @@ export const en: Translations = {
       keepAwakeTitle: 'Keep computer awake',
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
     },
+    quickEntry: {
+      enabledTitle: 'Quick Entry',
+      enabledDesc:
+        'Summon a small composer from anywhere with a global shortcut and fire a prompt without opening Hermes.',
+      shortcutTitle: 'Quick Entry shortcut',
+      shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
+      active: 'Shortcut is active.',
+      takenBy: 'Another app already uses this shortcut — pick a different one.',
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
+    },
     credentials: {
       pasteKey: 'Paste key',
       pasteLabelKey: label => `Paste ${label} key`,

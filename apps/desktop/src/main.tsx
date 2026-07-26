@@ -32,8 +32,12 @@ if (import.meta.env.MODE !== 'production' || import.meta.env.VITE_PERF_PROBE ===
   import('./app/chat/perf-probe')
 }
 
-if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
+const winParam = new URLSearchParams(window.location.search).get('win')
+
+if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
+} else if (winParam === 'quick') {
+  void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
 } else {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

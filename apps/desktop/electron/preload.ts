@@ -36,6 +36,30 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
     }
   },
+  // Quick Entry: the global-hotkey mini composer window. Main owns the OS
+  // shortcut + the persisted preference; the quick window only captures text
+  // and hands it back, and the primary renderer submits it through the normal
+  // prompt path.
+  quickEntry: {
+    getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
+    setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
+    submit: text => ipcRenderer.send('hermes:quick-entry:submit', text),
+    dismiss: () => ipcRenderer.send('hermes:quick-entry:dismiss'),
+    // Main → primary renderer: text captured by the quick window.
+    onSubmit: callback => {
+      const listener = (_event, text) => callback(text)
+      ipcRenderer.on('hermes:quick-entry:submit', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:submit', listener)
+    },
+    // Main → quick window: you were just summoned (reset draft + refocus).
+    onShown: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('hermes:quick-entry:shown', listener)
+
+      return () => ipcRenderer.removeListener('hermes:quick-entry:shown', listener)
+    }
+  },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),

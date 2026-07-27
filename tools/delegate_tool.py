@@ -34,6 +34,8 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from agent.tool_guardrails import commit_subagent_spawn
+
 from toolsets import TOOLSETS
 from agent.interrupt_compat import request_hard_interrupt
 
@@ -3619,6 +3621,8 @@ def delegate_task(
         if schema_err:
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
+
+    commit_subagent_spawn(len(task_list))
 
     overall_start = time.monotonic()
     results = []

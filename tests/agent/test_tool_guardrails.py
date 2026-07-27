@@ -173,6 +173,52 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 
 
 
+def test_subagent_cap_uses_commit_model():
+    """before_call checks cap; commit_subagent_spawn charges the counter.
+
+    The counter only increases after commit, which delegate_tool calls
+    after normalisation.  before_call alone does not charge.  (#72550)
+    """
+    from agent.tool_guardrails import _set_active_subagent_guardrail, commit_subagent_spawn
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=5))
+    )
+    _set_active_subagent_guardrail(controller)
+    # before_call does NOT charge — counter stays 0.
+    assert controller.before_call(
+        "delegate_task", {"tasks": [{"goal": "a"}, {"goal": "b"}, {"goal": "c"}]}
+    ).action == "allow"
+    assert controller._turn_subagent_count == 0
+    # Commit 3 → count goes to 3.
+    commit_subagent_spawn(3)
+    assert controller._turn_subagent_count == 3
+    # Next call: allowed (count 3 < cap 5).
+    assert controller.before_call("delegate_task", {"goal": "d"}).action == "allow"
+    commit_subagent_spawn(1)
+    assert controller._turn_subagent_count == 4
+    # Allowed (4 < 5).
+    assert controller.before_call("delegate_task", {"goal": "e"}).action == "allow"
+    commit_subagent_spawn(1)
+    assert controller._turn_subagent_count == 5
+    # Now at 5 ≥ 5 → blocked.
+    decision = controller.before_call("delegate_task", {"goal": "f"})
+    assert decision.action == "block"
+    assert decision.code == "loop_subagent_cap"
+
+
+def test_subagent_cap_resets_each_turn():
+    from agent.tool_guardrails import _set_active_subagent_guardrail, commit_subagent_spawn
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=1))
+    )
+    _set_active_subagent_guardrail(controller)
+    assert controller.before_call("delegate_task", {"goal": "a"}).action == "allow"
+    commit_subagent_spawn(1)
+    assert controller._turn_subagent_count == 1
+    assert controller.before_call("delegate_task", {"goal": "b"}).action == "block"
+    controller.reset_for_turn()
+    assert controller._turn_subagent_count == 0
+    assert controller.before_call("delegate_task", {"goal": "c"}).action == "allow"
 
 
 

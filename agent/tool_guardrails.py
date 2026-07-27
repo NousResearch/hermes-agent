@@ -270,6 +270,39 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     return False, ""
 
 
+# ── Subagent spawn reservation/commit (#72550) ────────────────────────────
+# delegate_task normalises its arguments AFTER the guardrail check, so the
+# guardrail cannot know the actual spawn count at before_call() time.  We
+# defer charging to commit_subagent_spawn(), which delegate_tool calls
+# after normalisation.  The active controller is wired in by _execute_tool_calls.
+
+_active_subagent_guardrail: "ToolCallGuardrailController | None" = None
+
+
+def _set_active_subagent_guardrail(ctrl: "ToolCallGuardrailController | None") -> None:
+    global _active_subagent_guardrail
+    _active_subagent_guardrail = ctrl
+
+
+def commit_subagent_spawn(count: int) -> None:
+    """Commit the *actual* subagent spawn count after delegate_task normalisation.
+
+    Called from delegate_tool.py after JSON-string recovery and
+    max_concurrent_children validation.  Caps at the configured
+    max_subagents so an oversized (then rejection-trimmed) batch does
+    not consume spendable budget.
+    """
+    global _active_subagent_guardrail
+    if _active_subagent_guardrail is None:
+        return
+    cap = _active_subagent_guardrail.config.loop_caps.max_subagents
+    if cap:
+        available = cap - _active_subagent_guardrail._turn_subagent_count
+        _active_subagent_guardrail._turn_subagent_count += min(count, available)
+    else:
+        _active_subagent_guardrail._turn_subagent_count += count
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -506,7 +539,9 @@ class ToolCallGuardrailController:
                 )
                 self._halt_decision = decision
                 return decision
-            self._turn_subagent_count += spawn_count
+            # Defer charging: commit_subagent_spawn() is called after
+            # delegate_tool normalisation (JSON-string recovery +
+            # max_concurrent_children validation).  (#72550)
             return None
 
         return None

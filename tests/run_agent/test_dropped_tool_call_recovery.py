@@ -53,7 +53,7 @@ def loop_agent():
 def _dropped_tool_call_response(content: str):
     """A response whose finish_reason claims a tool call, but tool_calls is
     empty — the provider contract violation this fix recovers from."""
-    from tests.run_agent.test_run_agent import _mock_assistant_msg
+    from tests.run_agent._run_agent_helpers import _mock_assistant_msg
     return SimpleNamespace(
         id="chatcmpl-dropped",
         model="test/model",
@@ -71,7 +71,7 @@ class TestDroppedToolCallRecovery:
         """finish_reason=tool_calls with an empty tool_calls array must
         re-prompt the model to emit the call rather than exiting the loop
         with the narration as the final answer."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_response
 
         loop_agent.client.chat.completions.create.side_effect = [
             _dropped_tool_call_response("Let me verify the PR and gather evidence."),
@@ -107,7 +107,7 @@ class TestDroppedToolCallRecovery:
         """The narration may live only in the reasoning field, leaving content
         empty. The recovery must still fire — it keys on the finish_reason /
         tool_calls mismatch, not on content being present."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_response
 
         loop_agent.client.chat.completions.create.side_effect = [
             _dropped_tool_call_response(""),  # no visible content at all
@@ -129,7 +129,7 @@ class TestDroppedToolCallRecovery:
     def test_clean_stop_text_turn_is_unaffected(self, loop_agent):
         """A genuine finish_reason=stop text response must exit normally — the
         recovery path must not fire on ordinary final answers."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_response
 
         loop_agent.client.chat.completions.create.side_effect = [
             _mock_response(content="Here is your answer.", finish_reason="stop"),
@@ -150,7 +150,7 @@ class TestDroppedToolCallRecovery:
     def test_persistent_dropped_tool_calls_are_bounded(self, loop_agent):
         """If the model never emits a call, the recovery must give up after a
         bounded number of consecutive stalls instead of looping forever."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_response
 
         # Stage plenty of dropped-tool-call responses followed by a clean stop,
         # so that if the bound is respected the loop exits on its own well
@@ -180,7 +180,7 @@ class TestDroppedToolCallRecovery:
         internal "issue the actual tool call now" instruction as user-authored
         context (#69630 review follow-up)."""
         from run_agent import _is_ephemeral_scaffolding
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_response
 
         loop_agent.client.chat.completions.create.side_effect = [
             _dropped_tool_call_response("Let me verify the PR."),
@@ -218,7 +218,7 @@ class TestDroppedToolCallRecovery:
         """If the model answers the nudge with a genuine final text turn, the
         trailing scaffolding must not leave the transcript tail on a synthetic
         user message (strict role alternation on the next turn)."""
-        from tests.run_agent.test_run_agent import _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_response
 
         loop_agent.client.chat.completions.create.side_effect = [
             _dropped_tool_call_response("Let me check."),

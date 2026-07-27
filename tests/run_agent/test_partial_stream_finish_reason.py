@@ -349,7 +349,7 @@ class TestConversationLoopPartialStreamContinuation:
         through length_continue_retries — the loop persists the partial
         content and asks the model to continue."""
 
-        from tests.run_agent.test_run_agent import _mock_response, _mock_assistant_msg
+        from tests.run_agent._run_agent_helpers import _mock_response, _mock_assistant_msg
 
         # First API call: the partial-stream stub (length on partial-stream-stub id).
         partial_stub = SimpleNamespace(
@@ -495,7 +495,7 @@ class TestContentFilterStallActivatesFallback:
         """Layer 3: a tagged stub activates fallback on the FIRST pass, with
         zero continuation retries burned, and the fallback provider then
         completes the turn."""
-        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_assistant_msg, _mock_response
 
         def _filter_stub():
             return SimpleNamespace(
@@ -547,7 +547,7 @@ class TestContentFilterStallActivatesFallback:
     def test_tagged_stub_no_fallback_falls_through(self, loop_agent):
         """When no fallback chain is configured, a tagged stub falls through
         to the normal continuation path (best-effort) rather than crashing."""
-        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_response
+        from tests.run_agent._run_agent_helpers import _mock_assistant_msg, _mock_response
 
         def _filter_stub():
             return SimpleNamespace(

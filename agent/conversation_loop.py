@@ -72,7 +72,10 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_caching import (
+    apply_anthropic_cache_control,
+    strip_anthropic_cache_control,
+)
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -834,6 +837,134 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
         if not _rewrite_system_content_blocks(api_messages[0], effective):
             api_messages[0]["content"] = effective
     return sp
+
+
+def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
+    """Rebuild ``_cached_system_prompt_static`` when caching becomes active.
+
+    Sessions restored under a cache-off primary skip the static-prefix rebuild
+    (gated on ``_use_prompt_caching`` at restore time). A later failover to a
+    cache-on provider would otherwise redecorate with ``static_system_prefix=
+    None`` and silently fall back to the legacy system-plus-3 layout (#72626).
+    """
+    if not getattr(agent, "_use_prompt_caching", False):
+        return
+    stored = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(stored, str) or not stored:
+        return
+    existing = getattr(agent, "_cached_system_prompt_static", None)
+    if isinstance(existing, str) and existing and stored.startswith(existing):
+        return
+    try:
+        from agent.system_prompt import build_system_prompt_parts as _build_parts
+
+        static = _build_parts(agent, system_message=system_message)["stable"]
+        if static and stored.startswith(static):
+            agent._cached_system_prompt_static = static
+        else:
+            agent._cached_system_prompt_static = None
+    except Exception:
+        logger.debug(
+            "static system-prefix reconstruction failed on failover redecoration",
+            exc_info=True,
+        )
+        agent._cached_system_prompt_static = None
+
+
+def _peel_moa_guidance(
+    messages: List[Dict[str, Any]],
+    guidance: Any,
+) -> List[Dict[str, Any]]:
+    """Remove MoA reference guidance previously attached by ``_attach_reference_guidance``.
+
+    Redecoration must run on the base transcript so the last cache breakpoint
+    does not land on the turn-varying guidance block; callers then rebase via
+    ``rebase_prepared_request`` (#72626).
+    """
+    if not guidance or not messages:
+        return messages
+    guidance_text = str(guidance)
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        return messages
+    content = last.get("content")
+    if content == guidance_text:
+        return list(messages[:-1])
+    suffix = "\n\n" + guidance_text
+    if isinstance(content, str) and content.endswith(suffix):
+        peeled = dict(last)
+        peeled["content"] = content[: -len(suffix)]
+        return [*messages[:-1], peeled]
+    if isinstance(content, list) and content:
+        last_part = content[-1]
+        if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
+            text = last_part.get("text") or ""
+            if text == suffix or text == guidance_text:
+                peeled = dict(last)
+                peeled["content"] = list(content[:-1])
+                return [*messages[:-1], peeled]
+            if text.endswith(suffix):
+                new_part = dict(last_part)
+                new_part["text"] = text[: -len(suffix)]
+                peeled = dict(last)
+                peeled["content"] = [*content[:-1], new_part]
+                return [*messages[:-1], peeled]
+    return messages
+
+
+def _redecorate_prompt_cache_for_provider(
+    agent,
+    api_messages: List[Dict[str, Any]],
+    *,
+    system_message=None,
+    moa_prepared: Optional[Dict[str, Any]] = None,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Strip and re-apply cache_control for the *current* provider policy.
+
+    Decoration runs once per call block before the retry loop for the primary
+    provider. ``try_activate_fallback`` refreshes ``_use_prompt_caching`` /
+    ``_use_native_cache_layout`` but the nine failover ``continue`` paths reused
+    the old ``api_messages`` (#72626). Mirror ``_reapply_reasoning_echo_for_provider``
+    by reshaping at the top of each retry attempt.
+
+    The source list is the mutated in-flight request (image shrink / ASCII /
+    reasoning_details recoveries already applied) — never a pristine
+    pre-decoration snapshot. MoA guidance is peeled, the base is redecorated,
+    then ``rebase_prepared_request`` re-attaches guidance outside the cached
+    span.
+    """
+    messages: List[Dict[str, Any]] = [
+        dict(m) if isinstance(m, dict) else m for m in (api_messages or [])
+    ]
+    prepared = moa_prepared
+    guidance = prepared.get("guidance") if isinstance(prepared, dict) else None
+    if guidance:
+        messages = _peel_moa_guidance(messages, guidance)
+
+    strip_anthropic_cache_control(messages)
+
+    if getattr(agent, "_use_prompt_caching", False):
+        _ensure_cached_system_prompt_static(agent, system_message=system_message)
+        static = getattr(agent, "_cached_system_prompt_static", None)
+        messages = apply_anthropic_cache_control(
+            messages,
+            cache_ttl=getattr(agent, "_cache_ttl", None) or "5m",
+            native_anthropic=bool(getattr(agent, "_use_native_cache_layout", False)),
+            static_system_prefix=static if isinstance(static, str) else None,
+        )
+
+    if (
+        prepared is not None
+        and getattr(agent, "provider", None) == "moa"
+        and guidance
+    ):
+        completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+        rebase = getattr(completions, "rebase_prepared_request", None)
+        if callable(rebase):
+            prepared = rebase(prepared, messages)
+            messages = prepared["messages"]
+
+    return messages, prepared
 
 
 def _apply_context_engine_selection(
@@ -1909,6 +2040,18 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
+                # Same story for prompt-cache decoration (#72626): try_activate_
+                # fallback refreshes the policy flags, but the decorated list
+                # still carries the primary's breakpoints (or none). Strip and
+                # re-render for the current provider before building kwargs.
+                api_messages, _moa_prepared_request = (
+                    _redecorate_prompt_cache_for_provider(
+                        agent,
+                        api_messages,
+                        system_message=system_message,
+                        moa_prepared=_moa_prepared_request,
+                    )
+                )
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)

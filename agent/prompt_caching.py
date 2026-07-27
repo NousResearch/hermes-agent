@@ -119,6 +119,43 @@ def _apply_system_cache_markers(
     return 1
 
 
+def strip_anthropic_cache_control(
+    api_messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove ``cache_control`` markers and flatten pure-text content lists.
+
+    Used before re-applying decoration after a mid-turn provider failover so
+    the mutated, undecorated shape (image shrink / ASCII cleanup / etc.) is
+    preserved while markers match the *new* provider's cache policy (#72626).
+
+    Pure-text content lists (including the ``[static, volatile]`` system
+    layout) are flattened back to a single string so
+    :func:`apply_anthropic_cache_control` can re-split them. Multimodal
+    content lists keep their part structure; only per-part markers are
+    removed.
+
+    Mutates ``api_messages`` in place and returns the same list.
+    """
+    for msg in api_messages:
+        if not isinstance(msg, dict):
+            continue
+        msg.pop("cache_control", None)
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict):
+                part.pop("cache_control", None)
+        if content and all(
+            isinstance(part, dict)
+            and part.get("type", "text") == "text"
+            and isinstance(part.get("text"), str)
+            for part in content
+        ):
+            msg["content"] = "".join(part["text"] for part in content)
+    return api_messages
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",

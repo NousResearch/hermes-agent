@@ -784,6 +784,24 @@ class RelayAdapter(BasePlatformAdapter):
         )
         if effective_reply_to is None and reply_to is not None:
             send_metadata.pop("reply_to_message_id", None)
+        # QA-7: the connector's Slack sender THREADS ON METADATA ONLY —
+        # threadTs() reads metadata.thread_id/thread_ts and never looks at
+        # the frame's reply_to. A send whose only threading signal is
+        # reply_to (base.py's final-reply and fallback lanes build metadata
+        # from source.thread_id = None for a top-level DM) would post to the
+        # home channel even though _resolve_reply_to_for_send kept the
+        # anchor. Promote the surviving anchor into metadata.thread_id so
+        # the wire carries it where the connector actually reads it. Only
+        # when the mode gate kept the anchor (thread-per-message / real
+        # thread) — flat mode already nulled effective_reply_to above.
+        if (
+            effective_reply_to is not None
+            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
+            and not (
+                send_metadata.get("thread_id") or send_metadata.get("thread_ts")
+            )
+        ):
+            send_metadata["thread_id"] = str(effective_reply_to)
         result = await self._transport.send_outbound(
             {
                 "op": "send",

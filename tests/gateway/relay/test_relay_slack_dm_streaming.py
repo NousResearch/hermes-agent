@@ -87,6 +87,10 @@ async def test_slack_dm_reply_keeps_anchor_in_thread_per_message_mode():
     assert frame["reply_to"] == "1700.0001", (
         "thread-per-message: the triggering ts anchors the final reply"
     )
+    # QA-7: the connector's Slack sender threads on metadata.thread_id ONLY
+    # (threadTs() never reads the frame's reply_to), so the surviving anchor
+    # must be promoted into metadata for the send to actually thread.
+    assert (frame["metadata"] or {}).get("thread_id") == "1700.0001"
 
 
 @pytest.mark.asyncio

@@ -191,6 +191,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // live report. Keep them on slash.exec until their RPC contracts are fully
   // equivalent.
   {
+    name: '/approvals',
+    description: 'Show or set approval mode [manual|smart|off]',
+    surface: exec(),
+    args: true
+  },
+  {
     name: '/agents',
     description: 'Show active desktop sessions and running tasks',
     aliases: ['/tasks'],

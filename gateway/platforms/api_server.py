@@ -5975,7 +5975,54 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif event_type in {"subagent.start", "subagent.complete"}:
+                event = {
+                    "event": event_type,
+                    "run_id": run_id,
+                    "timestamp": ts,
+                }
+                if preview is not None:
+                    event["preview"] = redact_sensitive_text(
+                        str(preview), force=True
+                    )
+                for key in (
+                    "goal",
+                    "task_count",
+                    "task_index",
+                    "subagent_id",
+                    "child_session_id",
+                    "parent_id",
+                    "depth",
+                    "model",
+                    "tool_count",
+                    "status",
+                    "summary",
+                    "duration_seconds",
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "api_calls",
+                    "cost_usd",
+                    "files_read",
+                    "files_written",
+                    "output_tail",
+                ):
+                    value = kwargs.get(key)
+                    if value is None:
+                        continue
+                    # Free-text fields can carry child terminal/tool output —
+                    # force the same secret redaction the API applies to error
+                    # text before it leaves the process on a public stream.
+                    if key in ("goal", "summary", "output_tail") and isinstance(
+                        value, str
+                    ):
+                        value = redact_sensitive_text(value, force=True)
+                    event[key] = value
+                _push(event)
+            # _thinking, subagent.tool, and subagent_progress are intentionally
+            # not forwarded on the /v1/runs stream: they are high-volume UI
+            # noise. Lifecycle boundaries (start/complete) still need to land
+            # so clients can observe delegate_task timeouts and failures.
 
         return _callback
 

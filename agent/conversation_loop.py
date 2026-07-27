@@ -5497,6 +5497,14 @@ def run_conversation(
                         args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
                         logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
+                # Uniquify duplicate tool-call ids BEFORE any downstream
+                # consumer (validation error paths, dispatch, history build,
+                # Responses item-id derivation). Models that reuse one id for
+                # different calls in a batch otherwise lose the later call's
+                # result: the pre-API sanitizer keeps only the first
+                # call/result pair per id. See _uniquify_tool_call_ids.
+                agent._uniquify_tool_call_ids(assistant_message.tool_calls)
+
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
@@ -6328,7 +6336,28 @@ def run_conversation(
                                ". No fallback providers configured.")
                         )
 
-                    final_response = "(empty)"
+                    # Deliver a labeled reasoning excerpt instead of a bare
+                    # "(empty)" when the model DID think but never produced
+                    # visible text. This is delivery-only: the persisted
+                    # assistant message above keeps the "(empty)" sentinel
+                    # (its replay semantics prevent empty-response loops),
+                    # and raw chain-of-thought is never promoted to a normal
+                    # answer earlier in the ladder — prefill continuation,
+                    # empty-content retries, and provider fallback all run
+                    # first. Only at this terminal, where the alternative is
+                    # returning nothing, is showing the model's own reasoning
+                    # (clearly labeled as such) strictly more useful.
+                    # Idea credit: PR #48795 (@ligl0325).
+                    if reasoning_text:
+                        final_response = (
+                            "⚠️ The model produced only internal reasoning and "
+                            "no final answer, despite retries"
+                            + (" and fallback" if agent._fallback_chain else "")
+                            + ". Its last reasoning, which may contain the "
+                            "answer:\n\n" + reasoning_preview
+                        )
+                    else:
+                        final_response = "(empty)"
                     break
                 
                 # Reset retry counter/signature on successful content

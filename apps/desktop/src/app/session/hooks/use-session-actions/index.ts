@@ -1102,6 +1102,7 @@ export function useSessionActions({
   const forkBranch = useCallback(
     async (
       branchMessages: BranchMessage[],
+      sourceSessionId: null | string,
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string
@@ -1119,14 +1120,19 @@ export function useSessionActions({
         await ensureGatewayProfile(profile)
 
         // No title: the backend auto-names the branch from its parent's lineage.
-        const branched = await requestGateway<SessionCreateResponse>('session.create', {
-          cols: 96,
-          source: 'desktop',
-          ...(cwd && { cwd }),
-          ...(profile ? { profile } : {}),
-          messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          ...(parentStoredId && { parent_session_id: parentStoredId })
-        })
+        const branched = sourceSessionId
+          ? await requestGateway<SessionCreateResponse>('session.branch', {
+              session_id: sourceSessionId,
+              count: branchMessages.length
+            })
+          : await requestGateway<SessionCreateResponse>('session.create', {
+              cols: 96,
+              source: 'desktop',
+              ...(cwd && { cwd }),
+              ...(profile ? { profile } : {}),
+              messages: branchMessages.map(({ content, role }) => ({ content, role })),
+              ...(parentStoredId && { parent_session_id: parentStoredId })
+            })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
@@ -1212,7 +1218,7 @@ export function useSessionActions({
         ? messages.findIndex(message => message.id === messageId)
         : messages.findLastIndex(message => message.role === 'assistant' || message.role === 'user')
 
-      const start = at >= 0 ? at : Math.max(messages.length - 1, 0)
+      const start = 0
       const end = at >= 0 ? at + 1 : messages.length
       const branchMessages = toBranchMessages(messages.slice(start, end))
 
@@ -1229,7 +1235,13 @@ export function useSessionActions({
       // must stay on that thread's backend (cache hit for an open session).
       const profile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
 
-      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim(), profile)
+      return forkBranch(
+        branchMessages,
+        activeSessionIdRef.current,
+        selectedStoredSessionIdRef.current,
+        $currentCwd.get().trim(),
+        profile
+      )
     },
     [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
   )
@@ -1261,7 +1273,7 @@ export function useSessionActions({
           return false
         }
 
-        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
+        return await forkBranch(branchMessages, null, stored?.id ?? storedSessionId, stored?.cwd?.trim(), profile)
       } catch (err) {
         notifyError(err, copy.branchFailed)
 

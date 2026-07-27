@@ -170,7 +170,6 @@ function TileChat({
           onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
           onAttachDroppedItems={composer.attachDroppedItems}
           onAttachImageBlob={composer.attachImageBlob}
-          onBranchInNewChat={() => undefined}
           onCancel={actions.cancelRun}
           onDeleteSelectedSession={() => undefined}
           onDismissError={actions.dismissError}

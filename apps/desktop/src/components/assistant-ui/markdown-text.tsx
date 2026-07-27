@@ -14,6 +14,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -33,6 +34,7 @@ import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
+import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
@@ -355,6 +357,9 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
+  /** Disable artifact-card promotion for fenced blocks (reasoning text — a
+   *  model's scratchpad draft must not register artifact versions). */
+  disableArtifacts?: boolean
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -403,7 +408,12 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-function MarkdownTextSurface({ containerClassName, containerProps, defer }: MarkdownTextSurfaceProps) {
+function MarkdownTextSurface({
+  containerClassName,
+  containerProps,
+  defer,
+  disableArtifacts
+}: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
@@ -508,18 +518,28 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer }: Mark
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
         img: MarkdownImage,
-        // ```mermaid / ```svg fences route to their lazy renderers; every other
-        // language falls back to the Shiki-highlighted code block.
-        SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
-          <RichCodeBlock
-            code={props.code}
-            fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
-            language={props.language}
-            streaming={isStreaming}
-          />
-        )
+        // ```mermaid / ```svg fences route to their lazy renderers; substantial
+        // html/svg/code fences promote to an artifact card that opens in the
+        // right rail; every other language falls back to the Shiki-highlighted
+        // code block.
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
+          const artifact = disableArtifacts ? null : detectArtifact(props.language, props.code)
+
+          if (artifact) {
+            return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
+          }
+
+          return (
+            <RichCodeBlock
+              code={props.code}
+              fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
+              language={props.language}
+              streaming={isStreaming}
+            />
+          )
+        }
       }) as StreamdownTextComponents,
-    [isStreaming]
+    [disableArtifacts, isStreaming]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {

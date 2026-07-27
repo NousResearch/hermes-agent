@@ -2367,6 +2367,13 @@ class AIAgent:
                 parts.append(f"Ray {ray_id}")
             return " — ".join(parts)
 
+        # GeminiAPIError (agent/gemini_native_adapter.py) already composes a
+        # clean one-liner and may have appended actionable guidance (free-tier
+        # 429, legacy Standard-key 401). Prefer its message over re-extracting
+        # the raw response body below, which would strip that guidance.
+        if type(error).__name__ == "GeminiAPIError":
+            return redact_sensitive_text(raw[:1000])
+
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
         if isinstance(body, dict):
@@ -4215,6 +4222,83 @@ class AIAgent:
             else:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
+
+    @staticmethod
+    def _uniquify_tool_call_ids(tool_calls: list) -> list:
+        """Ensure every tool call in a single assistant turn has a distinct id.
+
+        Some models/providers reuse one call id across different calls in a
+        single batch (observed with native Kimi Responses replays, Ollama-
+        compatible endpoints, and degraded models at long context; same bug
+        class as openclaw/openclaw#110518 / #110956). Duplicate ids are lossy
+        downstream: the pre-API sanitizer keeps only the first call/result
+        pair per id (#58327), so the later call's result silently vanishes
+        from every replayed payload, and strict providers (Anthropic
+        tool_use, DeepSeek) reject duplicate ids outright.
+
+        The first occurrence keeps its id; later collisions get a
+        deterministic ``<id>_d<n>`` suffix — never a random UUID, which would
+        break prompt-cache prefix stability across replays. Mutates the
+        entries in place (SDK models / SimpleNamespace / dicts) and returns
+        the same list. Blank/missing ids are left for the deterministic
+        fallback in ``build_assistant_message``.
+        """
+        seen: set = set()
+        for tc in tool_calls or []:
+            if isinstance(tc, dict):
+                raw = tc.get("call_id") or tc.get("id") or ""
+            else:
+                raw = getattr(tc, "call_id", None) or getattr(tc, "id", None) or ""
+            raw = raw.strip() if isinstance(raw, str) else ""
+            if not raw:
+                continue
+            # Composite Responses ids ("call_x|fc_y") collide on the call
+            # half — that's the pairing key providers enforce per turn.
+            cid = raw.split("|", 1)[0]
+            if not cid:
+                continue
+            if cid not in seen:
+                seen.add(cid)
+                continue
+            n = 2
+            new_id = f"{cid}_d{n}"
+            while new_id in seen:
+                n += 1
+                new_id = f"{cid}_d{n}"
+            seen.add(new_id)
+
+            def _renamed(value):
+                # Preserve a composite id's response-item half so the
+                # provider's real fc_/item id survives the rename.
+                if isinstance(value, str) and "|" in value:
+                    return f"{new_id}|{value.split('|', 1)[1]}"
+                return new_id
+
+            try:
+                if isinstance(tc, dict):
+                    if tc.get("id"):
+                        tc["id"] = _renamed(tc["id"])
+                    else:
+                        tc["id"] = new_id
+                    if tc.get("call_id"):
+                        tc["call_id"] = new_id
+                else:
+                    tc.id = _renamed(getattr(tc, "id", None))
+                    if getattr(tc, "call_id", None):
+                        tc.call_id = new_id
+            except Exception:
+                logger.warning(
+                    "Could not uniquify duplicate tool call id %s", cid
+                )
+                continue
+            _fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            _fn_name = (_fn.get("name") if isinstance(_fn, dict) else getattr(_fn, "name", None)) or "?"
+            logger.warning(
+                "Model reused tool call id %s within one turn; renamed the "
+                "duplicate to %s (tool=%s) to keep call/result pairing "
+                "lossless.", cid, new_id, _fn_name,
+            )
+        return tool_calls
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
@@ -6744,14 +6828,16 @@ class AIAgent:
             finish_task_run,
             start_task_run,
         )
+        from agent.subagent_lifecycle import bind_subagent_parent
         effective_task_id = task_id or str(uuid.uuid4())
+        session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
-            "session_id": self.session_id or "",
+            "session_id": session_id,
             "task_id": effective_task_id,
             "platform": getattr(self, "platform", None) or "",
         }
         relay_turn_id = (
-            f"{self.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+            f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
         )
         self._relay_pending_turn_id = relay_turn_id
         relay_parent_session_id = (
@@ -6804,7 +6890,7 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with scoped_runtime_main({}):
+            with bind_subagent_parent(self), scoped_runtime_main({}):
                 result = run_conversation(
                     self,
                     user_message,

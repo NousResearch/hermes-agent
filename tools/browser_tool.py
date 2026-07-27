@@ -2816,6 +2816,10 @@ def _extract_relevant_content(
     to simple truncation when no auxiliary text model is configured.
     """
     stored_path = _store_full_snapshot(snapshot_text)
+    if stored_path:
+        from tools.credential_files import to_agent_visible_cache_path
+
+        stored_path = to_agent_visible_cache_path(stored_path)
     stored_note = (
         f'\n\n[Summarized from a {len(snapshot_text):,}-char snapshot. Full snapshot '
         f'saved to: {stored_path} — read it with read_file if anything is missing.]'
@@ -2892,6 +2896,10 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_T
         return snapshot_text
 
     stored_path = _store_full_snapshot(snapshot_text)
+    if stored_path:
+        from tools.credential_files import to_agent_visible_cache_path
+
+        stored_path = to_agent_visible_cache_path(stored_path)
 
     lines = snapshot_text.split('\n')
     result: list[str] = []

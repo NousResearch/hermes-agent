@@ -201,6 +201,26 @@ class TestSignalHelpers:
         webp = b"RIFF\x24\x08\x00\x00WEBPVP8 " + b"\x00" * 100
         assert _guess_extension(webp) == ".webp"
 
+    def test_guess_extension_m4a_audio_brand(self):
+        """iOS Signal voice notes are MP4-container AAC with an M4A ftyp brand.
+
+        Classifying them as ``.mp4`` sent them to the document cache and made
+        STT reject the upload ("Invalid file format") even though the bytes
+        were valid audio. Audio brands must resolve to ``.m4a``.
+        """
+        from gateway.platforms.signal import _guess_extension, _is_audio_ext
+        for brand in (b"M4A ", b"M4B ", b"m4a "):
+            data = b"\x00\x00\x00\x1cftyp" + brand + b"\x00" * 100
+            assert _guess_extension(data) == ".m4a", brand
+            assert _is_audio_ext(_guess_extension(data)) is True
+
+    def test_guess_extension_video_brands_stay_mp4(self):
+        """Real video ftyp brands must not be swept up by the M4A fix."""
+        from gateway.platforms.signal import _guess_extension
+        for brand in (b"isom", b"mp42", b"avc1", b"qt  "):
+            data = b"\x00\x00\x00\x1cftyp" + brand + b"\x00" * 100
+            assert _guess_extension(data) == ".mp4", brand
+
     def test_guess_extension_aac_adts_unprotected(self):
         """ADTS AAC, MPEG-4, no CRC (the canonical Android Signal voice note).
 

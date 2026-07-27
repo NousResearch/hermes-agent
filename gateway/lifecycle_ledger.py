@@ -156,8 +156,14 @@ def _pid_alive_with_start_time(pid: Any, start_time: Any) -> bool:
     if pid_int <= 0:
         return False
     try:
-        os.kill(pid_int, 0)
-    except (ProcessLookupError, PermissionError, OSError):
+        # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the
+        # target's console group (bpo-14484). _pid_exists is the repo's
+        # canonical no-kill cross-platform probe (psutil-backed).
+        from gateway.status import _pid_exists
+
+        if not _pid_exists(pid_int):
+            return False
+    except Exception:
         return False
     if start_time is None:
         return True  # alive; can't disambiguate PID reuse — err on "alive"

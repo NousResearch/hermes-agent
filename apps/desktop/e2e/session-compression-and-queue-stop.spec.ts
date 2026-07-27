@@ -59,9 +59,10 @@ test.describe('session compression', () => {
 
     // Commit the command before typing its argument. This waits for the async
     // completion request on cold CI workers, then uses the composer's own
-    // keyboard accept path to replace the `/compress` trigger with a command
-    // chip. Clicking a later completion after typing the argument can insert a
-    // second command token (for example `//compress ...`) as plain text.
+    // keyboard accept path to advance the arg-taking command. Bare commands
+    // that take arguments intentionally remain plain text instead of becoming
+    // chips. Clicking a later completion after typing the argument can insert
+    // a second command token (for example `//compress ...`) as plain text.
     const composer = page.locator('[contenteditable="true"]').first()
     await composer.click()
     await composer.type('/compress', { delay: 15 })
@@ -72,7 +73,7 @@ test.describe('session compression', () => {
     await compressionCompletion.hover()
     await expect(compressionCompletion).toHaveAttribute('data-highlighted', '')
     await page.keyboard.press('Enter')
-    await expect(composer.locator('[data-slot="aui_slash-chip"][title="/compress"]')).toBeVisible()
+    await expect.poll(() => composer.textContent()).toMatch(/^\/compress\s*$/)
     await composer.type(' preserve the three test turns', { delay: 15 })
     await page.keyboard.press('Enter')
     await expect

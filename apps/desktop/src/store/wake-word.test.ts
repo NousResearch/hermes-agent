@@ -60,7 +60,7 @@ describe('toggleWakeWord', () => {
 
     await toggleWakeWord(request)
 
-    expect(request).toHaveBeenCalledWith('wake.start', { surface: 'gui' })
+    expect(request).toHaveBeenCalledWith('wake.start', { persist: true, surface: 'gui' })
     expect($wakeWord.get()).toMatchObject({ listening: true, notice: '', pending: false })
   })
 
@@ -75,7 +75,7 @@ describe('toggleWakeWord', () => {
 
     await toggleWakeWord(request)
 
-    expect(request).toHaveBeenCalledWith('wake.stop', {})
+    expect(request).toHaveBeenCalledWith('wake.stop', { persist: true })
     expect($wakeWord.get()).toMatchObject({ listening: false, notice: '', pending: false })
   })
 
@@ -86,7 +86,7 @@ describe('toggleWakeWord', () => {
 
     const state = $wakeWord.get()
     expect(state.listening).toBe(false)
-    expect(state.notice).toBe('owned')
+    expect(state.notice).toBe('another surface owns the listener')
     expect(state.available).toBe(true)
   })
 
@@ -215,7 +215,7 @@ describe('armWakeWord (gateway-ready auto-arm)', () => {
     const state = $wakeWord.get()
     expect(state.available).toBe(true)
     expect(state.listening).toBe(false)
-    expect(state.notice).toBe('owned')
+    expect(state.notice).toBe('another surface owns the listener')
   })
 })
 
@@ -227,7 +227,7 @@ describe('applyWakeStopResult', () => {
 
     const state = $wakeWord.get()
     expect(state.listening).toBe(false)
-    expect(state.notice).toBe('not_owner')
+    expect(state.notice).toBe('another surface owns the listener')
   })
 })
 

@@ -41,6 +41,7 @@ export interface WakeStatusResponse {
 }
 
 export interface WakeStartResponse {
+  enabled_persisted?: boolean
   hint?: string
   owner_surface?: string | null
   phrase?: string
@@ -50,6 +51,7 @@ export interface WakeStartResponse {
 }
 
 export interface WakeStopResponse {
+  disabled_persisted?: boolean
   reason?: string | null
   stopped?: boolean
 }
@@ -68,8 +70,28 @@ const gatewayRequester: WakeRequester = async <T>(method: string, params: Record
   return gateway.request<T>(method, params)
 }
 
-const noticeFrom = (result: { hint?: string; reason?: string | null } | null | undefined): string =>
-  result?.hint?.trim() || result?.reason?.trim() || ''
+// Friendly text for the gateway's wake refusal codes (mirrors the TUI's
+// START_REASON_TEXT). Unknown codes fall through raw so new server-side
+// codes stay visible instead of silently disappearing.
+const REASON_TEXT: Record<string, string> = {
+  disabled: 'click to enable',
+  disabled_for_surface: 'scoped to another surface (config wake_word.surface)',
+  not_owner: 'another surface owns the listener',
+  owned: 'another surface owns the listener',
+  unavailable: 'unavailable'
+}
+
+const noticeFrom = (result: { hint?: string; reason?: string | null } | null | undefined): string => {
+  const hint = result?.hint?.trim()
+
+  if (hint) {
+    return hint
+  }
+
+  const reason = result?.reason?.trim()
+
+  return reason ? (REASON_TEXT[reason] ?? reason) : ''
+}
 
 /** Sync the atom from a `wake.status` payload (mount / gateway-ready). */
 export function applyWakeStatus(status: WakeStatusResponse | null | undefined): void {
@@ -162,9 +184,12 @@ export async function toggleWakeWord(request: WakeRequester = gatewayRequester):
 
   try {
     if (state.listening) {
-      applyWakeStopResult(await request<WakeStopResponse>('wake.stop', {}))
+      applyWakeStopResult(await request<WakeStopResponse>('wake.stop', { persist: true }))
     } else {
-      applyWakeStartResult(await request<WakeStartResponse>('wake.start', { surface: 'gui' }))
+      // persist: true — a deliberate click is consent, so the backend flips
+      // wake_word.enabled in config.yaml (on/off) and the choice sticks for
+      // future sessions. Auto-arm (armWakeWord) never passes it.
+      applyWakeStartResult(await request<WakeStartResponse>('wake.start', { persist: true, surface: 'gui' }))
     }
   } catch (error) {
     const current = $wakeWord.get()

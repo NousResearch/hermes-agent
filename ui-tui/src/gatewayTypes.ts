@@ -403,6 +403,7 @@ export interface VoiceRecordResponse {
 // ── Wake word ────────────────────────────────────────────────────────
 
 export interface WakeStartResponse {
+  enabled_persisted?: boolean
   hint?: string
   owner_surface?: null | string
   phrase?: string
@@ -412,6 +413,7 @@ export interface WakeStartResponse {
 }
 
 export interface WakeStopResponse {
+  disabled_persisted?: boolean
   reason?: null | string
   stopped?: boolean
 }

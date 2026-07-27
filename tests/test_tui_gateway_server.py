@@ -1416,7 +1416,11 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
             "reason": "owned",
             "owner_surface": "gui",
         }
-        assert denied_stop["result"] == {"stopped": False, "reason": "not_owner"}
+        assert denied_stop["result"] == {
+            "stopped": False,
+            "reason": "not_owner",
+            "disabled_persisted": False,
+        }
         assert denied_voice_stop["result"] == {
             "status": "busy",
             "reason": "wake_owned",
@@ -1445,7 +1449,11 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
             "method": "wake.stop",
             "params": {},
         }, transport=first)
-        assert stopped["result"] == {"stopped": True, "reason": None}
+        assert stopped["result"] == {
+            "stopped": True,
+            "reason": None,
+            "disabled_persisted": False,
+        }
 
         reclaimed = server.dispatch({
             "id": "wake-reclaim-2",
@@ -1468,7 +1476,90 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
             "method": "wake.stop",
             "params": {},
         }, transport=second)
-        assert stopped_again["result"] == {"stopped": True, "reason": None}
+        assert stopped_again["result"] == {
+            "stopped": True,
+            "reason": None,
+            "disabled_persisted": False,
+        }
+    finally:
+        server._wake_owner_transport = None
+        server._wake_owner_surface = ""
+
+
+def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch):
+    """The ear toggle / /wake on|off write wake_word.enabled; auto-arm never does."""
+    from tools import wake_word
+
+    config = {"enabled": False, "phrase": "hey hermes", "surface": "auto",
+              "start_new_session": True}
+    persisted = []
+
+    def fake_persist(enabled):
+        persisted.append(enabled)
+        config["enabled"] = enabled
+        return True
+
+    monkeypatch.setattr(server, "_persist_wake_enabled", fake_persist)
+    monkeypatch.setattr(wake_word, "load_wake_word_config", lambda: dict(config))
+    monkeypatch.setattr(wake_word, "check_wake_word_requirements", lambda _cfg: {
+        "available": True,
+        "phrase": "hey hermes",
+        "provider": "test",
+        "hint": "",
+    })
+    listener = {"owner": None}
+    monkeypatch.setattr(
+        wake_word, "start_listening",
+        lambda callback, *, owner, config: listener.update(owner=owner),
+    )
+    monkeypatch.setattr(
+        wake_word, "stop_listening",
+        lambda *, owner: listener["owner"] is owner and not listener.update(owner=None),
+    )
+    monkeypatch.setattr(wake_word, "owns_listener", lambda owner: listener["owner"] is owner)
+
+    transport = types.SimpleNamespace(_closed=False)
+    server._wake_owner_transport = None
+    server._wake_owner_surface = ""
+    try:
+        # Passive auto-arm (no persist): refused, config untouched.
+        passive = server.dispatch({
+            "id": "wake-passive",
+            "method": "wake.start",
+            "params": {"surface": "gui"},
+        }, transport=transport)
+        assert passive["result"] == {"started": False, "reason": "disabled"}
+        assert persisted == []
+
+        # Explicit gesture: enables in config AND arms.
+        clicked = server.dispatch({
+            "id": "wake-click",
+            "method": "wake.start",
+            "params": {"surface": "gui", "persist": True},
+        }, transport=transport)
+        assert clicked["result"]["started"] is True
+        assert clicked["result"]["enabled_persisted"] is True
+        assert persisted == [True]
+
+        # Explicit stop: disables in config.
+        stopped = server.dispatch({
+            "id": "wake-click-off",
+            "method": "wake.stop",
+            "params": {"persist": True},
+        }, transport=transport)
+        assert stopped["result"]["stopped"] is True
+        assert stopped["result"]["disabled_persisted"] is True
+        assert persisted == [True, False]
+
+        # persist does NOT override an explicit surface scoping.
+        config.update(enabled=True, surface="tui")
+        scoped = server.dispatch({
+            "id": "wake-scoped",
+            "method": "wake.start",
+            "params": {"surface": "gui", "persist": True},
+        }, transport=transport)
+        assert scoped["result"] == {"started": False, "reason": "disabled_for_surface"}
+        assert persisted == [True, False]
     finally:
         server._wake_owner_transport = None
         server._wake_owner_surface = ""

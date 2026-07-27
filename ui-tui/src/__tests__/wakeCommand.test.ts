@@ -58,7 +58,7 @@ describe('/wake slash command', () => {
 
     await run('on')
 
-    expect(rpc).toHaveBeenCalledWith('wake.start', { surface: 'tui' })
+    expect(rpc).toHaveBeenCalledWith('wake.start', { persist: true, surface: 'tui' })
     expect(printed(sys)).toContain('listening')
     expect(printed(sys)).toContain('hey hermes')
     expect(printed(sys)).toContain('openwakeword')
@@ -104,9 +104,27 @@ describe('/wake slash command', () => {
 
     await run('off')
 
-    expect(rpc).toHaveBeenCalledWith('wake.stop', {})
+    expect(rpc).toHaveBeenCalledWith('wake.stop', { persist: true })
     expect(isWakeUserDisabled()).toBe(true)
     expect(printed(sys)).toContain('listener off')
+  })
+
+  it('/wake on reports when the gesture also enabled the config flag', async () => {
+    const { run, sys } = buildCtx({
+      'wake.start': { enabled_persisted: true, phrase: 'hey hermes', provider: 'openwakeword', started: true }
+    })
+
+    await run('on')
+
+    expect(printed(sys)).toContain('enabled in config')
+  })
+
+  it('/wake off reports when the gesture also disabled the config flag', async () => {
+    const { run, sys } = buildCtx({ 'wake.stop': { disabled_persisted: true, stopped: true } })
+
+    await run('off')
+
+    expect(printed(sys)).toContain('disabled in config')
   })
 
   it('/wake off explains a not_owner refusal but still records the opt-out', async () => {

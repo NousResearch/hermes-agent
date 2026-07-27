@@ -976,17 +976,21 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
 
-class TestOutputVerbosityConfig:
-    """Tests for the agent.output_verbosity Codex request setting."""
+class TestTextVerbosityConfig:
+    """Tests for the agent.text_verbosity Codex request setting."""
 
-    def _make_agent(self, output_verbosity):
+    def _make_agent(self, text_verbosity):
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
-                return_value={"agent": {"output_verbosity": output_verbosity}},
+                return_value={"agent": {"text_verbosity": text_verbosity}},
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": {"text_verbosity": text_verbosity}},
             ),
         ):
             return AIAgent(
@@ -1017,7 +1021,11 @@ class TestOutputVerbosityConfig:
             patch("run_agent.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
-                return_value={"agent": {"output_verbosity": "low"}},
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": {"text_verbosity": "low"}},
             ),
         ):
             agent = AIAgent(
@@ -1035,13 +1043,93 @@ class TestOutputVerbosityConfig:
 
         assert kwargs["text"] == {"verbosity": "low"}
 
-    @pytest.mark.parametrize("configured", ["", None, "extra-short", 42])
-    def test_unset_or_invalid_config_preserves_provider_default(self, configured):
+    @pytest.mark.parametrize(
+        ("provider", "model", "base_url"),
+        [
+            ("xai", "grok-4.3", "https://api.x.ai/v1"),
+            ("openai-api", "gpt-4.1", "https://api.openai.com/v1"),
+            ("custom", "gpt-5.6-sol", "https://responses.example.com/v1"),
+            ("openai-codex", "gpt-5.6-sol", "https://responses.example.com/v1"),
+            ("openai-codex", "gpt-5.6-sol", "https://api.x.ai/v1"),
+            ("openai-codex", "gpt-5.6-sol", "https://models.github.ai/inference"),
+        ],
+    )
+    def test_unsupported_responses_target_omits_text_verbosity(
+        self, provider, model, base_url
+    ):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+        ):
+            agent = AIAgent(
+                model=model,
+                provider=provider,
+                api_key="test-key-1234567890",
+                base_url=base_url,
+                api_mode="codex_responses",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert "text" not in kwargs
+
+    def test_chat_completions_omits_text_verbosity(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"agent": {"text_verbosity": "low"}},
+            ),
+        ):
+            agent = AIAgent(
+                model="gpt-5.6-sol",
+                provider="openai-api",
+                api_key="test-key-1234567890",
+                base_url="https://api.openai.com/v1",
+                api_mode="chat_completions",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert "text" not in kwargs
+
+    @pytest.mark.parametrize("configured", ["", None])
+    def test_unset_config_preserves_provider_default(self, configured):
         agent = self._make_agent(configured)
 
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
 
         assert "text" not in kwargs
+
+    @pytest.mark.parametrize("configured", ["extra-short", 42, [], {}])
+    def test_invalid_config_warns_and_preserves_provider_default(self, configured, caplog):
+        agent = self._make_agent(configured)
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "Hi"}])
+
+        assert "text" not in kwargs
+        assert "Invalid agent.text_verbosity" in caplog.text
 
 
 class TestToolUseEnforcementConfig:

@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.text_verbosity import parse_text_verbosity
 
 logger = logging.getLogger(__name__)
 
@@ -1065,9 +1066,7 @@ def _preflight_codex_api_kwargs(
             if normalized_key == "verbosity":
                 if value is None:
                     continue
-                from agent.output_verbosity import parse_output_verbosity
-
-                verbosity = parse_output_verbosity(value)
+                verbosity = parse_text_verbosity(value)
                 if verbosity is None:
                     raise ValueError(
                         "Codex Responses request 'text.verbosity' must be low, medium, or high."

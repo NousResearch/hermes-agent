@@ -1469,17 +1469,17 @@ on its own adaptive default. The
 native Anthropic provider already controls effort directly and is unaffected.
 :::
 
-### OpenAI Codex output verbosity
+### OpenAI Responses text verbosity
 
 Reasoning effort controls how much the model thinks; output verbosity separately
-controls how detailed its final response is. For GPT-5 models on the Codex OAuth
-backend or the exact `api.openai.com` host, set `agent.output_verbosity` to
-`low`, `medium`, or `high`:
+controls how detailed its final response is. For GPT-5 models on the canonical
+ChatGPT Codex route or the exact `api.openai.com` host, set
+`agent.text_verbosity` to `low`, `medium`, or `high`:
 
 ```yaml
 agent:
   reasoning_effort: high
-  output_verbosity: low
+  text_verbosity: low
 ```
 
 An empty or omitted value preserves the provider default. Hermes sends this to

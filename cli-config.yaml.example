@@ -812,6 +812,12 @@ agent:
   # Set to 0 to disable the warning.
   # gateway_timeout_warning: 900
 
+  # Session stall watchdog (seconds). When a busy session has a pending
+  # inbound follow-up and the agent activity clock is idle this long, the
+  # gateway logs a WARNING and notifies the user to try /new. Does not kill
+  # the turn (see gateway_timeout). 0 = disable. Default 300.
+  # session_stall_timeout: 300
+
   # Graceful drain timeout for gateway stop/restart (seconds).
   # Default 0 = no drain: a restart interrupts in-flight agents immediately,
   # cleans up, and exits. Set a positive value only if you want a grace

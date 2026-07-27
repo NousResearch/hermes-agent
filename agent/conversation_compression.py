@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import inspect
 import json
@@ -40,7 +41,7 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_engine import (
@@ -48,8 +49,19 @@ from agent.context_engine import (
     sanitize_memory_context,
 )
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 
 logger = logging.getLogger(__name__)
+
+# Terminal compression outcomes published by host/hygiene timeout or cooldown
+# writers. Detached heartbeat workers must not clobber these back to
+# agent.compression after cancel (otherwise timeout is unobservable).
+_TERMINAL_COMPRESSION_PROVENANCES = frozenset(
+    {
+        ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+        ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
+    }
+)
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
@@ -488,6 +500,190 @@ class CompressionCommitFence:
         self._lock.release()
 
 
+# Defaults for the in-agent (non-hygiene) progress-aware compress_context wrap.
+# Mirror hermes_cli.config.DEFAULT_CONFIG["compression"] keys of the same name.
+DEFAULT_CONTEXT_TIMEOUT_SECONDS = 120.0
+DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS = 600.0
+
+# Shared daemon pool for sync compress_context timeout wraps — analogous to
+# asyncio's default executor used by gateway session hygiene's
+# ``loop.run_in_executor(None, ...)``, but daemon so a fence-cancelled hung
+# worker cannot block interpreter exit via concurrent.futures' atexit join.
+# Created lazily; never shut down per call (a timed-out worker may still be
+# winding down after fence cancel).
+_compress_timeout_executor = None
+_compress_timeout_executor_lock = threading.Lock()
+
+
+def _get_compress_timeout_executor():
+    """Return the process-wide compress-timeout DaemonThreadPoolExecutor."""
+    global _compress_timeout_executor
+    executor = _compress_timeout_executor
+    if executor is not None:
+        return executor
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
+    with _compress_timeout_executor_lock:
+        if _compress_timeout_executor is None:
+            # Small pool: compress is rare and heavy. Sized for a few
+            # overlapping calls (live compress + fence-cancelled workers
+            # still winding down), not asyncio's min(32, cpu+4) fan-out.
+            _compress_timeout_executor = DaemonThreadPoolExecutor(
+                max_workers=4,
+                thread_name_prefix="compress-ctx-timeout",
+            )
+        return _compress_timeout_executor
+
+
+def resolve_context_compression_timeouts(
+    compression_cfg: Optional[dict] = None,
+) -> Tuple[float, float]:
+    """Return ``(idle_timeout_seconds, total_ceiling_seconds)``.
+
+    ``idle_timeout_seconds <= 0`` disables the owned progress-aware wrapper.
+    The ceiling is clamped to at least one idle window when the idle budget
+    is positive, matching gateway hygiene semantics.
+    """
+    idle = DEFAULT_CONTEXT_TIMEOUT_SECONDS
+    ceiling = DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS
+    cfg = compression_cfg
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            raw = load_config()
+            maybe = raw.get("compression", {}) if isinstance(raw, dict) else {}
+            cfg = maybe if isinstance(maybe, dict) else {}
+        except Exception:
+            cfg = {}
+    if isinstance(cfg, dict):
+        raw_idle = cfg.get("context_timeout_seconds")
+        if raw_idle is not None:
+            try:
+                parsed = float(raw_idle)
+                # Explicit 0/negative disables; positive values win.
+                idle = parsed
+            except (TypeError, ValueError):
+                pass
+        raw_ceiling = cfg.get("context_total_ceiling_seconds")
+        if raw_ceiling is not None:
+            try:
+                parsed = float(raw_ceiling)
+                if parsed > 0:
+                    ceiling = parsed
+            except (TypeError, ValueError):
+                pass
+    if idle > 0:
+        ceiling = max(ceiling, idle)
+    return idle, ceiling
+
+
+def run_compress_context_with_progress_timeout(
+    *,
+    worker: Callable[[CompressionCommitFence], Tuple[list, str]],
+    messages: list,
+    system_prompt_fallback: Any,
+    idle_timeout_seconds: float,
+    total_ceiling_seconds: float,
+    on_timeout: Optional[Callable[[float, float, float], None]] = None,
+) -> Tuple[list, str]:
+    """Run ``worker(fence)`` under a sync progress-aware timeout.
+
+    The idle budget is inactivity-based (same idea as gateway session hygiene):
+    streamed summary progress via :meth:`CompressionCommitFence.touch_progress`
+    extends the wait. A hard ceiling still bounds a degenerate trickle stream.
+
+    When cancellation wins before the commit boundary, returns
+    ``(messages, system_prompt_fallback)`` immediately and leaves the worker
+    thread detached — the fence prevents a late commit from mutating session
+    state. When the worker already entered the commit boundary, waits for that
+    commit to finish and returns its result.
+
+    ``system_prompt_fallback`` may be a string or a zero-arg callable resolved
+    only on the timeout path, so successful compression never pays for (or
+    fails on) an eager prompt rebuild.
+    """
+    if idle_timeout_seconds <= 0:
+        raise ValueError(
+            "run_compress_context_with_progress_timeout requires "
+            "idle_timeout_seconds > 0; call compress_context directly to disable"
+        )
+
+    def _resolve_fallback_prompt() -> str:
+        if callable(system_prompt_fallback):
+            return system_prompt_fallback()
+        return system_prompt_fallback
+
+    fence = CompressionCommitFence()
+    ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
+    idle = float(idle_timeout_seconds)
+    # Sync mirror of gateway session-hygiene's run_in_executor(None, ...) +
+    # wait_for loop (gateway/run.py): offload compress_context onto the shared
+    # daemon pool, poll with an inactivity budget + total ceiling, then
+    # fence-cancel on timeout so a late commit cannot land. Daemon workers
+    # match tool_executor: a cancelled hung summary must not block process exit.
+    from tools.thread_context import propagate_context_to_thread
+
+    executor = _get_compress_timeout_executor()
+    # Bare pool workers start with an empty ContextVar map; propagate the
+    # parent conversation/approval context into the worker.
+    future = executor.submit(propagate_context_to_thread(worker), fence)
+    wait_started = time.monotonic()
+    while True:
+        waited = time.monotonic() - wait_started
+        remaining_ceiling = ceiling - waited
+        if remaining_ceiling <= 0:
+            break
+        wait_slice = min(idle, remaining_ceiling)
+        try:
+            return future.result(timeout=wait_slice)
+        except concurrent.futures.TimeoutError:
+            waited = time.monotonic() - wait_started
+            since_progress = fence.seconds_since_progress()
+            if since_progress < idle and waited < ceiling:
+                logger.info(
+                    "Context compression still streaming after %.0fs "
+                    "(last progress %.1fs ago) — extending wait "
+                    "(ceiling %.0fs)",
+                    waited,
+                    since_progress,
+                    ceiling,
+                )
+                continue
+            break
+
+    cancelled: Optional[bool] = None
+    while cancelled is None:
+        cancelled = fence.try_cancel_before_commit()
+        if cancelled is None:
+            time.sleep(0.001)
+    if not cancelled:
+        return future.result()
+
+    waited = time.monotonic() - wait_started
+    since_progress = fence.seconds_since_progress()
+    if on_timeout is not None:
+        try:
+            on_timeout(idle, waited, since_progress)
+        except Exception:
+            logger.debug(
+                "compress_context timeout callback failed",
+                exc_info=True,
+            )
+    else:
+        logger.warning(
+            "Context compression made no progress for %.1fs "
+            "(total wait %.1fs, ceiling %.1fs); continuing without "
+            "compression",
+            since_progress,
+            waited,
+            ceiling,
+        )
+    # Leave the future on the shared pool: fence cancel won, so a late
+    # commit cannot land (same detachment model as gateway hygiene).
+    return messages, _resolve_fallback_prompt()
+
+
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
     """Whether the live in-memory SessionDB class structurally predates locks.
 
@@ -804,7 +1000,9 @@ class _CompressionActivityHeartbeat:
         )
 
     def start(self) -> "_CompressionActivityHeartbeat":
-        self._touch("context compression started")
+        # A new compression episode always republishes agent.compression even
+        # if a prior timeout/cooldown stamp is still on the agent.
+        self._touch("context compression started", allow_terminal_overwrite=True)
         self._thread.start()
         return self
 
@@ -814,11 +1012,17 @@ class _CompressionActivityHeartbeat:
             self._thread.join(timeout=1.0)
         self._touch(desc)
 
-    def _touch(self, desc: str) -> None:
+    def _touch(self, desc: str, *, allow_terminal_overwrite: bool = False) -> None:
         try:
+            if not allow_terminal_overwrite:
+                current = normalize_activity_provenance(
+                    getattr(self._agent, "_last_activity_provenance", None)
+                )
+                if current in _TERMINAL_COMPRESSION_PROVENANCES:
+                    return
             touch = getattr(self._agent, "_touch_activity", None)
             if callable(touch):
-                touch(desc)
+                touch(desc, provenance=ActivityProvenance.AGENT_COMPRESSION)
         except Exception:
             logger.debug("compression activity heartbeat touch failed", exc_info=True)
 
@@ -2037,12 +2241,15 @@ def compress_context(
         # thread-local and the compress call is synchronous on this thread,
         # so it cannot leak into unrelated auxiliary calls.
         #
-        # Fenceless callers (CLI /compress, in-loop auto-compress) install a
-        # no-op hook: nobody polls their progress, but an ACTIVE hook is what
-        # switches the summary call onto the streamed path — giving every
-        # compression path the same two guarantees: the configured timeout
-        # acts on inactivity (slow models finish), and a byte-trickling
-        # provider that keeps the connection alive forever is cut off at the
+        # Callers that pass no commit_fence install a no-op progress hook
+        # here.  AIAgent._compress_context injects an owned fence for
+        # fenceless callers so the host-level progress-aware wait can
+        # extend on streamed tokens; gateway hygiene already passes its
+        # own fence.  An ACTIVE hook (even a no-op) is what switches the
+        # summary call onto the streamed path — giving every compression
+        # path the same two guarantees: the configured timeout acts on
+        # inactivity (slow models finish), and a byte-trickling provider
+        # that keeps the connection alive forever is cut off at the
         # streamed total ceiling (see _aux_stream_total_ceiling) instead of
         # outliving the SDK's inactivity timeout indefinitely.
         from agent.auxiliary_client import (

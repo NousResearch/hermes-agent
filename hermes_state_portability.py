@@ -18,6 +18,7 @@ from hermes_state_common import (
     SCHEMA_SQL,
     _PREVIEW_RAW_SELECT,
     _shape_preview,
+    _sql_session_last_active,
 )
 
 # Moved methods logged under the "hermes_state" logger before the split;
@@ -108,10 +109,7 @@ class SessionPortabilityMixin:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
+                {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
@@ -148,10 +146,7 @@ class SessionPortabilityMixin:
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
+                {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             WHERE s.id = ?
         """

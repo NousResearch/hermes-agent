@@ -61,8 +61,25 @@ export function createClientSessionState(
   }
 }
 
+/** Internal compaction envelopes must never become user-visible titles (#72452). */
+const COMPACTION_TITLE_PREFIXES = [
+  '[CONTEXT COMPACTION — REFERENCE ONLY]',
+  '[CONTEXT SUMMARY]:',
+  '[CONTEXT SUMMARY]',
+] as const
+
+export function isCompactionEnvelopePreview(preview: string | null | undefined): boolean {
+  const text = (preview ?? '').trim()
+  if (!text) return false
+  return COMPACTION_TITLE_PREFIXES.some(prefix => text.startsWith(prefix))
+}
+
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  const explicit = session.title?.trim()
+  if (explicit) return explicit
+  const preview = session.preview?.trim()
+  if (preview && !isCompactionEnvelopePreview(preview)) return preview
+  return 'Untitled session'
 }
 
 export function coerceGatewayText(value: unknown): string {

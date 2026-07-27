@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getSession } from '@/hermes'
 import { parseSessionRefValue, sessionRefCacheKey, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { $sessions, sessionMatchesStoredId } from '@/store/session'
+import { isCompactionEnvelopePreview } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
 const titleCache = new Map<string, string>()
@@ -21,7 +22,11 @@ const titleSubs = new Map<string, Set<(value: string) => void>>()
  *  fallback is a worse chip label than the short id, so an untitled row
  *  resolves to empty and the caller's fallback wins. */
 function sessionRowTitle(row: SessionInfo): string {
-  return row.title?.trim() || row.preview?.trim() || ''
+  const explicit = row.title?.trim()
+  if (explicit) return explicit
+  const preview = row.preview?.trim()
+  if (preview && !isCompactionEnvelopePreview(preview)) return preview
+  return ''
 }
 
 function profileMatches(sessionProfile: null | string | undefined, target?: string): boolean {

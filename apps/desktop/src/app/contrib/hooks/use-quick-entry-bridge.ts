@@ -10,6 +10,7 @@ import {
 import { $gatewayState, $sessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { isSecondaryWindow } from '@/store/windows'
+import { sessionTitle } from '@/lib/chat-runtime'
 
 interface QuickEntryBridgeParams {
   startFreshSessionDraft: () => void
@@ -27,7 +28,10 @@ function sessionOptions(): QuickEntrySessionOption[] {
     .slice(0, QUICK_ENTRY_SESSION_OPTIONS)
     .map(session => ({
       id: session.id,
-      title: session.title?.trim() || session.preview?.trim() || session.id
+      title: (() => {
+        const t = sessionTitle(session)
+        return t === 'Untitled session' ? session.id : t
+      })()
     }))
 }
 

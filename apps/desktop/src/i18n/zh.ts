@@ -1954,10 +1954,7 @@ export const zh: Translations = {
     open: '打开'
   },
 
-  artifactPane: {
-    tabFallback: '产物',
-    modePreview: '预览',
-    modeSource: '源码',
+  artifactPreview: {
     versionOf: (current, total) => `第 ${current}/${total} 版`,
     olderVersion: '较旧版本',
     newerVersion: '较新版本',

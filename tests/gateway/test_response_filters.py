@@ -15,6 +15,31 @@ def test_edge_punctuation_silence_tokens_are_intentional_silence():
         assert is_intentional_silence_response(token)
 
 
+def test_single_action_json_silence_envelopes_are_intentional_silence():
+    for payload in (
+        '{"action":"NO_REPLY"}',
+        '{\n  "action": "NO_REPLY"\n}',
+    ):
+        assert is_intentional_silence_response(payload)
+        assert is_autonomous_silence_response(payload)
+
+
+def test_json_silence_envelope_requires_one_exact_action_key():
+    for payload in (
+        '{"action":"NO_REPLY","reason":"duplicate"}',
+        '{"Action":"NO_REPLY"}',
+        '{"action":"SILENT"}',
+        '{"action":" NO_REPLY "}',
+        '{"action":"NO_REPLY","action":"NO_REPLY"}',
+        '["NO_REPLY"]',
+        '{"action":',
+        '\u00a0{"action":"NO_REPLY"}',
+        '{"action":"NO_REPLY"}\u2028',
+    ):
+        assert not is_intentional_silence_response(payload)
+        assert not is_autonomous_silence_response(payload)
+
+
 def test_blank_and_prose_mentions_are_not_silence():
     assert not is_intentional_silence_response("")
     assert not is_intentional_silence_response("Use NO_REPLY when no answer is needed.")

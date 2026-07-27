@@ -26,11 +26,7 @@ function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
-export function usePreviewRouting({
-  baseHandleGatewayEvent,
-  currentCwd,
-  requestGateway
-}: PreviewRoutingOptions) {
+export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {
       const sessionId = $focusedRuntimeId.get()

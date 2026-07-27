@@ -50,6 +50,32 @@ def test_structured_and_bytes_round_trip_as_printable_nul_free_text(
     assert db.get_messages_as_conversation("codec")[0]["content"] == content
 
 
+@pytest.mark.parametrize("fts_table", ("messages_fts", "messages_fts_trigram"))
+def test_structured_content_fts_mirror_is_nul_free_when_available(db, fts_table):
+    message_id = db.append_message(
+        "codec",
+        role="tool",
+        content={"parts": [{"text": "line\x00break"}]},
+    )
+
+    with db._lock:
+        table_exists = db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (fts_table,),
+        ).fetchone()
+        if table_exists is None:
+            pytest.skip(f"{fts_table} is unavailable in this SQLite build")
+        row = db._conn.execute(
+            f"SELECT content FROM {fts_table} WHERE rowid = ?", (message_id,)
+        ).fetchone()
+
+    assert row is not None
+    mirrored_content = row["content"]
+    assert isinstance(mirrored_content, str)
+    assert mirrored_content.startswith(SessionDB._CONTENT_V2_JSON_PREFIX)
+    assert "\x00" not in mirrored_content
+
+
 def test_json_storage_is_deterministic_and_compact():
     content = {"z": [1, 2], "unicode": "\u732b"}
     expected = SessionDB._CONTENT_V2_JSON_PREFIX + json.dumps(

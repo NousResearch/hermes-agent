@@ -9,7 +9,7 @@ import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useSta
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
-import { useElapsedSeconds } from '@/components/chat/activity-timer'
+import { formatElapsed, useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
@@ -73,6 +73,22 @@ const ThinkingDisclosure: FC<{
   const open = userOpen ?? pending
   const isPreview = pending && userOpen === null
 
+  // How long the model thought is only knowable by having watched it happen —
+  // nothing in the persisted turn records it. So freeze the number the moment
+  // this block finishes in front of us, and stay quiet on a rehydrated turn
+  // rather than reporting whatever a timer that never ran would say.
+  const [watching, setWatching] = useState(false)
+  const [thoughtFor, setThoughtFor] = useState<null | number>(null)
+
+  useEffect(() => {
+    if (pending) {
+      setWatching(true)
+    } else if (watching) {
+      setWatching(false)
+      setThoughtFor(elapsed)
+    }
+  }, [elapsed, pending, watching])
+
   // While the preview is live, pin the scroll container to the bottom on
   // every content growth so the latest tokens are always visible.
   useEffect(() => {
@@ -127,7 +143,9 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            {t.assistant.thread.thinking}
+            {pending || thoughtFor === null
+              ? t.assistant.thread.thinking
+              : t.assistant.thread.thoughtFor(formatElapsed(thoughtFor))}
           </span>
           {pending && (
             <ActivityTimerText

@@ -243,7 +243,7 @@ SKILL_GRAPH_GUIDANCE = (
 # agent._skill_graph_mode is True.  Models treat identity as core
 # operating instructions, not optional guidance.
 SKILL_GRAPH_IDENTITY = (
-    "## Operating Protocol\n"
+    "## Skill Discovery Protocol\n"
     "\n"
     "Skills are discovered at runtime through the skill-graph plugin — "
     "search, don't guess.  Follow this protocol "

@@ -101,6 +101,62 @@ def test_replace_mode_still_works():
         assert "x = 42" in open(path).read()
 
 
+def test_verified_rolls_back_on_second_write_failure():
+    """Multi-file verified patch must roll back the first file if the
+    second write fails, preserving all-or-nothing atomicity.
+
+    Addresses review feedback from teknium1 on PR #45627: the sequential
+    write loop previously left earlier files committed when a later
+    write_file returned an error.
+    """
+
+    class FailSecondWrite(ShellFileOperations):
+        def __init__(self, env, cwd):
+            super().__init__(env, cwd=cwd)
+            self._call_count = 0
+            self._fail_path = None
+
+        def write_file(self, path, content):
+            self._call_count += 1
+            if self._call_count == 2:
+                from tools.file_operations import WriteResult
+                self._fail_path = path
+                return WriteResult(error="simulated write failure")
+            return super().write_file(path, content)
+
+    with tempfile.TemporaryDirectory() as d:
+        path_a = os.path.join(d, "a.py")
+        path_b = os.path.join(d, "b.py")
+        orig_a = "x = 1\n"
+        orig_b = "y = 2\n"
+        open(path_a, "w").write(orig_a)
+        open(path_b, "w").write(orig_b)
+
+        ops = FailSecondWrite(LocalEnv(d), cwd=d)
+
+        patch = f"""*** Begin Patch
+*** Update File: {path_a}
+@@ 1 @@
+-x = 1
++x = 42
+*** Update File: {path_b}
+@@ 1 @@
+-y = 2
++y = 99
+*** End Patch
+"""
+        res = ops.patch_verified(patch)
+
+        # The patch must fail, not partially succeed.
+        assert not res.success, "expected failure on second write"
+        assert "simulated write failure" in (res.error or "")
+
+        # File A must be restored to its original content (rolled back).
+        assert open(path_a).read() == orig_a, "first file was not rolled back"
+        # File B must be untouched (write failed).
+        assert open(path_b).read() == orig_b, "second file was modified"
+
+
 if __name__ == "__main__":
     import pytest
 

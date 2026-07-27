@@ -133,6 +133,23 @@ class RelayAdapter(BasePlatformAdapter):
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
 
+    @property
+    def supports_status_text(self) -> bool:  # type: ignore[override]
+        """Whether the fronted platform renders a TEXT status line.
+
+        Native parity (QA-1 rich status): Slack's typing surface is the
+        assistant status line ("Finding answers…" next to the bot name), a
+        text-rendering indicator. When the relay fronts Slack, advertise it so
+        run.py's live-status lane feeds per-tool phrases via
+        ``set_status_text()`` — exactly the wiring the native SlackAdapter
+        gets (``supports_status_text = True``). Other fronted platforms keep
+        textless typing bubbles and must NOT receive phrase traffic.
+
+        Property (not class attr) because ONE RelayAdapter class fronts many
+        platforms; the answer depends on the handshaked descriptor.
+        """
+        return self.descriptor.platform == Platform.SLACK.value
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,
@@ -892,13 +909,26 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return
+        # Rich status parity (QA-1): run.py's live-status lane stashes the
+        # current per-tool phrase via set_status_text() (base class store).
+        # Carry it as the typing frame's content so the connector's Slack
+        # sender renders it on assistant.threads.setStatus — the same phrase
+        # the native adapter shows ("is running pytest…", "Finding answers…").
+        # Absent (None/empty) => omit content; the connector falls back to its
+        # default "is typing…" heartbeat, preserving pre-phrase behaviour on
+        # every platform. Never send empty-string content here: on Slack that
+        # is the explicit CLEAR request reserved for stop_typing.
+        frame: Dict[str, Any] = {
+            "op": "typing",
+            "chat_id": chat_id,
+            "metadata": self._with_scope(chat_id, metadata),
+        }
+        phrase = getattr(self, "_status_text", {}).get(str(chat_id))
+        if phrase:
+            frame["content"] = str(phrase)
         try:
             await self._transport.send_outbound(
-                {
-                    "op": "typing",
-                    "chat_id": chat_id,
-                    "metadata": self._with_scope(chat_id, metadata),
-                },
+                frame,
                 platform=self._platform_by_chat.get(str(chat_id)),
             )
         except Exception:  # noqa: BLE001 - typing is cosmetic, never breaks a turn

@@ -208,3 +208,41 @@ async def test_non_slack_dm_approval_keeps_thread_id():
     await adapter.send_exec_approval("dc1", "cmd", "s", metadata=md)
     frame = _last_prompt(stub)
     assert frame["metadata"]["thread_id"] == "9000"
+
+
+# ---------------------------------------------------------------------------
+# QA-1 rich status: the relay advertises Slack's text status line and carries
+# the live per-tool phrase on the typing frame (native set_status_text parity).
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_slack_relay_advertises_status_text():
+    adapter, _stub = _wire("D1", "dm")
+    assert adapter.supports_status_text is True
+
+
+@pytest.mark.asyncio
+async def test_non_slack_relay_does_not_advertise_status_text():
+    stub = StubConnector(_slack_desc(platform="discord"))
+    adapter = RelayAdapter(
+        PlatformConfig(), _slack_desc(platform="discord"), transport=stub
+    )
+    assert adapter.supports_status_text is False
+
+
+@pytest.mark.asyncio
+async def test_typing_carries_live_status_phrase():
+    """set_status_text() -> the next typing frame carries the phrase as
+    content; clearing it (None) reverts to a content-less heartbeat frame
+    (never an empty string, which is Slack's explicit clear)."""
+    adapter, stub = _wire("D1", "dm", scope_id="T1")
+    adapter.set_status_text("D1", "is running pytest…")
+    await adapter.send_typing("D1", metadata={"scope_id": "T1"})
+    typing = [f for f in stub.sent if f["op"] == "typing"]
+    assert typing and typing[-1].get("content") == "is running pytest…"
+
+    adapter.set_status_text("D1", None)
+    await adapter.send_typing("D1", metadata={"scope_id": "T1"})
+    typing = [f for f in stub.sent if f["op"] == "typing"]
+    assert "content" not in typing[-1], (
+        "cleared phrase must omit content (empty string means CLEAR on Slack)"
+    )

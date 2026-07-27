@@ -306,3 +306,72 @@ async def test_stop_typing_clear_targets_same_synthesized_thread():
         f for f in stub.sent if f["op"] == "typing" and f.get("content") == ""
     ]
     assert clears and clears[-1]["metadata"].get("thread_id") == "1700.0042"
+
+
+# ---------------------------------------------------------------------------
+# QA-3 session keying: a top-level Slack DM message gets its own ts stamped as
+# source.thread_id (native inbound parity) so each message keys a FRESH
+# session in thread-per-message mode; flat mode and real threads untouched.
+# ---------------------------------------------------------------------------
+def _inbound_event(chat_id="D1", message_id="1700.0100", thread_id=None):
+    src = SessionSource(
+        platform=Platform.SLACK, chat_id=chat_id, chat_type="dm",
+        user_id="U1", scope_id="T1", thread_id=thread_id,
+    )
+    return MessageEvent(
+        text="hi", source=src, message_type=MessageType.TEXT,
+        message_id=message_id,
+    )
+
+
+def test_top_level_dm_gets_session_thread_stamp():
+    adapter, _ = _wire("D1", "dm")
+    ev = _inbound_event(message_id="1700.0100")
+    adapter._stamp_slack_session_thread(ev)
+    assert ev.source.thread_id == "1700.0100"
+
+
+def test_two_top_level_messages_key_distinct_sessions():
+    from gateway.session import build_session_key
+    adapter, _ = _wire("D1", "dm")
+    e1 = _inbound_event(message_id="1700.0100")
+    e2 = _inbound_event(message_id="1700.0200")
+    adapter._stamp_slack_session_thread(e1)
+    adapter._stamp_slack_session_thread(e2)
+    k1 = build_session_key(e1.source)
+    k2 = build_session_key(e2.source)
+    assert k1 != k2, "each top-level message must be its own session (QA-3)"
+
+
+def test_real_thread_reply_keeps_its_thread_session():
+    adapter, _ = _wire("D1", "dm")
+    ev = _inbound_event(message_id="1700.0300", thread_id="1700.0100")
+    adapter._stamp_slack_session_thread(ev)
+    assert ev.source.thread_id == "1700.0100", (
+        "an in-thread reply must keep resolving to its thread's session"
+    )
+
+
+def test_flat_mode_keeps_shared_dm_session():
+    adapter, _ = _wire("D1", "dm")
+    adapter.config.extra = {"reply_in_thread": False}
+    ev = _inbound_event(message_id="1700.0400")
+    adapter._stamp_slack_session_thread(ev)
+    assert ev.source.thread_id is None, (
+        "flat mode: shared rolling DM session (steer/queue) is intended UX"
+    )
+
+
+def test_nested_relay_slack_config_subset_wins():
+    """Enterprise knob shape: platforms.relay.extra.slack.reply_in_thread."""
+    adapter, _ = _wire("D1", "dm")
+    adapter.config.extra = {"slack": {"reply_in_thread": False}}
+    assert adapter._effective_reply_in_thread() is False
+    adapter.config.extra = {"slack": {"reply_in_thread": True}}
+    assert adapter._effective_reply_in_thread() is True
+    # Legacy flat key still honoured when no nested object exists.
+    adapter.config.extra = {"reply_in_thread": False}
+    assert adapter._effective_reply_in_thread() is False
+    # Default: thread-per-message.
+    adapter.config.extra = {}
+    assert adapter._effective_reply_in_thread() is True

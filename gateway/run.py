@@ -20688,11 +20688,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _slack_adapter_for_progress = self._adapter_for_source(source)
             if _slack_adapter_for_progress is not None:
                 try:
-                    _progress_reply_in_thread = bool(
-                        _slack_adapter_for_progress.config.extra.get(
-                            "reply_in_thread", True
-                        )
+                    # Relay lane: the adapter owns mode resolution (nested
+                    # platforms.relay.extra.slack subset with flat-key
+                    # fallback). Native lane: read the flat extra as before.
+                    _mode_fn = getattr(
+                        _slack_adapter_for_progress,
+                        "_effective_reply_in_thread",
+                        None,
                     )
+                    if callable(_mode_fn):
+                        _progress_reply_in_thread = bool(_mode_fn())
+                    else:
+                        _progress_reply_in_thread = bool(
+                            _slack_adapter_for_progress.config.extra.get(
+                                "reply_in_thread", True
+                            )
+                        )
                 except Exception:
                     _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(

@@ -1569,6 +1569,29 @@ export const zhHant = defineLocale({
     copyPath: '複製路徑'
   },
 
+  artifactCard: {
+    kind: { code: '程式碼', html: '互動頁面', svg: '圖形' },
+    generating: lines => `產生中… ${lines} 行`,
+    versionBadge: count => `${count} 個版本`,
+    open: '開啟'
+  },
+
+  artifactPane: {
+    tabFallback: '產物',
+    modePreview: '預覽',
+    modeSource: '原始碼',
+    versionOf: (current, total) => `第 ${current}/${total} 版`,
+    olderVersion: '較舊版本',
+    newerVersion: '較新版本',
+    latest: '最新',
+    copyContent: '複製內容',
+    download: '下載',
+    openInBrowser: '在瀏覽器中開啟',
+    openInBrowserFailed: '無法在瀏覽器中開啟',
+    missingTitle: '產物無法使用',
+    missingBody: '此產物已不在本機註冊表中。'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新工作階段',

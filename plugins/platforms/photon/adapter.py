@@ -659,6 +659,47 @@ class PhotonAdapter(BasePlatformAdapter):
             self._http_client = None
         self._mark_disconnected()
 
+    def _dispatch_fatal_notification(self) -> None:
+        """Notify the gateway of a fatal error from a detached task.
+
+        ``_monitor_sidecar_health`` and ``_supervise_sidecar`` run as
+        ``self._sidecar_health_task`` / ``self._sidecar_supervisor_task`` and
+        used to call ``await self._notify_fatal_error()`` directly, on their
+        own call stack. That routes straight into
+        ``GatewayRunner._handle_adapter_fatal_error_impl``, which tears the
+        adapter down via ``_safe_adapter_disconnect`` -> ``disconnect()``.
+        ``disconnect()`` cancels ``self._sidecar_health_task`` and awaits it
+        to make sure it's really gone -- but when the *health task itself* is
+        what's driving this whole notification (the common case: the health
+        poll is what detected the fatal condition), that task IS the one
+        awaiting several frames up the stack, so ``disconnect()`` cancels and
+        awaits its own caller. ``disconnect()``'s
+        ``task is not asyncio.current_task()`` guard doesn't catch this,
+        because the wrapper task ``_await_adapter_cleanup_with_timeout``
+        creates around ``disconnect()`` (via ``asyncio.ensure_future``) is
+        the current task there, not the health/supervisor task further up
+        the plain-await chain. The self-cancellation throws an unhandled
+        ``CancelledError`` through the health/supervisor task with nothing
+        to catch it -- ``CancelledError`` stopped subclassing ``Exception``
+        in Python 3.8, so the ``except Exception`` around the notify call
+        never saw it -- and the task dies silently mid-handoff: no log line,
+        no retry, the platform stranded with no automated way back.
+
+        Dispatching the notification onto a brand-new task instead -- the
+        same pattern ``DiscordAdapter._handle_bot_task_done`` already uses --
+        means ``disconnect()`` can cancel the health/supervisor task freely
+        without that cancellation ever reaching back into the code that's
+        still running the handoff, so the handoff always reaches the
+        reconnect queue.
+        """
+        asyncio.create_task(self._notify_fatal_error_logged())
+
+    async def _notify_fatal_error_logged(self) -> None:
+        try:
+            await self._notify_fatal_error()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[photon] fatal-error notification failed: %s", exc)
+
     # -- Inbound stream consumer ------------------------------------------
 
     async def _inbound_loop(self) -> None:
@@ -738,10 +779,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 message,
                 retryable=True,
             )
-            try:
-                await self._notify_fatal_error()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("[photon] fatal-error notification failed: %s", exc)
+            self._dispatch_fatal_notification()
             break
 
     async def _on_inbound_line(self, line: str) -> None:
@@ -1250,10 +1288,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 f"Photon sidecar exited unexpectedly (code {exit_code})",
                 retryable=True,
             )
-            try:
-                await self._notify_fatal_error()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("[photon] fatal-error notification failed: %s", exc)
+            self._dispatch_fatal_notification()
 
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc

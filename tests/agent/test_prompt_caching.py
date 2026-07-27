@@ -393,3 +393,57 @@ class TestStripAnthropicCacheControl:
         assert content[0] == {"type": "text", "text": "see"}
         assert content[1]["type"] == "image_url"
 
+    def test_preserves_organic_multipart_text_lists(self):
+        # Multi-part pure-text lists NOT produced by decoration (merged user
+        # turns, imported transcripts) must keep their structure — a ""-join
+        # would fuse "Hello"+"world" into "Helloworld" and change wire bytes
+        # on the common no-failover path (redecoration runs every attempt).
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": "world"},
+                ],
+            }
+        ]
+        strip_anthropic_cache_control(messages)
+        content = messages[0]["content"]
+        assert isinstance(content, list) and len(content) == 2
+        assert [p["text"] for p in content] == ["Hello", "world"]
+
+    def test_preserves_extra_part_keys_like_citations(self):
+        # anthropic_adapter deliberately whitelists citations on text blocks;
+        # strip must not destroy them by flattening the part away.
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "answer",
+                        "citations": [{"src": "doc"}],
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ]
+        strip_anthropic_cache_control(messages)
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["citations"] == [{"src": "doc"}]
+        assert "cache_control" not in content[0]
+
+    def test_marker_removal_is_copy_on_write_for_part_dicts(self):
+        # The per-call api_messages copy is SHALLOW (msg.copy()) — content
+        # part dicts alias the persistent history. Stripping a marker must
+        # never rewrite the stored transcript's part dicts in place.
+        shared_part = {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+        history = [{"role": "user", "content": [shared_part]}]
+        api_messages = [m.copy() for m in history]
+        strip_anthropic_cache_control(api_messages)
+        assert "cache_control" in shared_part  # history untouched
+        api_content = api_messages[0]["content"]
+        if isinstance(api_content, list):
+            assert all("cache_control" not in p for p in api_content)
+

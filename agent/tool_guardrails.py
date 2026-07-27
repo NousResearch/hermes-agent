@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -275,13 +276,16 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
 # guardrail cannot know the actual spawn count at before_call() time.  We
 # defer charging to commit_subagent_spawn(), which delegate_tool calls
 # after normalisation.  The active controller is wired in by _execute_tool_calls.
+#
+# Thread-local storage prevents cross-contamination when a synchronous
+# orchestrator subagent (running inside the parent's delegate_task call)
+# overwrites the active guardrail — each thread sees its own controller.
 
-_active_subagent_guardrail: "ToolCallGuardrailController | None" = None
+_active_subagent_guardrail: threading.local = threading.local()
 
 
 def _set_active_subagent_guardrail(ctrl: "ToolCallGuardrailController | None") -> None:
-    global _active_subagent_guardrail
-    _active_subagent_guardrail = ctrl
+    _active_subagent_guardrail.value = ctrl
 
 
 def commit_subagent_spawn(count: int) -> None:
@@ -292,15 +296,15 @@ def commit_subagent_spawn(count: int) -> None:
     max_subagents so an oversized (then rejection-trimmed) batch does
     not consume spendable budget.
     """
-    global _active_subagent_guardrail
-    if _active_subagent_guardrail is None:
+    ctrl = getattr(_active_subagent_guardrail, "value", None)
+    if ctrl is None:
         return
-    cap = _active_subagent_guardrail.config.loop_caps.max_subagents
+    cap = ctrl.config.loop_caps.max_subagents
     if cap:
-        available = cap - _active_subagent_guardrail._turn_subagent_count
-        _active_subagent_guardrail._turn_subagent_count += min(count, available)
+        available = cap - ctrl._turn_subagent_count
+        ctrl._turn_subagent_count += min(count, available)
     else:
-        _active_subagent_guardrail._turn_subagent_count += count
+        ctrl._turn_subagent_count += count
 
 
 class ToolCallGuardrailController:

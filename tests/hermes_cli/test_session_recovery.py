@@ -288,6 +288,20 @@ def _corrupt_middle_table_leaf(
     return leaf_page
 
 
+def _corrupt_table_root(path: Path, root_page: int) -> None:
+    data = bytearray(path.read_bytes())
+    page_size = int.from_bytes(data[16:18], "big")
+    if page_size == 1:
+        page_size = 65_536
+    page_start = (root_page - 1) * page_size
+    header_offset = page_start + (100 if root_page == 1 else 0)
+    assert data[header_offset] in {0x02, 0x05, 0x0A, 0x0D}
+    # Damage the root enough that no rowid bounds can be read. This reproduces
+    # a fully failed sessions copy while leaving the messages b-tree intact.
+    data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
+    path.write_bytes(data)
+
+
 def test_snapshot_blocks_connections_opened_during_the_copy(
     tmp_path: Path,
 ) -> None:
@@ -997,6 +1011,59 @@ def test_partial_recovery_reconstructs_unreadable_sessions_without_message_loss(
         )
     finally:
         conn.close()
+
+
+def test_partial_recovery_verifies_fully_reconstructed_sessions(
+    tmp_path: Path,
+) -> None:
+    """A failed sessions copy is recoverable when every parent is rebuilt.
+
+    Reported July 2026: all 194 original session rows were unreadable, but
+    partial recovery reconstructed 194 placeholders, retained 20,817 readable
+    messages, removed none, and produced clean integrity, FK, and FTS checks.
+    The verifier still treated ``sessions copy status is failed`` as fatal and
+    printed "Do not install it" for a structurally healthy partial output.
+    """
+    source = tmp_path / "sessions-root-destroyed.db"
+    output = tmp_path / "sessions-root-destroyed-recovered.db"
+    session_count = 60
+    sessions_root = _make_many_sessions_source(source, session_count)
+    _corrupt_table_root(source, sessions_root)
+    source_hash = _sha256(source)
+
+    report = recover_session_database(
+        source,
+        output,
+        work_dir=tmp_path,
+        chunk_size=8,
+        allow_partial=True,
+    )
+
+    assert report["copy"]["sessions"]["status"] == "failed"
+    assert report["copy"]["messages"]["status"] == "complete"
+    cleanup = report["orphan_cleanup"]
+    assert cleanup["sessions_reconstructed"] == session_count
+    assert cleanup["messages_retained"] == session_count
+    assert cleanup["messages_removed"] == 0
+
+    verification = report["verification"]
+    assert verification["errors"] == []
+    assert "sessions copy status is failed" in verification["warnings"]
+    assert verification["integrity_check"] == ["ok"]
+    assert verification["foreign_key_check"] == []
+    assert verification["table_counts"]["sessions"] == session_count
+    assert verification["table_counts"]["messages"] == session_count
+    assert report["verified"] is True
+    assert report["complete"] is False
+    assert report["partial"] is True
+    assert report["source_unchanged"] is True
+    assert _sha256(source) == source_hash
+
+    with sqlite3.connect(str(output)) as conn:
+        recovered = conn.execute(
+            "SELECT source, COUNT(*) FROM sessions GROUP BY source"
+        ).fetchall()
+    assert recovered == [("recovered", session_count)]
 
 
 def test_cli_recover_writes_verified_report_without_touching_source(

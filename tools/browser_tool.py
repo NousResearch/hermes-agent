@@ -457,6 +457,45 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     return raw
 
 
+def _get_cdp_override_raw() -> str:
+    """Return the *configured* CDP override without any network I/O.
+
+    Precedence is:
+    1. ``BROWSER_CDP_URL`` env var (live override from ``/browser connect``)
+    2. ``browser.cdp_url`` in config.yaml (persistent config)
+
+    This is the availability-check variant: callers that only need to know
+    *whether* a CDP override is configured (tool ``check_fn`` gates,
+    ``_is_local_mode`` / ``_is_local_backend`` routing decisions,
+    ``hermes doctor``) MUST use this instead of :func:`_get_cdp_override`.
+
+    Rationale: ``_get_cdp_override`` resolves the endpoint over HTTP
+    (``/json/version`` discovery, 10s timeout). Tool-schema assembly runs at
+    every CLI/Desktop startup and probes several browser-family check_fns;
+    when a *stale* ``browser.cdp_url`` points at a dead endpoint (the debug
+    Chrome it referenced is long gone), each check blocked on a failing
+    socket connect and startup stalled for 10+ seconds before the banner —
+    with no error, just mystery slowness. Same principle as the existing
+    "do not execute ``agent-browser --version`` here" rule in
+    ``check_browser_requirements``: no side effects during schema build.
+    """
+    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_override:
+        return env_override
+
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception as e:
+        logger.debug("Could not read browser.cdp_url from config: %s", e)
+
+    return ""
+
+
 def _get_cdp_override() -> str:
     """Return a normalized CDP URL override, or empty string.
 
@@ -467,22 +506,16 @@ def _get_cdp_override() -> str:
     When either is set, we skip both Browserbase and the local headless
     launcher and connect directly to the supplied Chrome DevTools Protocol
     endpoint.
+
+    NOTE: resolution may perform an HTTP ``/json/version`` discovery request.
+    Only call this on paths that are about to *connect* (session creation,
+    supervisor attach). Pure is-it-configured gates must use
+    :func:`_get_cdp_override_raw`.
     """
-    env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
-    if env_override:
-        return _resolve_cdp_override(env_override)
-
-    try:
-        from hermes_cli.config import read_raw_config
-
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {})
-        if isinstance(browser_cfg, dict):
-            return _resolve_cdp_override(str(browser_cfg.get("cdp_url", "") or ""))
-    except Exception as e:
-        logger.debug("Could not read browser.cdp_url from config: %s", e)
-
-    return ""
+    raw = _get_cdp_override_raw()
+    if not raw:
+        return ""
+    return _resolve_cdp_override(raw)
 
 
 def _get_dialog_policy_config() -> Tuple[str, float]:
@@ -789,7 +822,7 @@ def _termux_browser_install_error() -> str:
 
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
-    if _get_cdp_override():
+    if _get_cdp_override_raw():
         return False
     return _get_cloud_provider() is None
 
@@ -821,7 +854,7 @@ def _is_local_backend() -> bool:
     # config (both via _get_cdp_override(), and both now suppress camofox in
     # browser_camofox.py). _is_local_mode() already treats any CDP override as
     # non-local; keep the two helpers in agreement.
-    if _get_cdp_override():
+    if _get_cdp_override_raw():
         return False
     if _is_camofox_mode():
         return True
@@ -1313,7 +1346,7 @@ def _navigation_session_key(task_id: str, url: str) -> str:
     """
     if task_id is None:
         task_id = "default"
-    if _get_cdp_override():
+    if _get_cdp_override_raw():
         return task_id
     if _is_camofox_mode():
         return task_id
@@ -4740,7 +4773,9 @@ def check_browser_requirements() -> bool:
 
     # CDP override mode can connect to an existing remote/local browser endpoint
     # without requiring the local agent-browser binary on PATH.
-    if _get_cdp_override():
+    # Raw (no-I/O) check: this runs during tool-schema assembly at startup,
+    # where a stale endpoint must not cost a blocking HTTP probe.
+    if _get_cdp_override_raw():
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.

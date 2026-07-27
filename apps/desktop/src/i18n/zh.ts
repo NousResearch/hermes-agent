@@ -1994,11 +1994,11 @@ export const zh: Translations = {
     allPinned: '这里的全部已置顶。取消置顶某个对话即可在最近中显示。',
     shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
     noWorkspace: '无工作区',
-    noProject: '无项目',
     projectEmpty: '暂无会话',
     noSessions: '暂无会话',
     projects: {
       sectionLabel: '项目',
+      home: '主页',
       newButton: '新建项目',
       createTitle: '新建项目',
       createDesc: '为工作区命名并添加一个或多个文件夹。',

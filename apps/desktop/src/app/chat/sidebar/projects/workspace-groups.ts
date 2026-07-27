@@ -56,7 +56,9 @@ export interface SidebarProjectTree {
   // A git repo root promoted automatically (not a user-created projects.db row).
   // Deletable = dismissable.
   isAuto?: boolean
-  // The synthetic "No project" bucket for cwd-less sessions.
+  // The synthetic bucket (labeled "Home") holding every session no project
+  // claimed. It has no folder, so no repo/worktree structure — its one lane
+  // exists only to carry the rows.
   isNoProject?: boolean
   repos: SidebarWorkspaceTree[]
   sessionCount: number
@@ -112,6 +114,18 @@ export function kanbanWorktreeDir(path: string): null | string {
 
 /** Label for a main-checkout lane whose session recorded no branch. */
 export const DEFAULT_BRANCH_LABEL = 'main'
+
+/** Id of the Home bucket (must match the backend tree's `NO_PROJECT_ID`). */
+export const NO_PROJECT_ID = '__no_project__'
+
+/**
+ * A session with nowhere to be placed: no cwd and no recorded repo root. These
+ * are the rows the Home bucket owns, and the only ones the live overlay can
+ * hand it — a row WITH a cwd that the backend still couldn't place (junk root,
+ * deleted workspace) needs the backend's probes, so it waits for the snapshot.
+ */
+export const isDetachedSession = (session: SessionInfo): boolean =>
+  !(session.cwd || '').trim() && !(session.git_repo_root || '').trim()
 
 /** The one definition of a main-checkout lane id (must match the backend tree). */
 export const branchLaneId = (repoRoot: string, branch?: string): string =>
@@ -568,12 +582,44 @@ export function overlayRepoLanes(
   return { ...repo, groups, sessionCount: groups.reduce((n, g) => n + g.sessions.length, 0) }
 }
 
+/**
+ * Home's overlay: its rows have no cwd to place, so this is a plain upsert of
+ * detached live sessions into its single lane — a brand-new project-less chat
+ * shows the instant it's created, matching the flat Recents list.
+ */
+function overlayHomeLane(
+  project: SidebarProjectTree,
+  live: SessionInfo[],
+  removed: ReadonlySet<string>
+): SidebarProjectTree {
+  const lane = project.repos[0]?.groups[0]
+  const detached = live.filter(session => isDetachedSession(session) && !removed.has(session.id))
+  const kept = (lane?.sessions ?? []).filter(session => !removed.has(session.id))
+
+  if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
+    return project
+  }
+
+  const sessions = detached.reduce(upsertSession, kept)
+  const nextLane = { id: NO_PROJECT_ID, label: project.label, path: null, sessions }
+
+  return {
+    ...project,
+    repos: [{ id: NO_PROJECT_ID, label: project.label, path: null, groups: [nextLane], sessionCount: sessions.length }],
+    sessionCount: sessions.length
+  }
+}
+
 /** Project-level overlay: {@link overlayRepoLanes} across every repo subtree. */
 export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
   removed: ReadonlySet<string> = NO_REMOVED
 ): SidebarProjectTree {
+  if (project.isNoProject) {
+    return overlayHomeLane(project, live, removed)
+  }
+
   let changed = false
 
   const repos = project.repos.map(repo => {
@@ -591,7 +637,7 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
-/** Merge live sessions into per-project overview previews, keyed by project path. */
+/** Merge live sessions into per-project overview previews, keyed by project id. */
 export function overlayLivePreviews(
   projects: SidebarProjectTree[],
   live: SessionInfo[],
@@ -606,7 +652,8 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId = liveSessionProjectId(session, explicitProjects)
+    const projectId =
+      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
 
     if (!projectId) {
       continue
@@ -620,10 +667,6 @@ export function overlayLivePreviews(
   const out: Record<string, SessionInfo[]> = {}
 
   for (const node of projects) {
-    if (!node.path) {
-      continue
-    }
-
     const liveRows = byProject.get(node.id) ?? []
     const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
 
@@ -640,7 +683,7 @@ export function overlayLivePreviews(
       }
     }
 
-    out[node.path] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+    out[node.id] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
   }
 
   return out

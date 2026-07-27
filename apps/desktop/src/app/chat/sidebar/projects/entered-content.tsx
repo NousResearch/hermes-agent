@@ -55,6 +55,12 @@ export function EnteredProjectContent({
     return null
   }
 
+  // Home's rows aren't anchored to a folder, so there's no repo or worktree
+  // structure to show — just the chats.
+  if (project.isNoProject) {
+    return <>{renderRows(project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)))}</>
+  }
+
   const single = project.repos.length === 1
 
   return (

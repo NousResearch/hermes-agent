@@ -243,6 +243,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("browser", "allow_private_urls"),
         ("compression", "enabled"),
         ("compression", "threshold"),
+        ("compression", "in_place"),
         ("display", "streaming"),
         ("display", "skin"),
         ("display", "show_reasoning"),

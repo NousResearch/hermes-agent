@@ -1,7 +1,10 @@
 import { atom } from 'nanostores'
 import type { ReactNode } from 'react'
 
+import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+
+type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
 export const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
@@ -193,5 +196,27 @@ export function syncWorkspaceIsPage(pathname: string): void {
 
   if (isPage !== $workspaceIsPage.get()) {
     $workspaceIsPage.set(isPage)
+  }
+}
+
+/**
+ * Navigate to `path`, and if it lands on a full page rendered inside the
+ * `workspace` pane (skills/messaging/artifacts/contributed routes) also
+ * front the `workspace` pane in the pane tree.
+ *
+ * Without this, `navigate()` alone updates the route and the content inside
+ * `workspace` correctly, but if a session tile is currently focused in the
+ * same tab group, `workspace` stays behind it (issue #72602). This mirrors
+ * what `$selectedStoredSessionId.listen` already does for session switches
+ * in `store/session-states.ts`.
+ */
+export function navigateToWorkspacePage(navigate: NavigateLike, path: string, options?: { replace?: boolean }): void {
+  navigate(path, options)
+
+  const view = appViewForPath(path)
+
+  if (view !== 'chat' && !isOverlayView(view)) {
+    noteActiveTreeGroup(null)
+    revealTreePane('workspace')
   }
 }

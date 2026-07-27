@@ -78,6 +78,7 @@ import { closeAllTerminals } from '../right-sidebar/terminal/terminals'
 import {
   $workspaceIsPage,
   CRON_ROUTE,
+  navigateToWorkspacePage,
   routeSessionId,
   sessionRoute,
   SETTINGS_ROUTE,
@@ -1015,7 +1016,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onNavigateRoute={path => navigate(path)}
+            onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
         </Suspense>

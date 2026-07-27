@@ -73,18 +73,33 @@ def _wire(chat_id: str, chat_type: str, *, user_id="U1", scope_id=None):
 # The pure disambiguation contract (RelayAdapter.send)
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_slack_dm_reply_drops_synthetic_thread_anchor():
-    """A Slack DM reply with no real thread posts FLAT: reply_to is dropped so
-    the connector cannot thread it under the triggering message."""
+async def test_slack_dm_reply_keeps_anchor_in_thread_per_message_mode():
+    """Default mode (reply_in_thread=True, thread-per-message): the triggering
+    ts reply_to is the final reply's ONLY threading signal (base.py builds
+    metadata from source.thread_id, which is None for a top-level DM) — it
+    must be KEPT so the final message lands in the per-message thread with
+    the progress bubbles (2026-07-27 mixed-placement report)."""
     adapter, stub = _wire("D1", "dm")
     await adapter.send("D1", "the answer", reply_to="1700.0001")
     assert len(stub.sent) == 1
     frame = stub.sent[0]
     assert frame["op"] == "send"
-    # The synthetic self-anchor is suppressed on BOTH surfaces.
+    assert frame["reply_to"] == "1700.0001", (
+        "thread-per-message: the triggering ts anchors the final reply"
+    )
+
+
+@pytest.mark.asyncio
+async def test_slack_dm_reply_drops_synthetic_anchor_in_flat_mode():
+    """Flat mode (reply_in_thread=False): the synthetic self-anchor is dropped
+    so the reply posts flat at the DM root (native _resolve_thread_ts parity)
+    and no synthetic thread is invented (#18859)."""
+    adapter, stub = _wire("D1", "dm")
+    adapter.config.extra = {"reply_in_thread": False}
+    await adapter.send("D1", "the answer", reply_to="1700.0001")
+    frame = stub.sent[0]
     assert frame["reply_to"] is None
     assert "thread_id" not in (frame["metadata"] or {})
-    # And no synthetic thread_id was invented (the #18859 landmine).
     assert "thread_ts" not in (frame["metadata"] or {})
 
 
@@ -165,8 +180,13 @@ async def test_slack_dm_stream_consumer_edits_own_ts_not_flat():
 
     The connector returns a real message_id for the flat first send, so edit
     support must stay on and at least one edit op must be emitted (progressive
-    streaming), identical to a thread. No synthetic thread is created."""
+    streaming), identical to a thread. No synthetic thread is created.
+
+    Runs in EXPLICIT flat mode (reply_in_thread=False) — that is the mode this
+    contract belongs to; the default thread-per-message path is covered by
+    test_slack_dm_stream_consumer_threads_in_thread_per_message_mode."""
     adapter, stub = _wire("D1", "dm")
+    adapter.config.extra = {"reply_in_thread": False}
     consumer = await _drive_stream(
         adapter,
         "D1",
@@ -218,3 +238,24 @@ async def test_slack_thread_stream_consumer_still_threads_and_streams():
     # Thread preserved: the real thread_id rides along and reply_to is kept.
     assert first_send["metadata"]["thread_id"] == "1699.9000"
     assert first_send["reply_to"] == "1700.0002"
+
+
+@pytest.mark.asyncio
+async def test_slack_dm_stream_consumer_threads_in_thread_per_message_mode():
+    """Default mode: the DM stream's first send keeps the triggering-ts anchor
+    so the streamed final reply lands in the per-message thread; edits still
+    target the reply's own ts."""
+    adapter, stub = _wire("D1", "dm")
+    consumer = await _drive_stream(
+        adapter,
+        "D1",
+        metadata=None,
+        initial_reply_to_id="1700.0001",
+        chat_type="dm",
+    )
+    first_send = stub.sent[0]
+    assert first_send["op"] == "send"
+    assert first_send["reply_to"] == "1700.0001"
+    assert consumer.message_id and consumer.message_id != "__no_edit__"
+    edit_ids = {f["message_id"] for f in stub.sent if f["op"] == "edit"}
+    assert edit_ids <= {stub.next_send_result["message_id"]}

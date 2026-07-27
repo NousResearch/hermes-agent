@@ -4044,6 +4044,14 @@ def _project_session_response(
     return {key: session[key] for key in fields if key in session}
 
 
+def _strip_session_list_rows(
+    sessions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Replace list rows in place with explicit public response DTOs."""
+    sessions[:] = [_project_session_response(session) for session in sessions]
+    return sessions
+
+
 @app.get("/api/sessions")
 def get_sessions(
     limit: int = 20,

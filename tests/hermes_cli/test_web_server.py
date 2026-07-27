@@ -1376,6 +1376,33 @@ class TestWebServerEndpoints:
         assert full_rows[0].keys() == row.keys()
         assert not (self._private_session_fields() & full_rows[0].keys())
 
+    def test_sidebar_projection_bridge_uses_explicit_public_allowlist(self):
+        """Sidebar windows are replaced in place with fresh public DTOs."""
+        from hermes_cli import web_server
+
+        raw_row = {
+            "id": "allowlisted-sidebar-row",
+            "source": "desktop",
+            "profile": "default",
+            "is_default_profile": True,
+            "system_prompt": "private rendered prompt",
+            "future_private_field": "private future value",
+        }
+        rows = [raw_row]
+
+        projected = web_server._strip_session_list_rows(rows)
+
+        assert projected is rows
+        assert rows == [
+            {
+                "id": "allowlisted-sidebar-row",
+                "source": "desktop",
+                "profile": "default",
+                "is_default_profile": True,
+            }
+        ]
+        assert rows[0] is not raw_row
+
     def test_get_session_detail_uses_explicit_public_allowlist(self):
         """Detail cannot expose routing data or a future database column."""
         from hermes_cli import web_server

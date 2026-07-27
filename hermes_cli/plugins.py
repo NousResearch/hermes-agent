@@ -309,6 +309,8 @@ def _get_extra_plugin_paths() -> List[Path]:
     seen: Set[str] = set()
     for path in paths:
         try:
+            if not path.is_absolute():
+                path = get_hermes_home() / path
             path = path.resolve(strict=False)
         except (OSError, RuntimeError) as exc:
             logger.warning(
@@ -1493,6 +1495,20 @@ class PluginManager:
                     manifest.source,
                 )
                 continue
+            previous = winners.get(lookup_key)
+            if (
+                previous is not None
+                and previous.source == "external"
+                and manifest.source == "external"
+                and is_enabled
+            ):
+                logger.warning(
+                    "multiple enabled plugin sources provide key '%s'; "
+                    "the later configured source wins: %s -> %s",
+                    lookup_key,
+                    previous.path,
+                    manifest.path,
+                )
             winners[lookup_key] = manifest
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name

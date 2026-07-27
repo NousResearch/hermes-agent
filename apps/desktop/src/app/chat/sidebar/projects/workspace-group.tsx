@@ -121,7 +121,6 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
             </div>
           )
         }
-        count={visibleSessions.length}
         icon={leadingIcon}
         label={group.label}
         onToggle={toggleOpen}

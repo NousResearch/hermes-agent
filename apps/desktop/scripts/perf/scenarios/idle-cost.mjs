@@ -80,28 +80,30 @@ const idleCost = seconds => `
 
 /** Record frame pacing across an interaction driven from the page.
  *
+ *  The gesture body drives itself on requestAnimationFrame, so it IS the frame
+ *  clock — timing is taken from those same callbacks rather than a second,
+ *  independent rAF ticker. Running two rAF consumers made the observer's
+ *  deltas count the driver's frames as well as the app's and reported ~3fps
+ *  where the interaction actually ran at ~23fps. `frames` is filled by the
+ *  body via `__MARK__`.
+ *
  *  `record` MUST be false for any fps number you intend to believe: the render
  *  counter walks the whole fiber tree on every commit, so recording during a
  *  gesture measures the instrumentation as much as the app. Attribution and
- *  timing therefore run as two separate passes — the observer effect here is
- *  large enough to hide a 15x render reduction behind an unchanged fps. */
+ *  timing therefore run as two separate passes. */
 const withFrames = (body, record = false) => `
   (async () => {
     const rc = window.__RENDER_COUNTS__
     ${record ? 'rc.start()' : ''}
     const frames = []
     let last = performance.now()
-    let stop = false
-    const tick = () => {
-      if (stop) return
+    // The body calls this once per frame it drives.
+    const __MARK__ = () => {
       const now = performance.now()
       frames.push(now - last)
       last = now
-      requestAnimationFrame(tick)
     }
-    requestAnimationFrame(tick)
     ${body}
-    stop = true
     ${record ? 'rc.stop()' : ''}
     const total = frames.reduce((a, b) => a + b, 0)
     const sorted = [...frames].sort((a, b) => a - b)
@@ -138,12 +140,14 @@ const DRAG = withFrames(`
       x += 2
       window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x, clientY: y }))
       await new Promise(r => requestAnimationFrame(r))
+      __MARK__()
     }
     window.__DRAG_MOVED__ = Math.round(x - x0)
     for (let i = 0; i < 30; i++) {
       x -= 2
       window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x, clientY: y }))
       await new Promise(r => requestAnimationFrame(r))
+      __MARK__()
     }
     window.dispatchEvent(new PointerEvent('pointerup', { ...opts, buttons: 0, clientX: x, clientY: y }))
   } else {
@@ -154,6 +158,7 @@ const DRAG = withFrames(`
 /** Type into the composer — the keystroke symptom. */
 const TYPE = withFrames(`
   const el = document.querySelector('[contenteditable="true"], textarea')
+  window.__TYPE_TARGET__ = el ? (el.tagName.toLowerCase()) : 'none'
   if (el) {
     el.focus()
     for (let i = 0; i < 40; i++) {
@@ -167,6 +172,10 @@ const TYPE = withFrames(`
         el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ch, inputType: 'insertText' }))
       }
       el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ch }))
+      // Wait for the frame this keystroke produces, then mark it — same clock
+      // discipline as DRAG, so typing fps is comparable to drag fps.
+      await new Promise(r => requestAnimationFrame(r))
+      __MARK__()
       await new Promise(r => setTimeout(r, 25))
     }
   } else {
@@ -220,11 +229,16 @@ export default {
     const dragTarget = await cdp.eval('window.__DRAG_TARGET__ || "unknown"')
     const dragMoved = await cdp.eval('window.__DRAG_MOVED__ ?? 0')
     const type = JSON.parse(await cdp.eval(TYPE))
+    const typeTarget = await cdp.eval('window.__TYPE_TARGET__ || "unknown"')
 
     await cdp.eval(CLEANUP)
 
     if (dragTarget === 'none') {
       throw new Error('idle-cost: no [role="separator"] sash found — the drag measured nothing.')
+    }
+
+    if (typeTarget === 'none') {
+      throw new Error('idle-cost: no composer found — the typing pass measured nothing.')
     }
 
     return {

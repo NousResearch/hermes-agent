@@ -435,6 +435,39 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
   })
 
+  // A mid-turn redirect inserts its correction as a SECOND optimistic user row
+  // for the same turn. Keeping only the newest dropped the prompt that started
+  // it, so a resume repainted the thread with the user's message missing.
+  it('keeps every optimistic user row in the live run after a mid-turn redirect', () => {
+    const previous = [
+      msg('user-1000', 'user', 'remove the session counts'),
+      msg('user-2000', 'user', 'hurry up'),
+      msg('assistant-stream-1', 'assistant', 'Moving.', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'user-2000',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('still drops optimistic rows separated from the live run by an assistant reply', () => {
+    const previous = [
+      msg('user-stale', 'user', 'compressed-away prompt'),
+      msg('assistant-stale', 'assistant', 'compressed-away reply'),
+      msg('user-1000', 'user', 'the live prompt'),
+      msg('user-2000', 'user', 'the correction'),
+      msg('assistant-stream-1', 'assistant', 'Moving.', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'user-2000',
+      'assistant-stream-1'
+    ])
+  })
+
   // #67603: the gateway persists model-switch / personality notices as role=user
   // ([System: …], tui_gateway/server.py). A single trailing marker is already
   // handled by the latestAuthoritativeUser guard above, but TWO switches around
@@ -538,6 +571,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // Corrections typed while a turn ran are their own user bubbles on the same
+  // turn. Resume must rebuild the prompt AND every correction, in order.
+  it('projects mid-turn redirect corrections after the prompt that started the turn', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up', 'and the worktree ones'],
+        assistant: 'Moving.',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'remove the session counts',
+      'hurry up',
+      'and the worktree ones',
+      'Moving.'
+    ])
+  })
+
+  it('does not re-project a correction the transcript already persisted', () => {
+    const stored = [msg('stored-user', 'user', 'remove the session counts'), msg('stored-fix', 'user', 'hurry up')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up'],
+        assistant: 'Moving.',
+        streaming: true
+      }
+    })
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-fix'
+    ])
+  })
+
   it('does not duplicate the inflight user when the persisted turn carries @image refs', () => {
     // By the time a stored transcript reaches appendLiveSessionProjection it
     // has already been run through toChatMessages, so the @image directive has

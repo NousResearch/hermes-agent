@@ -1918,9 +1918,9 @@ class AIAgent:
         # where the next live turn re-reads it as an instruction and the agent
         # "becomes" the curator. Hard-stop before any DB touch.
         if getattr(self, "_persist_disabled", False):
-            return
+            return None
         if not self._session_db:
-            return
+            return None
         # Persist user-message override (#48677 chokepoint): historically this
         # mutated the live `messages` list in place, which — on the early
         # crash-resilience persist that runs BEFORE the API call is built —
@@ -2122,8 +2122,10 @@ class AIAgent:
             # allocated next turn at a recycled address.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)
+            return True
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
+            return False
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -3441,6 +3443,14 @@ class AIAgent:
                 + "the turn stopped while a tool result was still pending and "
                 "the model produced no follow-up text. Send `continue` to "
                 "let it summarize."
+            )
+        if reason == "session_persistence_failed":
+            return (
+                prefix
+                + "the turn was stopped because session storage could not be "
+                "written (the transcript would have been lost on restart). "
+                "Check disk space / permissions for the state DB, then send "
+                "your message again."
             )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.

@@ -4760,6 +4760,108 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
+_UPDATE_RUNTIME_RELOAD_MODULES = (
+    "hermes_constants",
+    "tools.environments.local",
+    "tools.lazy_deps",
+)
+
+
+def _reload_updated_runtime_modules() -> None:
+    """Reload update-sensitive modules after the checkout changes in-place.
+
+    ``hermes update`` keeps running in the pre-pull Python process. After a
+    large update, modules already present in ``sys.modules`` can still expose
+    old symbols even though their source files on disk are new. Refresh the
+    small module set used by lazy-backend refresh before that step imports
+    newly-updated code paths.
+    """
+    try:
+        import importlib
+
+        importlib.invalidate_caches()
+        for module_name in _UPDATE_RUNTIME_RELOAD_MODULES:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            try:
+                importlib.reload(module)
+            except Exception as exc:
+                logger.debug("Could not reload updated module %s: %s", module_name, exc)
+    except Exception as exc:
+        logger.debug("Could not refresh update runtime modules: %s", exc)
+
+
+# Stamp file recording the checkout fingerprint the bytecode cache was last
+# validated against. Lives next to the checkout (NOT in HERMES_HOME) because
+# __pycache__ is per-checkout state shared by every profile.
+_BYTECODE_FINGERPRINT_FILE = ".bytecode-fingerprint"
+
+
+def _record_bytecode_fingerprint() -> None:
+    """Persist the current checkout fingerprint after a bytecode sweep.
+
+    Never raises. A failed write just means the next launch re-sweeps —
+    safe, merely redundant.
+    """
+    try:
+        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
+        if not fingerprint:
+            return
+        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
+        tmp_path = stamp_path.with_name(stamp_path.name + ".tmp")
+        tmp_path.write_text(fingerprint, encoding="utf-8")
+        tmp_path.replace(stamp_path)
+    except OSError as exc:
+        logger.debug("Could not record bytecode fingerprint: %s", exc)
+
+
+def _sweep_stale_bytecode_if_checkout_changed() -> None:
+    """Clear ``__pycache__`` at launch when the checkout changed underneath us.
+
+    The stale-bytecode bug class (issues #6207, #60242; Dhruv's WhatsApp
+    ``cannot import name 'parse_model_flags_detailed'`` report) has one
+    shared shape: the checkout's ``.py`` files change (git pull inside
+    ``hermes update``, a manual ``git pull``, a ZIP update, a file-sync
+    restore) while ``__pycache__`` retains bytecode from the previous
+    revision, and a later process trusts the stale ``.pyc`` instead of the
+    fresh source.
+
+    Update-time clears alone can never close this class: ``hermes update``
+    always executes the PRE-pull updater code, so any hardening added to it
+    only takes effect one update late, and manual ``git pull`` never runs
+    the updater at all. This launch-time guard closes the loop: every
+    ``hermes`` entry point compares the checkout fingerprint (cheap file
+    reads, no git subprocess) against the last-validated stamp and sweeps
+    the bytecode cache once when they diverge.
+
+    Never raises — a failure here must not block launch.
+    """
+    try:
+        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
+        if not fingerprint:
+            return  # non-git install — the ZIP update path clears explicitly
+        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
+        try:
+            recorded = stamp_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            recorded = ""
+        if recorded == fingerprint:
+            return
+        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        if removed:
+            logger.info(
+                "Checkout changed since last launch (%s -> %s): cleared %d stale __pycache__ director%s",
+                recorded or "unknown",
+                fingerprint,
+                removed,
+                "y" if removed == 1 else "ies",
+            )
+        _record_bytecode_fingerprint()
+    except Exception as exc:
+        logger.debug("Stale-bytecode launch sweep failed: %s", exc)
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -5226,6 +5328,62 @@ def _run_npm_install_deterministic(
     )
 
 
+def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
+    """True when an npm bin shim for *name* exists (POSIX or Windows)."""
+    return any(
+        (bin_dir / candidate).exists()
+        for candidate in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe")
+    )
+
+
+def _web_build_toolchain_ready(*roots: Path) -> bool:
+    """True when ``tsc`` and ``vite`` shims are reachable from any of *roots*.
+
+    Callers must pass every root the build would search; checking only one
+    reports a healthy tree as broken.
+    """
+    bin_dirs = [
+        bin_dir
+        for bin_dir in (root / "node_modules" / ".bin" for root in roots)
+        if bin_dir.is_dir()
+    ]
+    return bool(bin_dirs) and all(
+        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
+        for tool in ("tsc", "vite")
+    )
+
+
+def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
+    """Roots whose ``node_modules/.bin`` can satisfy the web build.
+
+    ``npm run build`` prepends ``node_modules/.bin`` for the package and each
+    of its ancestors, so shims hoisted to the workspace root and shims nested
+    under a package that owns its lockfile (#42973) are equally valid.
+    """
+    return (web_dir, web_dir.parent)
+
+
+def _missing_web_build_tool(output: str) -> str | None:
+    """Return the build tool a failed ``npm run build`` could not resolve.
+
+    Each shell words this differently: ``sh: 1: tsc: not found`` (dash),
+    ``vite: command not found`` (bash/zsh), and ``'tsc' is not recognized as
+    an internal or external command`` (cmd.exe).
+    """
+    lowered = output.lower()
+    for tool in ("tsc", "vite"):
+        if any(
+            phrase in lowered
+            for phrase in (
+                f"{tool}: not found",
+                f"{tool}: command not found",
+                f"'{tool}' is not recognized",
+            )
+        ):
+            return tool
+    return None
+
+
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available, serializing across processes.
 
@@ -5333,12 +5491,16 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
-    r1 = _run_npm_install_deterministic(
-        npm,
-        npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
-        env=build_env,
-    )
+
+    def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
+        return _run_npm_install_deterministic(
+            npm,
+            npm_cwd,
+            extra_args=(*npm_workspace_args, "--silent") if silent else npm_workspace_args,
+            env=build_env,
+        )
+
+    r1 = _install_web_deps(silent=True)
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -5355,11 +5517,22 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # recoverable (the stale-dist fallback below handles the kill path).
     r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
     if r2.returncode != 0:
-        # Retry once after a short delay — covers boot-time races on Windows
-        # (antivirus scanning Node.js binaries, npm cache not ready, transient
-        # I/O when launched via Scheduled Task at logon). See issue #23817.
-        _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        # The install above can exit 0 while leaving the tree without a build
+        # toolchain — a lockfile-hash skip over a half-installed tree, or an
+        # interrupted link step. The generic retry below just reruns the same
+        # command, so `tsc: not found` survives it and the stale dist is
+        # served forever. Reinstall (non-silent, so the user sees it) first.
+        missing_tool = _missing_web_build_tool((r2.stdout or "") + (r2.stderr or ""))
+        if missing_tool:
+            _say(f"  ⚠ Build could not resolve {missing_tool} — reinstalling web dependencies...")
+            _install_web_deps(silent=False)
+            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        if r2.returncode != 0:
+            # Retry once after a short delay — covers boot-time races on Windows
+            # (antivirus scanning Node.js binaries, npm cache not ready, transient
+            # I/O when launched via Scheduled Task at logon). See issue #23817.
+            _time.sleep(3)
+            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -7707,6 +7880,7 @@ def _update_via_zip(args):
         print(
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
+    _record_bytecode_fingerprint()
 
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
@@ -10140,6 +10314,15 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # node_modules means the cache was recorded by another checkout.
     if not (PROJECT_ROOT / "node_modules").is_dir():
         return True
+    # A matching lockfile hash over a tree whose web build toolchain never
+    # landed must NOT skip the reinstall — otherwise every later `hermes
+    # update` keeps rebuilding against a half-installed tree and serving a
+    # stale dist.
+    web_dir = PROJECT_ROOT / "web"
+    if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
+        *_web_toolchain_roots(web_dir)
+    ):
+        return True
     try:
         # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
         cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
@@ -12196,6 +12379,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
+        _record_bytecode_fingerprint()
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
@@ -12272,6 +12456,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # later lazy failure cannot be "healed" by clearing the core marker
         # based on a narrow 7-package import probe (#58004 review).
         _clear_update_incomplete_marker()
+
+        # The update process is still the old Python interpreter process. Run
+        # one final cache/module refresh immediately before lazy backend
+        # refresh, which imports newly-pulled modules that may depend on fresh
+        # symbols in hermes_constants or lazy_deps. The dependency install
+        # above may also have regenerated bytecode from build-cache copies —
+        # this second sweep catches those stragglers (#60242, #65240).
+        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        if removed:
+            print(
+                f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
+            )
+        _record_bytecode_fingerprint()
+        _reload_updated_runtime_modules()
 
         # Upgrade pip before lazy refreshes — stale pip can fail source builds
         # and leave partially-written packages (#57828).
@@ -12430,18 +12628,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  ✓ Model catalog cache refreshed from checkout")
         except Exception as e:
             logger.debug("Model catalog seed during update failed: %s", e)
-
-        # After git pull, source files on disk are newer than cached Python
-        # modules in this process.  Reload hermes_constants so that any lazy
-        # import executed below (skills sync, gateway restart) sees new
-        # attributes like display_hermes_home() added since the last release.
-        try:
-            import importlib
-            import hermes_constants as _hc
-
-            importlib.reload(_hc)
-        except Exception:
-            pass  # non-fatal — worst case a lazy import fails gracefully
 
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
@@ -15473,6 +15659,12 @@ def main():
         _cleanup_quarantined_exes()
     except Exception:
         pass
+
+    # If the checkout changed since the last launch (hermes update, manual
+    # git pull, old-updater update that predates newer clears), sweep stale
+    # __pycache__ once so no process — this one's lazy imports included —
+    # resolves fresh source against old bytecode. Never raises.
+    _sweep_stale_bytecode_if_checkout_changed()
 
     # Self-heal a venv left half-built by an interrupted ``hermes update``
     # (Ctrl-C, terminal close, WSL OOM mid-install). Skip when the user is

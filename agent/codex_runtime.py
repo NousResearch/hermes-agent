@@ -778,11 +778,26 @@ def run_codex_app_server_turn(
         # the already-flushed user turn). See gateway/run.py agent_persisted.
         if getattr(agent, "_session_db", None) is not None:
             try:
-                agent._flush_messages_to_session_db(messages)
+                _codex_flush_ok = agent._flush_messages_to_session_db(messages)
             except Exception:
-                logger.debug(
+                _codex_flush_ok = False
+                logger.warning(
                     "codex app-server projected-message flush failed",
                     exc_info=True,
+                )
+            if _codex_flush_ok is False:
+                # Unlike the chat-completions loop (which fails closed BEFORE
+                # projection — see conversation_loop session_persistence_failed),
+                # codex output has already streamed to the user by the time this
+                # flush runs, so there is nothing left to withhold. We cannot
+                # flip agent_persisted=False either: the gateway fallback write
+                # would re-INSERT the already-flushed user turn (#860/#42039).
+                # Surface the durability gap loudly instead of a silent debug.
+                logger.warning(
+                    "codex app-server turn was delivered but could NOT be "
+                    "persisted to the session DB (session=%s) — this turn "
+                    "will be missing after restart/resume",
+                    getattr(agent, "session_id", None),
                 )
 
 

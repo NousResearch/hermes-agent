@@ -258,6 +258,7 @@ describe('revalidatePooledRemoteBackends', () => {
     const unreachable = new Set<string>()
     const log = vi.fn()
     const stopBackend = vi.fn()
+
     const probe = vi.fn(async (url: string) => {
       if ([...unreachable].some(base => url.startsWith(base))) {
         throw new Error('unreachable')
@@ -336,6 +337,7 @@ describe('revalidatePooledRemoteBackends', () => {
       ['coder', { process: null, remoteBaseUrl: 'https://dead.example.com' }],
       ['writer', { process: null, remoteBaseUrl: 'https://live.example.com' }]
     ])
+
     pool.unreachable.add('https://dead.example.com')
 
     const tracker = new RemoteLivenessTracker()

@@ -1101,9 +1101,14 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         "</memory_provider_context>"
     )
     fake_db = MagicMock()
-    fake_db.get_session.return_value = {
-        "system_prompt": stored_system_prompt,
-    }
+    async_session_db = SimpleNamespace(
+        _db=fake_db,
+        get_session=AsyncMock(
+            return_value={
+                "system_prompt": stored_system_prompt,
+            }
+        ),
+    )
 
     class FakeInPlaceCompressAgent:
         last_instance = None
@@ -1165,7 +1170,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = SimpleNamespace(_db=fake_db)
+    runner._session_db = async_session_db
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -1203,7 +1208,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     assert result == "ok"
     agent = FakeInPlaceCompressAgent.last_instance
     assert agent is not None
-    fake_db.get_session.assert_called_once_with("sess-1")
+    async_session_db.get_session.assert_awaited_once_with("sess-1")
     agent.context_compressor.bind_session_state.assert_called_once_with(fake_db, "sess-1")
     # In-place compaction already persisted via archive_and_compact() —
     # rewrite_transcript would replace_messages(active_only=False) and DELETE

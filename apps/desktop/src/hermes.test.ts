@@ -150,8 +150,9 @@ describe('Hermes REST helpers', () => {
     // Slices reassembled from the legacy per-slice route with the same
     // scoping: recents on the caller's profile, cron + messaging cross-profile.
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
-    expect(result.recents.total).toBe(7)
-    expect(result.recents.profile_totals).toEqual({ default: 7 })
+    // One row back against a 30-row window: the profile is fully loaded, so
+    // the legacy path must not claim there's another page.
+    expect(result.recents.profiles_truncated).toEqual({ default: false })
     expect(result.cron.sessions.map(s => s.id)).toEqual(['cron-1'])
     expect(result.messaging.sessions.map(s => s.id)).toEqual(['msg-1'])
 

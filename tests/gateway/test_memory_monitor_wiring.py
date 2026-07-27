@@ -11,9 +11,12 @@ and the config default block that backs it.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import gateway.run as run
+from gateway.run import GatewayRunner
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 
 
@@ -76,19 +79,65 @@ def test_start_helper_logs_warning_on_failure(caplog):
     )
 
 
-def test_gateway_start_calls_memory_monitor():
-    """Regression: GatewayRunner.start() must call _start_gateway_memory_monitor().
+def _make_partial_runner(tmp_path):
+    """Partially-constructed GatewayRunner, enough for the start() prologue.
 
-    This is the exact failure class of #49773: the helper existed and was
-    tested, but nothing in the runtime called it. If a future refactor removes
-    the call from start(), this test catches it.
+    Follows the established pattern (see test_teams_pipeline_runtime_wiring):
+    ``__new__`` + only the attributes the exercised code path touches. The
+    stubbed ``_abort_startup_if_shutdown_requested`` makes start() return at
+    its first checkpoint — which sits *after* the memory-monitor wiring — so
+    no adapters, servers, or background loops are ever started.
     """
-    import inspect
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(sessions_dir=str(tmp_path))
+    runner._start_loop_liveness_guards = lambda loop: None
 
-    from gateway.run import GatewayRunner
+    async def _abort(*_args, **_kwargs) -> bool:
+        return True
 
-    src = inspect.getsource(GatewayRunner.start)
-    assert "_start_gateway_memory_monitor" in src, (
-        "GatewayRunner.start() must call _start_gateway_memory_monitor() — "
-        "regression guard for #49773"
+    runner._abort_startup_if_shutdown_requested = _abort
+    return runner
+
+
+def test_gateway_runner_start_starts_memory_monitor(monkeypatch, tmp_path):
+    """Regression for #49773: starting the runner must start the heartbeat.
+
+    This is the exact failure class of the bug: ``start_memory_monitoring()``
+    existed and was tested in isolation, but nothing in the gateway runtime
+    called it. This test drives ``GatewayRunner.start()`` itself (up to its
+    first shutdown checkpoint) and asserts the monitor is actually started
+    with the configured interval.
+    """
+    runner = _make_partial_runner(tmp_path)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"logging": {"memory_monitor": {"enabled": True, "interval_seconds": 60}}},
     )
+    # Keep the test from touching the real ~/.hermes runtime-status file.
+    monkeypatch.setattr(
+        "gateway.status.write_runtime_status", lambda **_kw: None
+    )
+
+    with patch("gateway.memory_monitor.start_memory_monitoring") as mock_start:
+        result = asyncio.run(GatewayRunner.start(runner))
+
+    assert result is True
+    mock_start.assert_called_once_with(interval_seconds=60.0)
+
+
+def test_gateway_runner_start_respects_disabled_config(monkeypatch, tmp_path):
+    """start() must not spin up the heartbeat when the operator disabled it."""
+    runner = _make_partial_runner(tmp_path)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"logging": {"memory_monitor": {"enabled": False}}},
+    )
+    monkeypatch.setattr(
+        "gateway.status.write_runtime_status", lambda **_kw: None
+    )
+
+    with patch("gateway.memory_monitor.start_memory_monitoring") as mock_start:
+        result = asyncio.run(GatewayRunner.start(runner))
+
+    assert result is True
+    mock_start.assert_not_called()

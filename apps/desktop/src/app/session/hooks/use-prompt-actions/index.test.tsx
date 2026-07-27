@@ -940,7 +940,9 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
         const profile = sessionProfiles.get(sessionId)
         const command = String(params?.command ?? '')
 
-        if (profile && command === 'approvals off') persistedModes.set(profile, 'off')
+        if (profile && command === 'approvals off') {
+          persistedModes.set(profile, 'off')
+        }
 
         return { output: 'Approval mode: off (persistent profile setting).' } as never
       }

@@ -216,6 +216,14 @@ function recoverableTail(messages: ChatMessage[], streamId: null | string): Chat
     if (visible[index].role === 'user') {
       start = index
 
+      // A mid-turn redirect inserts its correction as another user row right
+      // before the live reply, so the turn can open with a RUN of user rows.
+      // Keep walking back over them: stopping at the nearest one journals the
+      // correction alone and loses the prompt that actually started the turn.
+      while (start > 0 && visible[start - 1].role === 'user') {
+        start -= 1
+      }
+
       break
     }
   }

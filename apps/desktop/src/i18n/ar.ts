@@ -2273,6 +2273,7 @@ export const ar = defineLocale({
       resumeWhenBackgroundDone: count =>
         count === 1 ? 'سيُستأنف عند انتهاء المهمة الخلفية' : `سيُستأنف عند انتهاء ${count} مهام خلفية`,
       thinking: 'يفكر...',
+      thought: 'فكّر',
       thoughtBriefly: 'فكّر قليلاً',
       thoughtFor: duration => `فكّر لمدة ${duration}`,
       today: time => `اليوم ${time}`,

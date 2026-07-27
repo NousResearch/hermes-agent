@@ -79,6 +79,15 @@ function isPending(tool: ToolCallLike): boolean {
   return tool.result === undefined
 }
 
+/**
+ * How a tool reads while it is happening — "Editing", "Exploring". Shared with
+ * the status line that covers the gap before a tool starts, so the same run is
+ * described in the same words from the moment the model drafts it.
+ */
+export function toolPresentVerb(toolName: string): string {
+  return CATEGORY_COPY[toolCategory(toolName)].present
+}
+
 /** The thing a tool acted on, as the header should name it. */
 function toolTarget(tool: ToolCallLike): string {
   const args = parseMaybeObject(tool.args)

@@ -50,6 +50,7 @@ import {
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
@@ -441,6 +442,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         flushQueuedDeltas(sessionId)
         pruneFinishedSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
+        setSessionDraftingTool(sessionId, '')
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
         // A fresh turn on this session optimistically clears its billing wall;
@@ -611,6 +613,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // last item stuck pending/in_progress. Finished lists keep their linger.
         clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
+        setSessionDraftingTool(sessionId, '')
 
         flushQueuedDeltas(sessionId)
 
@@ -677,12 +680,28 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (storedId && nextTitle) {
           setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
         }
-      } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
+      } else if (event.type === 'tool.generating') {
+        // Announced while the model is still emitting the call's JSON, so it
+        // carries a name and nothing else — no id, no args. Materializing a row
+        // from it strands an argless placeholder whenever the bubble is sealed
+        // before the real `tool.start` arrives, because the two can no longer be
+        // reconciled across the boundary. It's a status, so say it as one.
+        if (!sessionId) {
+          return
+        }
+
+        setSessionDraftingTool(sessionId, typeof payload?.name === 'string' ? payload.name : '')
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: false, toolRunning: true })
+        }
+      } else if (event.type === 'tool.start' || event.type === 'tool.progress') {
         if (!sessionId) {
           return
         }
 
         flushQueuedDeltas(sessionId)
+        setSessionDraftingTool(sessionId, '')
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
 
         if (isActiveEvent) {
@@ -691,6 +710,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
+          setSessionDraftingTool(sessionId, '')
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
 
           if (isActiveEvent) {
@@ -982,6 +1002,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           clearClarifyRequest(undefined, sessionId)
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
+          setSessionDraftingTool(sessionId, '')
           compactedTurnRef.current.delete(sessionId)
         }
 

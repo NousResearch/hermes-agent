@@ -2267,6 +2267,7 @@ export interface Translations {
       loadingResponse: string
       resumeWhenBackgroundDone: (count: number) => string
       thinking: string
+      thought: string
       thoughtBriefly: string
       thoughtFor: (duration: string) => string
       today: (time: string) => string

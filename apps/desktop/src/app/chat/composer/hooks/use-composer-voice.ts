@@ -166,17 +166,23 @@ export function useComposerVoice({
       .catch(() => undefined)
   }, [])
 
+  // The ref is a request token (did WE issue wake.pause?), not an atom mirror —
+  // it guards resumeWakeIfPaused from resuming a detector another surface owns.
+  const pauseWakeForVoice = useCallback(() => {
+    wakePausedRef.current = true
+    void $gateway
+      .get()
+      ?.request('wake.pause', {})
+      .catch(() => undefined)
+  }, [])
+
   useEffect(() => {
     if (voiceConversationActive) {
-      wakePausedRef.current = true
-      void $gateway
-        .get()
-        ?.request('wake.pause', {})
-        .catch(() => undefined)
+      pauseWakeForVoice()
     } else {
       resumeWakeIfPaused()
     }
-  }, [resumeWakeIfPaused, voiceConversationActive])
+  }, [pauseWakeForVoice, resumeWakeIfPaused, voiceConversationActive])
 
   useEffect(() => resumeWakeIfPaused, [resumeWakeIfPaused])
 

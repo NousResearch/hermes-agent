@@ -82,6 +82,10 @@ class RelayAdapter(BasePlatformAdapter):
         # synthetic reply_to in _resolve_thread_ts; the relay lane needs the same
         # disambiguation, and it needs the chat_type to know a chat is a DM.
         self._chat_type_by_chat: Dict[str, str] = {}
+        # chat_id -> last triggering message ts (Slack). The typing/status
+        # lane's synthetic thread anchor in thread-per-message mode (QA-1);
+        # see _capture_scope and send_typing.
+        self._last_inbound_ts_by_chat: Dict[str, str] = {}
         # chat_id -> the UNDERLYING platform (e.g. "discord", "telegram") this
         # chat belongs to (Phase 1.5 multi-platform-per-agent). One relay adapter
         # fronts N platforms on one WS; an outbound reply must egress through the
@@ -378,6 +382,19 @@ class RelayAdapter(BasePlatformAdapter):
             chat_type = getattr(src, "chat_type", None)
             if chat_type:
                 self._chat_type_by_chat[str(chat)] = str(chat_type)
+            # Triggering message ts (QA-1): the typing/status lane's metadata
+            # (base.py _thread_metadata_for_source) carries NO thread anchor
+            # for a top-level DM, but in thread-per-message mode the status
+            # must target the per-message thread (its root = this ts). Cache
+            # it per chat so send_typing can synthesize the anchor, mirroring
+            # native send_typing's _resolve_thread_ts(metadata.message_id).
+            # NOTE: message_id lives on the EVENT (MessageEvent), not the
+            # source — fall back to source for defensive coverage.
+            message_id = getattr(event, "message_id", None) or getattr(
+                src, "message_id", None
+            )
+            if message_id:
+                self._last_inbound_ts_by_chat[str(chat)] = str(message_id)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
             pass
 
@@ -909,6 +926,33 @@ class RelayAdapter(BasePlatformAdapter):
         """
         if self._transport is None:
             return
+        # Thread anchor for the status surface (QA-1). Slack's status line
+        # ("is thinking…" in the thread's replies footer — works with plain
+        # chat:write, confirmed on native no-assistant bots) is THREAD-only:
+        # the connector's typing case no-ops without a thread_ts. But the
+        # typing lane's metadata (base.py _thread_metadata_for_source) has no
+        # anchor for a top-level DM — source.thread_id is None — so every
+        # heartbeat was silently dropped. In thread-per-message mode the
+        # turn's thread root IS the triggering message ts (run.py's synthetic
+        # root); synthesize it here from the per-chat inbound cache, exactly
+        # like native send_typing resolves thread_ts from metadata.message_id.
+        # Flat mode (reply_in_thread=false) keeps the no-anchor no-op: there
+        # is no thread and must not be one (#18859).
+        md = dict(metadata or {})
+        if (
+            not (md.get("thread_id") or md.get("thread_ts"))
+            and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
+            and self._chat_type_by_chat.get(str(chat_id)) == "dm"
+        ):
+            try:
+                reply_in_thread = bool(
+                    (self.config.extra or {}).get("reply_in_thread", True)
+                )
+            except Exception:  # noqa: BLE001 - config shape is adapter-owned
+                reply_in_thread = True
+            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            if reply_in_thread and anchor:
+                md["thread_id"] = anchor
         # Rich status parity (QA-1): run.py's live-status lane stashes the
         # current per-tool phrase via set_status_text() (base class store).
         # Carry it as the typing frame's content so the connector's Slack
@@ -921,7 +965,7 @@ class RelayAdapter(BasePlatformAdapter):
         frame: Dict[str, Any] = {
             "op": "typing",
             "chat_id": chat_id,
-            "metadata": self._with_scope(chat_id, metadata),
+            "metadata": self._with_scope(chat_id, md),
         }
         phrase = getattr(self, "_status_text", {}).get(str(chat_id))
         if phrase:
@@ -957,13 +1001,31 @@ class RelayAdapter(BasePlatformAdapter):
         platform = self._platform_by_chat.get(str(chat_id))
         if platform != Platform.SLACK.value:
             return
+        # Clear must target the SAME thread the heartbeat set (QA-1): apply
+        # the identical synthetic-anchor rule as send_typing, or the clear
+        # frame no-ops threadless and the status line sticks until Slack's
+        # own timeout.
+        md = dict(metadata or {})
+        if (
+            not (md.get("thread_id") or md.get("thread_ts"))
+            and self._chat_type_by_chat.get(str(chat_id)) == "dm"
+        ):
+            try:
+                reply_in_thread = bool(
+                    (self.config.extra or {}).get("reply_in_thread", True)
+                )
+            except Exception:  # noqa: BLE001 - config shape is adapter-owned
+                reply_in_thread = True
+            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            if reply_in_thread and anchor:
+                md["thread_id"] = anchor
         try:
             await self._transport.send_outbound(
                 {
                     "op": "typing",
                     "chat_id": chat_id,
                     "content": "",
-                    "metadata": self._with_scope(chat_id, metadata),
+                    "metadata": self._with_scope(chat_id, md),
                 },
                 platform=platform,
             )

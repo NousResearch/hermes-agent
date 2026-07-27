@@ -398,7 +398,9 @@ def get_profiles_sessions(
             rows = db.list_sessions_rich(
                 limit=per_profile, offset=0, order_by_last_active=order == "recent",
                 # Same SQL-level blob skip as /api/sessions.
-                compact_rows=not full, include_pinned=True, **filters)
+                # full=1 returns more rows, never raw rows: the DTO
+                # allowlist below is the only public shape.
+                compact_rows=True, include_pinned=True, **filters)
             totals[name] = db.session_count(exclude_children=True, **filters)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
@@ -406,8 +408,7 @@ def get_profiles_sessions(
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
     window = _pinned_window(merged, offset, limit)
-    if not full:
-        _strip_session_list_rows(window)
+    _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
             "limit": limit, "offset": offset, "errors": errors}
 

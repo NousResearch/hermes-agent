@@ -398,14 +398,78 @@ def _split_text_for_speak_stream(text: str, cap: int) -> list:
     return pieces
 
 
-# Per-row fields no session LIST consumer reads but that dominate the payload (``system_prompt``
-# is the fully rendered prompt, tens of KB per row — 96% of a 528KB /api/sessions response).
-# Detail reads stay complete; list callers that need full rows pass ``?full=1``.
-_SESSION_LIST_HEAVY_FIELDS = ("system_prompt", "model_config")
+# Explicit public response shapes. SessionDB rows also contain user/chat/thread
+# identities, routing keys, origin_json, rendered prompts, model config, backend
+# URLs, and compression diagnostics. Projecting from an allowlist prevents a
+# future schema column from becoming an API field by accident.
+_SESSION_LIST_RESPONSE_FIELDS = (
+    "id",
+    "source",
+    "model",
+    "title",
+    "started_at",
+    "ended_at",
+    "last_active",
+    "is_active",
+    "message_count",
+    "tool_call_count",
+    "input_tokens",
+    "output_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "preview",
+    "parent_session_id",
+    "archived",
+    "pinned",
+    "unread",
+    "hidden",
+    "cwd",
+    "git_branch",
+    "git_repo_root",
+    "_lineage_root_id",
+    "handoff_platform",
+    "handoff_state",
+    "profile",
+    "is_default_profile",
+)
+
+_SESSION_DETAIL_RESPONSE_FIELDS = (
+    *_SESSION_LIST_RESPONSE_FIELDS,
+    "end_reason",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "cost_status",
+    "api_call_count",
+    "rewind_count",
+)
 
 
-def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    for s in sessions:
-        for key in _SESSION_LIST_HEAVY_FIELDS:
-            s.pop(key, None)
+_SESSION_BOOL_FIELDS = frozenset(
+    {"archived", "pinned", "unread", "is_active", "is_default_profile"}
+)
+
+
+def _project_session_response(
+    session: Dict[str, Any],
+    *,
+    detail: bool = False,
+) -> Dict[str, Any]:
+    """Build a new public session DTO from an explicit field allowlist."""
+    fields = _SESSION_DETAIL_RESPONSE_FIELDS if detail else _SESSION_LIST_RESPONSE_FIELDS
+    row = {key: session[key] for key in fields if key in session}
+    # SQLite stores booleans as 0/1; the public API contract is a real bool.
+    for key in _SESSION_BOOL_FIELDS:
+        if key in row:
+            row[key] = bool(row[key])
+    return row
+
+
+def _strip_session_list_rows(
+    sessions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Replace list rows in place with explicit public response DTOs."""
+    sessions[:] = [_project_session_response(session) for session in sessions]
     return sessions

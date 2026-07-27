@@ -136,16 +136,30 @@ export function isOverlayView(view: AppView): boolean {
   return OVERLAY_VIEWS.has(view)
 }
 
+/** The pathname of a router target. Every classifier below reasons about a
+ *  PATH, but callers navigate to full targets (`/skills?tab=mcp`), and an
+ *  unstripped query reaches the session-id parser — `/skills?tab=mcp` reads as
+ *  the session `skills?tab=mcp`, so Capabilities classifies as a chat.
+ *  `sessionRoute` percent-encodes ids, so `?`/`#` can only start a query or a
+ *  hash. */
+export function routePathname(to: string): string {
+  const cut = to.search(/[?#]/)
+
+  return cut === -1 ? to : to.slice(0, cut)
+}
+
 export function isNewChatRoute(pathname: string): boolean {
-  return pathname === NEW_CHAT_ROUTE
+  return routePathname(pathname) === NEW_CHAT_ROUTE
 }
 
 export function routeSessionId(pathname: string): string | null {
-  if (!pathname.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(pathname) || isContributedPath(pathname)) {
+  const path = routePathname(pathname)
+
+  if (!path.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(path) || isContributedPath(path)) {
     return null
   }
 
-  const id = pathname.slice(SESSION_ROUTE_PREFIX.length)
+  const id = path.slice(SESSION_ROUTE_PREFIX.length)
 
   return id && !id.includes('/') ? decodeURIComponent(id) : null
 }
@@ -172,15 +186,17 @@ export function sessionRoute(sessionId: string): string {
 }
 
 export function appViewForPath(pathname: string): AppView {
-  if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
+  const path = routePathname(pathname)
+
+  if (isNewChatRoute(path) || routeSessionId(path)) {
     return 'chat'
   }
 
-  if (isContributedPath(pathname)) {
+  if (isContributedPath(path)) {
     return 'extension'
   }
 
-  return APP_VIEW_BY_PATH.get(pathname) ?? 'chat'
+  return APP_VIEW_BY_PATH.get(path) ?? 'chat'
 }
 
 /** True while the workspace pane shows a FULL PAGE (skills/messaging/

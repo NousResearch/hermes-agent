@@ -267,6 +267,9 @@ export const en: Translations = {
       'view.closeTab': 'Close tab',
       'view.reopenTab': 'Reopen closed tab',
       'view.flipPanes': 'Swap sidebar sides',
+      'view.findInPage': 'Find in page',
+      'view.findNext': 'Find next match',
+      'view.findPrevious': 'Find previous match',
       'appearance.toggleMode': 'Toggle light / dark',
       'profile.default': 'Switch to default profile',
       'profile.switch.1': 'Switch to profile 1',
@@ -302,6 +305,11 @@ export const en: Translations = {
       'composer.history': 'Cycle popover / history',
       'composer.cancel': 'Close popover · cancel run'
     }
+  },
+
+  findInPage: {
+    next: 'Next match',
+    previous: 'Previous match'
   },
 
   language: {
@@ -543,6 +551,16 @@ export const en: Translations = {
       keepAwakeTitle: 'Keep computer awake',
       keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.'
     },
+    quickEntry: {
+      enabledTitle: 'Quick Entry',
+      enabledDesc:
+        'Summon a small composer from anywhere with a global shortcut and fire a prompt without opening Hermes.',
+      shortcutTitle: 'Quick Entry shortcut',
+      shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
+      active: 'Shortcut is active.',
+      takenBy: 'Another app already uses this shortcut — pick a different one.',
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
+    },
     credentials: {
       pasteKey: 'Paste key',
       pasteLabelKey: label => `Paste ${label} key`,
@@ -576,13 +594,15 @@ export const en: Translations = {
       allProfiles: 'All profiles',
       defaultConnection: 'Default connection for every profile that has no override of its own.',
       profileConnection: profile =>
-        `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
+        `Connection used only when “${profile}” is the active profile. Choose Use default gateway to remove its override.`,
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
       modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
+      inheritTitle: 'Use default gateway',
+      inheritDesc: "Remove this profile's override and use the default connection.",
       remoteTitle: 'Remote gateway',
       remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
       remoteAuthHint: 'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
@@ -1737,6 +1757,29 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  artifactCard: {
+    kind: { code: 'Code', html: 'Interactive page', svg: 'Graphic' },
+    generating: lines => `Generating… ${lines} lines`,
+    versionBadge: count => `${count} versions`,
+    open: 'Open'
+  },
+
+  artifactPane: {
+    tabFallback: 'Artifact',
+    modePreview: 'PREVIEW',
+    modeSource: 'SOURCE',
+    versionOf: (current, total) => `v${current} of ${total}`,
+    olderVersion: 'Older version',
+    newerVersion: 'Newer version',
+    latest: 'Latest',
+    copyContent: 'Copy content',
+    download: 'Download',
+    openInBrowser: 'Open in browser',
+    openInBrowserFailed: 'Could not open in browser',
+    missingTitle: 'Artifact unavailable',
+    missingBody: 'This artifact is no longer in the local registry.'
+  },
+
   sidebar: {
     nav: {
       'new-session': 'New session',
@@ -2011,6 +2054,10 @@ export const en: Translations = {
   statusStack: {
     agents: 'Agents',
     background: count => `${count} Background`,
+    goalActive: 'Goal active',
+    goalDone: 'Goal done',
+    goalPaused: 'Goal paused',
+    goalWaiting: 'Goal waiting',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
     running: 'Running',
@@ -2306,8 +2353,7 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit Models…',
       refreshModels: 'Refresh Models',
-      fast: 'Fast',
-      medium: 'Med'
+      fast: 'Fast'
     },
     modelOptions: {
       noOptions: 'No options for this model',
@@ -2380,6 +2426,16 @@ export const en: Translations = {
       gatewayOffline: 'offline',
       gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
+      customizeTitle: 'Show in status bar',
+      toggleApprovalMode: 'Approvals',
+      toggleBackendVersion: 'Backend version',
+      toggleCommandCenter: 'Command Center',
+      toggleContextUsage: 'Context meter',
+      toggleRunningTimer: 'Turn timer',
+      toggleSessionTimer: 'Session timer',
+      toggleTerminal: 'Terminal',
+      toggleVersion: 'Version & updates',
+      toggleWorkspace: 'Workspace',
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',
@@ -2740,6 +2796,7 @@ export const en: Translations = {
         execute_code: { done: 'Ran code', pending: 'Scripting', pendingAction: 'Scripting' },
         image_generate: { done: 'Generated image', pending: 'Generating image', pendingAction: 'Generating' },
         list_files: { done: 'Listed files', pending: 'Listing files', pendingAction: 'Listing' },
+        memory: { done: 'Saved to memory', pending: 'Saving to memory', pendingAction: 'Saving' },
         patch: { done: 'Patched file', pending: 'Patching file', pendingAction: 'Patching' },
         read_file: { done: 'Read file', pending: 'Reading file', pendingAction: 'Reading' },
         search_files: { done: 'Searched files', pending: 'Searching files', pendingAction: 'Searching' },

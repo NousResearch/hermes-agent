@@ -159,6 +159,14 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # Generic throttle prefix — Bedrock (and some proxies) surface throttling
+    # as "Throttling error: Too many tokens, please wait before trying
+    # again."  Without this entry the message falls through to the
+    # context-overflow list (which contains "too many tokens") and the retry
+    # loop compresses a healthy session instead of backing off.  Matched
+    # BEFORE _CONTEXT_OVERFLOW_PATTERNS in the message-only path, so the
+    # throttle wins.  (port of anomalyco/opencode#37848's exclusion guard)
+    "throttling",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate
@@ -212,6 +220,12 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
+    # Anthropic's structured 413 error type.  Normally arrives with an HTTP
+    # 413 status (handled by the status path), but aggregators/proxies can
+    # re-wrap it into a plain message with no status attribute — route it to
+    # the same compression recovery.  (port of anomalyco/opencode#37848)
+    "request_too_large",
+    "request exceeds the maximum size",
 ]
 
 # Image-size patterns.  Matched against 400 bodies (not 413) because most
@@ -298,6 +312,10 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "max input token",
     "input token",
     "exceeds the maximum number of input tokens",
+    # Together/Fireworks-style: "Input length 131393 exceeds the maximum
+    # allowed input length of 131040 tokens."  No other pattern in this list
+    # matches that wording.  (port of anomalyco/opencode#37848)
+    "maximum allowed input length",
 ]
 
 # Model not found patterns

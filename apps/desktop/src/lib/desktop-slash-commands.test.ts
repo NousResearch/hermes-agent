@@ -21,6 +21,9 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/version')).toBe(true)
     expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
     expect(isDesktopSlashCommand('/yolo')).toBe(true)
+    expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
+    expect(isDesktopSlashCommand('/approvals')).toBe(true)
+    expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
@@ -139,6 +142,14 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('keeps /goal arg text editable instead of sealing it into a chip', () => {
+    // /goal takes free prose (the goal itself) plus subcommands. Without
+    // args:true, Space after the command name committed a sealed directive
+    // chip and the goal text rendered awkwardly after a pill.
+    expect(resolveDesktopCommand('/goal')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/goal')?.args).toBe(true)
   })
 
   it('routes /journey (and aliases) to the memory graph overlay action', () => {

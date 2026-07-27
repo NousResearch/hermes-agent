@@ -48,6 +48,7 @@ from agent.turn_context import (
     reanchor_current_turn_user_idx,
 )
 from agent.turn_retry_state import TurnRetryState
+from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -539,15 +540,49 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted Model/Provider lines are stale."""
+    """Return False when the persisted runtime-identity lines are stale."""
 
     def line_value(label: str) -> str:
+        """Last matching line wins.
+
+        Safe ONLY for fields emitted in the volatile tier at the very END of
+        the prompt (Model / Provider / Platform). User-supplied project
+        context (AGENTS.md / CLAUDE.md / .cursorrules) is embedded in the
+        middle context tier, so a last-match scan lets project prose shadow
+        any field emitted EARLIER — see ``host_info_value``.
+        """
         prefix = f"{label}:"
         value = ""
         for line in prompt.splitlines():
             if line.startswith(prefix):
                 value = line[len(prefix):].strip()
         return value
+
+    def host_info_value(label: str) -> str:
+        """Read a field from the prompt's own host-info block.
+
+        The host-info block (``build_environment_hints``) sits in the STABLE
+        tier, ahead of the embedded project context files. A bare scan of the
+        whole prompt would therefore match a user's ``AGENTS.md`` that merely
+        contains a line starting with the same label, comparing runtime state
+        against project prose. That mismatch never clears, so the check would
+        reject the stored prompt on EVERY turn — rebuilding the system prompt
+        each message and destroying the prefix cache for the whole session,
+        which is far worse than the staleness this function guards against.
+
+        Anchor on the ``User home directory:`` line that immediately precedes
+        the working-directory line in that block, and take the FIRST such
+        occurrence, so only Hermes' own emitted block can satisfy the read.
+        """
+        prefix = f"{label}:"
+        lines = prompt.splitlines()
+        for idx, line in enumerate(lines):
+            if not line.startswith("User home directory:"):
+                continue
+            for candidate in lines[idx + 1: idx + 4]:
+                if candidate.startswith(prefix):
+                    return candidate[len(prefix):].strip()
+        return ""
 
     stored_model = line_value("Model")
     current_model = str(getattr(agent, "model", "") or "").strip()
@@ -557,6 +592,24 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     stored_provider = line_value("Provider")
     current_provider = str(getattr(agent, "provider", "") or "").strip()
     if stored_provider and current_provider and stored_provider != current_provider:
+        return False
+
+    # Detect cwd drift: if the stored prompt was built in a different working
+    # directory, reuse would silently inject a stale path into the prefix cache.
+    # Compare against resolve_agent_cwd() — the SAME resolver used to build the
+    # prompt — so gateway/TUI sessions that set TERMINAL_CWD are not falsely
+    # rejected (they would always differ from the launch dir's os.getcwd()).
+    stored_cwd = host_info_value("Current working directory")
+    if stored_cwd:
+        if stored_cwd != str(resolve_agent_cwd()):
+            return False
+
+    # Detect runtime-surface drift: the stored prompt records which platform it
+    # was built for (e.g. "desktop" vs "cli"). Reusing a desktop-built prompt on
+    # a terminal session (or vice versa) would inject the wrong runtime hints.
+    stored_platform = line_value("Platform")
+    current_platform = str(getattr(agent, "platform", "") or "").strip()
+    if stored_platform and current_platform and stored_platform != current_platform:
         return False
 
     return True
@@ -721,6 +774,41 @@ def _compression_deferred_result(
     }
 
 
+def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool:
+    """Rewrite a cache-decorated system message in place, keeping its blocks.
+
+    ``apply_anthropic_cache_control`` runs once per call block, *before* the
+    retry loop, and splits the system prompt into ``[static prefix, volatile
+    tail]`` text blocks carrying the cache_control breakpoints. Assigning a bare
+    string over that list drops both breakpoints, so the failover retry ships
+    the whole system prompt uncached and re-bills it in full.
+
+    ``rewrite_prompt_model_identity`` only touches the LAST ``Model:`` /
+    ``Provider:`` lines, and those live in the volatile tail — so the static
+    prefix stays byte-identical and its cache entry keeps matching. Returns
+    False when the shape is not one we can safely patch, so the caller falls
+    back to the plain-string assignment.
+    """
+    content = system_message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    if not all(
+        isinstance(part, dict) and part.get("type") == "text" for part in content
+    ):
+        return False
+    if len(content) == 1:
+        content[0]["text"] = effective
+        return True
+    if len(content) == 2:
+        head = content[0].get("text") or ""
+        if head and effective.startswith(head):
+            tail = effective[len(head):]
+            if tail:
+                content[1]["text"] = tail
+                return True
+    return False
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -743,7 +831,8 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
         effective = sp
         if agent.ephemeral_system_prompt:
             effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
-        api_messages[0]["content"] = effective
+        if not _rewrite_system_content_blocks(api_messages[0], effective):
+            api_messages[0]["content"] = effective
     return sp
 
 
@@ -5380,6 +5469,14 @@ def run_conversation(
                         args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
                         logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
+                # Uniquify duplicate tool-call ids BEFORE any downstream
+                # consumer (validation error paths, dispatch, history build,
+                # Responses item-id derivation). Models that reuse one id for
+                # different calls in a batch otherwise lose the later call's
+                # result: the pre-API sanitizer keeps only the first
+                # call/result pair per id. See _uniquify_tool_call_ids.
+                agent._uniquify_tool_call_ids(assistant_message.tool_calls)
+
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
@@ -6211,7 +6308,28 @@ def run_conversation(
                                ". No fallback providers configured.")
                         )
 
-                    final_response = "(empty)"
+                    # Deliver a labeled reasoning excerpt instead of a bare
+                    # "(empty)" when the model DID think but never produced
+                    # visible text. This is delivery-only: the persisted
+                    # assistant message above keeps the "(empty)" sentinel
+                    # (its replay semantics prevent empty-response loops),
+                    # and raw chain-of-thought is never promoted to a normal
+                    # answer earlier in the ladder — prefill continuation,
+                    # empty-content retries, and provider fallback all run
+                    # first. Only at this terminal, where the alternative is
+                    # returning nothing, is showing the model's own reasoning
+                    # (clearly labeled as such) strictly more useful.
+                    # Idea credit: PR #48795 (@ligl0325).
+                    if reasoning_text:
+                        final_response = (
+                            "⚠️ The model produced only internal reasoning and "
+                            "no final answer, despite retries"
+                            + (" and fallback" if agent._fallback_chain else "")
+                            + ". Its last reasoning, which may contain the "
+                            "answer:\n\n" + reasoning_preview
+                        )
+                    else:
+                        final_response = "(empty)"
                     break
                 
                 # Reset retry counter/signature on successful content

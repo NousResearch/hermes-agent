@@ -4,7 +4,13 @@ import { type MutableRefObject, type RefObject, useCallback, useEffect, useRef, 
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 
-import { COMPLETION_ACTIONS, slashArgStage, slashChipKindForItem, slashCommandToken } from '../composer-utils'
+import {
+  COMPLETION_ACTIONS,
+  isSkillItem,
+  slashArgStage,
+  slashChipKindForItem,
+  slashCommandToken
+} from '../composer-utils'
 import {
   composerPlainText,
   placeCaretEnd,
@@ -112,7 +118,13 @@ export function useComposerTrigger({
       return
     }
 
-    setTriggerItems(triggerAdapter.search(trigger.query))
+    const items = triggerAdapter.search(trigger.query)
+
+    // Mid-message only offers SKILLS. A built-in like `/model` or `/new` acts
+    // on the app, so it's meaningless as a reference inside prose — only a
+    // skill reads as "handle this part with X". Filtering here rather than in
+    // the fetcher keeps one completion source for both shapes.
+    setTriggerItems(trigger.inline ? items.filter(isSkillItem) : items)
   }, [trigger, triggerAdapter])
 
   const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
@@ -191,10 +203,13 @@ export function useComposerTrigger({
     // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
     // it — expand to its options step so the popover shows the inline list, just
     // as typing `/personality ` by hand would. A serialized value with a space is
-    // already an arg pick (`/personality alice`), so it commits normally.
+    // already an arg pick (`/personality alice`), so it commits normally. An
+    // inline (mid-message) pick never expands: it's a reference inside prose, so
+    // there's no command invocation for the args to belong to.
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
-    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+    const expandsToArgs =
+      trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)

@@ -26,6 +26,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -95,6 +96,44 @@ const TOOL_SECTION_SURFACE_CLASS =
 const TOOL_EXPANDED_SHELL_CLASS = 'rounded-[0.3125rem] border border-(--ui-stroke-tertiary)'
 
 const TOOL_SECTION_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.7rem] leading-relaxed')
+
+// Raw args/result dump — reference material, so a notch smaller than a body.
+const TOOL_PAYLOAD_PRE_CLASS = cn(TOOL_SECTION_SURFACE_CLASS, 'font-mono text-[0.65rem] leading-relaxed')
+
+/**
+ * Technical-mode raw payload, behind a chevron disclosure.
+ *
+ * Collapsed by default — in technical mode every tool row carries one, and
+ * expanding them all buries the transcript. Uses `DisclosureCaret` rather than
+ * a native `<details>`, whose marker is a browser-drawn triangle matching
+ * nothing else here.
+ */
+function ToolPayloadDisclosure({ args, result }: { args: unknown; result: unknown }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    // `py-0.5` tops up the parent's `p-1.5` to an even block on both edges.
+    <div className="max-w-full py-0.5">
+      <button
+        aria-expanded={open}
+        className={cn(
+          TOOL_SECTION_LABEL_CLASS,
+          'mb-0 flex items-center gap-1 bg-transparent transition-colors hover:text-(--ui-text-secondary)'
+        )}
+        onClick={() => setOpen(value => !value)}
+        type="button"
+      >
+        <DisclosureCaret className="text-(--ui-text-tertiary)" open={open} size="0.625rem" />
+        Tool payload
+      </button>
+      {open && (
+        <pre className={cn(TOOL_PAYLOAD_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
+          {technicalTrace(args, result)}
+        </pre>
+      )}
+    </div>
+  )
+}
 
 interface ToolStatusCopy {
   statusDone: string
@@ -616,19 +655,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {toolViewMode === 'technical' && !(isFileEdit && view.inlineDiff) && (
-            <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-              {technicalTrace(part.args, part.result)}
-            </pre>
-          )}
-          {toolViewMode === 'technical' && isFileEdit && view.inlineDiff && (
-            <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0 cursor-pointer')}>Tool payload</summary>
-              <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
-                {technicalTrace(part.args, part.result)}
-              </pre>
-            </details>
-          )}
+          {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
       )}
     </div>
@@ -673,10 +700,25 @@ function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
 
-// Tools whose body (an interactive form, a full-size image) must never be
-// trapped behind the window's max-height + fade mask. A run holding any of
-// them stays a plain, fully-visible stack no matter how long it is.
-export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
+// Tools whose body must never be trapped behind the window's max-height +
+// fade mask. A run holding any of them stays a plain, fully-visible stack no
+// matter how long it is.
+//
+// This list is deliberately tiny. A row rendered by ToolEntry carries
+// `data-tool-row`, and the `:has([data-tool-row][data-tool-open])` rule in
+// styles.css lifts the cap whenever one is open — so anything ToolEntry
+// renders takes care of itself. A code/diff row mounts open (see
+// `defaultOpen`), lifting the cap the moment it appears; a collapsed row is a
+// one-line status with no body in the DOM at all, so there is nothing to clip.
+//
+// Only components that bypass ToolEntry need this opt-out: `clarify` and
+// `image_generate` render their own markup, never emit `data-tool-row`, and so
+// the CSS escape hatch can never reach them.
+const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
+
+export function isUnboundableTool(toolName: string): boolean {
+  return UNBOUNDABLE_TOOLS.has(toolName)
+}
 
 export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
   return childCount >= TOOL_GROUP_SCROLL_THRESHOLD && !hasUnboundable
@@ -713,7 +755,25 @@ function useToolWindow(enabled: boolean) {
       return
     }
 
-    const pin = () => {
+    // Track the content's HEIGHT and only pin when it grows. The observer also
+    // fires for width changes — a sidebar sash drag resizes every tool window
+    // once per frame — and pinning there is (a) pointless, the list didn't
+    // grow, and (b) expensive: `pin` writes scrollTop then `syncFade` reads it
+    // back, a write->read forced reflow per tool group per frame. Measured on
+    // a real session while dragging the sash: 927ms of `pin` script plus
+    // 2.7s of style recalc across one 60-frame drag. Reading the height off
+    // the RO entry keeps the check reflow-free.
+    let lastHeight = -1
+
+    const pin = (entries: readonly ResizeObserverEntry[]) => {
+      const height = entries[entries.length - 1]?.borderBoxSize?.[0]?.blockSize ?? -1
+      const grew = height < 0 || height > lastHeight
+      lastHeight = height
+
+      if (!grew) {
+        return
+      }
+
       if (stickRef.current) {
         el.scrollTop = el.scrollHeight
       }
@@ -761,7 +821,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const hasUnboundable = useAuiState(s =>
     s.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .some(part => part.type === 'tool-call' && UNBOUNDABLE_TOOLS.has(part.toolName))
+      .some(part => part.type === 'tool-call' && isUnboundableTool(part.toolName))
   )
 
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)

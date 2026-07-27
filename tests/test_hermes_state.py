@@ -3008,6 +3008,31 @@ class TestPruneSessions:
         assert session is not None
         assert session["id"] == "new"
 
+    def test_age_preview_and_prune_use_last_activity(self, db):
+        old_ts = time.time() - 100 * 86400
+        for sid in ("inactive", "recently-active"):
+            db.create_session(session_id=sid, source="telegram")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (old_ts, sid),
+            )
+        db.end_session("inactive", end_reason="agent_close")
+        db.append_message(
+            "recently-active",
+            role="user",
+            content="A recent message in a long-lived conversation.",
+        )
+        db.end_session("recently-active", end_reason="agent_close")
+        db._conn.commit()
+
+        candidates = db.list_prune_candidates(older_than_days=90)
+
+        assert [row["id"] for row in candidates] == ["inactive"]
+        assert candidates[0]["last_active"] == pytest.approx(old_ts)
+        assert db.prune_sessions(older_than_days=90) == 1
+        assert db.get_session("inactive") is None
+        assert db.get_session("recently-active") is not None
+
     def test_prune_skips_active_sessions(self, db):
         db.create_session(session_id="active", source="cli")
         # Backdate but don't end
@@ -5548,6 +5573,39 @@ class TestAutoMaintenance:
         # Active session's transcript is untouched
         assert (sessions_dir / "new.jsonl").exists()
 
+    def test_auto_prune_preserves_old_session_with_recent_activity(self, db, tmp_path):
+        """Retention is based on activity, not when a conversation began."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        db.create_session(session_id="long-lived", source="telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 100 * 86400, "long-lived"),
+        )
+        db._conn.commit()
+        db.append_message(
+            "long-lived",
+            role="user",
+            content="This conversation was active today.",
+        )
+        db.end_session("long-lived", end_reason="agent_close")
+        transcript = sessions_dir / "long-lived.jsonl"
+        transcript.write_text('{"role":"user","content":"recent"}\n')
+
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90,
+            vacuum=False,
+            sessions_dir=sessions_dir,
+        )
+
+        assert result["pruned"] == 0
+        assert db.get_session("long-lived") is not None
+        assert [m["content"] for m in db.get_messages("long-lived")] == [
+            "This conversation was active today."
+        ]
+        assert transcript.exists()
+
     def test_auto_prune_without_sessions_dir_preserves_files(self, db, tmp_path):
         """Backward-compat: no sessions_dir = DB-only cleanup (legacy behavior)."""
         sessions_dir = tmp_path / "sessions"
@@ -7251,6 +7309,59 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+def test_starved_refresher_revives_its_own_unclaimed_lease(db, monkeypatch):
+    """A live owner past its own TTL must be able to revive an unclaimed row.
+
+    Ownership is decided by ``holder`` alone, deliberately NOT by
+    ``expires_at``. A refresher starved by a GC pause or a slow write can tick
+    after its own lease notionally expired; while nobody else has claimed the
+    row, that owner is still the owner. Requiring ``expires_at >= now`` made
+    the stall permanent — every later refresh matched 0 rows, so the owner kept
+    compressing and rotating with no lease at all, which is exactly the
+    unprotected window a competing path can fork the session lineage in.
+    """
+    db.create_session("s1", "cli")
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+
+    # Starved well past the 10s TTL, but the row is still holder-a's.
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1050.0)
+    assert db.refresh_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+    revived_expires = db._conn.execute(
+        "SELECT expires_at FROM compression_locks WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()[0]
+    assert revived_expires == 1060.0
+
+    # Reviving must not hand the lease to anyone else.
+    assert db.refresh_compression_lock("s1", "holder-b", ttl_seconds=10.0) is False
+
+
+def test_refresh_cannot_resurrect_a_lock_already_reclaimed(db, monkeypatch):
+    """Once a competitor owns the row, the old holder's refresh must fail.
+
+    The guard is the ``holder`` match, not the clock: a reclaim replaces
+    ``holder``, so the previous owner's UPDATE matches nothing.
+    """
+    db.create_session("s1", "cli")
+
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+    assert db.try_acquire_compression_lock("s1", "holder-a", ttl_seconds=10.0) is True
+
+    # holder-a's lease lapses and holder-b legitimately reclaims it.
+    monkeypatch.setattr(hermes_state.time, "time", lambda: 1020.0)
+    assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+    # holder-a coming back late must NOT steal it back.
+    assert db.refresh_compression_lock("s1", "holder-a", ttl_seconds=10.0) is False
+    current = db._conn.execute(
+        "SELECT holder FROM compression_locks WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()[0]
+    assert current == "holder-b"
 
 
 # =========================================================================

@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $busy,
@@ -18,6 +20,7 @@ import {
   setMessages,
   setSessions
 } from '@/store/session'
+import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './utils'
@@ -73,6 +76,8 @@ async function actRender(ui: React.ReactElement) {
 interface HarnessHandle {
   activeSessionIdRef: MutableRefObject<string | null>
   cancelRun: () => Promise<void>
+  editMessage: (edited: Parameters<ReturnType<typeof usePromptActions>['editMessage']>[0]) => Promise<void>
+  reloadFromMessage: (parentId: null | string) => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   redirectPrompt: (text: string) => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
@@ -174,6 +179,10 @@ function Harness({
       activeSessionIdRef,
       cancelRun: (...args: Parameters<typeof actions.cancelRun>) =>
         act(async () => actions.cancelRun(...args)) as Promise<void>,
+      editMessage: (...args: Parameters<typeof actions.editMessage>) =>
+        act(async () => actions.editMessage(...args)) as Promise<void>,
+      reloadFromMessage: (...args: Parameters<typeof actions.reloadFromMessage>) =>
+        act(async () => actions.reloadFromMessage(...args)) as Promise<void>,
       restoreToMessage: (...args: Parameters<typeof actions.restoreToMessage>) =>
         act(async () => actions.restoreToMessage(...args)) as Promise<void>,
       redirectPrompt: (...args: Parameters<typeof actions.redirectPrompt>) =>
@@ -186,6 +195,8 @@ function Harness({
     })
   }, [
     actions.cancelRun,
+    actions.editMessage,
+    actions.reloadFromMessage,
     actions.restoreToMessage,
     actions.redirectPrompt,
     actions.steerPrompt,
@@ -308,6 +319,112 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
     return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
   })
 }
+
+describe('usePromptActions slash session targeting', () => {
+  const STORED_SESSION_ID = 'stored-db-xyz789'
+  const RECOVERED_SESSION_ID = 'rt-recovered-456'
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('runs /goal status against the ROUTED stored session instead of minting a new one', async () => {
+    // Teknium's report: start a goal in the desktop app, then `/goal status`
+    // says there is no goal. `/goal` state lives per-session in SessionDB
+    // (`goal:<session_id>`), and slash.ts used to resolve its target with a
+    // bare `hint || activeRef || createSession()`. With the runtime binding
+    // momentarily absent (profile swap / reconnect / orphan-reap / timeout) it
+    // minted a NEW session, so the status query asked a session that never had
+    // a goal. submit.ts already resumes the routed chat here; both pipelines
+    // must resolve identically.
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let boundRuntimeId: null | string = null
+
+    const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.resume') {
+        boundRuntimeId = RECOVERED_SESSION_ID
+        selectedStoredSessionIdRef.current = STORED_SESSION_ID
+        activeSessionIdRef.current = RECOVERED_SESSION_ID
+
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      if (method === 'slash.exec') {
+        return { output: '⊙ Goal (active, 1/20 turns): build a rocket' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    await handle!.submitText('/goal status')
+
+    // Never fork the conversation to answer a question about it.
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls.map(c => c.method)).toEqual(['session.resume', 'slash.exec'])
+    expect(calls[0]?.params).toMatchObject({ session_id: STORED_SESSION_ID })
+    // The command lands on the recovered runtime that owns the goal.
+    expect(calls[1]?.params).toEqual({ command: 'goal status', session_id: RECOVERED_SESSION_ID })
+  })
+
+  it('does not fork the chat when the routed session cannot be rebound', async () => {
+    const calls: string[] = []
+    const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={{ current: null }}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => null}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={{ current: null }}
+        storedSessionId={null}
+      />
+    )
+
+    await handle!.submitText('/goal status')
+
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(calls).not.toContain('slash.exec')
+  })
+})
 
 describe('usePromptActions /compress', () => {
   beforeEach(() => {
@@ -812,6 +929,51 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     vi.restoreAllMocks()
   })
 
+  it('executes /approvals against the focused profile session and persists its mode', async () => {
+    const focusedProfile = 'work'
+    const focusedSessionId = 'work-runtime-session'
+    const persistedModes = new Map<string, string>()
+    const sessionProfiles = new Map([[focusedSessionId, focusedProfile]])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'slash.exec') {
+        const sessionId = String(params?.session_id ?? '')
+        const profile = sessionProfiles.get(sessionId)
+        const command = String(params?.command ?? '')
+
+        if (profile && command === 'approvals off') {
+          persistedModes.set(profile, 'off')
+        }
+
+        return { output: 'Approval mode: off (persistent profile setting).' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        activeSessionId={focusedSessionId}
+        activeSessionIdRef={{ current: focusedSessionId }}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={focusedSessionId}
+      />
+    )
+
+    await handle!.submitText('/approvals off')
+
+    expect(requestGateway).toHaveBeenCalledWith('slash.exec', {
+      command: 'approvals off',
+      session_id: focusedSessionId
+    })
+    expect(persistedModes.get(focusedProfile)).toBe('off')
+    expect(persistedModes.has('default')).toBe(false)
+  })
+
   it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     const states: Record<string, unknown>[] = []
@@ -864,6 +1026,285 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
+  })
+
+  it('queues the /goal kickoff instead of dropping it when the session is busy (#63352)', async () => {
+    // The backend sets the goal the moment slash.exec runs — dropping the
+    // returned kickoff message because busyRef was true left a goal the agent
+    // never heard about. The busy path must park the kickoff on the composer
+    // queue so the settle drain sends it.
+    $queuedPromptsBySession.set({})
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): ship the release notes',
+          message: 'ship the release notes'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal ship the release notes')
+
+    // The kickoff must NOT submit mid-turn — and must NOT vanish either.
+    expect(calls.map(c => c.method)).toEqual(['slash.exec'])
+
+    const queued = getQueuedPrompts(RUNTIME_SESSION_ID)
+    expect(queued.map(entry => entry.text)).toEqual(['ship the release notes'])
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    // The notice still renders, and the busy line reports a queue, not a demand
+    // to /interrupt.
+    expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
+    expect(renderedText).toContain('queued')
+
+    $queuedPromptsBySession.set({})
+  })
+
+  it('gates the busy queue on the TARGET session, not the foreground busy flag', async () => {
+    // `busyRef` is the FOREGROUND view's busy flag; a slash command runs against
+    // the session `resolveTargetSessionId` picked, which is frequently not the
+    // foreground one (tile, route rebind, freshly created session). A stale
+    // foreground `true` — e.g. left behind by a warm resume of a *different*,
+    // still-running session — parked the kickoff of an idle session's command
+    // on the queue and told the user "session busy" about a session that was
+    // doing nothing.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState(RUNTIME_SESSION_ID))
+
+    const calls: string[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      return (method === 'slash.exec' ? { type: 'send', message: 'audit the session states' } : {}) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/audit-only audit the session states')
+
+    // The target session is idle, so the command sends now — nothing queues.
+    expect(calls).toContain('prompt.submit')
+    expect(getQueuedPrompts(RUNTIME_SESSION_ID)).toEqual([])
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('still queues when the TARGET session is busy and the foreground flag is not', async () => {
+    // The converse leak: a background/tile command must not submit mid-turn
+    // just because the foreground view happens to be idle.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
+
+    const calls: string[] = []
+    const busyRef = { current: false }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      return (method === 'slash.exec' ? { type: 'send', message: 'audit the session states' } : {}) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/audit-only audit the session states')
+
+    expect(calls).toEqual(['slash.exec'])
+    expect(getQueuedPrompts(RUNTIME_SESSION_ID).map(entry => entry.text)).toEqual(['audit the session states'])
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('binds slash output and the busy queue to the TARGET session, not the foreground selection', async () => {
+    // A tile (⌘T tab, split pane) routes its slash commands through this hook
+    // with an explicit runtime id while the foreground selection names a
+    // different conversation. Binding the output writer to the foreground
+    // selection re-keyed the tile's cache entry onto the primary's stored
+    // session and parked its queued payload on the primary's queue.
+    const tileRuntimeId = 'tile-runtime'
+    const tileStoredId = 'tile-stored'
+
+    $queuedPromptsBySession.set({})
+    publishSessionState(tileRuntimeId, {
+      ...createClientSessionState(tileStoredId),
+      busy: true
+    })
+
+    const boundStoredIds: (null | string | undefined)[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'slash.exec' ? { type: 'send', message: 'run it in the tab' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={(_sessionId, storedSessionId) => boundStoredIds.push(storedSessionId)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="primary-stored"
+      />
+    )
+
+    await handle!.submitText('/audit-only run it in the tab', { sessionId: tileRuntimeId })
+
+    // Every transcript write lands on the tile's own stored session.
+    expect(boundStoredIds).not.toHaveLength(0)
+    expect(new Set(boundStoredIds)).toEqual(new Set([tileStoredId]))
+    // …and the kickoff queues against the tile, never the foreground chat.
+    expect(getQueuedPrompts(tileStoredId).map(entry => entry.text)).toEqual(['run it in the tab'])
+    expect(getQueuedPrompts('primary-stored')).toEqual([])
+
+    dropSessionState(tileRuntimeId)
+    $queuedPromptsBySession.set({})
+  })
+
+  it("sends a skill's kickoff into the TAB that invoked it, not the foreground chat", async () => {
+    // `/work` in a fresh ⌘T tab: slash.exec returns a skill dispatch whose
+    // `message` is the kickoff prompt. The dispatcher resolved the tab as its
+    // target, printed "⚡ loading skill" there — then submitted the kickoff
+    // with no target at all, so submit re-resolved from activeSessionIdRef and
+    // fired it as a user message into whatever conversation was on screen.
+    const tabRuntimeId = 'tab-runtime'
+    const tabStoredId = 'tab-stored'
+
+    $queuedPromptsBySession.set({})
+    publishSessionState(tabRuntimeId, createClientSessionState(tabStoredId))
+
+    const submitted: (Record<string, unknown> | undefined)[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submitted.push(params)
+      }
+
+      return (
+        method === 'slash.exec'
+          ? { type: 'skill', name: 'work', message: 'Load the work skill, then: fix the tab bug' }
+          : {}
+      ) as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="foreground-runtime"
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="foreground-stored"
+      />
+    )
+
+    await handle!.submitText('/work fix the tab bug', { sessionId: tabRuntimeId })
+
+    expect(submitted).toEqual([
+      expect.objectContaining({
+        session_id: tabRuntimeId,
+        text: 'Load the work skill, then: fix the tab bug'
+      })
+    ])
+
+    dropSessionState(tabRuntimeId)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('slash status header carries the command token, not the full invocation', async () => {
+    // `/goal <long prose>` used to echo the entire invocation in the mono
+    // header AND the goal text again in the backend notice right under it.
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set: build the whole thing',
+          message: 'build the whole thing end to end with tests'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal build the whole thing end to end with tests')
+
+    const systemTexts = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ role?: string; parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages
+          .filter(message => message.role === 'system')
+          .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(systemTexts).toContain('slash:/goal\n')
+    expect(systemTexts).not.toContain('slash:/goal build the whole thing')
   })
 
   it('dispatches a slash command with a multiline arg instead of "empty slash command" (#41323, #55510)', async () => {
@@ -3386,5 +3827,178 @@ describe('uploadComposerAttachment remote read failures', () => {
         { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
       )
     ).rejects.toThrow('ENOENT: no such file')
+  })
+})
+
+// The actions bag is a STABLE ref that wiring.tsx mutates in place
+// (Object.assign), and the pane surfaces are memoized on that stable ref — so a
+// surface does NOT re-render when the active session changes and its props keep
+// holding whichever `usePromptActions` closure was current when it last
+// rendered. `activeSessionIdRef` is therefore the authority (mirrored during
+// render in use-session-state-cache, and pinned imperatively mid-flight by
+// submit.ts / use-session-actions without touching the source prop), while the
+// closure-captured `activeSessionId` prop is stale by design.
+//
+// Every action below used `activeSessionId || activeSessionIdRef.current`, which
+// prefers the STALE value whenever it is non-null and only consults the fresh
+// ref once the prop is null. That routed history-mutating writes and live-turn
+// corrections into the previously-focused chat: content the user typed in chat B
+// reached chat A's agent, and rewinds truncated the wrong session's transcript.
+// `cancelRun` in the same file already reads the ref exclusively and documents
+// exactly this hazard.
+describe('usePromptActions stale-closure session routing', () => {
+  const RUNTIME_SESSION_B = 'rt-session-b-current'
+
+  beforeEach(() => {
+    // Earlier suites in this file leave `$busy` true (it is a module-level
+    // store, shared across tests). reloadFromMessage bails on a busy session,
+    // so without this reset the regeneration case never reaches its routing
+    // decision and would pass vacuously.
+    $busy.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    setMessages([])
+    $busy.set(false)
+    vi.restoreAllMocks()
+  })
+
+  type GatewayCall = [string, Record<string, unknown>?]
+  type GatewayRequestFn = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  type GatewayMock = GatewayRequestFn & { mock: { calls: unknown[][] } }
+
+  function gatewayCalls(requestGateway: GatewayMock): GatewayCall[] {
+    return requestGateway.mock.calls as unknown as GatewayCall[]
+  }
+
+  // Renders with `activeSessionId` (the prop) pinned to session A, then moves
+  // the ref to session B — the exact split a memoized surface holds after the
+  // user switches chats. Every action must target B.
+  //
+  // The rewind/reload planners read the GLOBAL `$messages` store (the view
+  // transcript), not the harness's per-session state, so the fixture has to
+  // seed both or the action bails on a null plan and the test would pass
+  // vacuously without ever reaching the routing decision.
+  async function renderWithStaleClosure(requestGateway: GatewayMock, seedMessages?: unknown[]) {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const updated: string[] = []
+
+    if (seedMessages) {
+      setMessages(seedMessages as never)
+    }
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        onUpdateState={sessionId => updated.push(sessionId)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seedMessages}
+        selectedStoredSessionIdRef={{ current: null }}
+      />
+    )
+
+    // The user switches to session B. The ref follows; the prop captured in the
+    // memoized surface's closure still says session A.
+    activeSessionIdRef.current = RUNTIME_SESSION_B
+
+    return { handle: handle!, updated }
+  }
+
+  it('redirects the live turn into the CURRENT session, not the stale closure session', async () => {
+    const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never) as unknown as GatewayMock
+    const { handle } = await renderWithStaleClosure(requestGateway)
+
+    await handle.redirectPrompt('actually use Postgres')
+
+    // A redirect reaches the model mid-turn. Sent to the stale session, the
+    // correction lands in a conversation the user is no longer looking at —
+    // this is the observed "session suddenly working on another chat's task".
+    expect(requestGateway).toHaveBeenCalledWith('session.redirect', {
+      session_id: RUNTIME_SESSION_B,
+      text: 'actually use Postgres'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'session.redirect',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID })
+    )
+  })
+
+  it('regenerates against the CURRENT session, not the stale closure session', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle, updated } = await renderWithStaleClosure(requestGateway, [
+      { id: 'u1', parts: [textPart('original prompt')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
+    ])
+
+    await handle.reloadFromMessage('u1')
+
+    // prompt.submit with a truncate ordinal DELETES history after that point.
+    // Aimed at the stale session it destroys the wrong transcript.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_B }),
+      expect.anything()
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID }),
+      expect.anything()
+    )
+    expect(updated).toContain(RUNTIME_SESSION_B)
+    expect(updated).not.toContain(RUNTIME_SESSION_ID)
+  })
+
+  it('restores a checkpoint in the CURRENT session, not the stale closure session', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle, updated } = await renderWithStaleClosure(requestGateway, [
+      { id: 'u1', parts: [textPart('first prompt')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('first reply')], role: 'assistant', timestamp: 1 },
+      { id: 'u2', parts: [textPart('second prompt')], role: 'user', timestamp: 2 }
+    ])
+
+    await handle.restoreToMessage('u2')
+
+    // A rewind is destructive; the optimistic truncation must also be applied
+    // to the session that actually receives the rewind.
+    expect(updated).toContain(RUNTIME_SESSION_B)
+    expect(updated).not.toContain(RUNTIME_SESSION_ID)
+
+    for (const [, params] of gatewayCalls(requestGateway)) {
+      if (params && 'session_id' in params) {
+        expect(params.session_id).toBe(RUNTIME_SESSION_B)
+      }
+    }
+  })
+
+  it('edits a message in the CURRENT session, not the stale closure session', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never) as unknown as GatewayMock
+
+    const { handle, updated } = await renderWithStaleClosure(requestGateway, [
+      { id: 'u1', parts: [textPart('original prompt')], role: 'user', timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 }
+    ])
+
+    await handle.editMessage({
+      content: [{ text: 'edited prompt', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+
+    expect(updated).toContain(RUNTIME_SESSION_B)
+    expect(updated).not.toContain(RUNTIME_SESSION_ID)
+
+    for (const [, params] of gatewayCalls(requestGateway)) {
+      if (params && 'session_id' in params) {
+        expect(params.session_id).toBe(RUNTIME_SESSION_B)
+      }
+    }
   })
 })

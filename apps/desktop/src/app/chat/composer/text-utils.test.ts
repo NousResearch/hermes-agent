@@ -44,14 +44,25 @@ describe('detectTrigger', () => {
   it('does not treat file-style paths as slash triggers', () => {
     expect(detectTrigger('src/foo/bar')).toBeNull()
     expect(detectTrigger('/path/to/file')).toBeNull()
+    // Mid-message paths stay excluded too: a path keeps going past the command
+    // token, so the trailing-anchored inline trigger never matches it.
+    expect(detectTrigger('check src/foo/bar')).toBeNull()
+    expect(detectTrigger('look at /usr/local/bin')).toBeNull()
+    expect(detectTrigger('and/or')).toBeNull()
   })
 
-  it('does not trigger slash popover mid-message', () => {
-    expect(detectTrigger('hello /')).toBeNull()
-    expect(detectTrigger('hello /skill')).toBeNull()
+  it('treats a mid-message slash as an inline reference', () => {
+    // Skills have to be reachable anywhere in a prompt, not just at position 0.
+    expect(detectTrigger('hello /')).toEqual({ kind: '/', inline: true, query: '', tokenLength: 1 })
+    expect(detectTrigger('hello /clean')).toEqual({ kind: '/', inline: true, query: 'clean', tokenLength: 6 })
+    expect(detectTrigger('text\n/skill')).toEqual({ kind: '/', inline: true, query: 'skill', tokenLength: 6 })
+  })
+
+  it('does not carry arg completion into an inline slash reference', () => {
+    // Only a position-0 slash is a real invocation, so `/personality alic`
+    // mid-message is prose — the trigger ends at the command token.
     expect(detectTrigger('hello there /personality alic')).toBeNull()
-    expect(detectTrigger('text\n/skill')).toBeNull()
-    expect(detectTrigger('multi word message /')).toBeNull()
+    expect(detectTrigger('run /tools enable foo')).toBeNull()
   })
 
   it('still anchors at-mention triggers strictly at the token edge', () => {

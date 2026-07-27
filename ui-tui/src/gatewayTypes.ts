@@ -9,6 +9,9 @@ export type GatewaySkin = HermesSkin
 
 export interface GatewayCompletionItem {
   display: string
+  /** Completion class, set by the gateway. `skill` covers skill commands and
+   *  skill bundles — the only kind offered for an inline `/skill` reference. */
+  kind?: string
   meta?: string
   text: string
 }
@@ -78,6 +81,8 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Focus view (/focus) — display-only reduced-output mode. */
+  focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>

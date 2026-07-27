@@ -29,7 +29,7 @@ import { setSessionTodos } from '@/store/todos'
 import type { ClientSessionState } from '../../../types'
 
 import { useGatewayEventHandler } from './gateway-event'
-import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from './utils'
+import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
   activeGatewayProfile?: string
@@ -184,6 +184,9 @@ export function useMessageStream({
   const queuedDeltasRef = useRef<Map<string, QueuedStreamDeltas>>(new Map())
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
+  // What the previous flush cost on the main thread — drives the adaptive
+  // flush floor in scheduleDeltaFlush so multi-stream load yields to input.
+  const lastFlushCostRef = useRef<number>(0)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
@@ -243,21 +246,46 @@ export function useMessageStream({
     // length. With this floor, slower streams still coalesce ~2 tokens per
     // commit and the synthetic harness shows longtask counts drop from ~5/5s
     // to ~1/5s on big sessions (see scripts/profile-typing-lag.md).
+    //
+    // ADAPTIVE: the floor scales with what the last flush actually cost.
+    // With several sessions streaming at once (split tiles), one flush carries
+    // every stream's commit + markdown re-parse; when that work approaches or
+    // exceeds the fixed 33ms budget, back-to-back flushes leave the main
+    // thread no idle frames and every interaction (typing, resize, hover)
+    // stutters even though no render is wasted. Yielding 3x the measured cost
+    // keeps the thread ~75% idle for input at any load: cheap flushes stay at
+    // 30fps of text growth, expensive multi-stream flushes degrade text fps
+    // instead of interactivity — capped so text never updates slower than 4/s.
     const sinceLast = performance.now() - lastFlushAtRef.current
+
+    const adaptiveFloor = Math.min(
+      Math.max(STREAM_DELTA_FLUSH_MS, lastFlushCostRef.current * 3),
+      MAX_STREAM_FLUSH_GAP_MS
+    )
 
     const runFlush = () => {
       flushHandleRef.current = null
-      lastFlushAtRef.current = performance.now()
+      const startedAt = performance.now()
+      lastFlushAtRef.current = startedAt
       flushQueuedDeltas()
+      lastFlushCostRef.current = performance.now() - startedAt
     }
 
-    if (sinceLast >= STREAM_DELTA_FLUSH_MS && typeof window.requestAnimationFrame === 'function') {
-      flushHandleRef.current = window.requestAnimationFrame(runFlush)
-
-      return
-    }
-
-    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
+    // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
+    // renderer it considers hidden, and "hidden" is not something this code can
+    // verify: `backgroundThrottling: false` plus the process-level switches in
+    // electron/main.ts cover the blurred and occluded cases, but they don't
+    // cover a minimized window, a fully off-screen one, or a renderer the
+    // compositor has otherwise parked. In those states an rAF-gated flush never
+    // runs, so a finished answer sits in this queue until some later input or
+    // focus event happens to wake a frame — the reply looks stalled, then
+    // arrives all at once on refocus.
+    //
+    // A timer keeps the same coalescing cadence (that's what the floor above is
+    // for) while guaranteeing delivery without user interaction. Timers are
+    // clamped in background renderers rather than suspended, and
+    // disable-background-timer-throttling already opts out of that clamp.
+    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, adaptiveFloor - sinceLast))
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
@@ -277,11 +305,7 @@ export function useMessageStream({
   useEffect(
     () => () => {
       if (flushHandleRef.current !== null && typeof window !== 'undefined') {
-        if (typeof window.cancelAnimationFrame === 'function') {
-          window.cancelAnimationFrame(flushHandleRef.current)
-        } else {
-          window.clearTimeout(flushHandleRef.current)
-        }
+        window.clearTimeout(flushHandleRef.current)
       }
 
       flushHandleRef.current = null

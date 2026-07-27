@@ -508,3 +508,58 @@ async def test_no_revocation_no_fatal():
     except asyncio.CancelledError:
         pass
     assert a.has_fatal_error is False
+
+
+# ─────────────── get_chat_info gated on supported_ops (Phase 1) ───────────────
+
+
+class _ChatInfoTransport:
+    """Transport stub that records whether get_chat_info was proxied."""
+
+    def __init__(self):
+        self.calls = []
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+    async def get_chat_info(self, chat_id):
+        self.calls.append(chat_id)
+        return {"name": "general", "type": "channel"}
+
+
+@pytest.mark.asyncio
+async def test_get_chat_info_proxied_when_advertised():
+    t = _ChatInfoTransport()
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(supported_ops=("send", "edit", "typing", "get_chat_info")),
+        transport=t,
+    )
+    info = await a.get_chat_info("chan-1")
+    assert info == {"name": "general", "type": "channel"}
+    assert t.calls == ["chan-1"]
+
+
+@pytest.mark.asyncio
+async def test_get_chat_info_local_fallback_for_legacy_connector():
+    """A legacy connector (no supported_ops) would only answer 'unsupported op'
+    — the adapter must skip the round trip and answer locally."""
+    t = _ChatInfoTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(), transport=t)
+    info = await a.get_chat_info("chan-1")
+    assert info == {"name": "chan-1", "type": "dm"}
+    assert t.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_chat_info_local_fallback_when_not_advertised():
+    """A connector that advertises ops but OMITS get_chat_info is authoritative."""
+    t = _ChatInfoTransport()
+    a = RelayAdapter(
+        PlatformConfig(),
+        make_desc(supported_ops=("send", "edit", "typing")),
+        transport=t,
+    )
+    info = await a.get_chat_info("chan-1")
+    assert info == {"name": "chan-1", "type": "dm"}
+    assert t.calls == []

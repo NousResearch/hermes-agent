@@ -945,7 +945,7 @@ DEFAULT_CONFIG = {
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
     "agent": {
-        "max_turns": 90,
+        "max_turns": 500,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -1108,6 +1108,18 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Max seconds the gateway waits for boot auto-resume turns to finish
+        # before it releases the startup-restore inbound gate.  While startup
+        # restore is in progress the gateway QUEUES every inbound message
+        # instead of replying, so no channel gets an answer until this gate
+        # opens.  Without a bound, one pathologically long resumed turn holds
+        # the gate shut and every channel's inbound piles up unanswered for as
+        # long as that turn runs.  On timeout the gate releases and the slow
+        # resume turn keeps running in the background; duplicate-agent
+        # protection is unaffected because the resume slot is claimed
+        # synchronously before the gate runs.  Set to 0 to disable the bound
+        # (historical "wait forever" behaviour).
+        "gateway_startup_restore_drain_timeout": 30,
         # Stale-stream ceiling for local providers (Ollama, oMLX, llama-cpp) in
         # seconds. When the base stale timeout is at its default (180s) and a
         # local endpoint is detected, this finite ceiling replaces the former
@@ -1409,6 +1421,18 @@ DEFAULT_CONFIG = {
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
         },
+        # Per-turn runaway-loop caps (inspired by Claude Code v2.1.212,
+        # Week 29, July 2026). Hard ceilings on how many times a runaway-prone
+        # tool may be called within a SINGLE agent loop (turn); the counters
+        # reset at the start of every turn, so a legitimate multi-turn session
+        # is never starved. They are always-on and fire regardless of the
+        # warn/hard-stop thresholds above. A single turn issuing dozens of web
+        # searches or spawning dozens of subagents is already pathological, so
+        # the defaults are low. Set either to 0 to disable that cap (unlimited).
+        "loop_caps": {
+            "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
+            "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
+        },
     },
 
     "compression": {
@@ -1469,6 +1493,13 @@ DEFAULT_CONFIG = {
                                       # tool iteration. 0 = commit any non-zero prune.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
+                                      # WITHOUT forward progress. The summary call streams, so
+                                      # this is an inactivity budget: a slow model still
+                                      # producing tokens keeps extending the wait; only a
+                                      # silent/hung call is cut off.
+        "hygiene_total_ceiling_seconds": 600,  # absolute cap on the hygiene compression wait even
+                                      # while tokens are still moving — bounds a degenerate
+                                      # trickle stream. Clamped to >= hygiene_timeout_seconds.
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
@@ -1525,8 +1556,8 @@ DEFAULT_CONFIG = {
                                       # turns are soft-archived under the same id
                                       # (active=0, compacted=1) — still searchable via
                                       # session_search and recoverable, not deleted.
-                                      # Default False during rollout; will flip on
-                                      # after live validation.
+                                      # Default True since 2107b86024; set False to
+                                      # restore the legacy rotating-compaction path.
         "model_thresholds": {},       # Per-model threshold overrides. Keys are
                                       # substring-matched against the model name
                                       # (longest match wins); values replace the
@@ -1553,21 +1584,6 @@ DEFAULT_CONFIG = {
                                       # failure-cooldown / anti-thrash / per-session
                                       # lock guards as every automatic compaction.
                                       # Example: 1800 = compact after 30 min idle.
-    },
-
-    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
-    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
-    # implementations. Per-platform notification opt-out is handled by the
-    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
-    "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to task
-        # completion + block events when ``kanban_create`` is called from
-        # inside a session that has a persistent delivery channel. The
-        # agent that dispatched the task will get notified automatically
-        # instead of having to poll. Disable to mirror pre-feature
-        # behaviour — e.g. for a profile that prefers explicit
-        # ``kanban_notify-subscribe`` calls per task.
-        "auto_subscribe_on_create": True,
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -1651,6 +1667,13 @@ DEFAULT_CONFIG = {
         # not a meaningful recovery, so an unretried blip silently loses the
         # call.
         "transient_retries": 2,
+        # Endpoints that reject NON-streaming chat requests outright (e.g.
+        # Tencent Copilot returns HTTP 400 "Non-stream chat request is
+        # currently not supported"). Auxiliary calls to a matching endpoint
+        # are sent with stream=True and aggregated client-side. Entries are
+        # case-insensitive substrings matched against the endpoint URL;
+        # copilot.tencent.com is always treated as stream-only.
+        "stream_only_base_urls": [],
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
@@ -1955,6 +1978,14 @@ DEFAULT_CONFIG = {
         # Show a color-coded battery read-out as the first status-bar element in
         # the CLI/TUI (off by default). No-op on machines without a battery.
         "battery": False,
+        # Focus view (/focus): display-only reduced-output mode. When true the
+        # CLI/TUI pins tool_progress to "off" (reusing the existing suppression
+        # path), reports a per-turn hidden-line count with a recovery hint, and
+        # pins a "focus" segment in the status bar. focus_saved_tool_progress
+        # holds the mode /focus off restores. Never affects what is sent to the
+        # model — see hermes_cli/focus_view.py.
+        "focus_view": False,
+        "focus_saved_tool_progress": "all",
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent
@@ -1991,6 +2022,16 @@ DEFAULT_CONFIG = {
         # tool name. Applies to CLI spinner + gateway/desktop tool-progress.
         # Custom/plugin/MCP tools always fall back to the raw preview.
         "friendly_tool_labels": True,
+        # CLI-only post-turn accounting line printed after each interactive turn:
+        # "⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands".
+        # Observed from the tool-progress feed the CLI already receives; never
+        # printed in quiet/non-interactive paths or in gateway/messaging
+        # surfaces (those have their own runtime footer).
+        "turn_summary": True,
+        # CLI-only: append cumulative turn output tokens to the live spinner
+        # timer ("⚡ Reading file  ( 2.3s · ↓ 1.2k tok)"). Updates as each API
+        # call in the turn reports usage.
+        "spinner_token_flow": True,
         # How gateway tool-progress is grouped on platforms that support message
         # editing: "accumulate" (default) edits one bubble in place; "separate"
         # sends one message per tool (the pre-v0.9 behavior, noisier). Only
@@ -2731,6 +2772,20 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        # Operator-customizable policy text for smart approvals. When
+        # non-empty, this is appended to the smart-approval guardian's
+        # SYSTEM prompt (trusted channel) as additional rules — e.g.
+        # "Always ESCALATE commands touching /etc" or "APPROVE docker
+        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
+        # customizable auto-review guardian policy.
+        "smart_policy": "",
+        # Consecutive-denial circuit breaker for smart approvals: after this
+        # many guardian DENY verdicts in a row within one session, the deny
+        # message returned to the model escalates to a hard-stop instruction
+        # (report to the user / ask for manual run or /approve) instead of a
+        # plain "Do NOT retry". Any approval resets the count. 0 disables.
+        # Inspired by ChatGPT Work's auto-review circuit breaker.
+        "denial_breaker_threshold": 3,
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable
@@ -2906,6 +2961,14 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false
@@ -2987,22 +3050,40 @@ DEFAULT_CONFIG = {
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
         "tool_search": {
-            # "auto" (default) — activate only when deferrable tool schemas
-            #   exceed ``threshold_pct`` of the active model's context length,
-            #   so small toolsets pay no overhead.
-            # "on"  — always activate when there is at least one deferrable
-            #   tool. Use when you have many MCP servers and want maximum
-            #   token reduction unconditionally.
+            # Tiered disclosure: any deferrable (MCP/plugin) tool activates
+            # the bridge; the listing then scales with catalog size.
+            #   Tier 0 — no MCP/plugin tools: everything stays eager.
+            #   Tier 1 — catalog listing fits the budget: bridge + skills-style
+            #     name+description manifest (degrades to names-only).
+            #   Tier 2 — per-tool listing over budget even names-only (e.g.
+            #     Cloudflare's ~3,300-tool flat API surface): bare bridge +
+            #     a one-line-per-server summary (name + tool count) so the
+            #     model knows which domains are reachable; individual tools
+            #     discoverable through tool_search only.
+            # "auto"/"on" — activate when at least one deferrable tool exists.
             # "off" — disable entirely. Tools-array assembly is a pass-through.
             "enabled": "auto",
-            # Percentage of context length at which "auto" mode kicks in.
-            # 10 matches the Claude Code default. Range 0..100.
-            "threshold_pct": 10,
+            # Listing budget as a percentage of the active model's context
+            # length. Effective budget = min(this % of context,
+            # listing_max_tokens). Range 0..100.
+            "threshold_pct": 5,
             # When the model calls tool_search without a ``limit`` argument,
             # how many hits to return. Range 1..max_search_limit.
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Skills-style catalog listing embedded in the tool_search bridge
+            # description: every deferred tool's name + first sentence of its
+            # description (≤60 chars), grouped by MCP server / toolset. Keeps
+            # capabilities discoverable while schemas stay deferred.
+            # "auto" (default) — include when the listing fits the budget
+            #   (falls back to names-only, then to the bare tier-2 bridge).
+            # "on"  — same rendering, but explicit intent to always list.
+            # "off" — always the bare bridge (tier 2 for every catalog).
+            "listing": "auto",
+            # Absolute cap on the embedded listing in tokens (chars/4
+            # estimate), regardless of context size. Range 200..60000.
+            "listing_max_tokens": 20000,
         },
     },
 
@@ -3239,14 +3320,15 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # When true, prune ended sessions older than retention_days once
+        # When true, prune ended sessions inactive for retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
-        # Only touches ended sessions — active sessions are always preserved.
+        # Activity is the latest message timestamp, falling back to creation
+        # time for empty sessions. Active sessions are always preserved.
         # Default false: session history is valuable for search recall, and
         # silently deleting it could surprise users.  Opt in explicitly.
         "auto_prune": False,
-        # How many days of ended-session history to keep.  Matches the
-        # default of ``hermes sessions prune``.
+        # How many inactive days of ended-session history to keep. Matches
+        # the default of ``hermes sessions prune``.
         "retention_days": 90,
         # When true, auto-archive (soft-hide, never delete) sessions that
         # haven't been touched in ``auto_archive_days`` days, once per

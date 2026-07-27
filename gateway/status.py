@@ -22,9 +22,10 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
-from typing import Any, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -1136,6 +1137,147 @@ def derive_gateway_drainable(*, gateway_running: bool, gateway_state: Any) -> bo
     non-running gateway.
     """
     return bool(gateway_running) and gateway_state in _DRAINABLE_GATEWAY_STATES
+
+
+@dataclass(frozen=True)
+class GatewayLiveness:
+    """Resolved gateway liveness for one dashboard surface.
+
+    ``source`` records which rung of the ladder answered, purely for logging
+    and tests — never branch product behavior on it.
+
+    ``probe_error`` is True when a rung raised instead of answering. Callers
+    that must distinguish "the gateway is down" from "we could not tell"
+    need it: the dashboard renders a down badge either way, but the kanban
+    dispatcher warning deliberately fails OPEN on an unreadable probe so it
+    never cries wolf at a user whose gateway is fine.
+    """
+
+    running: bool
+    pid: Optional[int]
+    source: str
+    health_body: Optional[dict[str, Any]] = None
+    probe_error: bool = False
+
+
+def resolve_gateway_liveness(
+    *,
+    profile_dir: Optional[Path] = None,
+    runtime: Any = _UNSET,
+    health_probe: Optional[Callable[[], tuple[bool, Optional[dict[str, Any]]]]] = None,
+    use_cache: bool = True,
+    pid_probe: Optional[Callable[..., Optional[int]]] = None,
+    runtime_reader: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
+    runtime_pid_probe: Optional[Callable[..., Optional[int]]] = None,
+) -> GatewayLiveness:
+    """Single source of truth for "is the gateway up?" across dashboard surfaces.
+
+    Before this existed, ``/api/status`` and ``/api/messaging/platforms``
+    each open-coded their own ladder and disagreed on the same page load —
+    the sidebar read "running" while the Channels page rendered "The gateway
+    is not running."  Three deployments hit it: a cross-container gateway
+    (only ``/api/status`` ran the HTTP health probe), a profile-scoped
+    dashboard (only ``/api/status`` passed the profile's paths, so messaging
+    borrowed another profile's runtime state — issue #71211), and a
+    launch-service-managed gateway with no PID file (only some callers used
+    the runtime-status fallback).
+
+    The ladder, most to least authoritative:
+
+    1. **PID file + runtime lock** — scoped to ``profile_dir`` when given.
+       Cached by default (``use_cache``); high-frequency polling must not
+       churn file descriptors re-flocking ``gateway.lock`` on every request.
+    2. **HTTP health probe** — supplied by the caller (the dashboard owns the
+       deprecated ``GATEWAY_HEALTH_URL`` config).  Covers the gateway running
+       in another container where no local PID is visible.
+    3. **Runtime status PID** — validated against the live process table with
+       ``expected_home`` so a recycled PID belonging to a *different*
+       profile's gateway is never reported as this one's.
+
+    Rung 3 only ever runs against a LOCAL state record: the probe body's PID
+    belongs to another host, and ``os.kill``-ing a remote PID is both wrong
+    and trips the test live-system guard.  Pass ``runtime`` when the caller
+    has already read the state file so it isn't read twice per request.
+
+    ``pid_probe`` / ``runtime_reader`` / ``runtime_pid_probe`` let a caller
+    inject its own module-level references to these helpers.  The dashboard
+    passes its ``hermes_cli.web_server`` bindings so the long-standing
+    monkeypatch seam in the test-suite keeps working; production callers
+    leave them ``None`` and get this module's implementations.
+    """
+    _pid_probe = pid_probe or (
+        get_running_pid_cached if use_cache else get_running_pid
+    )
+    _runtime_reader = runtime_reader or read_runtime_status
+    _runtime_pid_probe = runtime_pid_probe or get_runtime_status_running_pid
+
+    pid_path = (profile_dir / "gateway.pid") if profile_dir is not None else None
+    probe_error = False
+    try:
+        # Plain zero-arg call when unscoped: several callers monkeypatch these
+        # probes with zero-arg lambdas, and /api/status's cache signature is
+        # keyed on the exact call shape.
+        pid = _pid_probe(pid_path) if pid_path is not None else _pid_probe()
+    except Exception:
+        # A probe failure (permissions, exotic /proc, Windows quirks) must
+        # degrade to the next rung, never 500 a status endpoint. Recorded in
+        # probe_error so fail-open callers can tell "down" from "unknown".
+        pid = None
+        probe_error = True
+    if pid is not None:
+        return GatewayLiveness(running=True, pid=pid, source="pid")
+
+    health_body: Optional[dict[str, Any]] = None
+    if health_probe is not None:
+        try:
+            alive, health_body = health_probe()
+        except Exception:
+            alive, health_body = False, None
+            probe_error = True
+        if alive:
+            # Display-only PID: it belongs to the remote container.
+            remote_pid = health_body.get("pid") if health_body else None
+            return GatewayLiveness(
+                running=True,
+                pid=remote_pid,
+                source="health",
+                health_body=health_body,
+            )
+
+    if runtime is _UNSET:
+        try:
+            runtime = (
+                _runtime_reader(path=profile_dir / "gateway_state.json")
+                if profile_dir is not None
+                else _runtime_reader()
+            )
+        except Exception:
+            runtime = None
+            probe_error = True
+    try:
+        runtime_pid = (
+            _runtime_pid_probe(runtime, expected_home=profile_dir)
+            if profile_dir is not None
+            else _runtime_pid_probe(runtime)
+        )
+    except Exception:
+        runtime_pid = None
+        probe_error = True
+    if runtime_pid is not None:
+        return GatewayLiveness(
+            running=True,
+            pid=runtime_pid,
+            source="runtime_status",
+            health_body=health_body,
+        )
+
+    return GatewayLiveness(
+        running=False,
+        pid=None,
+        source="none",
+        health_body=health_body,
+        probe_error=probe_error,
+    )
 
 
 def get_runtime_status_running_pid(

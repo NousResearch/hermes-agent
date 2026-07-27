@@ -2,7 +2,7 @@ import type { ComponentProps, ElementType, FC } from 'react'
 import { memo } from 'react'
 import { Streamdown } from 'streamdown'
 
-import { ExternalLink, ExternalLinkIcon } from '@/lib/external-link'
+import { ExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
 // Compact markdown renderer for tool detail bodies. Same Streamdown pipeline
@@ -42,20 +42,15 @@ function tagged<T extends keyof typeof TAG_CLASSES>(Tag: T) {
 function MarkdownAnchor({ children, className, href, ...rest }: ComponentProps<'a'>) {
   if (!href || !/^https?:\/\//i.test(href)) {
     return (
-      <a
-        className={cn('font-medium underline underline-offset-4 decoration-current/20', className)}
-        href={href}
-        {...rest}
-      >
+      <a className={cn('link-chip font-medium', className)} href={href} {...rest}>
         {children}
       </a>
     )
   }
 
   return (
-    <ExternalLink className={cn('decoration-current/20', className)} href={href} showExternalIcon={false}>
+    <ExternalLink className={className} href={href}>
       {children}
-      <ExternalLinkIcon />
     </ExternalLink>
   )
 }

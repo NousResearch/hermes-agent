@@ -361,9 +361,12 @@ def _run_one_file_once(
         output +=  "\n"
 
     if rc == 5:
-        # No tests collected — every test in the file was filtered out.
-        # Treat as a pass; surface info in a slightly distinct status
-        # so the operator can spot it.
+        # No tests collected in THIS file — legitimate per-file: a
+        # platform-gated or fully-marker-filtered file (e.g. a win32-only
+        # suite on Linux) collects nothing and must not fail the suite.
+        # Tolerated here; the RUN-level guard in main() still fails when
+        # NOTHING was collected across every file, so a broken invocation
+        # (venv without pytest, -k that matches nothing) can't report green.
         rc = 0
     summary = _parse_pytest_summary(output)
     subproc_wall = time.monotonic() - subproc_start
@@ -794,6 +797,46 @@ def main() -> int:
         i += 1
 
     args = parser.parse_args(our_args)
+
+    # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
+    # This runner is FILE-granular: it spawns one ``pytest <file>`` per test
+    # file. A pytest node id (``tests/foo.py::TestBar::test_baz``) is not an
+    # existing path, so discovery silently dropped it and the run exited with
+    # "No test files to run" — the selector looked accepted but nothing ran.
+    # Translate instead: run the FILE and narrow with ``-k`` on the last
+    # segment, which is what the caller meant.
+    node_id_selectors: List[Tuple[str, str]] = []
+    if args.paths_positional:
+        translated: List[str] = []
+        for raw in args.paths_positional:
+            if "::" not in raw:
+                translated.append(raw)
+                continue
+            file_part, _, selector = raw.partition("::")
+            leaf = selector.rsplit("::", 1)[-1]
+            # Strip a parametrized id (``test_x[case]``) down to the function
+            # name; ``-k`` matches substrings, and brackets are -k syntax.
+            leaf = leaf.split("[", 1)[0]
+            node_id_selectors.append((raw, leaf))
+            translated.append(file_part)
+        if node_id_selectors:
+            args.paths_positional = translated
+            keys = [leaf for _, leaf in node_id_selectors]
+            expr = " or ".join(dict.fromkeys(keys))
+            for raw, leaf in node_id_selectors:
+                print(
+                    f"note: '{raw}' is a pytest node id; this runner is "
+                    f"file-granular. Running the file with -k {leaf!r}.",
+                    file=sys.stderr,
+                )
+            # Only inject -k when the caller didn't pass one themselves; their
+            # explicit filter wins over our inferred one.
+            if not any(
+                t == "-k" or t.startswith("-k=") or (t.startswith("-k") and len(t) > 2)
+                for t in bare_passthrough + explicit_passthrough
+            ):
+                bare_passthrough = bare_passthrough + ["-k", expr]
+
     # Bare flags run before any explicit ``--`` passthrough so ordering is
     # intuitive (``run_tests.sh tests/foo.py -q -- --tb=long`` → ``-q --tb=long``).
     pytest_passthrough = bare_passthrough + explicit_passthrough
@@ -894,10 +937,16 @@ def main() -> int:
     fail_count = 0
     tests_passed = 0
     tests_failed = 0
+    # Every collected outcome, not just pass/fail: a legitimately all-skipped
+    # (platform-gated) file reports "2 skipped" and must NOT trip the
+    # nothing-ran guard, whereas a file that died before collection reports
+    # nothing at all and must.
+    tests_collected = 0
     lock = threading.Lock()
 
-    def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, dict[str, int], float]]") -> None:
+    def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, Dict[str, int], float]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed
+        nonlocal tests_collected
         n_tests = test_counts.get(file, 0)
         try:
             fpath, rc, output, summary, subproc_wall = fut.result()
@@ -921,6 +970,10 @@ def main() -> int:
             # Accumulate test-level counts from parsed summary.
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
+            tests_collected += sum(
+                summary.get(k, 0)
+                for k in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
+            )
             file_times.append((fpath, subproc_wall))
             if rc == 0:
                 pass_count += 1
@@ -958,6 +1011,27 @@ def main() -> int:
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
     print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+
+    # Zero tests collected across the WHOLE run is NOT a pass. Per-file rc=5
+    # is deliberately tolerated above (platform-gated files), but if NOTHING
+    # ran anywhere the invocation itself was broken — a venv without pytest, a
+    # -k/-m filter that matched nothing, or collection erroring everywhere.
+    # The summary line above reads green at a glance ("0 failed ... 100%
+    # complete"), which has been misread as a successful verification, so say
+    # it plainly AND fail the exit code.
+    no_tests_ran_at_all = bool(files) and tests_collected == 0
+    if no_tests_ran_at_all:
+        print()
+        print(
+            "=== ✗ NO TESTS RAN — 0 collected across "
+            f"{len(files)} file{'s' if len(files) != 1 else ''}. "
+            "This is NOT a pass. ==="
+        )
+        print(
+            "  Common causes: the selected venv has no pytest; a -k/-m filter "
+            "matched nothing; or collection errored in every file."
+        )
+        print("  Check the per-file output above for the real error.")
 
     # Flaky files: failed once, passed on the automatic retry. Green, but
     # loudly reported so they get fixed instead of silently re-flaking.
@@ -1030,6 +1104,9 @@ def main() -> int:
             print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
             for file, s in no_tests_ran:
                 print(f"  {_format_file(file, repo_root)}")
+        return 1
+
+    if no_tests_ran_at_all:
         return 1
 
     return 0

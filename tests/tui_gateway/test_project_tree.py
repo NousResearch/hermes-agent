@@ -466,6 +466,106 @@ def test_broad_default_non_git_cwd_stays_unscoped():
     assert detached["id"] not in tree["scoped_session_ids"]
 
 
+def test_deleted_sibling_worktree_folds_into_parent_home_checkout():
+    # A deleted <repo>-<suffix> worktree leaves its session with an unresolvable
+    # cwd and no persisted root. It joins the parent's trunk lane — no dead-path
+    # lane, no phantom project.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-session-links"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+    project = tree["projects"][0]
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    main = project["repos"][0]["groups"][0]
+    assert main["isMain"] and main["path"] == "/www/hermes-agent"
+    assert len(main["sessions"]) == 2
+
+
+def test_deleted_sibling_worktree_subdir_folds_into_parent_home_checkout():
+    # Same as above, but the session's cwd is a SUBDIR of the deleted worktree
+    # (an agent that cd-ed into `<repo>-<suffix>/apps/desktop`). The leaf name
+    # ("desktop") shares nothing with the repo, so the sibling probe has to walk
+    # the ancestors — otherwise the dead path is minted as its own project.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-agent-guiperf/apps/desktop"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+    project = tree["projects"][0]
+    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    assert len(project["repos"][0]["groups"][0]["sessions"]) == 2
+
+
+def test_deleted_unrelated_workspace_does_not_become_a_project():
+    # A deleted dir the sibling probe can't reach by name (`hermes-salvage-drafts`
+    # shares no prefix with `hermes-agent`; `/tmp/scratch` was never a worktree)
+    # must not be promoted to a phantom project — it can never be opened and can
+    # only be dismissed by hand. The session stays in flat Recents.
+    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    sessions = [
+        _session("/www/hermes-agent", branch="main"),
+        _session("/www/hermes-salvage-drafts/apps/desktop"),
+        _session("/tmp/scratch"),
+    ]
+    on_disk = {"/www/hermes-agent"}
+
+    tree = pt.build_tree([], sessions, [], resolve, hydrate=True, exists=lambda p: p in on_disk)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
+
+
+def test_existing_non_git_workspace_still_becomes_a_project():
+    # The existence guard keys on the DIRECTORY, not on git-ness: a plain folder
+    # that's still on disk is a legitimate workspace and must keep its project.
+    sessions = [_session("/www/notes")]
+
+    tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True, exists=lambda _p: True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/www/notes"]
+
+
+def test_stale_persisted_repo_root_does_not_become_a_project():
+    # A session carrying a git_repo_root whose repo has since been deleted must
+    # not resurrect it as a project on the strength of the persisted value alone.
+    sessions = [_session("/tmp/gone/sub", repo_root="/tmp/gone")]
+
+    tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True, exists=lambda _p: False)
+
+    assert tree["projects"] == []
+
+
+def test_exists_defaults_to_keeping_everything():
+    # Omitting `exists` (remote backends, which can't stat) preserves the old
+    # behavior: guessing "gone" would wrongly hide a project on the other host.
+    sessions = [_session("/remote/workspace")]
+
+    tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True)
+
+    assert [p["id"] for p in tree["projects"]] == ["/remote/workspace"]
+
+
+def test_sibling_probe_is_bounded():
+    # Each miss costs a git invocation, and this runs per session, so a deeply
+    # nested unresolvable cwd must not fan out into an unbounded probe storm.
+    probed = []
+
+    def resolve(cwd):
+        probed.append(cwd)
+        return None
+
+    assert pt._probe_sibling_worktree("/a-b-c/d-e-f/g-h-i/j-k-l", resolve) == ""
+    assert len(probed) <= pt._MAX_SIBLING_PROBES
+
+
 def test_colliding_repo_basenames_disambiguate_labels():
     resolve = _resolver(
         {

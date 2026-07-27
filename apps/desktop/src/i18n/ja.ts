@@ -650,6 +650,16 @@ export const ja = defineLocale({
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
     },
+    quickEntry: {
+      enabledTitle: 'クイック入力',
+      enabledDesc:
+        'グローバルショートカットで小さな入力欄をどこからでも呼び出し、Hermes を開かずにプロンプトを送信します。',
+      shortcutTitle: 'クイック入力のショートカット',
+      shortcutDesc: '修飾キーが 1 つ以上必要です（例: CommandOrControl+Shift+Space）。',
+      active: 'ショートカットは有効です。',
+      takenBy: 'このショートカットは他のアプリが使用しています。別のものを選んでください。',
+      invalidShortcut: '有効なショートカットではありません。修飾キーを 1 つ以上含めてください。'
+    },
     credentials: {
       pasteKey: 'キーを貼り付け',
       pasteLabelKey: label => `${label} キーを貼り付け`,
@@ -683,13 +693,15 @@ export const ja = defineLocale({
       allProfiles: 'すべてのプロファイル',
       defaultConnection: '独自のオーバーライドがないすべてのプロファイルのデフォルト接続。',
       profileConnection: profile =>
-        `"${profile}" がアクティブプロファイルのときのみ使用される接続。ローカルに設定するとデフォルトを継承します。`,
+        `"${profile}" がアクティブプロファイルのときのみ使用される接続。「デフォルトゲートウェイを使用」を選ぶとオーバーライドが削除されます。`,
       envOverrideTitle: '環境変数がこのデスクトップセッションを制御しています。',
       envOverrideDesc:
         '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',
       localTitle: 'ローカルゲートウェイ',
       localDesc:
         'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',
+      inheritTitle: 'デフォルトゲートウェイを使用',
+      inheritDesc: 'このプロファイルのオーバーライドを削除し、デフォルト接続を使用します。',
       remoteTitle: 'リモートゲートウェイ',
       remoteDesc:
         'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型ゲートウェイは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
@@ -1609,6 +1621,29 @@ export const ja = defineLocale({
     copyPath: 'パスをコピー'
   },
 
+  artifactCard: {
+    kind: { code: 'コード', html: 'インタラクティブページ', svg: 'グラフィック' },
+    generating: lines => `生成中… ${lines} 行`,
+    versionBadge: count => `${count} 個のバージョン`,
+    open: '開く'
+  },
+
+  artifactPane: {
+    tabFallback: 'アーティファクト',
+    modePreview: 'プレビュー',
+    modeSource: 'ソース',
+    versionOf: (current, total) => `${total} 中 v${current}`,
+    olderVersion: '前のバージョン',
+    newerVersion: '次のバージョン',
+    latest: '最新',
+    copyContent: 'コンテンツをコピー',
+    download: 'ダウンロード',
+    openInBrowser: 'ブラウザで開く',
+    openInBrowserFailed: 'ブラウザで開けませんでした',
+    missingTitle: 'アーティファクトを利用できません',
+    missingBody: 'このアーティファクトはローカルレジストリに存在しません。'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新しいセッション',
@@ -1878,6 +1913,10 @@ export const ja = defineLocale({
   statusStack: {
     agents: 'エージェント',
     background: count => `バックグラウンド ${count} 件`,
+    goalActive: '目標進行中',
+    goalDone: '目標達成',
+    goalPaused: '目標一時停止中',
+    goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
     running: '実行中',
@@ -2178,8 +2217,7 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
-      fast: '高速',
-      medium: '中'
+      fast: '高速'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',
@@ -2611,6 +2649,11 @@ export const ja = defineLocale({
           done: 'ファイルを一覧表示しました',
           pending: 'ファイルを一覧表示中',
           pendingAction: '一覧表示中'
+        },
+        memory: {
+          done: 'メモリに保存しました',
+          pending: 'メモリに保存中',
+          pendingAction: '保存中'
         },
         patch: {
           done: 'ファイルにパッチを適用しました',

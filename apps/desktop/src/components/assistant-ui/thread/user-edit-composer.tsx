@@ -22,6 +22,7 @@ import {
   onComposerInsertRequest
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
+import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
 import {
   dragHasAttachments,
@@ -31,6 +32,7 @@ import {
 } from '@/app/chat/composer/inline-refs'
 import {
   composerPlainText,
+  insertComposerContentsAtCaret,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
@@ -38,6 +40,8 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
+import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
+import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
 import {
   extractDroppedFiles,
   HERMES_PATHS_MIME,
@@ -158,6 +162,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     [aui, rememberInitialDraft]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     draftRef.current = draft
 
@@ -211,6 +216,22 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     },
     [aui]
   )
+
+  // Same stack the main composer owns, for the same reason: the editor mutates
+  // through `Range` to dodge Chromium's O(n²) editing pipeline, which also
+  // dodges its undo stack, so a paste was invisible to Cmd+Z. `rememberInitialDraft`
+  // already marks every mutation site (it's the dirty-edit guard), so the undo
+  // points ride along with it.
+  const syncFromEditorRef = useCallback(() => {
+    const editor = editorRef.current
+
+    return editor ? syncDraftFromEditor(editor) : draftRef.current
+  }, [syncDraftFromEditor])
+
+  const { recordUndoPoint, redo, undo, withUndoPoint } = useComposerUndo({
+    editorRef,
+    syncDraftFromEditor: syncFromEditorRef
+  })
 
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
@@ -275,6 +296,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
 
       rememberInitialDraft()
+      recordUndoPoint()
       const serialized = hermesDirectiveFormatter.serialize(item)
       const starter = serialized.endsWith(':')
       const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
@@ -324,7 +346,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       document.execCommand('insertText', false, text)
       finish()
     },
-    [aui, closeTrigger, refreshTrigger, rememberInitialDraft, requestEditFocus, trigger]
+    [aui, closeTrigger, recordUndoPoint, refreshTrigger, rememberInitialDraft, requestEditFocus, trigger]
   )
 
   const insertRefStrings = useCallback(
@@ -335,20 +357,23 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return false
       }
 
-      const nextDraft = insertInlineRefsIntoEditor(editor, refs)
+      // Bank BEFORE the insert — insertInlineRefsIntoEditor mutates in place, so
+      // recording after it would snapshot the state we're trying to undo to.
+      const undone = withUndoPoint(() => insertInlineRefsIntoEditor(editor, refs) !== null)
 
-      if (nextDraft === null) {
+      if (!undone) {
         return false
       }
 
       rememberInitialDraft()
+      const nextDraft = composerPlainText(editor)
       draftRef.current = nextDraft
       aui.composer().setText(nextDraft)
       requestEditFocus()
 
       return true
     },
-    [aui, rememberInitialDraft, requestEditFocus]
+    [aui, rememberInitialDraft, requestEditFocus, withUndoPoint]
   )
 
   const insertDroppedRefs = useCallback(
@@ -491,6 +516,19 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     window.setTimeout(refreshTrigger, 0)
   }
 
+  // Native typing/deleting still goes through Chromium's editing pipeline, whose
+  // undo stack we've taken over — bank the pre-edit state here, while
+  // `beforeinput` can still see the old text.
+  const handleBeforeInput = (event: FormEvent<HTMLDivElement>) => {
+    const inputType = (event.nativeEvent as InputEvent).inputType
+
+    if (inputType === 'historyUndo' || inputType === 'historyRedo') {
+      return
+    }
+
+    recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+  }
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const pastedText = sanitizeComposerInput(event.clipboardData.getData('text'))
 
@@ -502,7 +540,10 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     event.preventDefault()
     rememberInitialDraft()
-    document.execCommand('insertText', false, pastedText)
+    recordUndoPoint()
+
+    // Links land as `@url:` chips, same as the main composer.
+    insertComposerContentsAtCaret(event.currentTarget, linkifyUrls(pastedText))
     syncDraftFromEditor(event.currentTarget)
   }
 
@@ -594,9 +635,34 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
     }
 
+    // Undo/redo before Escape — we own the stack, and a stray Cmd+Z must never
+    // fall through to something that cancels the edit outright.
+    if (isUndoShortcut(event.nativeEvent)) {
+      event.preventDefault()
+      undo()
+
+      return
+    }
+
+    if (isRedoShortcut(event.nativeEvent)) {
+      event.preventDefault()
+      redo()
+
+      return
+    }
+
     if (event.key === 'Escape') {
       event.preventDefault()
       aui.composer().cancel()
+
+      return
+    }
+
+    // A typed link finished with a space chips like a pasted one.
+    if (withUndoPoint(() => chipTypedUrlOnSpace(event))) {
+      event.preventDefault()
+      rememberInitialDraft()
+      syncDraftFromEditor(event.currentTarget)
 
       return
     }
@@ -668,6 +734,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               contentEditable
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
+              onBeforeInput={handleBeforeInput}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
               onDrop={handleDrop}

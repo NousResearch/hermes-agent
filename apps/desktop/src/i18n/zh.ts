@@ -258,6 +258,9 @@ export const zh: Translations = {
       'view.closeTab': '关闭标签',
       'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
+      'view.findInPage': '页面内查找',
+      'view.findNext': '查找下一个',
+      'view.findPrevious': '查找上一个',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',
@@ -293,6 +296,11 @@ export const zh: Translations = {
       'composer.history': '切换弹窗/历史',
       'composer.cancel': '关闭弹窗·取消运行'
     }
+  },
+
+  findInPage: {
+    next: '下一个匹配',
+    previous: '上一个匹配'
   },
 
   language: {
@@ -750,6 +758,15 @@ export const zh: Translations = {
       keepAwakeTitle: '保持电脑唤醒',
       keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。'
     },
+    quickEntry: {
+      enabledTitle: '快速输入',
+      enabledDesc: '用全局快捷键在任何地方唤出一个小输入框，无需打开 Hermes 即可发送提示。',
+      shortcutTitle: '快速输入快捷键',
+      shortcutDesc: '至少需要一个修饰键，例如 CommandOrControl+Shift+Space。',
+      active: '快捷键已生效。',
+      takenBy: '此快捷键已被其他应用占用，请换一个。',
+      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。'
+    },
     credentials: {
       pasteKey: '粘贴密钥',
       pasteLabelKey: label => `粘贴 ${label} 密钥`,
@@ -782,12 +799,14 @@ export const zh: Translations = {
       appliesTo: '应用于',
       allProfiles: '所有 profile',
       defaultConnection: '默认连接会用于所有没有自定义覆盖的 profile。',
-      profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。设为本地即可继承默认连接。`,
+      profileConnection: profile => `仅当“${profile}”是当前 profile 时使用此连接。选择“使用默认网关”可移除其覆盖。`,
       envOverrideTitle: '环境变量正在控制此桌面会话。',
       envOverrideDesc: '取消设置 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 后才会使用下面保存的设置。',
       modeTitle: '连接模式',
       localTitle: '本地网关',
       localDesc: '在 localhost 启动私有 Hermes 后端。这是默认方式，并且可离线工作。',
+      inheritTitle: '使用默认网关',
+      inheritDesc: '移除此 profile 的自定义覆盖并使用默认连接。',
       remoteTitle: '远程网关',
       remoteDesc: '将此桌面外壳连接到远程 Hermes 后端。',
       remoteAuthHint: '托管网关使用 OAuth 或用户名密码；自托管网关也可能使用会话 token。',
@@ -1928,6 +1947,29 @@ export const zh: Translations = {
     copyPath: '复制路径'
   },
 
+  artifactCard: {
+    kind: { code: '代码', html: '交互页面', svg: '图形' },
+    generating: lines => `生成中… ${lines} 行`,
+    versionBadge: count => `${count} 个版本`,
+    open: '打开'
+  },
+
+  artifactPane: {
+    tabFallback: '产物',
+    modePreview: '预览',
+    modeSource: '源码',
+    versionOf: (current, total) => `第 ${current}/${total} 版`,
+    olderVersion: '较旧版本',
+    newerVersion: '较新版本',
+    latest: '最新',
+    copyContent: '复制内容',
+    download: '下载',
+    openInBrowser: '在浏览器中打开',
+    openInBrowserFailed: '无法在浏览器中打开',
+    missingTitle: '产物不可用',
+    missingBody: '此产物已不在本地注册表中。'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新建会话',
@@ -2200,6 +2242,10 @@ export const zh: Translations = {
   statusStack: {
     agents: '代理',
     background: count => `${count} 个后台任务`,
+    goalActive: '目标进行中',
+    goalDone: '目标已完成',
+    goalPaused: '目标已暂停',
+    goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
     running: '运行中',
@@ -2483,8 +2529,7 @@ export const zh: Translations = {
       noModels: '未找到模型',
       editModels: '编辑模型…',
       refreshModels: '刷新模型',
-      fast: '快速',
-      medium: '中'
+      fast: '快速'
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',
@@ -2557,6 +2602,16 @@ export const zh: Translations = {
       gatewayOffline: '离线',
       gatewayRestarting: '重启中…',
       gatewayTitle: 'Hermes 推理网关状态',
+      customizeTitle: '在状态栏中显示',
+      toggleApprovalMode: '审批',
+      toggleBackendVersion: '后端版本',
+      toggleCommandCenter: '命令中心',
+      toggleContextUsage: '上下文用量',
+      toggleRunningTimer: '回合计时',
+      toggleSessionTimer: '会话计时',
+      toggleTerminal: '终端',
+      toggleVersion: '版本与更新',
+      toggleWorkspace: '工作区',
       agents: '代理',
       closeAgents: '关闭代理',
       openAgents: '打开代理',
@@ -2903,6 +2958,7 @@ export const zh: Translations = {
         execute_code: { done: '已运行代码', pending: '正在编写脚本', pendingAction: '正在编写脚本' },
         image_generate: { done: '已生成图片', pending: '正在生成图片', pendingAction: '正在生成' },
         list_files: { done: '已列出文件', pending: '正在列出文件', pendingAction: '正在列出' },
+        memory: { done: '已保存到记忆', pending: '正在保存到记忆', pendingAction: '正在保存' },
         patch: { done: '已修补文件', pending: '正在修补文件', pendingAction: '正在修补' },
         read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
         search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },

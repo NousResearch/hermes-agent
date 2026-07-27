@@ -619,6 +619,15 @@ export const ar = defineLocale({
       imported: 'تم استيراد الإعدادات',
       invalidJson: 'JSON غير صالح'
     },
+    quickEntry: {
+      enabledTitle: 'الإدخال السريع',
+      enabledDesc: 'استدعِ محرّرا صغيرا من أي مكان باختصار عام وأرسل طلبا دون فتح Hermes.',
+      shortcutTitle: 'اختصار الإدخال السريع',
+      shortcutDesc: 'يحتاج إلى مفتاح تعديل واحد على الأقل، مثل CommandOrControl+Shift+Space.',
+      active: 'الاختصار مفعّل.',
+      takenBy: 'يستخدم تطبيق آخر هذا الاختصار — اختر اختصارا مختلفا.',
+      invalidShortcut: 'ليس اختصارا صالحا. أضف مفتاح تعديل واحدا على الأقل.'
+    },
     credentials: {
       pasteKey: 'لصق المفتاح',
       pasteLabelKey: label => `لصق مفتاح ${label}`,
@@ -651,11 +660,13 @@ export const ar = defineLocale({
       allProfiles: 'كل الملفات الشخصية',
       defaultConnection: 'الاتصال الافتراضي لكل ملف شخصي لا يملك تجاوزاً خاصاً.',
       profileConnection: profile =>
-        `الاتصال المستخدم فقط عندما يكون "${profile}" هو الملف الشخصي النشط. اضبطه على محلي ليرث الافتراضي.`,
+        `الاتصال المستخدم فقط عندما يكون "${profile}" هو الملف الشخصي النشط. اختر "استخدام البوابة الافتراضية" لإزالة التجاوز الخاص به.`,
       envOverrideTitle: 'متغيرات البيئة تتحكم في جلسة سطح المكتب هذه.',
       envOverrideDesc: 'أزل HERMES_DESKTOP_REMOTE_URL و HERMES_DESKTOP_REMOTE_TOKEN لاستخدام الإعداد المحفوظ أدناه.',
       localTitle: 'بوابة محلية',
       localDesc: 'تشغيل خلفية Hermes خاصة على localhost. هذا هو الافتراضي ويعمل دون اتصال.',
+      inheritTitle: 'استخدام البوابة الافتراضية',
+      inheritDesc: 'إزالة التجاوز الخاص بهذا الملف الشخصي واستخدام الاتصال الافتراضي.',
       remoteTitle: 'بوابة بعيدة',
       remoteDesc:
         'صل واجهة سطح المكتب هذه بخلفية Hermes بعيدة. البوابات المستضافة تستخدم OAuth أو اسم مستخدم وكلمة مرور، والبوابات الذاتية قد تستخدم رمز جلسة.',
@@ -1484,6 +1495,29 @@ export const ar = defineLocale({
     copyUrl: 'نسخ الرابط',
     copyPath: 'نسخ المسار'
   },
+
+  artifactCard: {
+    kind: { code: 'كود', html: 'صفحة تفاعلية', svg: 'رسم' },
+    generating: lines => `جارٍ الإنشاء… ${lines} سطرًا`,
+    versionBadge: count => `${count} إصدارات`,
+    open: 'فتح'
+  },
+
+  artifactPane: {
+    tabFallback: 'ناتج',
+    modePreview: 'معاينة',
+    modeSource: 'المصدر',
+    versionOf: (current, total) => `الإصدار ${current} من ${total}`,
+    olderVersion: 'إصدار أقدم',
+    newerVersion: 'إصدار أحدث',
+    latest: 'الأحدث',
+    copyContent: 'نسخ المحتوى',
+    download: 'تنزيل',
+    openInBrowser: 'فتح في المتصفح',
+    openInBrowserFailed: 'تعذّر الفتح في المتصفح',
+    missingTitle: 'الناتج غير متاح',
+    missingBody: 'لم يعد هذا الناتج موجودًا في السجل المحلي.'
+  },
   sidebar: {
     nav: {
       'new-session': 'جلسة جديدة',
@@ -1986,8 +2020,7 @@ export const ar = defineLocale({
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
       refreshModels: 'تحديث النماذج',
-      fast: 'سريع',
-      medium: 'متوسط'
+      fast: 'سريع'
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',
@@ -2399,6 +2432,11 @@ export const ar = defineLocale({
           done: 'تم سرد الملفات',
           pending: 'جار سرد الملفات',
           pendingAction: 'جار السرد'
+        },
+        memory: {
+          done: 'تم الحفظ في الذاكرة',
+          pending: 'جار الحفظ في الذاكرة',
+          pendingAction: 'جار الحفظ'
         },
         patch: {
           done: 'تم تصحيح الملف',

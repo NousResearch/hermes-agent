@@ -96,6 +96,7 @@ from gateway.status import (
     normalize_updated_at,
     parse_active_agents,
     read_runtime_status,
+    resolve_gateway_liveness,
 )
 from utils import env_var_enabled
 
@@ -921,7 +922,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["stash", "discard"],
     },
     "updates.refresh_cua_driver": {
-        "type": "bool",
+        "type": "boolean",
         "description": (
             "Refresh an already-installed cua-driver during hermes update. "
             "Disable this on non-admin macOS accounts where /Applications is "
@@ -3070,41 +3071,60 @@ async def get_status(profile: Optional[str] = None):
     try:
         current_ver, latest_ver = check_config_version()
         # --- Gateway liveness detection ---
-        # Try local PID check first (same-host).  If that fails and a remote
-        # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
-        # dashboard works when the gateway runs in a separate container.
+        # Delegated to the single shared ladder in gateway.status so this
+        # endpoint and /api/messaging/platforms can never disagree about
+        # whether the gateway is up (they used to: sidebar "running" while
+        # the Channels page rendered "The gateway is not running").
         #
         # When ?profile=<name> was given, scope PID and state reads to that
         # profile's directory — gateway identity files (PID, lock, runtime
         # status) are written to the per-profile home, not the process-level
         # HERMES_HOME (see issue #69143). Plain /api/status keeps the exact
         # zero-arg call so its behavior (and cache signature) is unchanged.
-        gateway_pid = (
-            get_running_pid_cached(pid_path=profile_dir / "gateway.pid")
-            if profile_dir
-            else get_running_pid_cached()
-        )
-        gateway_running = gateway_pid is not None
-        remote_health_body: dict | None = None
+        #
+        # The module-level probe references are handed to the resolver so the
+        # long-standing `monkeypatch.setattr(web_server, "get_running_pid_cached", ...)`
+        # seam used across the test-suite still intercepts them.
+        def _bounded_health_probe():
+            """Health probe with the route's blocking-call budget preserved.
 
-        if not gateway_running and _GATEWAY_HEALTH_URL:
-            loop = asyncio.get_running_loop()
-            try:
-                alive, remote_health_body = await asyncio.wait_for(
-                    loop.run_in_executor(None, _probe_gateway_health),
-                    timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT,
-                )
-            except TimeoutError:
-                _log.warning(
-                    "/api/status gateway health probe exceeded %.2fs; using local status",
-                    _GATEWAY_HEALTH_ROUTE_TIMEOUT,
-                )
-                alive, remote_health_body = False, None
-            if alive:
-                gateway_running = True
-                # PID from the remote container (display only — not locally valid)
-                if remote_health_body:
-                    gateway_pid = remote_health_body.get("pid")
+            The resolver only reaches this rung when the local PID probe came
+            up empty, so the timeout is paid at most once per request and only
+            in the cross-container case that needs it.
+            """
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_probe_gateway_health)
+                try:
+                    return future.result(timeout=_GATEWAY_HEALTH_ROUTE_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    _log.warning(
+                        "/api/status gateway health probe exceeded %.2fs; "
+                        "using local status",
+                        _GATEWAY_HEALTH_ROUTE_TIMEOUT,
+                    )
+                    return False, None
+                except Exception:
+                    return False, None
+
+        local_runtime = (
+            read_runtime_status(path=profile_dir / "gateway_state.json")
+            if profile_dir
+            else read_runtime_status()
+        )
+
+        liveness = await run_in_threadpool(
+            lambda: resolve_gateway_liveness(
+                profile_dir=profile_dir,
+                runtime=local_runtime,
+                health_probe=_bounded_health_probe if _GATEWAY_HEALTH_URL else None,
+                pid_probe=get_running_pid_cached,
+                runtime_reader=read_runtime_status,
+                runtime_pid_probe=get_runtime_status_running_pid,
+            )
+        )
+        gateway_running = liveness.running
+        gateway_pid = liveness.pid
+        remote_health_body: dict | None = liveness.health_body
 
         gateway_state = None
         gateway_platforms: dict = {}
@@ -3123,39 +3143,9 @@ async def get_status(profile: Optional[str] = None):
 
         # Prefer the detailed health endpoint response (has full state) when the
         # local runtime status file is absent or stale (cross-container).
-        #
-        # When ?profile=<name> was given, read from the profile's directory so
-        # the state file resolves to the per-profile gateway_state.json, not
-        # the fixed process-level HERMES_HOME (see issue #69143). Plain
-        # /api/status keeps the exact zero-arg call so existing behavior
-        # (and monkeypatched call shapes) are unchanged.
-        local_runtime = (
-            read_runtime_status(path=profile_dir / "gateway_state.json")
-            if profile_dir
-            else read_runtime_status()
-        )
         runtime = local_runtime
         if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
             runtime = remote_health_body
-        # The runtime-status PID fallback validates liveness with a local
-        # os.kill() probe, so it must only run against the LOCAL status file —
-        # never the remote health body, whose PID belongs to another host and
-        # is display-only. (Running os.kill on a remote PID is both wrong and
-        # trips the test live-system guard.)
-        if not gateway_running and local_runtime is not None:
-            # expected_home scopes the OS-identity check to the requested
-            # profile so a recycled PID belonging to a different profile's
-            # live gateway is not reported running for this one.
-            runtime_pid = (
-                get_runtime_status_running_pid(
-                    local_runtime, expected_home=profile_dir
-                )
-                if profile_dir
-                else get_runtime_status_running_pid(local_runtime)
-            )
-            if runtime_pid is not None:
-                gateway_running = True
-                gateway_pid = runtime_pid
 
         if runtime:
             gateway_state = runtime.get("gateway_state")
@@ -5086,8 +5076,7 @@ def get_profiles_sessions_sidebar(
     recents_rows: List[Dict[str, Any]] = []
     cron_rows: List[Dict[str, Any]] = []
     messaging_rows: List[Dict[str, Any]] = []
-    recents_total = 0
-    recents_profile_totals: Dict[str, int] = {}
+    recents_truncated: Dict[str, bool] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
 
@@ -5126,18 +5115,13 @@ def get_profiles_sessions_sidebar(
             continue
         try:
             if recents_scope == "all" or name == recents_scope:
-                recents_rows.extend(
-                    _tag(_slice(db, exclude=recents_exclude_list, cap=recents_cap), name)
-                )
-                rtotal = db.session_count(
-                    exclude_sources=recents_exclude_list or None,
-                    min_message_count=1,
-                    include_archived=False,
-                    archived_only=False,
-                    exclude_children=True,
-                )
-                recents_total += rtotal
-                recents_profile_totals[name] = rtotal
+                profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
+                # A full window means more rows remain on disk. That is all the
+                # sidebar's "load more" needs, and unlike an exact COUNT(*) per
+                # profile per refresh it costs nothing beyond the rows already
+                # read.
+                recents_truncated[name] = len(profile_rows) >= recents_cap
+                recents_rows.extend(_tag(profile_rows, name))
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
             messaging_rows.extend(
                 _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
@@ -5156,8 +5140,7 @@ def get_profiles_sessions_sidebar(
     return {
         "recents": {
             "sessions": _window(recents_rows, recents_cap),
-            "total": recents_total,
-            "profile_totals": recents_profile_totals,
+            "profiles_truncated": recents_truncated,
         },
         "cron": {"sessions": _window(cron_rows, cron_cap)},
         "messaging": {
@@ -8056,7 +8039,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": (
             "DISCORD_BOT_TOKEN",
             "DISCORD_ALLOWED_USERS",
-            "DISCORD_REPLY_TO_MODE",
         ),
         "required_env": ("DISCORD_BOT_TOKEN",),
     },
@@ -8213,7 +8195,35 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     # plugin registry. Only the docs link needs an override here so the
     # Channels page can point at the Microsoft Teams setup guide.
     "teams": {
+        "description": "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+    },
+    # Bundled platform plugins: name comes from the plugin registry label;
+    # give each a human description (the registry's install_hint is a
+    # dependency note, not a description) and a docs link.
+    "irc": {
+        "description": "Relay messages between an IRC channel (or DMs) and Hermes.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
+    },
+    "line": {
+        "description": "Use Hermes from LINE via the LINE Messaging API webhook.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
+    },
+    "ntfy": {
+        "description": "Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
+    },
+    "photon": {
+        "description": "Use Hermes through iMessage via Photon's managed Spectrum platform.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
+    },
+    "raft": {
+        "description": "Join a Raft workspace as an external agent.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
+    },
+    "simplex": {
+        "description": "Talk to Hermes over SimpleX Chat via a local simplex-chat daemon.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex",
     },
     "yuanbao": {
         "name": "Yuanbao (元宝)",
@@ -8239,6 +8249,23 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Receive events from GitHub, GitLab, and other webhook sources.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/",
         "env_vars": ("WEBHOOK_ENABLED", "WEBHOOK_PORT", "WEBHOOK_SECRET"),
+        "required_env": (),
+    },
+    "msgraph_webhook": {
+        "name": "Microsoft Graph Webhook",
+        "description": "Receive Microsoft Graph change notifications (Teams meetings, Outlook, …).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/msgraph-webhook",
+        "required_env": (),
+    },
+    "whatsapp_cloud": {
+        "name": "WhatsApp Cloud API",
+        "description": "Use Hermes via Meta's hosted WhatsApp Cloud API (no local bridge).",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp-cloud",
+    },
+    "relay": {
+        "name": "Relay (experimental)",
+        "description": "Generic relay adapter fronted by the Hermes Relay connector.",
+        "docs_url": "",
         "required_env": (),
     },
 }
@@ -8422,6 +8449,28 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     """
     from gateway.config import Platform
 
+    # Resolve plugin entries FIRST. Plugin platforms (irc, ntfy, photon, …)
+    # leak into ``Platform.__members__`` as pseudo-members the moment any
+    # earlier code path calls ``Platform("<plugin id>")`` — and iterating the
+    # enum first would then claim them with no plugin metadata, rendering
+    # nameless "Irc"/"Ntfy" cards with empty descriptions on the Channels
+    # page while the real label/install-hint sat unused in the registry.
+    plugin_map: dict[str, Any] = {}
+    try:
+        # Plugin discovery only runs as a side effect of importing
+        # model_tools; this server process doesn't do that, so trigger it
+        # explicitly (idempotent) or plugin_entries() is empty here and
+        # every plugin platform renders nameless.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        from gateway.platform_registry import platform_registry
+
+        for plugin_entry in platform_registry.plugin_entries():
+            plugin_map[plugin_entry.name] = plugin_entry
+    except Exception:
+        _log.debug("plugin platform registry unavailable", exc_info=True)
+
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
 
@@ -8431,18 +8480,15 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if member.value in seen:
             continue
         seen.add(member.value)
-        entries.append(_build_catalog_entry(member.value))
+        entries.append(
+            _build_catalog_entry(member.value, plugin_map.get(member.value))
+        )
 
-    try:
-        from gateway.platform_registry import platform_registry
-
-        for plugin_entry in platform_registry.plugin_entries():
-            if plugin_entry.name in seen:
-                continue
-            seen.add(plugin_entry.name)
-            entries.append(_build_catalog_entry(plugin_entry.name, plugin_entry))
-    except Exception:
-        _log.debug("plugin platform registry unavailable", exc_info=True)
+    for name, plugin_entry in plugin_map.items():
+        if name in seen:
+            continue
+        seen.add(name)
+        entries.append(_build_catalog_entry(name, plugin_entry))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(
@@ -8495,6 +8541,14 @@ def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
     return (platform_id.upper().replace("-", "_") + "_",)
 
 
+# Which per-platform knobs the setup UI hides, and why: see
+# hermes_cli/setup_hidden_env.py. Shared with the `hermes setup gateway`
+# wizard so the surfaces ask for the same things.
+from hermes_cli.setup_hidden_env import (  # noqa: E402
+    is_setup_hidden_env as _is_setup_hidden_env,
+)
+
+
 def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
     """All messaging-category env vars for a platform (override + plugin + prefix)."""
     prefixes = _platform_env_prefixes(platform_id)
@@ -8503,6 +8557,8 @@ def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
         if info.get("category") != "messaging":
             continue
         if name in _MESSAGING_KEYS_PAGE_KEYS:
+            continue
+        if _is_setup_hidden_env(name):
             continue
         if not any(name.startswith(prefix) for prefix in prefixes):
             continue
@@ -8515,10 +8571,18 @@ def _merge_platform_env_vars(
     override: dict[str, Any],
     plugin_entry: Any | None,
 ) -> tuple[str, ...]:
-    """Canonical env-var list for a messaging platform card."""
+    """Canonical env-var list for a messaging platform card.
+
+    Required credentials always survive: a platform that genuinely needs one of
+    the hidden-suffix vars to connect keeps it, since hiding a required field
+    would make the platform unconfigurable.
+    """
     discovered = _discover_platform_env_vars(platform_id)
     if "env_vars" in override:
-        return tuple(dict.fromkeys((*override["env_vars"], *discovered)))
+        explicit = tuple(
+            key for key in override["env_vars"] if not _is_setup_hidden_env(key)
+        )
+        return tuple(dict.fromkeys((*explicit, *discovered)))
     if plugin_entry is not None and plugin_entry.required_env:
         return tuple(dict.fromkeys((*tuple(plugin_entry.required_env), *discovered)))
     return discovered
@@ -8592,6 +8656,7 @@ def _messaging_platform_payload(
     env_on_disk: dict[str, str],
     runtime: dict | None,
     scoped: bool = False,
+    profile_home: Optional[Path] = None,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     runtime_platforms = runtime.get("platforms") if runtime else {}
@@ -8600,10 +8665,29 @@ def _messaging_platform_payload(
         if isinstance(runtime_platforms, dict)
         else {}
     )
-    gateway_running = (
-        get_running_pid() is not None
-        or get_runtime_status_running_pid(runtime) is not None
+    # Same shared ladder /api/status uses. Before this was unified, the two
+    # endpoints disagreed on the same page load — the sidebar strip read
+    # "running" (it probed GATEWAY_HEALTH_URL and scoped to the requested
+    # profile) while the Channels page rendered "The gateway is not running"
+    # (it did neither). Cross-container, profile-scoped, and
+    # launch-service-managed deployments each hit that split.
+    #
+    # profile_home is passed when the request was scoped to a named profile:
+    # gateway/status readers resolve process-level paths and do NOT follow the
+    # HERMES_HOME contextvar override (#56986 / #69143), so the profile's
+    # directory has to be handed over explicitly or messaging silently reports
+    # another profile's gateway (#71211).
+    liveness = resolve_gateway_liveness(
+        profile_dir=profile_home,
+        runtime=runtime,
+        health_probe=(
+            _probe_gateway_health if _GATEWAY_HEALTH_URL else None
+        ),
+        pid_probe=get_running_pid_cached,
+        runtime_reader=read_runtime_status,
+        runtime_pid_probe=get_runtime_status_running_pid,
     )
+    gateway_running = liveness.running
     env_vars = []
 
     for key in entry["env_vars"]:
@@ -9605,17 +9689,26 @@ async def cancel_telegram_onboarding(pairing_id: str):
 async def get_messaging_platforms(profile: Optional[str] = None):
     # Profile-scoped so the dashboard's global profile switcher shows the
     # TARGET profile's channel credentials/state, not the root install's.
-    # Inside _profile_scope, load_env()/read_runtime_status()/get_running_pid()
-    # all resolve against the requested profile's HERMES_HOME.
+    # load_env() honors the HERMES_HOME contextvar override; the gateway
+    # status readers do NOT (they resolve process-level paths), so the
+    # profile directory is passed explicitly for those (#71211).
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
-        runtime = read_runtime_status()
+        runtime = (
+            read_runtime_status(path=scoped_dir / "gateway_state.json")
+            if scoped_dir is not None
+            else read_runtime_status()
+        )
         return {
             "env_path": str(get_env_path()),
             "gateway_start_command": _gateway_display_command(profile, "start"),
             "platforms": [
                 _messaging_platform_payload(
-                    entry, env_on_disk, runtime, scoped=scoped_dir is not None
+                    entry,
+                    env_on_disk,
+                    runtime,
+                    scoped=scoped_dir is not None,
+                    profile_home=scoped_dir,
                 )
                 for entry in _messaging_platform_catalog()
             ]
@@ -9750,8 +9843,17 @@ async def test_messaging_platform(platform_id: str, profile: Optional[str] = Non
 
     with _profile_scope(profile) as scoped_dir:
         env_on_disk = load_env()
+        runtime = (
+            read_runtime_status(path=scoped_dir / "gateway_state.json")
+            if scoped_dir is not None
+            else read_runtime_status()
+        )
         payload = _messaging_platform_payload(
-            entry, env_on_disk, read_runtime_status(), scoped=scoped_dir is not None
+            entry,
+            env_on_disk,
+            runtime,
+            scoped=scoped_dir is not None,
+            profile_home=scoped_dir,
         )
     if not payload["enabled"]:
         message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
@@ -11920,9 +12022,15 @@ def _prune_sessions(body: SessionPrune):
                 "ok": True,
                 "removed": 0,
                 "matched": len(rows),
-                # Rows are ordered oldest-first.
-                "oldest_started_at": rows[0]["started_at"] if rows else None,
-                "newest_started_at": rows[-1]["started_at"] if rows else None,
+                # Rows are ordered by last activity, not creation time.
+                "oldest_last_active": rows[0]["last_active"] if rows else None,
+                "newest_last_active": rows[-1]["last_active"] if rows else None,
+                "oldest_started_at": (
+                    min(r["started_at"] for r in rows) if rows else None
+                ),
+                "newest_started_at": (
+                    max(r["started_at"] for r in rows) if rows else None
+                ),
                 "sessions": [
                     {
                         "id": r["id"],
@@ -11930,6 +12038,7 @@ def _prune_sessions(body: SessionPrune):
                         "title": r.get("title"),
                         "model": r.get("model"),
                         "started_at": r["started_at"],
+                        "last_active": r["last_active"],
                         "message_count": r["message_count"],
                     }
                     for r in rows

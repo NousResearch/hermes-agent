@@ -380,25 +380,46 @@ def _background_review_write_guard(
                     f"skill '{name}'."
                 ),
             }
-        # Manually authored skills (created_by != "agent") are off-limits
-        # to autonomous curation. This prevents the LLM consolidation pass
-        # from archiving skills the user placed manually (e.g. via URL
-        # install or direct SKILL.md authoring), which lack the
-        # `created_by: "agent"` marker.
+        # Skills that are not curator-managed are off-limits to autonomous
+        # curation. This prevents the LLM consolidation pass from mutating
+        # skills the user owns (manually authored, URL-installed, or created by
+        # a foreground `skill_manage(create)` at the user's request), which lack
+        # the `created_by: "agent"` marker.
+        #
+        # A MISSING record and an explicit `created_by: null` must resolve
+        # IDENTICALLY (issue #67140). Keying on `isinstance(usage_rec, dict)`
+        # made the policy depend on the guard's own side effect: a local skill
+        # with no telemetry record passed, the successful write called
+        # bump_patch() which created a `created_by: null` record, and the very
+        # same write was refused from then on. "Allowed exactly once" is not a
+        # policy — it is a race with our own bookkeeping. Fail closed for both
+        # shapes; `hermes curator adopt <name>` is the supported way in.
         usage_data = skill_usage.load_usage()
         usage_rec = usage_data.get(name)
-        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
+        if not skill_usage._is_curator_managed_record(usage_rec):
+            if isinstance(usage_rec, dict):
+                _detail = f"created_by={usage_rec.get('created_by')!r}"
+            else:
+                _detail = "no usage record"
             return {
                 "success": False,
                 "error": (
                     f"Refusing background curator {action} for skill "
-                    f"'{name}': the skill records show it is not agent-created "
-                    f"(created_by={usage_rec.get('created_by')!r}). Manually authored "
-                    f"skills are off-limits to autonomous curation."
+                    f"'{name}': the skill is not curator-managed ({_detail}). "
+                    "User-owned skills are off-limits to autonomous curation. "
+                    f"Run `hermes curator adopt {name}` to opt it in."
                 ),
             }
     except Exception:
-        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
+        logger.warning("owned skill guard lookup failed for %s", name, exc_info=True)
+        return {
+            "success": False,
+            "error": (
+                f"Refusing background curator {action} for skill '{name}': "
+                "agent ownership could not be verified because the provenance "
+                "record is unavailable or unreadable."
+            ),
+        }
     return None
 
 

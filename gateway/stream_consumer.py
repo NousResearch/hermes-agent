@@ -675,10 +675,13 @@ class GatewayStreamConsumer:
         # Platform message length limit — leave room for cursor + formatting.
         # Use the adapter's length function (e.g. utf16_len for Telegram) so
         # overflow detection matches what the platform actually enforces.
+        # Both resolve PER-CHAT (max_message_length_for_chat): a relay adapter
+        # fronting N platforms has different caps per chat (Discord 2000 vs
+        # Telegram 4096); native adapters return their scalar unchanged.
         # Gate on isinstance(BasePlatformAdapter) so test MagicMocks (whose
         # auto-attributes return mock objects, not callables) fall back to len.
         _len_fn: "Callable[[str], int]" = (
-            self.adapter.message_len_fn
+            self.adapter.message_len_fn_for_chat(self.chat_id)
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
@@ -1359,6 +1362,15 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
+        # Per-chat resolution (relay adapter fronting N platforms): the cap and
+        # length unit follow the chat's underlying platform, not the adapter
+        # scalar. Native adapters return their scalar/property unchanged.
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                raw_limit = self.adapter.max_message_length_for_chat(self.chat_id)
+                _len_fn = self.adapter.message_len_fn_for_chat(self.chat_id)
+            except Exception as e:
+                logger.debug("per-chat limit resolution failed: %s", e)
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
@@ -1744,8 +1756,11 @@ class GatewayStreamConsumer:
         """Per-message length budget (in the adapter's ``message_len_fn`` units)
         before the consumer splits an overflowing reply.
 
-        Adapters with a richer send/draft path (e.g. Telegram rich messages)
-        can raise this above ``MAX_MESSAGE_LENGTH`` via
+        Resolved PER-CHAT via ``max_message_length_for_chat`` — a relay adapter
+        fronting N platforms has a different cap per chat (Discord 2000 vs
+        Telegram 4096 vs Slack 39000); native adapters return their scalar
+        ``MAX_MESSAGE_LENGTH`` unchanged. Adapters with a richer send/draft
+        path (e.g. Telegram rich messages) can raise this above the base via
         ``streaming_overflow_limit`` so a reply that fits one rich message isn't
         fragmented at the legacy edit limit.  Falls back to
         ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
@@ -1754,6 +1769,10 @@ class GatewayStreamConsumer:
         # isinstance gate: MagicMock adapters return mock objects (truthy, not
         # ints) for arbitrary attribute access — keep them on the base limit.
         if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                base = self.adapter.max_message_length_for_chat(self.chat_id)
+            except Exception as e:
+                logger.debug("max_message_length_for_chat failed: %s", e)
             try:
                 cap = self.adapter.streaming_overflow_limit()
             except Exception as e:

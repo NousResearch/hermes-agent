@@ -437,7 +437,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 500,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -1762,8 +1762,23 @@ class AIAgent:
                 # blocks. A list override, however, is the original clean
                 # multimodal payload (for example before a queued /model note)
                 # and must replace the API-local list once the turn is final.
-                if override is not None and (
-                    not isinstance(msg.get("content"), list) or isinstance(override, list)
+                # Preflight compaction can re-anchor this index at a message
+                # whose content was MERGED with the compaction summary
+                # (merge-summary-into-tail).  That is not an accident:
+                # ``reanchor_current_turn_user_idx`` falls back to the last
+                # user row precisely BECAUSE the merge rewrote the content and
+                # the exact-match lookup misses.  Overwriting it with the clean
+                # text would drop the summary from the continuation history the
+                # next turn is built from — the same hazard the DB-write twin
+                # below already refuses (see the sibling guard in
+                # ``_flush_messages_to_session_db_unlocked``).
+                if (
+                    override is not None
+                    and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    and (
+                        not isinstance(msg.get("content"), list)
+                        or isinstance(override, list)
+                    )
                 ):
                     msg["content"] = override
                 if timestamp is not None:
@@ -2351,6 +2366,13 @@ class AIAgent:
             if ray_id:
                 parts.append(f"Ray {ray_id}")
             return " — ".join(parts)
+
+        # GeminiAPIError (agent/gemini_native_adapter.py) already composes a
+        # clean one-liner and may have appended actionable guidance (free-tier
+        # 429, legacy Standard-key 401). Prefer its message over re-extracting
+        # the raw response body below, which would strip that guidance.
+        if type(error).__name__ == "GeminiAPIError":
+            return redact_sensitive_text(raw[:1000])
 
         # JSON body errors from OpenAI/Anthropic SDKs
         body = getattr(error, "body", None)
@@ -4201,6 +4223,83 @@ class AIAgent:
             else:
                 logger.warning("Removed duplicate tool call: %s", tc.function.name)
         return unique if len(unique) < len(tool_calls) else tool_calls
+
+    @staticmethod
+    def _uniquify_tool_call_ids(tool_calls: list) -> list:
+        """Ensure every tool call in a single assistant turn has a distinct id.
+
+        Some models/providers reuse one call id across different calls in a
+        single batch (observed with native Kimi Responses replays, Ollama-
+        compatible endpoints, and degraded models at long context; same bug
+        class as openclaw/openclaw#110518 / #110956). Duplicate ids are lossy
+        downstream: the pre-API sanitizer keeps only the first call/result
+        pair per id (#58327), so the later call's result silently vanishes
+        from every replayed payload, and strict providers (Anthropic
+        tool_use, DeepSeek) reject duplicate ids outright.
+
+        The first occurrence keeps its id; later collisions get a
+        deterministic ``<id>_d<n>`` suffix — never a random UUID, which would
+        break prompt-cache prefix stability across replays. Mutates the
+        entries in place (SDK models / SimpleNamespace / dicts) and returns
+        the same list. Blank/missing ids are left for the deterministic
+        fallback in ``build_assistant_message``.
+        """
+        seen: set = set()
+        for tc in tool_calls or []:
+            if isinstance(tc, dict):
+                raw = tc.get("call_id") or tc.get("id") or ""
+            else:
+                raw = getattr(tc, "call_id", None) or getattr(tc, "id", None) or ""
+            raw = raw.strip() if isinstance(raw, str) else ""
+            if not raw:
+                continue
+            # Composite Responses ids ("call_x|fc_y") collide on the call
+            # half — that's the pairing key providers enforce per turn.
+            cid = raw.split("|", 1)[0]
+            if not cid:
+                continue
+            if cid not in seen:
+                seen.add(cid)
+                continue
+            n = 2
+            new_id = f"{cid}_d{n}"
+            while new_id in seen:
+                n += 1
+                new_id = f"{cid}_d{n}"
+            seen.add(new_id)
+
+            def _renamed(value):
+                # Preserve a composite id's response-item half so the
+                # provider's real fc_/item id survives the rename.
+                if isinstance(value, str) and "|" in value:
+                    return f"{new_id}|{value.split('|', 1)[1]}"
+                return new_id
+
+            try:
+                if isinstance(tc, dict):
+                    if tc.get("id"):
+                        tc["id"] = _renamed(tc["id"])
+                    else:
+                        tc["id"] = new_id
+                    if tc.get("call_id"):
+                        tc["call_id"] = new_id
+                else:
+                    tc.id = _renamed(getattr(tc, "id", None))
+                    if getattr(tc, "call_id", None):
+                        tc.call_id = new_id
+            except Exception:
+                logger.warning(
+                    "Could not uniquify duplicate tool call id %s", cid
+                )
+                continue
+            _fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            _fn_name = (_fn.get("name") if isinstance(_fn, dict) else getattr(_fn, "name", None)) or "?"
+            logger.warning(
+                "Model reused tool call id %s within one turn; renamed the "
+                "duplicate to %s (tool=%s) to keep call/result pairing "
+                "lossless.", cid, new_id, _fn_name,
+            )
+        return tool_calls
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
@@ -6462,13 +6561,43 @@ class AIAgent:
         ``force=False``.
         """
         from agent.conversation_compression import compress_context
-        return compress_context(
-            self, messages, system_message,
-            approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
-            force=force,
-            defer_context_engine_notification=defer_context_engine_notification,
-            commit_fence=commit_fence,
+        from agent.portal_tags import (
+            get_conversation_context,
+            reset_conversation_context,
+            set_conversation_context,
         )
+        # Out-of-turn compaction entry points — ``/compact`` (cli.py), the
+        # gateway ``/compress`` command and its hygiene sweep (both of which
+        # build a throwaway agent), and partial head compression — call this
+        # forwarder directly, outside ``run_conversation``'s ambient scope.
+        # With nothing ambient the summarizer's auxiliary call carries no
+        # conversation tag and no Portal sticky key, so it routes independently
+        # of the conversation it belongs to. Publish the root here as a
+        # fallback; in-turn callers already have it set to the same value, so
+        # this is a no-op for them.
+        #
+        # Note this does NOT keep the compaction turn's own prompt cache warm:
+        # compaction replaces the history with a summary and rebuilds the
+        # system prompt, so that request is a cold write on any endpoint. What
+        # it buys is the turns AFTER compaction reading the cache it wrote.
+        token = None
+        if get_conversation_context() is None:
+            root = self._conversation_root_id()
+            if root:
+                token = set_conversation_context(root)
+        try:
+            return compress_context(
+                self, messages, system_message,
+                approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
+                force=force,
+                defer_context_engine_notification=defer_context_engine_notification,
+                commit_fence=commit_fence,
+            )
+        finally:
+            # Restore whatever the caller had, so a compaction never leaks its
+            # tag into the surrounding scope.
+            if token is not None:
+                reset_conversation_context(token)
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
@@ -6693,6 +6822,8 @@ class AIAgent:
             reset_conversation_context,
             set_conversation_context,
         )
+        from agent.subagent_lifecycle import bind_subagent_parent
+
         # Publish the conversation id for ambient Nous Portal tagging. Every
         # LLM call made inside this turn — main loop, compression, vision,
         # web_extract, session_search, MoA slots, background-review forks
@@ -6712,7 +6843,7 @@ class AIAgent:
         # replaces the value with the live runtime after fallback restoration.
         # Keep the scope local instead of storing ContextVar tokens on the agent,
         # which may be observed from another thread.
-        with scoped_runtime_main({}):
+        with bind_subagent_parent(self), scoped_runtime_main({}):
             try:
                 return run_conversation(
                     self,

@@ -50,6 +50,9 @@ export function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind 
   return 'command'
 }
 
+/** True for a skill completion — the only kind offered mid-message. */
+export const isSkillItem = (item: Unstable_TriggerItem) => slashChipKindForItem(item) === 'skill'
+
 /** A `/` query is at its arg stage once it's past the command name. */
 export const slashArgStage = (query: string) => query.includes(' ')
 

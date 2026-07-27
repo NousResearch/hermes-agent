@@ -51,6 +51,7 @@ class _ClarifyEntry:
     session_key: str
     question: str
     choices: Optional[List[str]]
+    multi_select: bool = False
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -61,6 +62,7 @@ class _ClarifyEntry:
             "session_key": self.session_key,
             "question": self.question,
             "choices": list(self.choices) if self.choices else None,
+            "multi_select": bool(self.multi_select),
         }
 
 
@@ -80,6 +82,7 @@ def register(
     session_key: str,
     question: str,
     choices: Optional[List[str]],
+    multi_select: bool = False,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -91,6 +94,7 @@ def register(
         session_key=session_key,
         question=question,
         choices=list(choices) if choices else None,
+        multi_select=bool(multi_select) and bool(choices),
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
     )
@@ -205,6 +209,14 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
       - Accept exact choice label matches (case-insensitive)
       - Reject arbitrary prose (return None) so the message continues as a normal turn
 
+    For multi-select clarifies (entry.multi_select=True):
+      - Accept several numbers separated by commas and/or spaces ("1,3" / "1 3")
+      - Accept exact choice label matches (single or comma-separated)
+      - Out-of-range numbers reject the whole reply (return None) so the user
+        can retry instead of silently getting a partial selection
+      - Selections are returned as a JSON array string, which the clarify
+        tool's ``_parse_multi_select_response`` decodes back into a list
+
     For text fallback or awaiting_text mode:
       - Accept any text (numeric/label/custom) after passing through coercion
 
@@ -218,6 +230,14 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     if not entry.choices:
         # Open-ended: accept any text
         return text
+
+    if entry.multi_select:
+        coerced = _coerce_multi_select_text(entry, text)
+        if coerced is not None:
+            return coerced
+        # Not a parseable selection — accept as custom text only in
+        # awaiting_text mode (the "Other" path); otherwise reject.
+        return text if entry.awaiting_text else None
 
     # Try numeric selection first (always valid for multi-choice)
     try:
@@ -239,6 +259,58 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
         return text
 
     return None
+
+
+def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
+    """Parse a typed multi-select reply into a JSON array of choice labels.
+
+    Accepts numbers and/or exact labels separated by commas (and, for
+    all-numeric replies, bare spaces): "1,3", "1 3", "staging, prod".
+    Returns ``None`` when any token is out of range or unrecognised so the
+    caller can reject the reply cleanly instead of resolving a partial or
+    wrong selection.
+    """
+    import json as _json
+
+    if not text:
+        return None
+    choices = entry.choices or []
+
+    # Split on commas first; if no commas and every whitespace-separated
+    # token is numeric, treat spaces as separators too ("1 3").
+    if "," in text:
+        tokens = [t.strip() for t in text.split(",") if t.strip()]
+    else:
+        parts = text.split()
+        if len(parts) > 1 and all(p.strip().isdigit() for p in parts):
+            tokens = [p.strip() for p in parts]
+        else:
+            tokens = [text]
+
+    selected: List[str] = []
+    for token in tokens:
+        if token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(choices):
+                label = str(choices[idx]).strip()
+                if label not in selected:
+                    selected.append(label)
+                continue
+            return None  # out-of-range number → reject whole reply
+        # Exact label match (case-insensitive)
+        matched = None
+        for choice in choices:
+            if token.casefold() == str(choice).strip().casefold():
+                matched = str(choice).strip()
+                break
+        if matched is None:
+            return None
+        if matched not in selected:
+            selected.append(matched)
+
+    if not selected:
+        return None
+    return _json.dumps(selected, ensure_ascii=False)
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:

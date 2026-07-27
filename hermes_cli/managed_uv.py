@@ -19,6 +19,7 @@ releases it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -137,8 +138,13 @@ class _RepairLock:
 def _report_runtime_repair_failure(repair: RuntimeRepairResult) -> None:
     if repair.backup_venv is None:
         print(
-            "  ⚠ Managed Python runtime was not replaced; "
+            "  ℹ Managed Python runtime was not replaced; "
             f"the existing venv is unchanged ({repair.detail})."
+        )
+        print(
+            "    Sessions stay protected meanwhile: Hermes keeps databases "
+            "out of WAL mode on this SQLite build. The next `hermes update` "
+            "will retry."
         )
         return
     print(f"  ✗ Managed Python runtime cutover needs manual recovery: {repair.detail}")
@@ -364,26 +370,88 @@ def _runtime_request(info: SQLiteRuntimeInfo) -> str:
     return ".".join(str(part) for part in info.python_version[:2])
 
 
-def _install_safe_python_generation(
+# Cap on how many newer patches we'll try, newest-first, before giving up.
+# Bounded because each attempt is a real download+install+probe+delete cycle;
+# in practice the fix is almost always in the very next patch or two.
+_MAX_PATCH_RETRIES = 5
+
+
+def _list_available_patches(
+    uv_bin: str, minor: str, *, cwd: Path, env: dict
+) -> list[tuple[int, int, int]]:
+    """Return known patch versions for ``minor`` (e.g. "3.11"), newest first.
+
+    Queries ``uv python list --all-versions`` rather than trusting the bare
+    minor-line request to resolve to the newest patch (issue #71250: on some
+    hosts/uv versions, the resolved candidate for a bare "3.11" request can
+    be an older cached/indexed patch that still links a vulnerable SQLite,
+    even when a newer non-vulnerable patch is available). Returns [] on any
+    failure (network, parse) -- callers fall back to the original bare-minor
+    request in that case, preserving prior behavior.
+    """
+    try:
+        result = subprocess.run(
+            [
+                uv_bin, "python", "list", minor,
+                "--all-versions", "--only-downloads",
+                "--output-format", "json", "--no-config",
+            ],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        entries = json.loads(result.stdout)
+        versions: list[tuple[int, int, int]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            # Only default/cpython builds -- skip pypy/graalpy/freethreaded
+            # variants, which aren't what this repair path wants.
+            if entry.get("implementation") not in (None, "cpython"):
+                continue
+            if entry.get("variant") not in (None, "default"):
+                continue
+            parts = entry.get("version_parts") or {}
+            try:
+                versions.append(
+                    (int(parts["major"]), int(parts["minor"]), int(parts["patch"]))
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        # Deduplicate (list --all-versions can repeat a version across
+        # platforms/arches if filtering above didn't fully narrow it) and
+        # sort newest-first.
+        return sorted(set(versions), reverse=True)
+    except Exception:
+        return []
+
+
+def _attempt_install_generation(
     uv_bin: str,
+    request: str,
     *,
     project_root: Path,
+    python_root: Path,
     current: SQLiteRuntimeInfo,
 ) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
-    runtime_root = project_root / _RUNTIME_DIR_NAME
-    python_root = managed_python_install_dir(project_root)
+    """One install+probe attempt for a specific version request (bare minor
+    like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
+    own generation directory so a rejected candidate's files are fully
+    cleaned up before the next attempt, matching --reinstall semantics.
+    Returns None (and cleans up) on any failure, including a vulnerable
+    or off-line candidate.
+    """
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     generation = python_root / f"generation-{token}"
     generation.mkdir(parents=True, exist_ok=False)
-    for path in (runtime_root, python_root, generation):
-        _make_world_traversable(path)
+    _make_world_traversable(generation)
 
-    env = managed_python_env(
-        project_root,
-        install_dir=generation,
-    )
-    request = _runtime_request(current)
-    print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    env = managed_python_env(project_root, install_dir=generation)
     install = subprocess.run(
         [
             uv_bin,
@@ -403,7 +471,8 @@ def _install_safe_python_generation(
     )
     if install.returncode != 0:
         logger.warning(
-            "private Python install failed (rc=%d): %s",
+            "private Python install failed for %s (rc=%d): %s",
+            request,
             install.returncode,
             (install.stderr or install.stdout or "").strip(),
         )
@@ -427,7 +496,8 @@ def _install_safe_python_generation(
     )
     if found.returncode != 0 or not found.stdout.strip():
         logger.warning(
-            "private Python lookup failed (rc=%d): %s",
+            "private Python lookup failed for %s (rc=%d): %s",
+            request,
             found.returncode,
             (found.stderr or "").strip(),
         )
@@ -466,6 +536,68 @@ def _install_safe_python_generation(
         _remove_tree(generation, boundary=python_root)
         return None
     return generation, python, candidate
+
+
+def _install_safe_python_generation(
+    uv_bin: str,
+    *,
+    project_root: Path,
+    current: SQLiteRuntimeInfo,
+) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
+    runtime_root = project_root / _RUNTIME_DIR_NAME
+    python_root = managed_python_install_dir(project_root)
+    _make_world_traversable(runtime_root)
+    _make_world_traversable(python_root)
+
+    request = _runtime_request(current)
+    print(f"  → Provisioning a private Python {request} runtime with fixed SQLite...")
+    result = _attempt_install_generation(
+        uv_bin, request, project_root=project_root,
+        python_root=python_root, current=current,
+    )
+    if result is not None:
+        return result
+
+    # The bare minor-line request resolved to a still-vulnerable (or
+    # otherwise rejected) candidate. Rather than giving up immediately,
+    # query which patches on this minor line uv actually knows about and
+    # retry with explicit newer versions, newest-first -- this handles the
+    # case where the default resolution for a bare request picks an older
+    # cached/indexed patch even though a newer, non-vulnerable one is
+    # available (issue #71250).
+    env_for_list = managed_python_env(project_root, install_dir=python_root)
+    patches = _list_available_patches(
+        uv_bin, request, cwd=project_root, env=env_for_list
+    )
+    tried_versions = {current.python_version[:3]}
+    attempts = 0
+    for version_tuple in patches:
+        if attempts >= _MAX_PATCH_RETRIES:
+            break
+        if version_tuple in tried_versions:
+            continue
+        # Only NEWER patches can carry the SQLite fix. A patch at or below the
+        # installed one is either the version we already know is vulnerable or
+        # an older build that cannot contain a later fix, and the downgrade
+        # guard in _attempt_install_generation rejects it anyway -- so trying
+        # it spends a full download+install+probe+delete cycle to reach a
+        # certain rejection. This matters on a uv whose download catalog is
+        # stale: in #71250 the newest indexed 3.11 was 3.11.14, exactly the
+        # installed version, so without this skip the loop burned all five
+        # retries walking backwards (3.11.13 -> 3.11.9) before failing.
+        if version_tuple <= current.python_version[:3]:
+            continue
+        tried_versions.add(version_tuple)
+        explicit_request = ".".join(str(p) for p in version_tuple)
+        print(f"  → Retrying with explicit patch {explicit_request}...")
+        attempts += 1
+        result = _attempt_install_generation(
+            uv_bin, explicit_request, project_root=project_root,
+            python_root=python_root, current=current,
+        )
+        if result is not None:
+            return result
+    return None
 
 
 def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo | None]:
@@ -747,6 +879,64 @@ def _windows_runtime_holders() -> tuple[bool, str]:
     return False, ""
 
 
+def _uv_version_string(uv_bin: str) -> str:
+    """Return ``uv --version`` output, or ``""`` when it cannot be read."""
+    try:
+        result = subprocess.run(
+            [uv_bin, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=15,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
+    """Re-bootstrap the managed uv binary to refresh its Python catalog.
+
+    The managed uv is installed with ``UV_UNMANAGED_INSTALL``, which disables
+    ``uv self update`` by design — so its embedded python-build-standalone
+    download catalog stays frozen at bootstrap age.  python-build-standalone
+    re-releases existing CPython patch versions with newer SQLite (e.g. the
+    3.11.15 build was re-cut with SQLite 3.53.x), so a stale catalog can make
+    every provisioning attempt resolve to a vulnerable build even though a
+    fixed build of the SAME patch version exists (issue #72093).  The
+    patch-retry loop cannot recover from that: the fixed build carries no
+    newer version number to retry with.
+
+    Re-running the official installer is the only supported refresh path for
+    unmanaged installs.  Only the Hermes-managed binary is ever refreshed;
+    a caller-supplied foreign uv path is left alone.
+
+    Returns ``True`` when the binary's version actually changed — i.e. a
+    provisioning retry can now see a different catalog.  ``False`` means a
+    retry would resolve identically and is not worth the download cycle.
+    """
+    managed = managed_uv_path()
+    try:
+        if Path(uv_bin).resolve() != managed.resolve():
+            return False
+    except OSError:
+        return False
+    before = _uv_version_string(uv_bin)
+    try:
+        _install_uv(managed)
+    except Exception as exc:
+        logger.warning("managed uv refresh failed: %s", exc)
+        return False
+    after = _uv_version_string(uv_bin)
+    if not after:
+        return False
+    return after != before
+
+
 def repair_vulnerable_runtime(
     uv_bin: str,
     *,
@@ -821,6 +1011,19 @@ def repair_vulnerable_runtime(
             project_root=root,
             current=current,
         )
+        if provisioned is None:
+            # Likely a stale managed-uv catalog: python-build-standalone
+            # re-releases the same patch versions with fixed SQLite, but a
+            # frozen catalog keeps resolving the old vulnerable build and the
+            # patch-retry loop has no newer number to try (issue #72093).
+            # Refresh the managed binary and retry once.
+            if _refresh_managed_uv_catalog(uv_bin):
+                print("  → Managed uv refreshed; retrying provisioning...")
+                provisioned = _install_safe_python_generation(
+                    uv_bin,
+                    project_root=root,
+                    current=current,
+                )
         if provisioned is None:
             return RuntimeRepairResult(
                 "failed",

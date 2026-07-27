@@ -2060,6 +2060,28 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             _apply_assistant_cache_control_to_last_cacheable_block(
                 replayed, m.get("cache_control")
             )
+            # apply_anthropic_cache_control marks an assistant turn with
+            # non-empty text by writing cache_control INTO ``content`` (see
+            # _apply_cache_marker's list branch), not at the top level. This
+            # branch rebuilds the message from ordered_blocks and never reads
+            # ``content``, so that marker would be dropped -- and because
+            # _can_carry_marker already counted this message as a carrier, the
+            # breakpoint is burned rather than relocated. #56195 covered the
+            # complementary shape (blank content -> top-level marker); this is
+            # the interleaved thinking + preamble-text + tool_use shape.
+            _inline_cc = None
+            _msg_content = m.get("content")
+            if isinstance(_msg_content, list):
+                for _blk in _msg_content:
+                    if isinstance(_blk, dict) and isinstance(
+                        _blk.get("cache_control"), dict
+                    ):
+                        _inline_cc = _blk["cache_control"]
+                        break
+            if _inline_cc is not None:
+                _apply_assistant_cache_control_to_last_cacheable_block(
+                    replayed, _inline_cc
+                )
             return {"role": "assistant", "content": replayed}
 
     blocks = _extract_preserved_thinking_blocks(m)
@@ -2893,6 +2915,7 @@ def create_anthropic_message(
     *,
     log_prefix: str = "",
     prefer_stream: bool = True,
+    on_stream_event=None,
 ) -> Any:
     """Create an Anthropic message, aggregating via stream when available.
 
@@ -2902,6 +2925,13 @@ def create_anthropic_message(
     crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
     match the main turn path, falling back to ``create()`` only for providers
     that explicitly do not support streaming, such as restricted Bedrock roles.
+
+    ``on_stream_event``: optional callable invoked once per streamed event
+    (best-effort, exceptions swallowed). Lets callers report forward progress
+    to liveness watchdogs — e.g. the auxiliary compression path ticking its
+    progress hook so a slow-but-generating summary model isn't treated as
+    hung. Only fires on the streaming path; the ``create()`` fallback has no
+    events to report.
     """
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
@@ -2912,6 +2942,18 @@ def create_anthropic_message(
         stream_kwargs.pop("stream", None)
         try:
             with stream_fn(**stream_kwargs) as stream:
+                if callable(on_stream_event):
+                    # Consume the event stream manually so each event can
+                    # tick the caller's progress callback; get_final_message
+                    # then returns the accumulated snapshot.
+                    for _event in stream:
+                        try:
+                            on_stream_event(_event)
+                        except Exception:
+                            logger.debug(
+                                "%son_stream_event callback failed",
+                                log_prefix, exc_info=True,
+                            )
                 return stream.get_final_message()
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):

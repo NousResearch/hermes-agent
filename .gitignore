@@ -175,5 +175,13 @@ apps/desktop/demo/
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+#
+# Spelling variants are listed because a single `infographic/` pattern was
+# sidestepped by an `infograficos/` directory (#70552). .gitignore is only
+# the first line of defence and cannot stop `git add -f` at all — the
+# infographic-check CI job is what actually enforces this.
 infographic/
+infographics/
+infograficos/
+infografico/
 native/fts5_cjk/*.so

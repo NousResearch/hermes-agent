@@ -122,27 +122,75 @@ def test_expected_machines_unknown_host_is_permissive():
 
 # ─── _windows_native_machine ────────────────────────────────────────────────
 
+# MACHINE_ATTRIBUTES.UserEnabled — mirrors hermes_cli.main.
+_USER_ENABLED = 0x00000001
+
+
+class _SettableFunc:
+    """Callable that accepts ctypes ``.restype`` / ``.argtypes`` assignment."""
+
+    def __init__(self, fn):
+        self._fn = fn
+        self.restype = None
+        self.argtypes = None
+
+    def __call__(self, *args, **kwargs):
+        return self._fn(*args, **kwargs)
+
 
 class _FakeKernel32:
-    """Stands in for kernel32 so the IsWow64Process2 path runs on any CI OS."""
+    """Stands in for kernel32 so the native-arch probes run on any CI OS."""
 
-    def __init__(self, native_machine: int):
-        self._native = native_machine
+    def __init__(
+        self,
+        native_pe_machine: int,
+        *,
+        wow64_ok: bool = True,
+        user_runnable: set | None = None,
+    ):
+        self._native_pe = native_pe_machine
+        self._wow64_ok = wow64_ok
+        self._user_runnable = user_runnable
+        self.GetCurrentProcess = _SettableFunc(lambda: -1)
+        self.IsWow64Process2 = _SettableFunc(self._is_wow64_process2)
+        self.GetMachineTypeAttributes = _SettableFunc(
+            self._get_machine_type_attributes
+        )
 
-    def GetCurrentProcess(self):
-        return -1
-
-    def IsWow64Process2(self, _handle, process_ref, native_ref):
+    def _is_wow64_process2(self, _handle, process_ref, native_ref):
+        if not self._wow64_ok:
+            return 0
         process_ref._obj.value = PE_AMD64  # emulated x64 process
-        native_ref._obj.value = self._native
+        native_ref._obj.value = self._native_pe
         return 1
 
+    def _get_machine_type_attributes(self, machine, attributes_ref):
+        if self._user_runnable is None:
+            raise AttributeError("GetMachineTypeAttributes unavailable in this fake")
+        if machine not in self._user_runnable:
+            attributes_ref._obj.value = 0
+            return 0
+        attributes_ref._obj.value = _USER_ENABLED
+        return 0
 
-def _fake_windll(native_machine: int):
-    class _WinDLL:
-        kernel32 = _FakeKernel32(native_machine)
 
-    return _WinDLL()
+def _fake_windll(
+    native_pe_machine: int,
+    *,
+    wow64_ok: bool = True,
+    user_runnable: set | None = None,
+):
+    kernel32 = _FakeKernel32(
+        native_pe_machine,
+        wow64_ok=wow64_ok,
+        user_runnable=user_runnable,
+    )
+
+    def _windll(name, *args, **kwargs):
+        assert "kernel32" in str(name).lower()
+        return kernel32
+
+    return _windll
 
 
 def test_native_machine_reports_os_arch_not_process_arch(monkeypatch):
@@ -152,27 +200,89 @@ def test_native_machine_reports_os_arch_not_process_arch(monkeypatch):
     import ctypes
 
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
-    with patch.object(ctypes, "windll", _fake_windll(PE_ARM64), create=True), \
+    # WinDLL only exists on Windows; create=True so Linux/macOS CI can stub it.
+    with patch.object(ctypes, "WinDLL", _fake_windll(PE_ARM64), create=True), \
          patch("platform.machine", return_value="AMD64"):
         assert cli_main._windows_native_machine() == "ARM64"
 
 
+def test_native_machine_binds_current_process_handle_restype(monkeypatch):
+    """ctypes must type GetCurrentProcess as HANDLE — default c_int truncates
+    the pseudo-handle on Win64 and makes IsWow64Process2 return
+    ERROR_INVALID_HANDLE, re-breaking the #71218 gate on WoA."""
+    import ctypes
+    from ctypes import wintypes
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    windll = _fake_windll(PE_ARM64)
+    with patch.object(ctypes, "WinDLL", windll, create=True), \
+         patch("platform.machine", return_value="AMD64"):
+        assert cli_main._windows_native_machine() == "ARM64"
+    kernel32 = windll("kernel32")
+    assert kernel32.GetCurrentProcess.restype is wintypes.HANDLE
+    assert kernel32.IsWow64Process2.argtypes is not None
+
+
+def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch):
+    """GetMachineTypeAttributes answers "can this host load PE machine X?"
+    directly, so a WoA host that reports AMD64 everywhere else still accepts an
+    ARM64 exe."""
+    import ctypes
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    with patch.object(
+        ctypes,
+        "WinDLL",
+        _fake_windll(
+            PE_ARM64, wow64_ok=False, user_runnable={PE_ARM64, PE_AMD64}
+        ),
+        create=True,
+    ), patch("platform.machine", return_value="AMD64"):
+        assert cli_main._expected_windows_pe_machines() == {PE_ARM64, PE_AMD64}
+
+
+def test_expected_machines_falls_back_when_attributes_api_missing(monkeypatch):
+    """Pre-Windows-11 hosts have no GetMachineTypeAttributes — the name-based
+    mapping must still drive the gate."""
+    import ctypes
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    with patch.object(
+        ctypes, "WinDLL", _fake_windll(PE_ARM64, user_runnable=None), create=True
+    ), patch("platform.machine", return_value="AMD64"):
+        assert cli_main._expected_windows_pe_machines() == {PE_ARM64, PE_AMD64}
+
+
 def test_native_machine_env_fallback_without_api(monkeypatch):
-    """Pre-1511 Windows 10: no IsWow64Process2 → the WOW64 env var wins."""
+    """Pre-1511 Windows 10: no IsWow64Process2 → env."""
+    import ctypes
+
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
     monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "AMD64")
-    # On non-Windows interpreters ctypes has no `windll`, which is exactly the
-    # AttributeError shape a missing API produces.
-    with patch("platform.machine", return_value="x86"):
+
+    def _no_kernel32(name, *args, **kwargs):
+        raise OSError(f"no {name} in this fake pre-1511 host")
+
+    with patch.object(ctypes, "WinDLL", _no_kernel32, create=True), \
+         patch("platform.machine", return_value="x86"):
         assert cli_main._windows_native_machine() == "AMD64"
 
 
 def test_native_machine_platform_fallback(monkeypatch):
     """No API, no env vars → the historical platform.machine() answer."""
+    import ctypes
+
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
     monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
     monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
-    with patch("platform.machine", return_value="AMD64"):
+
+    def _no_kernel32(name, *args, **kwargs):
+        raise OSError(f"no {name} in this fake host")
+
+    with patch.object(ctypes, "WinDLL", _no_kernel32, create=True), \
+         patch("platform.machine", return_value="AMD64"):
         assert cli_main._windows_native_machine() == "AMD64"
 
 
@@ -189,8 +299,31 @@ def test_integrity_gate_accepts_arm64_exe_from_emulated_x64_process(monkeypatch,
 
     monkeypatch.setattr(cli_main.sys, "platform", "win32")
     exe = make_pe(tmp_path / "Hermes.exe", PE_ARM64)
-    with patch.object(ctypes, "windll", _fake_windll(PE_ARM64), create=True), \
+    with patch.object(ctypes, "WinDLL", _fake_windll(PE_ARM64), create=True), \
          patch("platform.machine", return_value="AMD64"):
+        assert cli_main._desktop_exe_integrity_error(exe) is None
+
+
+def test_integrity_gate_accepts_arm64_when_iswow64_fails_but_attributes_ok(
+    monkeypatch, tmp_path
+):
+    """End-to-end residual WoA shape: IsWow64Process2 fails and env lies as
+    AMD64, but GetMachineTypeAttributes reports ARM64 as user-runnable, so the
+    ARM64 Hermes.exe must pass the gate."""
+    import ctypes
+
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+    monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+    exe = make_pe(tmp_path / "Hermes.exe", PE_ARM64)
+    with patch.object(
+        ctypes,
+        "WinDLL",
+        _fake_windll(
+            PE_ARM64, wow64_ok=False, user_runnable={PE_ARM64, PE_AMD64}
+        ),
+        create=True,
+    ), patch("platform.machine", return_value="AMD64"):
         assert cli_main._desktop_exe_integrity_error(exe) is None
 
 

@@ -557,11 +557,17 @@ def cua_driver_binary_available() -> bool:
     return resolve_cua_driver_cmd() is not None
 
 
-def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
+def cua_driver_update_check(*, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Run ``cua-driver check-update --json`` and return its parsed state.
 
     The payload mirrors the ``check_for_update`` MCP tool:
     ``{current_version, latest_version, update_available, ...}``.
+
+    ``timeout`` defaults to 8s on POSIX and 25s on Windows — first-spawn of
+    the exe there routinely eats several seconds in Defender/SmartScreen
+    scanning, and a false timeout is expensive: callers treat ``None`` as
+    indeterminate, and the ``install_cua_driver(upgrade=True)`` path used to
+    fall through to a full multi-minute reinstall on it.
 
     Returns ``None`` (callers should stay quiet) when the result is
     indeterminate: the binary is missing, the driver is too old to support
@@ -569,6 +575,8 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
     ``error`` field is set), or the output didn't parse. Best-effort; never
     raises.
     """
+    if timeout is None:
+        timeout = 25.0 if sys.platform == "win32" else 8.0
     driver_cmd = resolve_cua_driver_cmd()
     if not driver_cmd:
         return None

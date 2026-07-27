@@ -433,26 +433,56 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
 
 def should_use_direct_api_call(agent) -> bool:
-    """Whether a cron OpenAI-wire request should skip the interrupt worker.
+    """Whether an OpenAI-wire request should skip the interrupt worker.
 
-    Issue #62151 is specific to OpenRouter's chat-completions path inside the
-    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
-    established workers: their cancellation and client ownership differ, and
-    the report provides no evidence that those paths share the pre-HTTP wedge.
+    Two nested-pool contexts wedge before the socket opens when the request
+    is pushed onto yet another daemon worker thread:
+
+    - Gateway cron turns (#62151): gateway asyncio loop → cron thread →
+      interrupt worker. Fixed by running inline.
+    - Delegated children (#60203): gateway loop → async-delegation executor
+      (module-lifetime daemon pool) → per-child timeout executor → interrupt
+      worker. Same fingerprint after multi-day gateway uptime — children hang
+      at their FIRST API call with zero stale-detector output (the worker
+      never reaches dispatch), all providers, restart cures it. The cron fix
+      originally excluded delegation "for lack of evidence"; #60203 is that
+      evidence.
+
+    Running inline drops the deepest thread layer (whose only job is
+    interactive-interrupt responsiveness). Interrupts still work: the inline
+    path registers ``agent._active_request_abort``, which ``interrupt()``
+    invokes cross-thread to shut the active sockets — the same mechanism the
+    async-delegation stall monitor (#72227) relies on.
+
+    Keep native/Codex/Bedrock/MoA transports on their established workers:
+    their cancellation and client ownership differ.
     """
-    return (
-        getattr(agent, "platform", None) == "cron"
-        and getattr(agent, "api_mode", None) == "chat_completions"
-        and getattr(agent, "provider", None) != "moa"
-    )
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return False
+    if getattr(agent, "provider", None) == "moa":
+        return False
+    if getattr(agent, "platform", None) == "cron":
+        return True
+    # Delegated child (delegate_task sync or background) — detected via the
+    # execution ContextVar set by _run_single_child, with the agent's own
+    # platform stamp as a fallback for callers that bypass the runner.
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        if is_delegated_child_context():
+            return True
+    except Exception:
+        pass
+    return getattr(agent, "platform", None) == "subagent"
 
 
 def direct_api_call(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread.
 
-    Used when ``should_use_direct_api_call`` is True. Skips the interrupt worker
-    (whose only job is interactive-interrupt responsiveness, which this context
-    does not have) so the nested-pool deadlock (#62151) cannot occur. Because the
+    Used when ``should_use_direct_api_call`` is True (cron turns and
+    delegated children). Skips the interrupt worker (whose only job is
+    interactive-interrupt responsiveness, which these contexts do not have)
+    so the nested-pool deadlock (#62151, #60203) cannot occur. Because the
     request runs in-flight normally, the per-request OpenAI client's own httpx
     timeout (provider ``request_timeout_seconds`` / ``HERMES_API_TIMEOUT``) bounds
     a genuinely hung provider — the same bound interactive calls already rely on.
@@ -463,7 +493,7 @@ def direct_api_call(agent, api_kwargs: dict):
     request_client_lock = threading.Lock()
 
     def _abort_active_request(reason: str) -> None:
-        """Abort the inline request from cron's watchdog/interrupt thread."""
+        """Abort the inline request from a watchdog/interrupt thread."""
         with request_client_lock:
             request_client = request_client_holder["client"]
         if request_client is not None:
@@ -1514,45 +1544,6 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     )
 
 
-def _fallback_entry_is_same_backend_by_base_url(
-    *,
-    current_provider: str,
-    fb_provider: str,
-    current_base_url: str,
-    fb_base_url: str,
-    current_model: str,
-    fb_model: str,
-) -> bool:
-    """True when base_url+model identity means the fallback is the same backend.
-
-    Issue #22548: two ``custom_providers`` aliases that point at the same shim
-    URL with the same model must be skipped, or failover loops on the dead
-    backend.  First-class providers that share a host while using different
-    auth (``xai-oauth`` vs ``xai``, ``openai-codex`` vs ``openai-api``) are
-    distinct credential surfaces — skipping them strands configured failover
-    when primary and fallback reuse the same model slug on that host.
-    """
-    if not (
-        fb_base_url
-        and current_base_url
-        and fb_base_url == current_base_url
-        and fb_model == current_model
-    ):
-        return False
-    if fb_provider == current_provider:
-        return True
-    try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-
-        # Both sides are registered first-class providers → different auth
-        # identities even when the inference host matches. Allow failover.
-        if current_provider in PROVIDER_REGISTRY and fb_provider in PROVIDER_REGISTRY:
-            return False
-    except Exception:
-        pass
-    return True
-
-
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
     fb_provider = (fb.get("provider") or "").strip().lower()
@@ -1638,33 +1629,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback(reason)
 
-    # Skip entries that resolve to the current (provider, model) — falling
-    # back to the same backend that just failed loops the failure. Compare
-    # base_url too so two distinct custom_providers entries pointing at the
-    # same shim/proxy URL also dedup. See issue #22548. Do NOT treat
-    # first-class providers that share a host (xai-oauth vs xai) as the same
-    # backend — they use different credentials.
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    current_model = (getattr(agent, "model", "") or "").strip()
-    current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
-    fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-    if fb_provider == current_provider and fb_model == current_model:
+    # Skip entries that resolve to the same backend that just failed —
+    # falling back to it loops the failure. Identity semantics (which axes
+    # distinguish two backends, shim aliases, first-class credential
+    # surfaces, multi-endpoint pools) are owned by agent.backend_identity —
+    # see #22548, #70893, #62984. Do not re-implement comparisons here.
+    from agent.backend_identity import BackendIdentity, should_skip_candidate
+
+    current_ident = BackendIdentity.build(
+        provider=getattr(agent, "provider", ""),
+        model=getattr(agent, "model", ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
+    fb_ident = BackendIdentity.build(
+        provider=fb_provider,
+        model=fb_model,
+        base_url=(fb.get("base_url") or ""),
+    )
+    if should_skip_candidate(fb_ident, current_ident):
         logger.warning(
-            "Fallback skip: chain entry %s/%s matches current provider/model",
-            fb_provider, fb_model,
-        )
-        return agent._try_activate_fallback(reason)
-    if _fallback_entry_is_same_backend_by_base_url(
-        current_provider=current_provider,
-        fb_provider=fb_provider,
-        current_base_url=current_base_url,
-        fb_base_url=fb_base_url_for_dedup,
-        current_model=current_model,
-        fb_model=fb_model,
-    ):
-        logger.warning(
-            "Fallback skip: chain entry base_url %s matches current backend",
-            fb_base_url_for_dedup,
+            "Fallback skip: chain entry %s/%s resolves to the same backend "
+            "as the current one (%s)",
+            fb_provider, fb_model, current_ident.base_url or current_ident.provider,
         )
         return agent._try_activate_fallback(reason)
 

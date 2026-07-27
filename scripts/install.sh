@@ -1620,7 +1620,8 @@ setup_path() {
     log_info "Setting up hermes command..."
 
     if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+        HERMES_BIN="$INSTALL_DIR/venv/bin/python"
+        HERMES_ENTRYPOINT="$INSTALL_DIR/hermes"
     else
         HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
         if [ -z "$HERMES_BIN" ]; then
@@ -1629,10 +1630,10 @@ setup_path() {
         fi
     fi
 
-    # Verify the entry point script was actually generated
-    if [ ! -x "$HERMES_BIN" ]; then
-        log_warn "hermes entry point not found at $HERMES_BIN"
-        log_info "This usually means the pip install didn't complete successfully."
+    # Verify the interpreter and the checked-in entrypoint needed by the launcher.
+    if [ ! -x "$HERMES_BIN" ] || { [ "$USE_VENV" = true ] && [ ! -f "$HERMES_ENTRYPOINT" ]; }; then
+        log_warn "Hermes launcher prerequisites not found"
+        log_info "This usually means the Python package install didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
             log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux-all]' -c constraints-termux.txt"
         else
@@ -1654,12 +1655,25 @@ setup_path() {
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
     rm -f "$command_link_dir/hermes"
-    cat > "$command_link_dir/hermes" <<EOF
+    if [ "$USE_VENV" = true ]; then
+        # uv-generated console scripts resolve themselves through `realpath`,
+        # which stock macOS does not provide. Run the checked-in entrypoint
+        # with the venv interpreter instead, so the public launcher remains
+        # independent of non-standard shell utilities.
+        cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "\$@"
+EOF
+    else
+        cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
+    fi
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
@@ -2391,6 +2405,48 @@ maybe_start_gateway() {
     fi
 }
 
+write_bootstrap_marker() {
+    # Writes $INSTALL_DIR/.hermes-bootstrap-complete, which tells the Hermes
+    # desktop app (apps/desktop/electron/main.ts) and the macOS launcher fast
+    # path (apps/bootstrap-installer) "a real install finished here -- don't
+    # re-run first-run bootstrap."
+    #
+    # Schema mirrors install.ps1's Write-BootstrapMarker and main.ts's
+    # writeBootstrapMarker(). Keep the three in lockstep:
+    #   schemaVersion 1 + pinnedCommit (length >= 7) are what the desktop
+    #   validator requires; desktopVersion is omitted because only the desktop
+    #   app knows its own version.
+    if [ ! -d "$INSTALL_DIR" ]; then
+        log_warn "Skipping bootstrap marker: $INSTALL_DIR doesn't exist"
+        return 0
+    fi
+
+    # Explicit --commit wins; otherwise read HEAD from the checkout we just
+    # installed. If neither resolves, skip the marker entirely rather than
+    # write one the desktop will reject -- an absent marker is a clean
+    # "bootstrap needed", a malformed one is a confusing half-state.
+    local pinned_commit="$INSTALL_COMMIT"
+    if [ -z "$pinned_commit" ]; then
+        pinned_commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || pinned_commit=""
+    fi
+
+    if [ -z "$pinned_commit" ]; then
+        log_warn "Skipping bootstrap marker: could not resolve HEAD in $INSTALL_DIR"
+        return 0
+    fi
+
+    local marker_path="$INSTALL_DIR/.hermes-bootstrap-complete"
+    local tmp_path="$marker_path.tmp"
+
+    # Atomic publish: the macOS launcher predicate only checks existence, so a
+    # torn write would arm the fast path against a half-written marker.
+    printf '{\n  "schemaVersion": 1,\n  "pinnedCommit": "%s",\n  "pinnedBranch": "%s",\n  "completedAt": "%s"\n}\n' \
+        "$pinned_commit" \
+        "$BRANCH" \
+        "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$tmp_path"
+    mv -f "$tmp_path" "$marker_path"
+}
+
 print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
@@ -3024,6 +3080,7 @@ run_stage_body() {
             detect_os
             resolve_install_layout
             print_success
+            write_bootstrap_marker
             # Code-scoped stamp: write next to the install tree, not into
             # $HERMES_HOME. $HERMES_HOME is a shared data dir (it can be
             # bind-mounted into a Docker gateway too), so a stamp there gets
@@ -3107,6 +3164,8 @@ main() {
     fi
 
     print_success
+
+    write_bootstrap_marker
 
     # Code-scoped stamp: write next to the install tree, not into $HERMES_HOME.
     # $HERMES_HOME is a shared data dir (it can be bind-mounted into a Docker

@@ -397,6 +397,115 @@ class TestWebServerEndpoints:
         assert data["gateway_pid"] == 4321
         assert data["gateway_state"] == "running"
 
+    def test_get_status_and_messaging_agree_on_cross_container_gateway(
+        self, monkeypatch
+    ):
+        """The two surfaces must never contradict each other about liveness.
+
+        Reported symptom: the dashboard sidebar read "Gateway running" while
+        the Channels page on the same load rendered "The gateway is not
+        running." Cause: /api/status probed GATEWAY_HEALTH_URL and
+        /api/messaging/platforms did not, so a gateway in another container
+        (no local PID file) was live to one endpoint and dead to the other.
+
+        This asserts the RELATIONSHIP — both endpoints resolve liveness the
+        same way — not either endpoint's literal value.
+        """
+        import hermes_cli.web_server as web_server
+
+        # No local PID and no local runtime state: only the health probe can
+        # see the gateway, which is exactly the cross-container deployment.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: None)
+        monkeypatch.setattr(
+            web_server, "get_runtime_status_running_pid", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(
+            web_server,
+            "_probe_gateway_health",
+            lambda: (True, {"pid": 4321, "gateway_state": "running", "platforms": {}}),
+        )
+
+        status_running = self.client.get("/api/status").json()["gateway_running"]
+        platforms = self.client.get("/api/messaging/platforms").json()["platforms"]
+
+        assert status_running is True, "health probe should report the gateway up"
+        assert platforms, "catalog must not be empty or the assertion is vacuous"
+        for platform in platforms:
+            assert platform["gateway_running"] == status_running, (
+                f"{platform['id']}: Channels page says "
+                f"gateway_running={platform['gateway_running']} while the "
+                f"sidebar says {status_running}"
+            )
+
+    def test_get_status_and_messaging_agree_when_gateway_is_down(self, monkeypatch):
+        """Agreement must hold in the negative direction too.
+
+        Guards against "fix" it by hardcoding True somewhere: with every rung
+        declining, both surfaces must report the gateway down.
+        """
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda *a, **k: None)
+        monkeypatch.setattr(
+            web_server, "get_runtime_status_running_pid", lambda *a, **k: None
+        )
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        status_running = self.client.get("/api/status").json()["gateway_running"]
+        platforms = self.client.get("/api/messaging/platforms").json()["platforms"]
+
+        assert status_running is False
+        assert platforms
+        for platform in platforms:
+            assert platform["gateway_running"] == status_running
+
+    def test_messaging_platforms_profile_scopes_gateway_reads(self, monkeypatch):
+        """?profile=<name> must resolve liveness from the profile's own home.
+
+        The gateway status readers resolve process-level paths and ignore the
+        HERMES_HOME contextvar override (#56986), so /api/messaging/platforms
+        has to pass the profile directory explicitly — otherwise it reports a
+        DIFFERENT profile's gateway as this profile's, which hides a real
+        outage behind a false "connected" (issue #71211).
+        """
+        import hermes_cli.web_server as web_server
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        seen = {}
+
+        def _pid(pid_path=None, **kw):
+            seen["pid_path"] = pid_path
+            return None
+
+        def _runtime(path=None):
+            seen["status_path"] = path
+            return None
+
+        def _runtime_pid(runtime=None, *, expected_home=None):
+            seen["expected_home"] = expected_home
+            return None
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", _pid)
+        monkeypatch.setattr(web_server, "get_running_pid", _pid)
+        monkeypatch.setattr(web_server, "read_runtime_status", _runtime)
+        monkeypatch.setattr(web_server, "get_runtime_status_running_pid", _runtime_pid)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/messaging/platforms?profile=worker")
+
+        assert resp.status_code == 200
+        assert seen["pid_path"] == worker_home / "gateway.pid"
+        assert seen["status_path"] == worker_home / "gateway_state.json"
+        assert seen["expected_home"] == worker_home
+
     def test_get_status_unknown_profile_404s(self):
         resp = self.client.get("/api/status?profile=no-such-profile")
         assert resp.status_code == 404
@@ -2077,7 +2186,9 @@ class TestWebServerEndpoints:
         assert row["profile"] == "default"
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
-        assert data["recents"]["total"] >= 1
+        # Pagination reports "was this window capped?" per profile, not an exact
+        # COUNT(*) — one row against a 20-row cap means nothing more to load.
+        assert data["recents"]["profiles_truncated"]["default"] is False
 
     def test_sessions_endpoint_reads_requested_profile(self):
         """The machine dashboard's global profile switcher must retarget
@@ -3044,6 +3155,14 @@ class TestWebServerEndpoints:
         assert data["AWS_PROFILE"]["provider"] == "bedrock"
 
     def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
+        """Platform-scoped vars belong to a Channels card; cross-cutting
+        gateway vars belong to the Keys page.
+
+        Uses credentials as the example: the self-configuring knobs
+        (*_HOME_CHANNEL, *_ALLOW_ALL_USERS, …) were deliberately dropped from
+        the setup cards and handed back to Keys — see
+        tests/hermes_cli/test_setup_hidden_env.py.
+        """
         from hermes_cli.web_server import (
             _MESSAGING_KEYS_PAGE_KEYS,
             _build_catalog_entry,
@@ -3051,13 +3170,12 @@ class TestWebServerEndpoints:
         )
 
         discord = _build_catalog_entry("discord")
-        assert "DISCORD_HOME_CHANNEL" in discord["env_vars"]
-        assert "DISCORD_ALLOW_ALL_USERS" in discord["env_vars"]
+        assert "DISCORD_BOT_TOKEN" in discord["env_vars"]
+        assert "DISCORD_ALLOWED_USERS" in discord["env_vars"]
 
         managed = _channel_managed_env_keys()
-        assert "DISCORD_HOME_CHANNEL" in managed
-        assert "BLUEBUBBLES_ALLOW_ALL_USERS" in managed
-        assert "MATTERMOST_ALLOW_ALL_USERS" in managed
+        assert "DISCORD_BOT_TOKEN" in managed
+        assert "MATTERMOST_TOKEN" in managed
         assert "GATEWAY_PROXY_URL" not in managed
         assert "GATEWAY_PROXY_URL" in _MESSAGING_KEYS_PAGE_KEYS
 
@@ -3542,6 +3660,42 @@ class TestWebServerEndpoints:
             assert any(field["key"] == "IRC_SERVER" and field["required"] for field in ids["ircfake"]["env_vars"])
         finally:
             platform_registry.unregister("ircfake")
+
+    def test_messaging_catalog_prefers_plugin_label_over_enum_pseudo_member(self):
+        """A plugin platform that leaked into Platform.__members__ as a pseudo-
+        member must still render with its plugin label, not a title-cased id.
+
+        Regression: Platform("<plugin id>") caches a pseudo-member in the enum;
+        the catalog iterated the enum FIRST and claimed the id with no plugin
+        metadata, so bundled plugin platforms (irc, ntfy, photon, …) rendered
+        as nameless "Irc"/"Ntfy" cards with empty descriptions.
+        """
+        from gateway.config import Platform
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        entry = PlatformEntry(
+            name="pseudofake",
+            label="Pseudo Fake (plugin label)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+        )
+        platform_registry.register(entry)
+        try:
+            # Materialize the enum pseudo-member the way any earlier config
+            # read would (Platform(value) on a registered plugin platform).
+            member = Platform("pseudofake")
+            assert member.value == "pseudofake"
+            assert "PSEUDOFAKE" in Platform.__members__
+
+            resp = self.client.get("/api/messaging/platforms")
+            ids = {row["id"]: row for row in resp.json()["platforms"]}
+            assert "pseudofake" in ids
+            assert ids["pseudofake"]["name"] == "Pseudo Fake (plugin label)"
+        finally:
+            platform_registry.unregister("pseudofake")
+            Platform._value2member_map_.pop("pseudofake", None)
+            Platform._member_map_.pop("PSEUDOFAKE", None)
 
     def test_update_messaging_platform_saves_env_and_enablement(self):
         from hermes_cli.config import load_config, load_env

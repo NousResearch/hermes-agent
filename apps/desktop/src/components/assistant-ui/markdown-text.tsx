@@ -303,7 +303,29 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   )
 }
 
-function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+// Generated/inline media often arrives as image markdown — `![clip](clip.mp4)`.
+// A raw <img> with a video/audio source renders a broken-image icon (the file is
+// valid, the browser just can't paint it as an image), so route those sources to
+// MediaAttachment, which picks the right <video>/<audio> element (streaming
+// protocol + open-externally fallback) by media kind. Detection is
+// extension-based via mediaKind(); an extension-less/data/blob video URL still
+// resolves to 'file' and falls through to the image path as before.
+//
+// This is split from the image path because that path is built on hooks: a
+// conditional return inside it would have to sit after every hook call, which
+// would still fire an image resolve for media we never render as an image.
+export function MarkdownImage(props: ComponentProps<'img'>) {
+  const rawSrc = typeof props.src === 'string' ? props.src : ''
+  const kind = rawSrc ? mediaKind(rawSrc) : 'file'
+
+  if (kind === 'video' || kind === 'audio') {
+    return <MediaAttachment path={rawSrc} />
+  }
+
+  return <MarkdownImageContent {...props} />
+}
+
+function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
   const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
   const [failed, setFailed] = useState(false)

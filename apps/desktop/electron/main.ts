@@ -145,6 +145,7 @@ import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRoutePr
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
+import { scrubDesktopChildEnv } from './scrub-child-env'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -2827,11 +2828,10 @@ async function applyUpdates(opts = {}) {
     // `hermes update` will run (the venv shim is locked while we live).
     const child = spawnUpdaterProcess(updater, updaterArgs, {
       cwd: HERMES_HOME,
-      env: {
-        ...process.env,
+      env: scrubDesktopChildEnv(process.env, {
         HERMES_HOME,
         PATH: pathWithHermesManagedNode(venvBin)
-      },
+      }),
       detached: true,
       stdio: 'ignore'
     })
@@ -2902,11 +2902,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: HERMES_HOME,
-    env: {
-      ...process.env,
+    env: scrubDesktopChildEnv(process.env, {
       HERMES_HOME,
       PATH: pathWithHermesManagedNode(venvBin)
-    },
+    }),
     detached: true,
     stdio: 'ignore'
   })
@@ -2955,7 +2954,7 @@ function runStreamedUpdate(command, args, { cwd, env, stage }: any = {}) {
         args,
         hiddenWindowsChildOptions({
           cwd,
-          env: { ...process.env, ...(env || {}) },
+          env: scrubDesktopChildEnv(process.env, env || {}),
           stdio: ['ignore', 'pipe', 'pipe']
         })
       )

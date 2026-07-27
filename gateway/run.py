@@ -18394,6 +18394,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     options=options,
                     display_type=display_type if is_rich else None,
                     auth_policy=auth_policy if is_rich else None,
+                    # Thread the session initiator so adapters running
+                    # ``session_owner_only`` can admit them even without a
+                    # static user allowlist (otherwise the policy fail-closes
+                    # against everyone, including the user who started the turn).
+                    session_owner_user_id=str(source.user_id) if source and source.user_id else None,
                 )
 
                 # Pause typing — like approval, we don't want a "thinking..."

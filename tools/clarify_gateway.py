@@ -58,6 +58,11 @@ class _ClarifyEntry:
     options: Optional[List[Dict[str, Any]]] = None
     display_type: Optional[str] = None
     auth_policy: Optional[str] = None
+    # Platform user id of the session initiator.  Adapters that gate
+    # interactive components on ``session_owner_only`` read this so the user
+    # who started the turn is admitted even when no static allowlist is set.
+    # Defaults to None — no regression for the simple-choices / no-owner path.
+    session_owner_user_id: Optional[str] = None
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -68,6 +73,7 @@ class _ClarifyEntry:
             "options": self.options,
             "display_type": self.display_type,
             "auth_policy": self.auth_policy,
+            "session_owner_user_id": self.session_owner_user_id,
         }
 
 
@@ -90,6 +96,7 @@ def register(
     options: Optional[List[Dict[str, Any]]] = None,
     display_type: Optional[str] = None,
     auth_policy: Optional[str] = None,
+    session_owner_user_id: Optional[str] = None,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -113,6 +120,7 @@ def register(
         options=options,
         display_type=display_type,
         auth_policy=auth_policy,
+        session_owner_user_id=session_owner_user_id,
     )
     with _lock:
         _entries[clarify_id] = entry

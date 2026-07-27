@@ -420,3 +420,151 @@ class TestClarifyToolSimplePathUnchanged:
         data = json.loads(result)
         assert data["choices_offered"] is None
         assert data["user_response"] == "free text"
+
+
+# ===========================================================================
+# Session-owner capture (T1 — tools/clarify_gateway.py)
+# ===========================================================================
+
+def _clear_clarify_state():
+    """Reset module-level state between primitive tests."""
+    from tools import clarify_gateway as cm
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+        cm._notify_cbs.clear()
+
+
+def _read_module_source(path: str) -> str:
+    """Read a source file as text with an explicit UTF-8 encoding."""
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+class TestSessionOwnerCapture:
+    """T1: ``_ClarifyEntry`` carries the session owner and ``register()`` persists it.
+
+    Foundation for Discord's ``session_owner_only`` auth fast-path (T2 reads
+    this field via ``_ClarifyEntry.signature()``).  No adapter behaviour change
+    here — the simple-choices / no-owner paths stay byte-identical (default None).
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_register_with_session_owner_exposes_on_entry(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "id-owner-1", "sk-owner", "Q?", None,
+            session_owner_user_id="42",
+        )
+        assert entry.session_owner_user_id == "42"
+
+    def test_register_with_session_owner_exposes_in_signature(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "id-owner-2", "sk-owner", "Q?", None,
+            session_owner_user_id="42",
+        )
+        sig = entry.signature()
+        assert sig["session_owner_user_id"] == "42"
+
+    def test_register_without_session_owner_defaults_none(self):
+        """No regression for simple-choices callers that never pass the kwarg."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-owner-3", "sk-owner", "Q?", ["A", "B"])
+        assert entry.session_owner_user_id is None
+
+    def test_signature_without_session_owner_is_none(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-owner-4", "sk-owner", "Q?", ["A", "B"])
+        sig = entry.signature()
+        assert sig["session_owner_user_id"] is None
+
+    def test_closure_pattern_propagates_source_user_id(self):
+        """Reproduce the ``_clarify_callback_sync`` closure pattern: capture a
+        ``source`` with ``user_id="42"``, call ``register(...)`` exactly as the
+        gateway does, and confirm the entry in ``_entries`` carries the owner.
+        """
+        from types import SimpleNamespace
+        from tools import clarify_gateway as cm
+
+        # Mimic the SessionSource the gateway holds in closure scope.
+        source = SimpleNamespace(user_id="42")
+
+        # Mirror the propagation line from gateway/run.py::_clarify_callback_sync.
+        cm.register(
+            clarify_id="id-closure",
+            session_key="sk-closure",
+            question="Q?",
+            choices=None,
+            options=None,
+            display_type=None,
+            auth_policy=None,
+            session_owner_user_id=str(source.user_id) if source and source.user_id else None,
+        )
+
+        entry = cm._entries.get("id-closure")
+        assert entry is not None
+        assert entry.session_owner_user_id == "42"
+
+    def test_closure_pattern_none_when_source_user_id_missing(self):
+        """When ``source.user_id`` is falsy the propagation expression yields
+        None — no regression for anonymous-admin platforms (Telegram)."""
+        from types import SimpleNamespace
+        from tools import clarify_gateway as cm
+
+        source = SimpleNamespace(user_id=None)
+        cm.register(
+            clarify_id="id-closure-none",
+            session_key="sk-closure",
+            question="Q?",
+            choices=["A"],
+            session_owner_user_id=str(source.user_id) if source and source.user_id else None,
+        )
+        entry = cm._entries.get("id-closure-none")
+        assert entry is not None
+        assert entry.session_owner_user_id is None
+
+    def test_clarify_callback_sync_wires_session_owner(self):
+        """Structural invariant: the ``register(...)`` call inside
+        ``_clarify_callback_sync`` (gateway/run.py) passes the
+        ``session_owner_user_id`` keyword.
+
+        ``_clarify_callback_sync`` is a deeply-nested closure with many
+        closure dependencies, so it cannot be driven in isolation cheaply.
+        This AST check asserts the production wiring relationship directly —
+        it fails if a refactor drops or renames the kwarg at the call site.
+        """
+        import ast
+        import gateway.run as grun
+
+        # Find the _clarify_callback_sync FunctionDef anywhere in the module.
+        tree = ast.parse(_read_module_source(grun.__file__))
+        sync_defs = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_clarify_callback_sync"
+        ]
+        assert sync_defs, "_clarify_callback_sync not found in gateway/run.py"
+        sync_body = sync_defs[0]
+
+        # Walk its body for a call to *.register(...) carrying our keyword.
+        def _has_owner_kwarg(call: ast.Call) -> bool:
+            if not isinstance(call.func, ast.Attribute):
+                return False
+            if call.func.attr != "register":
+                return False
+            return any(kw.arg == "session_owner_user_id" for kw in call.keywords)
+
+        register_calls = [
+            n for n in ast.walk(sync_body)
+            if isinstance(n, ast.Call) and _has_owner_kwarg(n)
+        ]
+        assert register_calls, (
+            "_clarify_callback_sync must pass session_owner_user_id= to its "
+            "register(...) call so adapters can read the session initiator."
+        )

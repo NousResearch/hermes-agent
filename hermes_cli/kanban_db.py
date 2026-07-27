@@ -7302,13 +7302,21 @@ def _error_fingerprint(error_text: str) -> str:
 # tool call next time), so a protocol violation is NOT deterministic — give it a
 # bounded retry before the breaker trips instead of blocking on the first hit.
 #
-# The budget is a violation-only STREAK, not a share of the unified
-# ``consecutive_failures`` counter: it counts consecutive clean-exit protocol
-# violations (derived from run history by ``_protocol_violation_streak``), so
-# earlier timeouts / nonzero exits neither consume nor extend it, and a
-# below-budget violation does not tick the unified counter either. A per-task
-# ``max_retries`` overrides this bound — the same "task override wins"
-# precedence ``_record_task_failure`` documents for every other failure kind.
+# The DEFAULT budget (no per-task override) is a violation-only STREAK, not a
+# share of the unified ``consecutive_failures`` counter: it counts consecutive
+# clean-exit protocol violations (derived from run history by
+# ``_protocol_violation_streak``), so earlier timeouts / nonzero exits
+# neither consume nor extend it, and a below-budget violation does not tick
+# the unified counter either.
+#
+# An explicit per-task ``max_retries`` (#72174) instead counts violations
+# into the SAME unified ``consecutive_failures`` counter every other failure
+# kind uses — it's a contract on the task's total retry budget, so a mixed
+# sequence of ordinary crashes/timeouts and violations must not ride past it
+# just because no single failure kind alone reached its own bound. This is
+# the same "task override wins" precedence ``_record_task_failure`` documents
+# for every other failure kind; see the branch in
+# ``detect_crashed_workers`` that dispatches on whether ``max_retries`` is set.
 _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
 
 # How far back to walk a task's closed runs when counting the violation
@@ -7401,9 +7409,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case, which is accounted against its
-    # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
+    # clean-exit-but-still-running case. When the task has no explicit
+    # ``max_retries`` it's accounted against its own bounded violation
+    # streak instead of the unified failure counter; an explicit
+    # ``max_retries`` counts it into the unified counter instead (#72174 —
+    # see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
@@ -7552,14 +7562,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
     # complete on a later run (a goal-mode finalize nudge, or the model simply
     # emitting kanban_complete/kanban_block next time), so blocking on the first
-    # occurrence just churned them through the respawn cycle. The retry budget
-    # is a violation-only streak (``_protocol_violation_streak``): earlier
+    # occurrence just churned them through the respawn cycle.
+    #
+    # Without an explicit per-task ``max_retries`` the retry budget is a
+    # violation-only streak (``_protocol_violation_streak``): earlier
     # timeouts / nonzero exits neither consume nor extend it, and a
     # below-budget violation does not tick the unified
     # ``consecutive_failures`` counter, so the two budgets stay independent.
-    # A per-task ``max_retries`` overrides the violation bound with the same
-    # top precedence it has for every other failure kind. Systemic same-error
-    # crashes still trip immediately.
+    #
+    # An EXPLICIT per-task ``max_retries`` (#72174) instead counts the
+    # violation into the unified ``consecutive_failures`` counter, same as
+    # every other failure kind — it's the task's total retry contract, so a
+    # mix of ordinary crashes and violations can't ride past it just because
+    # neither failure kind's own bound was individually reached. Systemic
+    # same-error crashes still trip immediately.
     auto_blocked: list[str] = []
     if crash_details:
         # Fingerprint errors to detect systemic failures.
@@ -7569,7 +7585,6 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
         for tid, pid, claimer, protocol_violation, error_text in crash_details:
             if protocol_violation:
-                streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
                     "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
                 ).fetchone()
@@ -7578,39 +7593,78 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 task_override = (
                     trow["max_retries"] if "max_retries" in trow.keys() else None
                 )
-                violation_limit = (
-                    int(task_override)
-                    if task_override is not None
-                    else _PROTOCOL_VIOLATION_FAILURE_LIMIT
-                )
-                if streak < violation_limit:
-                    # Below budget: the task is already back at ``ready``
-                    # (respawn allowed) with ``last_failure_error`` stamped.
-                    # Deliberately no ``_record_task_failure`` call — a
-                    # below-budget violation must not consume the unified
-                    # failure budget, just as other failure kinds don't
-                    # consume this one.
-                    continue
-                # Streak reached the bound: trip the breaker. ``force_trip``
-                # skips the threshold resolution inside
-                # ``_record_task_failure`` because the decision — including
-                # the per-task ``max_retries`` override — was already made
-                # against the violation streak above.
-                tripped = _record_task_failure(
-                    conn, tid,
-                    error=error_text,
-                    outcome="crashed",
-                    failure_limit=violation_limit,
-                    force_trip=True,
-                    release_claim=False,
-                    end_run=False,
-                    event_payload_extra={
-                        "pid": pid,
-                        "claimer": claimer,
-                        "protocol_violations": streak,
-                        "protocol_violation_limit": violation_limit,
-                    },
-                )
+                # Diagnostic only below — how many CONSECUTIVE clean-exit
+                # violations led up to this one. When no override is set
+                # this also gates the decision (see the branch below); when
+                # an override IS set it's informational context only, since
+                # the override governs the unified counter instead (#72174).
+                streak = _protocol_violation_streak(conn, tid)
+                if task_override is None:
+                    # Default policy (PR #64353): a protocol violation is
+                    # accounted against its own bounded, violation-only
+                    # streak, independent of the unified
+                    # ``consecutive_failures`` counter every other failure
+                    # kind uses — an earlier crash/timeout neither consumes
+                    # nor extends it, and a below-budget violation does not
+                    # tick the unified counter either.
+                    if streak < _PROTOCOL_VIOLATION_FAILURE_LIMIT:
+                        # Below budget: the task is already back at
+                        # ``ready`` (respawn allowed) with
+                        # ``last_failure_error`` stamped. Deliberately no
+                        # ``_record_task_failure`` call — a below-budget
+                        # violation must not consume the unified failure
+                        # budget, just as other failure kinds don't consume
+                        # this one.
+                        continue
+                    # Streak reached the bound: trip the breaker.
+                    # ``force_trip`` skips the threshold resolution inside
+                    # ``_record_task_failure`` because the decision was
+                    # already made against the violation streak above.
+                    tripped = _record_task_failure(
+                        conn, tid,
+                        error=error_text,
+                        outcome="crashed",
+                        failure_limit=_PROTOCOL_VIOLATION_FAILURE_LIMIT,
+                        force_trip=True,
+                        release_claim=False,
+                        end_run=False,
+                        event_payload_extra={
+                            "pid": pid,
+                            "claimer": claimer,
+                            "protocol_violations": streak,
+                            "protocol_violation_limit":
+                                _PROTOCOL_VIOLATION_FAILURE_LIMIT,
+                        },
+                    )
+                else:
+                    # Explicit per-task override (#72174 fix): an explicit
+                    # ``max_retries`` is a contract on the task's TOTAL
+                    # retry budget, so a violation must count into the same
+                    # unified ``consecutive_failures`` counter every other
+                    # failure kind feeds — NOT the dedicated violation-only
+                    # streak above, which a mixed sequence of ordinary
+                    # crashes/timeouts and below-streak-budget violations
+                    # could ride past the explicit cap without ever
+                    # tripping it. ``_record_task_failure`` already
+                    # resolves ``task.max_retries`` with top precedence
+                    # (same as every other failure kind), so this is the
+                    # identical call the plain-crash branch below makes —
+                    # it increments the counter unconditionally (even when
+                    # it doesn't trip) and trips exactly at the override.
+                    tripped = _record_task_failure(
+                        conn, tid,
+                        error=error_text,
+                        outcome="crashed",
+                        release_claim=False,
+                        end_run=False,
+                        event_payload_extra={
+                            "pid": pid,
+                            "claimer": claimer,
+                            "protocol_violation": True,
+                            "protocol_violations": streak,
+                            "protocol_violation_limit": int(task_override),
+                        },
+                    )
                 if tripped:
                     auto_blocked.append(tid)
                 continue
@@ -7688,10 +7742,14 @@ def _record_task_failure(
     counter-vs-threshold comparison (the resolution order above is then
     only reported in the ``gave_up`` payload, not re-evaluated). Callers
     use it when they have already applied their own bounded-retry policy
-    — e.g. the clean-exit protocol-violation streak in
-    ``detect_crashed_workers``, which resolves the per-task
-    ``max_retries`` override against the violation streak itself. The
-    failure is still counted into ``consecutive_failures``.
+    — e.g. the default (no per-task override) clean-exit protocol-violation
+    streak in ``detect_crashed_workers``, which decides independently of
+    this function's own threshold resolution. The failure is still counted
+    into ``consecutive_failures``. When a task HAS an explicit
+    ``max_retries`` override, ``detect_crashed_workers`` instead calls this
+    function WITHOUT ``force_trip`` for protocol violations too, so the
+    override is resolved right here with the same top precedence as every
+    other failure kind (see resolution order above) — see #72174.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT

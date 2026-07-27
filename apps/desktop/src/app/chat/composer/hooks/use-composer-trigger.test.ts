@@ -172,6 +172,20 @@ describe('useComposerTrigger — free-text slash arguments', () => {
     expect(hook.result.current.triggerActiveExplicit).toBe(false)
   })
 
+  it('keeps a multi-word /resume search typeable instead of firing the picker action', () => {
+    // The session list always ends in a "Browse all sessions…" action row, so
+    // an accept here doesn't insert a chip — it empties the composer and opens
+    // the overlay, taking the half-typed query with it.
+    const editor = mountEditor('/resume my new')
+    const { hook } = mountTrigger(editor, [item('/resume', 'Sessions')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.slashFreeTextArgStage).toBe(true)
+    expect(hook.result.current.commitTypedSlashDirective()).toBe(false)
+    expect(composerPlainText(editor)).toBe('/resume my new')
+  })
+
   it('still commits a fully typed finite option as one directive chip', () => {
     const editor = mountEditor('/personality creative')
     const { hook } = mountTrigger(editor, [])

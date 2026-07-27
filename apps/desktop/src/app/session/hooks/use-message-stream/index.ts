@@ -257,6 +257,8 @@ export function useMessageStream({
     // keeps the thread ~75% idle for input at any load: cheap flushes stay at
     // 30fps of text growth, expensive multi-stream flushes degrade text fps
     // instead of interactivity — capped so text never updates slower than 4/s.
+    // The cost has to include the deferred view-sync frame where the commit
+    // actually happens; see runFlush below.
     const sinceLast = performance.now() - lastFlushAtRef.current
 
     const adaptiveFloor = Math.min(
@@ -269,7 +271,27 @@ export function useMessageStream({
       const startedAt = performance.now()
       lastFlushAtRef.current = startedAt
       flushQueuedDeltas()
-      lastFlushCostRef.current = performance.now() - startedAt
+      // The store write above is only the cheap half of a flush. While a
+      // session streams, syncSessionStateToView defers the $messages publish
+      // (and with it the React commit + Streamdown re-parse the floor is meant
+      // to account for) to its own rAF inside updateSessionState, which runs
+      // after this timer task. Stopping the clock here pins lastFlushCostRef
+      // near zero and collapses the adaptive floor to 33ms no matter the load.
+      // Our rAF is registered after the view-sync one, so it runs in the same
+      // frame right after that commit; its timestamp marks frame start, so
+      // (now - frameStart) counts only work done inside the frame, not the
+      // vsync wait. A hidden renderer never fires rAF, so the write cost
+      // stays as the fallback.
+      const writeCost = performance.now() - startedAt
+      lastFlushCostRef.current = writeCost
+      window.requestAnimationFrame(frameStart => {
+        // A newer flush already started; its own measurement wins.
+        if (lastFlushAtRef.current !== startedAt) {
+          return
+        }
+
+        lastFlushCostRef.current = writeCost + Math.max(0, performance.now() - frameStart)
+      })
     }
 
     // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a

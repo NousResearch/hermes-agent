@@ -1546,8 +1546,8 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
                 self._manager.shutdown()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Honcho shutdown failed: %s", exc, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

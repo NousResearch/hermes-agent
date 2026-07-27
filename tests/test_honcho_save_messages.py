@@ -1,8 +1,7 @@
 """Tests for Honcho saveMessages write behavior."""
 
-from types import SimpleNamespace
-
 from plugins.memory.honcho import HonchoMemoryProvider
+from plugins.memory.honcho.client import HonchoClientConfig
 
 
 class _RecordingSession:
@@ -17,21 +16,21 @@ class _RecordingManager:
     def __init__(self):
         self.session = _RecordingSession()
         self.get_or_create_calls = []
-        self.flush_calls = []
+        self.save_calls = []
 
     def get_or_create(self, session_key):
         self.get_or_create_calls.append(session_key)
         return self.session
 
-    def _flush_session(self, session):
-        self.flush_calls.append(session)
+    def save(self, session):
+        self.save_calls.append(session)
 
 
 def _provider_with_save_messages(save_messages):
     provider = HonchoMemoryProvider()
     provider._manager = _RecordingManager()
     provider._session_key = "test-session"
-    provider._config = SimpleNamespace(
+    provider._config = HonchoClientConfig(
         save_messages=save_messages,
         message_max_chars=25000,
     )
@@ -47,7 +46,7 @@ def test_sync_turn_skips_honcho_message_persistence_when_save_messages_false():
 
     assert provider._manager.get_or_create_calls == []
     assert provider._manager.session.messages == []
-    assert provider._manager.flush_calls == []
+    assert provider._manager.save_calls == []
 
 
 def test_sync_turn_persists_honcho_messages_when_save_messages_true():
@@ -62,4 +61,4 @@ def test_sync_turn_persists_honcho_messages_when_save_messages_true():
         ("user", "user message"),
         ("assistant", "assistant message"),
     ]
-    assert provider._manager.flush_calls == [provider._manager.session]
+    assert provider._manager.save_calls == [provider._manager.session]

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
+_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _PEER_ID_HASH_LEN = 8
 _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
 
@@ -152,10 +153,12 @@ class HonchoSessionManager:
         self._lifecycle_lock = threading.Lock()
         self._shutdown_requested = threading.Event()
         self._shutdown_complete = threading.Event()
+        self._active_saves = 0
+        self._active_saves_complete = threading.Event()
+        self._active_saves_complete.set()
+        self._shutdown_finalize_thread: threading.Thread | None = None
         if write_frequency == "async":
             self._async_queue = queue.Queue()
-        else:
-            self._shutdown_complete.set()
 
     @property
     def honcho(self) -> Honcho:
@@ -518,23 +521,45 @@ class HonchoSessionManager:
           "session" — defer until flush_session() is called explicitly
           N (int)   — flush every N turns
         """
-        self._turn_counter += 1
-        wf = self._write_frequency
+        flush_now = False
+        with self._lifecycle_lock:
+            if self._shutdown_requested.is_set():
+                logger.warning(
+                    "Ignoring Honcho save for %s after shutdown began",
+                    session.key,
+                )
+                return
 
-        if wf == "async":
-            if self._async_queue is not None:
-                with self._lifecycle_lock:
-                    if not self._shutdown_requested.is_set():
-                        self._ensure_async_writer()
-                        self._async_queue.put(session)
-        elif wf == "turn":
+            self._turn_counter += 1
+            wf = self._write_frequency
+
+            if wf == "async":
+                if self._async_queue is not None:
+                    self._ensure_async_writer()
+                    self._async_queue.put(session)
+            elif wf == "turn":
+                flush_now = True
+            elif wf == "session":
+                # Accumulate; caller must call flush_all() at session end
+                pass
+            elif isinstance(wf, int) and wf > 0:
+                if self._turn_counter % wf == 0:
+                    flush_now = True
+
+            if flush_now:
+                self._active_saves += 1
+                self._active_saves_complete.clear()
+
+        if not flush_now:
+            return
+
+        try:
             self._flush_session(session)
-        elif wf == "session":
-            # Accumulate; caller must call flush_all() at session end
-            pass
-        elif isinstance(wf, int) and wf > 0:
-            if self._turn_counter % wf == 0:
-                self._flush_session(session)
+        finally:
+            with self._lifecycle_lock:
+                self._active_saves -= 1
+                if self._active_saves == 0:
+                    self._active_saves_complete.set()
 
     def flush_all(self) -> None:
         """Flush all pending unsynced messages for all cached sessions.
@@ -542,11 +567,6 @@ class HonchoSessionManager:
         Called at session end for "session" write_frequency, or to force
         a sync before process exit regardless of mode.
         """
-        # Wait for all in-flight async writes first so we do not flush the
-        # same session concurrently from both paths.
-        if self._async_queue is not None:
-            self._async_queue.join()
-
         with self._cache_lock:
             sessions = list(self._cache.values())
         for session in sessions:
@@ -568,24 +588,50 @@ class HonchoSessionManager:
                 )
                 self._async_thread.start()
 
-    def shutdown(self) -> None:
-        """Flush pending messages and stop the async writer, if present."""
-        if self._async_queue is not None and self._async_thread is not None:
-            with self._lifecycle_lock:
-                if self._shutdown_requested.is_set():
-                    return
+    def _finish_shutdown(self) -> None:
+        """Run the final synchronous flush outside the caller's shutdown path."""
+        try:
+            self.flush_all()
+        except Exception as exc:
+            logger.warning("Honcho final shutdown flush failed: %s", exc, exc_info=True)
+        finally:
+            self._shutdown_complete.set()
 
+    def shutdown(self) -> None:
+        """Flush pending messages and stop the async writer within a bounded wait."""
+        with self._lifecycle_lock:
+            if self._shutdown_complete.is_set():
+                return
+            if not self._shutdown_requested.is_set():
                 self._shutdown_requested.set()
-                try:
-                    self.flush_all()
+                if self._async_queue is not None and self._async_thread is not None:
                     self._async_queue.put(_ASYNC_SHUTDOWN)
-                    self._async_queue.join()
-                    self._async_thread.join(timeout=10)
-                finally:
-                    self._shutdown_complete.set()
+
+        if not self._active_saves_complete.wait(timeout=_SHUTDOWN_TIMEOUT_SECONDS):
+            logger.warning("Timed out waiting for active Honcho saves to finish")
             return
 
-        self.flush_all()
+        if self._async_thread is not None:
+            self._async_thread.join(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+            if self._async_thread.is_alive():
+                logger.warning("Timed out waiting for Honcho async writer to stop")
+                return
+
+        with self._lifecycle_lock:
+            if self._shutdown_complete.is_set():
+                return
+            if self._shutdown_finalize_thread is None:
+                self._shutdown_finalize_thread = threading.Thread(
+                    target=self._finish_shutdown,
+                    name="honcho-shutdown-flush",
+                    daemon=True,
+                )
+                self._shutdown_finalize_thread.start()
+            finalize_thread = self._shutdown_finalize_thread
+
+        finalize_thread.join(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+        if finalize_thread.is_alive():
+            logger.warning("Timed out waiting for Honcho final shutdown flush")
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""

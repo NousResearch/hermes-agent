@@ -238,7 +238,10 @@ class TestConcludeToolDispatch:
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
         provider._cron_skipped = False
-        provider._config = SimpleNamespace(message_max_chars=25000)
+        provider._config = SimpleNamespace(
+            message_max_chars=25000,
+            save_messages=True,
+        )
 
         session = MagicMock()
         provider._manager.get_or_create.return_value = session

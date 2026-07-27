@@ -4,6 +4,8 @@ sync_turn() must delegate persistence to manager.save() so the configured
 writeFrequency mode controls whether messages flush immediately or later.
 """
 
+import json
+
 from unittest.mock import MagicMock, patch
 
 from plugins.memory.honcho import HonchoMemoryProvider
@@ -124,3 +126,35 @@ class TestSyncTurnWriteFrequency:
 
             mock_save.assert_called_once()
             mock_flush.assert_not_called()
+
+    def test_profile_config_controls_save_and_write_contract(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "apiKey": "k",
+                    "saveMessages": True,
+                    "writeFrequency": "session",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        provider = HonchoMemoryProvider()
+        manager = HonchoSessionManager(config=cfg)
+        session = _dummy_session()
+        manager._cache[session.key] = session
+        provider._manager = manager
+        provider._config = cfg
+        provider._session_key = session.key
+
+        with patch.object(manager, "_flush_session") as mock_flush:
+            provider.sync_turn("user fact", "assistant fact")
+            provider._sync_thread.join(timeout=2.0)
+
+        mock_flush.assert_not_called()
+        assert [(m["role"], m["content"]) for m in session.messages] == [
+            ("user", "user fact"),
+            ("assistant", "assistant fact"),
+        ]

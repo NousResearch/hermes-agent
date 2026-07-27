@@ -941,6 +941,36 @@ class TestRunEventCallback:
 
         assert adapter._run_statuses[run_id]["last_event"] == "subagent.complete"
 
+    @pytest.mark.asyncio
+    async def test_subagent_events_redact_secrets_and_carry_child_session(self, adapter):
+        """Free-text fields (goal/summary/output_tail/preview) must pass the
+        forced secret redaction before hitting the public /v1/runs stream,
+        and child_session_id must survive the allowlist so clients can
+        correlate the child's session."""
+        run_id = "run_subagent_redact"
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_statuses.pop(run_id, None)
+
+        callback = adapter._make_run_event_callback(run_id, loop)
+        secret = "sk-proj-abcdef1234567890abcdef1234567890abcdef12"
+        callback(
+            "subagent.complete",
+            preview=f"leaked {secret}",
+            goal=f"use key {secret} to fetch data",
+            subagent_id="deleg_999",
+            child_session_id="child-sess-42",
+            status="completed",
+            summary=f"exported OPENAI_API_KEY={secret} then ran",
+            output_tail=f"env shows {secret}",
+        )
+
+        event = await asyncio.wait_for(queue.get(), timeout=1.0)
+        assert event["child_session_id"] == "child-sess-42"
+        for field in ("preview", "goal", "summary", "output_tail"):
+            assert secret not in event[field], field
+
 
 # ---------------------------------------------------------------------------
 # /health endpoint

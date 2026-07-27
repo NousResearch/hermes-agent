@@ -14,10 +14,9 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
-  setSessionProfileTotals,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal
+  setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
 
@@ -43,8 +42,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // "batched sidebar endpoint missing" capability verdict across the switch.
   resetSidebarBatchCapability()
   setSessions([])
-  setSessionsTotal(0)
-  setSessionProfileTotals({})
+  setSessionProfilesTruncated({})
   setCronSessions([])
   setMessagingSessions([])
   setMessagingPlatformTotals({})

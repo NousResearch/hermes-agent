@@ -2186,7 +2186,9 @@ class TestWebServerEndpoints:
         assert row["profile"] == "default"
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
-        assert data["recents"]["total"] >= 1
+        # Pagination reports "was this window capped?" per profile, not an exact
+        # COUNT(*) — one row against a 20-row cap means nothing more to load.
+        assert data["recents"]["profiles_truncated"]["default"] is False
 
     def test_sessions_endpoint_reads_requested_profile(self):
         """The machine dashboard's global profile switcher must retarget

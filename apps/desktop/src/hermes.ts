@@ -420,8 +420,24 @@ export async function listAllProfileSessions(
 // splices remote profiles per slice (see interceptSessionRequestForRemote).
 export interface SidebarSessionSlice {
   sessions: SessionInfo[]
-  total?: number
-  profile_totals?: Record<string, number>
+  /** Per-profile "the window came back full, more rows exist on disk" flags —
+   *  what pagination needs, without a COUNT(*) per profile DB per refresh. */
+  profiles_truncated?: Record<string, boolean>
+}
+
+/** Which profiles filled their per-profile window in a returned page. The
+ *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
+ *  a profile at (or over) the cap still has more on disk. */
+function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
+  const counts = new Map<string, number>()
+
+  for (const session of sessions) {
+    const key = session.profile || 'default'
+
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+
+  return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
 }
 
 export interface SidebarSessionsResponse {
@@ -494,7 +510,10 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const errors = [...(recents.errors ?? []), ...(cron.errors ?? []), ...(messaging.errors ?? [])]
 
   return {
-    recents: { profile_totals: recents.profile_totals, sessions: recents.sessions, total: recents.total },
+    recents: {
+      profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
+      sessions: recents.sessions
+    },
     cron: { sessions: cron.sessions },
     messaging: { sessions: messaging.sessions },
     ...(errors.length ? { errors } : {})

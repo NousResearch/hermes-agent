@@ -1,9 +1,20 @@
-import { type ComponentProps, memo, type ReactNode, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { type ComponentProps, memo, type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import {
+  ContextMenu,
+  ContextMenuCheckboxItem,
+  ContextMenuContent,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $statusbarHiddenIds, setStatusbarItemVisible } from '@/store/statusbar-prefs'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
 // trigger). The 'text' variant intentionally omits hover/transition/disabled.
@@ -47,6 +58,14 @@ export interface StatusbarItem {
   title?: string
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'
+  /** Plain-text name for the bar's right-click show/hide menu. An item without
+   *  one is never listed there and always shows — the safe default for plugin
+   *  contributions that don't opt in. */
+  toggleLabel?: string
+  /** Listed in the menu but not switchable: the bar's own affordances (command
+   *  center, update/version pills) would strand the user if they could be
+   *  hidden from the surface that hides them. */
+  lockedVisible?: boolean
 }
 
 export interface StatusbarSelectModifiers {
@@ -63,35 +82,98 @@ interface StatusbarControlsProps extends ComponentProps<'footer'> {
 
 export function StatusbarControls({ className, leftItems = [], items = [], ...props }: StatusbarControlsProps) {
   const navigate = useNavigate()
+  const hiddenIds = useStore($statusbarHiddenIds)
+
+  const visible = (item: StatusbarItem) =>
+    !item.hidden && (item.lockedVisible || !item.toggleLabel || !hiddenIds.includes(item.id))
 
   return (
-    <footer
-      className={cn(
-        'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
-        className
-      )}
-      data-slot="statusbar"
-      {...props}
-    >
-      {/* `overflow-x-clip` (not `overflow-x-auto`) so a wide status item — for
-          example "Connecting…" on a fresh/untitled session — can't paint a
-          horizontal scrollbar across the bottom of the window. Items already
-          `truncate` their labels, so clipping is the right behavior. */}
-      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
-        {leftItems
-          .filter(item => !item.hidden)
-          .map(item => (
-            <StatusbarItemView item={item} key={`left:${item.id}`} navigate={navigate} />
-          ))}
-      </div>
-      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
-        {items
-          .filter(item => !item.hidden)
-          .map(item => (
-            <StatusbarItemView item={item} key={`right:${item.id}`} navigate={navigate} />
-          ))}
-      </div>
-    </footer>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <footer
+          className={cn(
+            'flex h-5 shrink-0 items-stretch justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background) px-1 py-0 text-(--ui-text-tertiary) [-webkit-app-region:no-drag]',
+            className
+          )}
+          data-slot="statusbar"
+          {...props}
+        >
+          {/* `overflow-x-clip` (not `overflow-x-auto`) so a wide status item — for
+              example "Connecting…" on a fresh/untitled session — can't paint a
+              horizontal scrollbar across the bottom of the window. Items already
+              `truncate` their labels, so clipping is the right behavior. */}
+          <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
+            {leftItems.filter(visible).map(item => (
+              <StatusbarItemView item={item} key={`left:${item.id}`} navigate={navigate} />
+            ))}
+          </div>
+          <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
+            {items.filter(visible).map(item => (
+              <StatusbarItemView item={item} key={`right:${item.id}`} navigate={navigate} />
+            ))}
+          </div>
+        </footer>
+      </ContextMenuTrigger>
+      <StatusbarVisibilityMenu hiddenIds={hiddenIds} items={items} leftItems={leftItems} />
+    </ContextMenu>
+  )
+}
+
+/** Right-click the bar to choose what it shows. Lists every item that named
+ *  itself with `toggleLabel`, in bar order (left cluster then right), so the
+ *  menu reads like the surface it edits. */
+function StatusbarVisibilityMenu({
+  hiddenIds,
+  items,
+  leftItems
+}: {
+  hiddenIds: readonly string[]
+  items: readonly StatusbarItem[]
+  leftItems: readonly StatusbarItem[]
+}) {
+  const { t } = useI18n()
+  const copy = t.shell.statusbar
+
+  // Deduped by id: an item can legitimately appear in both clusters across
+  // renders (contributions move sides), and a repeated checkbox would let one
+  // row's toggle silently contradict the other's.
+  const toggles = useMemo(() => {
+    const seen = new Set<string>()
+
+    return [...leftItems, ...items].filter(item => {
+      if (!item.toggleLabel || seen.has(item.id)) {
+        return false
+      }
+
+      seen.add(item.id)
+
+      return true
+    })
+  }, [items, leftItems])
+
+  if (toggles.length === 0) {
+    return null
+  }
+
+  return (
+    <ContextMenuContent className="w-52">
+      <ContextMenuLabel>{copy.customizeTitle}</ContextMenuLabel>
+      <ContextMenuSeparator />
+      {toggles.map(item => (
+        <ContextMenuCheckboxItem
+          checked={item.lockedVisible || !hiddenIds.includes(item.id)}
+          disabled={item.lockedVisible}
+          key={item.id}
+          onCheckedChange={checked => setStatusbarItemVisible(item.id, checked)}
+          // Radix closes the menu on select; keep it open so several items can
+          // be toggled in one pass (this is a preferences surface, not a
+          // command list).
+          onSelect={event => event.preventDefault()}
+        >
+          <span className="truncate">{item.toggleLabel}</span>
+        </ContextMenuCheckboxItem>
+      ))}
+    </ContextMenuContent>
   )
 }
 

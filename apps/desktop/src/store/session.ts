@@ -270,7 +270,6 @@ export function mergeSessionPage(
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom<ConnectionState>('idle')
 export const $sessions = atom<SessionInfo[]>([])
-export const $sessionsTotal = atom<number>(0)
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
 // scheduler's always-newest sessions never crowd recents out of the page
 // budget. Powers the collapsed "Cron jobs" sidebar section.
@@ -294,11 +293,13 @@ export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
 // one platform may have more rows on disk than were loaded.
 export const $messagingTruncated = atom<boolean>(false)
-// Listable conversation count per profile (children excluded), keyed by profile
-// name. Lets the sidebar scope its "Load more" footer to the active profile so a
-// huge default profile doesn't keep "Load more" visible while browsing a small
-// one. Empty for single-profile users (fall back to $sessionsTotal).
-export const $sessionProfileTotals = atom<Record<string, number>>({})
+// Whether a profile's last session page was CAPPED by the request limit, keyed
+// by profile name — i.e. more rows exist on disk than were loaded. Replaces the
+// old exact per-profile totals: rendering `loaded/total` in the sidebar cost a
+// COUNT(*) per profile DB on every refresh and only ever confused people, while
+// "is there another page?" is what pagination actually needs and comes free
+// from the row count the query already returned.
+export const $sessionProfilesTruncated = atom<Record<string, boolean>>({})
 export const $sessionsLoading = atom(true)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
@@ -376,14 +377,13 @@ export const $sessionPickerOpen = atom(false)
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
-export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($messagingPlatformTotals, next)
 export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($messagingTruncated, next)
-export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
-  updateAtom($sessionProfileTotals, next)
+export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean>>) =>
+  updateAtom($sessionProfilesTruncated, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>

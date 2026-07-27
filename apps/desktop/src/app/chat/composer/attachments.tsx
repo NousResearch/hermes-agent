@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -8,8 +9,7 @@ import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
-import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { openPreview } from '@/store/preview'
 
 export function AttachmentList({
   attachments,
@@ -31,13 +31,15 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   const { t } = useI18n()
   const c = t.composer
   const Icon = { folder: FolderOpen, url: Link, image: ImageIcon, file: FileText, terminal: Terminal }[attachment.kind]
-  const cwd = useStore($currentCwd)
+  // The tile's cwd when this pill lives in a tile composer, not the primary's:
+  // a relative attachment path has to resolve against its own session's root.
+  const cwd = useStore(useSessionView().$cwd)
   const isUploading = attachment.uploadState === 'uploading'
   const hasUploadError = attachment.uploadState === 'error'
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
   const detail = attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
 
-  async function openPreview() {
+  async function openAttachmentPreview() {
     if (!canPreview) {
       return
     }
@@ -70,7 +72,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
           ? { ...preview, dataUrl: attachment.previewUrl, previewKind: 'image' as const }
           : preview
 
-      setCurrentSessionPreviewTarget(withBytes, 'manual', target)
+      openPreview(withBytes, 'manual')
     } catch (error) {
       notifyError(error, c.previewUnavailable)
     }
@@ -89,7 +91,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
               : 'border-border/60 hover:border-primary/35 hover:bg-accent/45'
           )}
           disabled={!canPreview}
-          onClick={() => void openPreview()}
+          onClick={() => void openAttachmentPreview()}
           type="button"
         >
           <span className="relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-border/55 bg-muted/35 text-muted-foreground">

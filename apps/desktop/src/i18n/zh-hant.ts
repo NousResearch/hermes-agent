@@ -1576,10 +1576,7 @@ export const zhHant = defineLocale({
     open: '開啟'
   },
 
-  artifactPane: {
-    tabFallback: '產物',
-    modePreview: '預覽',
-    modeSource: '原始碼',
+  artifactPreview: {
     versionOf: (current, total) => `第 ${current}/${total} 版`,
     olderVersion: '較舊版本',
     newerVersion: '較新版本',

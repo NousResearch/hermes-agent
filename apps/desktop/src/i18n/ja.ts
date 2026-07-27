@@ -1628,10 +1628,7 @@ export const ja = defineLocale({
     open: '開く'
   },
 
-  artifactPane: {
-    tabFallback: 'アーティファクト',
-    modePreview: 'プレビュー',
-    modeSource: 'ソース',
+  artifactPreview: {
     versionOf: (current, total) => `${total} 中 v${current}`,
     olderVersion: '前のバージョン',
     newerVersion: '次のバージョン',

@@ -1,23 +1,24 @@
-import { atom, computed } from 'nanostores'
+import { atom } from 'nanostores'
 
 import { artifactContentHash, type ArtifactDetection, type ArtifactKind, artifactSlug } from '@/lib/artifact-detect'
-import { persistentAtom } from '@/lib/persisted'
 
-import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_PREVIEW_TAB_ID, selectRightRailTab } from './layout'
-import { setPaneOpen } from './panes'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { closeArtifactPreviewTabs, openPreview, type PreviewTarget } from './preview'
 
 /**
  * ARTIFACT REGISTRY — substantial generated content (HTML pages, large SVGs,
  * long code) produced in the transcript, promoted out of the message flow into
- * versioned, openable artifacts. The renderer owns this state: artifacts are a
- * presentation of message content the backend already persists, so the store
- * is a cache keyed by session with bounded history.
+ * versioned content the right rail can preview. The registry is authoritative
+ * for artifact content; a rail tab only ever holds a reference to it, so a new
+ * version shows up in an already-open tab.
  *
  * Identity: one artifact = one (session, slug) pair, where the slug derives
  * from kind + language + title. When the model regenerates "the dashboard"
  * three times in a session, that is ONE artifact with three versions, exactly
  * like a document the user keeps refining — not three cards.
+ *
+ * Memory-only: the transcript is the durable copy. Cards re-register as they
+ * render, so a reload rebuilds the registry (and its version history) for free
+ * instead of parking megabytes of generated HTML in localStorage.
  */
 
 export interface ArtifactVersion {
@@ -39,99 +40,11 @@ export interface ArtifactRecord {
   versions: ArtifactVersion[]
 }
 
-type ArtifactRegistry = Record<string, ArtifactRecord[]>
+export type ArtifactRegistry = Record<string, ArtifactRecord[]>
 
-const STORAGE_KEY = 'hermes.desktop.artifacts.v1'
 const MAX_ARTIFACTS_PER_SESSION = 24
 const MAX_VERSIONS_PER_ARTIFACT = 20
 const MAX_SESSIONS = 40
-// localStorage is ~5MB; artifacts carry full content, so cap the persisted
-// bytes per artifact aggressively. Oversized artifacts survive in memory for
-// the app's lifetime but persist only their newest version(s) that fit.
-const MAX_PERSISTED_CHARS_PER_ARTIFACT = 120_000
-
-export type ArtifactTabId = `artifact:${string}`
-
-export function artifactTabId(artifactId: string): ArtifactTabId {
-  return `artifact:${artifactId}`
-}
-
-export function artifactIdFromTabId(tabId: string): string | null {
-  return tabId.startsWith('artifact:') ? tabId.slice('artifact:'.length) : null
-}
-
-function isArtifactVersion(value: unknown): value is ArtifactVersion {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const r = value as Record<string, unknown>
-
-  return typeof r.content === 'string' && typeof r.createdAt === 'number' && typeof r.hash === 'string'
-}
-
-function isArtifactRecord(value: unknown): value is ArtifactRecord {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const r = value as Record<string, unknown>
-
-  return (
-    typeof r.createdAt === 'number' &&
-    typeof r.id === 'string' &&
-    (r.kind === 'code' || r.kind === 'html' || r.kind === 'svg') &&
-    typeof r.language === 'string' &&
-    typeof r.sessionId === 'string' &&
-    typeof r.slug === 'string' &&
-    typeof r.title === 'string' &&
-    typeof r.updatedAt === 'number' &&
-    Array.isArray(r.versions) &&
-    r.versions.length > 0 &&
-    r.versions.every(isArtifactVersion)
-  )
-}
-
-function sanitizeRegistry(value: unknown): ArtifactRegistry {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {}
-  }
-
-  const out: ArtifactRegistry = {}
-
-  for (const [sessionId, records] of Object.entries(value as Record<string, unknown>)) {
-    if (!Array.isArray(records)) {
-      continue
-    }
-
-    const valid = records.filter(isArtifactRecord)
-
-    if (valid.length > 0) {
-      out[sessionId] = valid
-    }
-  }
-
-  return out
-}
-
-function persistedVersions(record: ArtifactRecord): ArtifactVersion[] {
-  const kept: ArtifactVersion[] = []
-  let budget = MAX_PERSISTED_CHARS_PER_ARTIFACT
-
-  // Newest first; always keep at least the current version even if oversized.
-  for (let i = record.versions.length - 1; i >= 0; i -= 1) {
-    const version = record.versions[i]!
-
-    if (kept.length > 0 && version.content.length > budget) {
-      break
-    }
-
-    budget -= version.content.length
-    kept.unshift(version)
-  }
-
-  return kept
-}
 
 function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
   const entries = Object.entries(registry)
@@ -154,36 +67,15 @@ function pruneRegistry(registry: ArtifactRegistry): ArtifactRegistry {
   return Object.fromEntries(entries)
 }
 
-export const $artifactRegistry = persistentAtom<ArtifactRegistry>(
-  STORAGE_KEY,
-  {},
-  {
-    decode: raw => sanitizeRegistry(JSON.parse(raw) as unknown),
-    encode: registry =>
-      JSON.stringify(
-        Object.fromEntries(
-          Object.entries(pruneRegistry(registry)).map(([sessionId, records]) => [
-            sessionId,
-            records.map(record => ({ ...record, versions: persistedVersions(record) }))
-          ])
-        )
-      )
-  }
-)
+export const $artifactRegistry = atom<ArtifactRegistry>({})
 
-/** Artifact tabs open in the right rail (ids into the registry). */
-export const $artifactTabs = atom<ArtifactTabId[]>([])
-
-/** Per-tab selected version index; absent = newest. Ephemeral by design: a
- *  reopened artifact always lands on its current version. */
+/** Per-artifact selected version index; absent = newest. */
 export const $artifactVersionSelection = atom<Record<string, number>>({})
 
-function currentArtifactSessionId(): string {
-  return $selectedStoredSessionId.get() || $activeSessionId.get() || ''
-}
-
-export function getArtifact(artifactId: string): ArtifactRecord | null {
-  for (const records of Object.values($artifactRegistry.get())) {
+/** Lookup against a registry value, for components that already subscribe to
+ *  the atom and need the record to change identity when it does. */
+export function findArtifact(registry: ArtifactRegistry, artifactId: string): ArtifactRecord | null {
+  for (const records of Object.values(registry)) {
     const found = records.find(record => record.id === artifactId)
 
     if (found) {
@@ -194,24 +86,9 @@ export function getArtifact(artifactId: string): ArtifactRecord | null {
   return null
 }
 
-export const $openArtifacts = computed([$artifactRegistry, $artifactTabs], (registry, tabs) => {
-  const byId = new Map<string, ArtifactRecord>()
-
-  for (const records of Object.values(registry)) {
-    for (const record of records) {
-      byId.set(record.id, record)
-    }
-  }
-
-  return tabs
-    .map(tabId => {
-      const id = artifactIdFromTabId(tabId)
-      const record = id ? byId.get(id) : undefined
-
-      return record ? { record, tabId } : null
-    })
-    .filter((entry): entry is { record: ArtifactRecord; tabId: ArtifactTabId } => entry !== null)
-})
+export function getArtifact(artifactId: string): ArtifactRecord | null {
+  return findArtifact($artifactRegistry.get(), artifactId)
+}
 
 export function artifactsForSession(sessionId: string | null | undefined): ArtifactRecord[] {
   const id = sessionId?.trim()
@@ -301,56 +178,24 @@ export function upsertArtifact(
   return { artifactId: record.id, record, versionAdded: true }
 }
 
-export function upsertCurrentSessionArtifact(detection: ArtifactDetection, content: string): UpsertResult | null {
-  return upsertArtifact(currentArtifactSessionId(), detection, content)
+/** A rail tab for an artifact references the registry by id rather than
+ *  carrying content, so an open tab follows the artifact as it gains versions. */
+export function artifactPreviewTarget(record: ArtifactRecord): PreviewTarget {
+  return { kind: 'artifact', label: record.title, source: record.id, url: record.id }
 }
 
-/** Open an artifact tab in the right rail and select it. User-initiated only
- *  (card click) — never called from streaming, per the no-hijack rule. */
-export function openArtifactTab(artifactId: string) {
-  const tabId = artifactTabId(artifactId)
-  const current = $artifactTabs.get()
+/** Open an artifact in the right rail at `versionIndex` (default: newest).
+ *  User-initiated only (card click) — never called from streaming, per the
+ *  no-hijack rule. */
+export function openArtifact(artifactId: string, versionIndex?: number) {
+  const record = getArtifact(artifactId)
 
-  if (!current.includes(tabId)) {
-    $artifactTabs.set([...current, tabId])
+  if (!record) {
+    return
   }
 
-  // Land on the newest version whenever (re)opened.
-  const selection = $artifactVersionSelection.get()
-
-  if (artifactId in selection) {
-    const { [artifactId]: _dropped, ...rest } = selection
-    $artifactVersionSelection.set(rest)
-  }
-
-  setPaneOpen(PREVIEW_PANE_ID, true)
-  selectRightRailTab(tabId)
-}
-
-export function closeArtifactTab(tabId: ArtifactTabId): boolean {
-  const current = $artifactTabs.get()
-  const index = current.indexOf(tabId)
-
-  if (index === -1) {
-    return false
-  }
-
-  const next = current.filter(id => id !== tabId)
-
-  $artifactTabs.set(next)
-
-  const artifactId = artifactIdFromTabId(tabId)
-
-  if (artifactId) {
-    const { [artifactId]: _dropped, ...rest } = $artifactVersionSelection.get()
-    $artifactVersionSelection.set(rest)
-  }
-
-  if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)] ?? RIGHT_RAIL_PREVIEW_TAB_ID)
-  }
-
-  return true
+  selectArtifactVersion(artifactId, versionIndex ?? record.versions.length - 1)
+  openPreview(artifactPreviewTarget(record))
 }
 
 export function selectArtifactVersion(artifactId: string, versionIndex: number) {
@@ -375,12 +220,8 @@ export function selectArtifactVersion(artifactId: string, versionIndex: number) 
   $artifactVersionSelection.set({ ...selection, [artifactId]: clamped })
 }
 
-export function closeAllArtifactTabs() {
-  $artifactTabs.set([])
-  $artifactVersionSelection.set({})
-}
-
 export function clearArtifactRegistry() {
   $artifactRegistry.set({})
-  closeAllArtifactTabs()
+  $artifactVersionSelection.set({})
+  closeArtifactPreviewTabs()
 }

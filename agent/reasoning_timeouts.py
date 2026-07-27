@@ -106,6 +106,14 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("claude-sonnet-5", 180),
     ("claude-sonnet-4.5", 180),
     ("claude-sonnet-4.6", 180),
+    # Anthropic Mythos-class named reasoning models (claude-fable-5, …).
+    # 1M context + 128K output — heavier thinking phase than the
+    # numbered Claude line, so the floor is in the deep-reasoning tier
+    # alongside o1 / deepseek-r1 / nemotron-3-ultra.  Without this
+    # entry the stale-stream detector kills fable-5's thinking phase
+    # at the default 180s (300s with context scaling), tripping the
+    # cross-turn circuit breaker after 5 consecutive stale kills.
+    ("claude-fable", 600),
     # xAI Grok reasoning variants.  Explicit reasoning-only keys
     # plus one for the ``non-reasoning`` variant so users picking
     # the fast variant don't get the 300s floor.  Bare ``grok-3``,
@@ -207,6 +215,8 @@ def get_reasoning_stale_timeout_floor(model: object) -> Optional[float]:
     300.0
     >>> get_reasoning_stale_timeout_floor("anthropic/claude-opus-4-6")
     240.0
+    >>> get_reasoning_stale_timeout_floor("anthropic/claude-fable-5")
+    600.0
     >>> get_reasoning_stale_timeout_floor("gpt-4o") is None
     True
     >>> get_reasoning_stale_timeout_floor("olmo-1") is None

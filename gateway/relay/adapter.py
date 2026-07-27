@@ -274,6 +274,7 @@ class RelayAdapter(BasePlatformAdapter):
     async def _on_inbound(self, event) -> None:
         """Bridge a connector-delivered MessageEvent into the normal adapter path."""
         self._capture_scope(event)
+        self._stamp_slack_session_thread(event)
         # Phase 3: a structured prompt answer resolves its waiting primitive
         # (approval/confirm/clarify) and is CONSUMED — it must not also
         # dispatch as a chat message. Unknown/expired prompt ids fall through
@@ -282,6 +283,71 @@ class RelayAdapter(BasePlatformAdapter):
             return
         await self._localize_inbound_media(event)
         await self.handle_message(event)
+
+    def _relay_slack_extra(self) -> Dict[str, Any]:
+        """The Slack-behavior subset of the RELAY platform config.
+
+        Enterprise knob shape (Hermes-config directed, relay-namespaced):
+
+            platforms:
+              relay:
+                extra:
+                  slack:              # supported subset of native Slack fields
+                    reply_in_thread: true
+
+        The native ``platforms.slack`` block keeps meaning "native adapter
+        settings"; relay-fronted Slack reads its subset here. Legacy fallback:
+        a flat key on the relay extra (``extra.reply_in_thread``) still wins
+        when no ``slack`` object exists, preserving current staging configs.
+        """
+        extra = getattr(self.config, "extra", None) or {}
+        sub = extra.get("slack")
+        return sub if isinstance(sub, dict) else extra
+
+    def _effective_reply_in_thread(self) -> bool:
+        """Resolve the thread-per-message vs flat-DM mode for fronted Slack."""
+        try:
+            return bool(self._relay_slack_extra().get("reply_in_thread", True))
+        except Exception:  # noqa: BLE001 - config shape is operator-owned
+            return True
+
+    def _stamp_slack_session_thread(self, event) -> None:
+        """Native session-keying parity for fronted Slack (QA-3).
+
+        Native SlackAdapter's inbound handler stamps ``thread_ts =
+        event.thread_ts or ts`` — every TOP-LEVEL message carries its own ts
+        as ``source.thread_id``, so build_session_key appends it and each
+        top-level message gets a FRESH session (per-message threads ⇒
+        per-message sessions; a 2nd message runs parallel instead of steering
+        the in-flight turn). The connector normalizes a top-level message
+        with thread_id=null, so without this stamp every top-level DM
+        collapses into ONE session key and message 2 pre-empts message 1
+        ("Redirected current run", 2026-07-27 report).
+
+        Only in thread-per-message mode: flat mode keeps the shared rolling
+        DM session on purpose (steer/queue there is the intended UX). Never
+        overwrites a real thread_id (an in-thread reply must keep resolving
+        to its thread's session).
+        """
+        try:
+            src = getattr(event, "source", None)
+            if not src:
+                return
+            platform = getattr(src, "platform", None)
+            if getattr(platform, "value", platform) != Platform.SLACK.value:
+                return
+            if getattr(src, "thread_id", None):
+                return  # real thread — its session key is already correct
+            message_id = getattr(event, "message_id", None) or getattr(
+                src, "message_id", None
+            )
+            if not message_id:
+                return
+            if not self._effective_reply_in_thread():
+                return
+            src.thread_id = str(message_id)
+        except Exception:  # noqa: BLE001 - session stamping must never break inbound
+            logger.debug("slack session-thread stamp failed", exc_info=True)
 
     async def _localize_inbound_media(self, event) -> None:
         """Download connector re-hosted attachments to local temp paths.
@@ -875,12 +941,7 @@ class RelayAdapter(BasePlatformAdapter):
         # message to the DM root while progress stayed threaded (2026-07-27
         # report, sibling of the QA-5 prompt bug). Native SlackAdapter only
         # suppresses the anchor when reply_in_thread=false; mirror that.
-        try:
-            reply_in_thread = bool(
-                (self.config.extra or {}).get("reply_in_thread", True)
-            )
-        except Exception:  # noqa: BLE001 - config shape is adapter-owned
-            reply_in_thread = True
+        reply_in_thread = self._effective_reply_in_thread()
         if reply_in_thread:
             # Thread-per-message: the triggering ts is the thread anchor.
             return reply_to
@@ -962,12 +1023,7 @@ class RelayAdapter(BasePlatformAdapter):
             and self._platform_by_chat.get(str(chat_id)) == Platform.SLACK.value
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            try:
-                reply_in_thread = bool(
-                    (self.config.extra or {}).get("reply_in_thread", True)
-                )
-            except Exception:  # noqa: BLE001 - config shape is adapter-owned
-                reply_in_thread = True
+            reply_in_thread = self._effective_reply_in_thread()
             anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
             if reply_in_thread and anchor:
                 md["thread_id"] = anchor
@@ -1028,12 +1084,7 @@ class RelayAdapter(BasePlatformAdapter):
             not (md.get("thread_id") or md.get("thread_ts"))
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            try:
-                reply_in_thread = bool(
-                    (self.config.extra or {}).get("reply_in_thread", True)
-                )
-            except Exception:  # noqa: BLE001 - config shape is adapter-owned
-                reply_in_thread = True
+            reply_in_thread = self._effective_reply_in_thread()
             anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
             if reply_in_thread and anchor:
                 md["thread_id"] = anchor

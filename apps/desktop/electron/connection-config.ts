@@ -351,6 +351,24 @@ function profileRemoteOverride(config, profile) {
 }
 
 /**
+ * Decide whether a profile should reuse the primary backend connection.
+ *
+ * The primary profile always owns the window backend. In app-global remote
+ * mode, that same backend serves every profile through request-level profile
+ * scoping, unless a profile has its own remote connection override.
+ */
+function profileUsesPrimaryBackend(profile, opts: any = {}) {
+  const scopedProfile = connectionScopeKey(profile)
+  const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
+
+  if (!scopedProfile || scopedProfile === primaryProfile) {
+    return true
+  }
+
+  return Boolean(opts.globalRemote) && !opts.profileRemoteOverride
+}
+
+/**
  * In global-remote mode one backend serves every Desktop profile, so REST calls
  * that are scoped by renderer-side `request.profile` must carry that scope as a
  * query parameter. Local pooled backends and per-profile remote overrides do not
@@ -505,6 +523,7 @@ export {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  profileUsesPrimaryBackend,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,

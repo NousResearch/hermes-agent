@@ -15,7 +15,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { copyPath, revealPath } from '@/store/projects'
 
-import { SidebarCount, SidebarRowLead } from '../chrome'
+import { SidebarRowLead } from '../chrome'
 
 import { WorktreeDialog } from './worktree-dialog'
 
@@ -151,7 +151,6 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
 // button with a leading glyph, plus an optional trailing action (the +).
 export function WorkspaceHeader({
   action,
-  count,
   emphasis = false,
   icon,
   label,
@@ -160,7 +159,6 @@ export function WorkspaceHeader({
   title
 }: {
   action?: React.ReactNode
-  count: React.ReactNode
   emphasis?: boolean
   icon: React.ReactNode
   label: string
@@ -186,9 +184,6 @@ export function WorkspaceHeader({
       >
         <SidebarRowLead>{icon}</SidebarRowLead>
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
-        <span className="shrink-0">
-          <SidebarCount>{count}</SidebarCount>
-        </span>
         <DisclosureCaret
           className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
           open={open}

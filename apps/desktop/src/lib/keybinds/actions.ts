@@ -100,6 +100,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  // ⌘⇧S — "s" for status bar. VS Code ships
+  // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
+  // gap in their View family) and Hermes has no chord dispatcher, so this
+  // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
+  { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },

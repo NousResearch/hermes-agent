@@ -21,6 +21,7 @@ import time
 from types import SimpleNamespace
 
 from agent.iteration_budget import IterationBudget
+from agent.session_activity import ActivityProvenance
 
 
 def _make_cached_agent(max_iterations: int) -> SimpleNamespace:
@@ -32,6 +33,7 @@ def _make_cached_agent(max_iterations: int) -> SimpleNamespace:
     return SimpleNamespace(
         _last_activity_ts=time.time() - 1000,
         _last_activity_desc="previous turn",
+        _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION,
         _api_call_count=42,
         _last_flushed_db_idx=5,
         max_iterations=max_iterations,
@@ -53,6 +55,7 @@ def test_init_cached_agent_for_turn_does_not_touch_max_iterations():
     # Per-turn state was reset...
     assert agent._api_call_count == 0
     assert agent._last_activity_desc == "starting new turn (cached)"
+    assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
     assert agent._last_flushed_db_idx == 0
     # ...but the iteration budget was NOT changed by the helper itself.
     assert agent.max_iterations == 90
@@ -67,6 +70,7 @@ def test_init_cached_agent_preserves_max_iterations_on_interrupt_depth():
 
     # Activity timestamps preserved for the inactivity watchdog (#15654)...
     assert agent._last_activity_desc == "previous turn"
+    assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
     # ...and max_iterations untouched.
     assert agent.max_iterations == 200
 

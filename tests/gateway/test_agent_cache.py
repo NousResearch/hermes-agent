@@ -1598,10 +1598,13 @@ class TestCachedAgentInactivityReset:
     """
 
     def _fake_agent(self, stale_seconds: float = 1800.0):
+        from agent.session_activity import ActivityProvenance
+
         m = MagicMock()
         m._last_activity_ts = _FAKE_NOW - stale_seconds
         m._api_call_count = 10
         m._last_activity_desc = "previous turn activity"
+        m._last_activity_provenance = ActivityProvenance.AGENT_COMPRESSION
         return m
 
     def test_fresh_turn_resets_idle_clock(self):
@@ -1635,6 +1638,20 @@ class TestCachedAgentInactivityReset:
 
         assert agent._last_activity_desc == "starting new turn (cached)"
 
+    def test_fresh_turn_resets_provenance(self):
+        """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
+        from agent.session_activity import ActivityProvenance
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_activity_provenance is ActivityProvenance.UNKNOWN
+
     def test_interrupt_turn_preserves_idle_clock(self):
         """interrupt_depth=1: clock preserved so accumulated stuck-turn
         idle time is not discarded by an interrupt-recursive re-entry (#15654)."""
@@ -1662,6 +1679,17 @@ class TestCachedAgentInactivityReset:
             "_last_activity_desc must not change on interrupt-recursive turns; "
             "it describes the activity *at* _last_activity_ts"
         )
+
+    def test_interrupt_turn_preserves_provenance(self):
+        """interrupt_depth=1: provenance preserved with ts/desc."""
+        from agent.session_activity import ActivityProvenance
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent(stale_seconds=1200.0)
+
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
+
+        assert agent._last_activity_provenance is ActivityProvenance.AGENT_COMPRESSION
 
     def test_deep_interrupt_recursion_preserves_idle_clock(self):
         """interrupt_depth=MAX-1: clock still preserved at any non-zero depth."""

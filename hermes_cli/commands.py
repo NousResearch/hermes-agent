@@ -1179,11 +1179,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - init: repo-scan AGENTS.md bootstrap — a cwd-centric dev command that is
 #     rare from Slack; reachable as /hermes init. Without this entry, adding
 #     /init clamps /version off the native list and breaks Telegram parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init"})
 #   - version: low-frequency info command; reachable as /hermes version on
 #     Slack. Demoted when /context claimed a native slot (context is a
 #     recurring inspection surface; version is a one-off lookup).
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "version"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

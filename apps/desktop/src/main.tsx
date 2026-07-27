@@ -17,6 +17,7 @@ import { HashRouter } from 'react-router-dom'
 import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
+import { RootTooltipProvider } from './components/ui/tooltip'
 import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
@@ -46,6 +47,12 @@ if (winParam === 'overlay') {
           <I18nProvider>
             <ThemeProvider>
               <HapticsProvider>
+                {/* ONE tooltip provider for the whole app. Every `Tip` used to
+                    carry its own, and with ~107 call sites those subtrees
+                    dominated unrelated interactions (52,784 TooltipProvider
+                    renders in a single sash drag). Radix's provider holds only
+                    refs and stable callbacks, so hoisting is what it's for. */}
+                <RootTooltipProvider>
                 {/* useTransitions={false}: react-router v7's HashRouter wraps every
                     route state update in React.startTransition() by default. In
                     React 19's concurrent renderer, transitions are non-urgent — React
@@ -58,6 +65,7 @@ if (winParam === 'overlay') {
                 <HashRouter useTransitions={false}>
                   <App />
                 </HashRouter>
+                </RootTooltipProvider>
               </HapticsProvider>
             </ThemeProvider>
           </I18nProvider>

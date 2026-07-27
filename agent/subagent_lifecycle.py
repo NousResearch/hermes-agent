@@ -156,7 +156,12 @@ class _Registry:
 
 
 _REGISTRY = _Registry()
-_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="hermes-lifecycle")
+# Daemon worker pool: a wedged/abandoned child must never block interpreter
+# exit at atexit-join time (same rationale as _run_single_child's timeout
+# executor and the async-delegation registry pool).
+from tools.daemon_pool import DaemonThreadPoolExecutor as _DaemonExecutor
+
+_EXECUTOR = _DaemonExecutor(max_workers=8, thread_name_prefix="hermes-lifecycle")
 _SECRET = secrets.token_bytes(32)
 _ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "hermes_subagent_lifecycle_parent", default=None

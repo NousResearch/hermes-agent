@@ -10015,13 +10015,19 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        rich_session = db._get_session_rich_row(sid, compact_rows=True)
+        if rich_session and "last_active" in rich_session:
+            session["last_active"] = rich_session["last_active"]
         if profile:
             session["profile"] = _cron_profile_home(profile)[0]
             session["is_default_profile"] = session["profile"] == "default"
         session["archived"] = bool(session.get("archived"))
         session["is_active"] = (
             session.get("ended_at") is None
-            and (time.time() - session.get("started_at", 0)) < 300
+            and (
+                time.time()
+                - session.get("last_active", session.get("started_at", 0))
+            ) < 300
         )
         return _project_session_response(session, detail=True)
     finally:

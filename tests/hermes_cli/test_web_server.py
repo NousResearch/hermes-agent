@@ -1394,6 +1394,40 @@ class TestWebServerEndpoints:
         assert isinstance(row["archived"], bool)
         assert not (self._private_session_fields() & row.keys())
 
+    def test_get_session_detail_uses_recent_message_for_active_state(self, monkeypatch):
+        """A recent message keeps a long-lived session active in detail."""
+        from hermes_cli import web_server
+        from hermes_state import SessionDB
+
+        now = 2_000_000_000.0
+        session_id = "recently-active-detail"
+        db = SessionDB()
+        try:
+            db.create_session(session_id=session_id, source="cli")
+            db.append_message(session_id, role="user", content="still working")
+
+            def _set_timestamps(conn):
+                conn.execute(
+                    "UPDATE sessions SET started_at = ? WHERE id = ?",
+                    (now - 3_600, session_id),
+                )
+                conn.execute(
+                    "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                    (now - 60, session_id),
+                )
+
+            db._execute_write(_set_timestamps)
+        finally:
+            db.close()
+
+        monkeypatch.setattr(web_server.time, "time", lambda: now)
+
+        row = asyncio.run(web_server.get_session_detail(session_id))
+
+        assert row["started_at"] == now - 3_600
+        assert row["last_active"] == now - 60
+        assert row["is_active"] is True
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

@@ -1,6 +1,14 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef } from 'react'
+import {
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef
+} from 'react'
 
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
@@ -11,7 +19,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $compactionActive } from '@/store/compaction'
+import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
@@ -22,7 +30,12 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
-import { COMPOSER_FADE_BACKGROUND, type QueueEditState, slashArgStage } from './composer-utils'
+import {
+  acceptsTriggerCompletion,
+  COMPOSER_FADE_BACKGROUND,
+  type QueueEditState,
+  slashArgStage
+} from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
@@ -108,7 +121,7 @@ export function ChatBar({
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
-  const compacting = useStore($compactionActive)
+  const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
@@ -302,12 +315,14 @@ export function ChatBar({
     ascendTriggerPath,
     closeTrigger,
     commitTypedSlashDirective,
+    moveTriggerActive,
     refreshTrigger,
     replaceTriggerWithChip,
     setTriggerActive,
     slashFreeTextArgStage,
     trigger,
     triggerActive,
+    triggerActiveExplicit,
     triggerItems,
     triggerKeyConsumedRef,
     triggerLoading
@@ -528,7 +543,7 @@ export function ChatBar({
       if (event.key === 'ArrowDown') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        setTriggerActive(idx => (idx + 1) % triggerItems.length)
+        moveTriggerActive(1)
 
         return
       }
@@ -536,20 +551,21 @@ export function ChatBar({
       if (event.key === 'ArrowUp') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
-        setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
+        moveTriggerActive(-1)
 
         return
       }
 
-      // Enter / Tab / Space all accept the highlighted item: a no-arg command
-      // commits its directive chip, an arg-taking command expands to its
-      // options step, and an arg option commits the full `/cmd arg` chip. Space
-      // is slash-only (an `@` mention takes a literal space) and gated to a
-      // non-empty query so a bare `/ ` still types a space.
-      const acceptOnSpace =
-        event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim()) && !slashFreeTextArgStage
-
-      const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
+      // Accepting the highlighted item: a no-arg command commits its directive
+      // chip, an arg-taking command expands to its options step, and an arg
+      // option commits the full `/cmd arg` chip.
+      const accept = acceptsTriggerCompletion({
+        activeExplicit: triggerActiveExplicit,
+        freeTextArgStage: slashFreeTextArgStage,
+        key: event.key,
+        kind: trigger.kind,
+        query: trigger.query
+      })
 
       if (accept) {
         event.preventDefault()
@@ -637,7 +653,7 @@ export function ChatBar({
 
       // $messages is read imperatively (not subscribed) so the composer
       // doesn't re-render on every streaming delta flush.
-      const history = deriveUserHistory(scope.readMessages(), chatMessageText)
+      const history = deriveUserHistory(scope.$messages.get(), chatMessageText)
       const entry = browseBackward(sessionId, currentDraft, history)
 
       if (entry !== null) {
@@ -662,7 +678,7 @@ export function ChatBar({
         event.preventDefault()
         triggerKeyConsumedRef.current = true
 
-        const history = deriveUserHistory(scope.readMessages(), chatMessageText)
+        const history = deriveUserHistory(scope.$messages.get(), chatMessageText)
         const result = browseForward(sessionId, history)
 
         if (result !== null) {

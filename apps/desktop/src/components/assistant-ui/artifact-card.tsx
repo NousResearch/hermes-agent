@@ -9,13 +9,7 @@ import { useI18n } from '@/i18n'
 import type { ArtifactDetection } from '@/lib/artifact-detect'
 import { codiconForLanguage } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
-import {
-  $artifactRegistry,
-  artifactsForSession,
-  openArtifactTab,
-  selectArtifactVersion,
-  upsertArtifact
-} from '@/store/artifacts'
+import { $artifactRegistry, artifactsForSession, openArtifact, upsertArtifact } from '@/store/artifacts'
 
 interface ArtifactCardProps {
   code: string
@@ -92,16 +86,11 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
       return
     }
 
-    openArtifactTab(result.artifactId)
-
     // An older card opens at ITS version, not silently the newest — the user
-    // clicked this specific iteration. openArtifactTab resets to newest, so
-    // re-pin when this card's content is a historical version.
+    // clicked this specific iteration.
     const versionIndex = result.record.versions.findIndex(version => version.content === trimmed)
 
-    if (versionIndex !== -1 && versionIndex < result.record.versions.length - 1) {
-      selectArtifactVersion(result.artifactId, versionIndex)
-    }
+    openArtifact(result.artifactId, versionIndex === -1 ? undefined : versionIndex)
   }
 
   return (

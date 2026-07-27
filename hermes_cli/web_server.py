@@ -5967,24 +5967,38 @@ def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[D
             _command_result(kind="pip", name=", ".join(dependencies), status="already_installed")
         ]
 
-    uv_path = shutil.which("uv")
-    if uv_path:
-        command: Any = [uv_path, "pip", "install", "--python", sys.executable, "--quiet", *missing]
-        display = f"uv pip install --python {sys.executable} {' '.join(missing)}"
-    else:
-        command = [sys.executable, "-m", "pip", "install", "--quiet", *missing]
-        display = f"{sys.executable} -m pip install {' '.join(missing)}"
-
+    # Route through the lazy-install pipeline (tools.lazy_deps.install_specs)
+    # instead of shelling out to pip against sys.executable directly. That
+    # pipeline is environment-aware: on hosted/immutable images the agent venv
+    # under /opt/hermes is sealed read-only, and installs must be redirected
+    # to the writable durable target on the data volume
+    # (HERMES_LAZY_INSTALL_TARGET, e.g. /opt/data/lazy-packages) — the same
+    # path every lazy backend already uses. A direct `pip install --python
+    # sys.executable` on those images fails with a permission error (NS-605).
+    # install_specs also activates the target on sys.path post-install so the
+    # availability recheck below sees the new packages without a restart.
     try:
-        completed = _run_setup_command(command, display=display, timeout=240)
+        from tools.lazy_deps import install_specs
+
+        outcome = install_specs(missing, timeout=240)
     except Exception as exc:
         return [
             _command_result(
                 kind="pip",
                 name=", ".join(missing),
                 status="failed",
-                command=display,
                 error=str(exc),
+            )
+        ]
+
+    if outcome.blocked:
+        return [
+            _command_result(
+                kind="pip",
+                name=", ".join(missing),
+                status="failed",
+                command=outcome.command,
+                error=outcome.reason,
             )
         ]
 
@@ -5992,9 +6006,14 @@ def _install_memory_provider_pip_dependencies(dependencies: List[str]) -> List[D
         _command_result(
             kind="pip",
             name=", ".join(missing),
-            status="installed" if completed.returncode == 0 else "failed",
-            command=display,
-            completed=completed,
+            status="installed" if outcome.ok else "failed",
+            command=outcome.command,
+            completed=subprocess.CompletedProcess(
+                args=outcome.command,
+                returncode=0 if outcome.ok else 1,
+                stdout=outcome.stdout,
+                stderr=outcome.stderr,
+            ),
         )
     ]
 

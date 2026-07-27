@@ -13846,22 +13846,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_in_place = bool(
                                         getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
-                                    if _hyg_rotated:
-                                        session_entry.session_id = _hyg_new_sid
-                                        # The held turn lease follows the
-                                        # rotation so an alias key resolving
-                                        # the fresh child still serializes
-                                        # against this turn (#64934).
-                                        self._rebind_turn_lease(
-                                            _quick_key, run_generation, _hyg_new_sid
-                                        )
-                                        await self.async_session_store._save()
-                                        await asyncio.to_thread(
-                                            self._sync_telegram_topic_binding,
-                                            source, session_entry,
-                                            reason="hygiene-compression",
-                                        )
-
                                     # Only rewrite the transcript when rotation produced
                                     # a NEW session id.  In-place compaction does NOT
                                     # need a rewrite: archive_and_compact() has already
@@ -13882,10 +13866,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # rewrite_transcript() would DELETE the original
                                     # messages and replace them with only the compressed
                                     # summary (permanent data loss, #21301).
+                                    #
+                                    # Write-before-repoint (mirrors manual /compress):
+                                    # if we repointed session_entry onto the child SID
+                                    # and rewrite_transcript then failed (lock/ENOSPC),
+                                    # the live entry would already reference a brand-new
+                                    # empty session while the turn continues — the
+                                    # conversation silently vanishes. Persist the child
+                                    # transcript first; only then rebind the live entry.
                                     if _hyg_rotated:
-                                        await self.async_session_store.rewrite_transcript(
-                                            session_entry.session_id, _compressed
-                                        )
+                                        if not await self.async_session_store.rewrite_transcript(
+                                            _hyg_new_sid, _compressed
+                                        ):
+                                            logger.error(
+                                                "Session hygiene: failed to persist "
+                                                "compressed transcript for rotated "
+                                                "session %s → %s; keeping the live "
+                                                "entry on the original session so the "
+                                                "conversation is not dropped",
+                                                session_entry.session_id,
+                                                _hyg_new_sid,
+                                            )
+                                            # Fail closed: treat like no rotation.
+                                            _hyg_rotated = False
+                                            _hyg_in_place = False
+                                        else:
+                                            session_entry.session_id = _hyg_new_sid
+                                            # The held turn lease follows the
+                                            # rotation so an alias key resolving
+                                            # the fresh child still serializes
+                                            # against this turn (#64934).
+                                            self._rebind_turn_lease(
+                                                _quick_key, run_generation, _hyg_new_sid
+                                            )
+                                            await self.async_session_store._save()
+                                            await asyncio.to_thread(
+                                                self._sync_telegram_topic_binding,
+                                                source, session_entry,
+                                                reason="hygiene-compression",
+                                            )
+
+                                    if _hyg_rotated:
                                         # Reset stored token count — transcript rewritten
                                         session_entry.last_prompt_tokens = 0
                                         history = _compressed

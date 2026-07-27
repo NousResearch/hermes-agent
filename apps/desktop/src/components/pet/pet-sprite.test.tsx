@@ -84,12 +84,14 @@ function installWindowStateBridge() {
 function installRaf() {
   let nextId = 1
   const frames = new Map<number, FrameRequestCallback>()
+
   const request = vi.fn((callback: FrameRequestCallback) => {
     const id = nextId++
     frames.set(id, callback)
 
     return id
   })
+
   const cancel = vi.fn((id: number) => {
     frames.delete(id)
   })

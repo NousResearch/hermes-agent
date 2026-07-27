@@ -102,9 +102,7 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect(first.map(s => s.id)).toEqual(['a', 'b'])
 
     // Second refresh returns fresh (but equal) row objects, as the API does.
-    listSidebarSessions.mockResolvedValue(
-      sidebar({ sessions: [row('a'), row('b')] })
-    )
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a'), row('b')] }))
 
     await act(async () => {
       await result.current.refreshSessions()
@@ -123,9 +121,7 @@ describe('refreshSessions identity + loading hygiene', () => {
 
     const first = $sessions.get()
 
-    listSidebarSessions.mockResolvedValue(
-      sidebar({ sessions: [row('a', { last_active: 2000, title: 'Renamed' })] })
-    )
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a', { last_active: 2000, title: 'Renamed' })] }))
 
     await act(async () => {
       await result.current.refreshSessions()
@@ -197,9 +193,7 @@ describe('refreshSessions batches slices into one request', () => {
     const cron = [row('c1', { source: 'cron', title: 'nightly' })]
     const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
 
-    listSidebarSessions.mockResolvedValue(
-      sidebar({ sessions: recents }, cron, messaging)
-    )
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 

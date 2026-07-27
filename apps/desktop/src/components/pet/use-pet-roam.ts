@@ -173,10 +173,13 @@ export function usePetRoam({
         const delay = Math.max(0, pauseUntil - now)
 
         if (delay > 0) {
-          pauseTimer = window.setTimeout(() => {
-            pauseTimer = 0
-            step(performance.now())
-          }, Math.min(delay, PAUSE_POLL_MS))
+          pauseTimer = window.setTimeout(
+            () => {
+              pauseTimer = 0
+              step(performance.now())
+            },
+            Math.min(delay, PAUSE_POLL_MS)
+          )
 
           return
         }

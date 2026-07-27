@@ -41,10 +41,7 @@ export interface FoundInPagePayload {
  * keeping the projection explicit makes the wire shape auditable and keeps
  * tests independent of the runtime type.
  */
-export function formatFoundInPage(result: {
-  activeMatchOrdinal?: number
-  matches?: number
-}): FoundInPagePayload {
+export function formatFoundInPage(result: { activeMatchOrdinal?: number; matches?: number }): FoundInPagePayload {
   return {
     activeMatchOrdinal: Number(result?.activeMatchOrdinal ?? 0),
     count: Number(result?.matches ?? 0)
@@ -102,9 +99,7 @@ export function stopFind(
  * highlight matches in THAT window, and the match counter must reflect
  * THAT window's DOM, not the primary's.
  */
-export function installFoundInPageForwarder(
-  webContents: Electron.WebContents | null | undefined
-): () => void {
+export function installFoundInPageForwarder(webContents: Electron.WebContents | null | undefined): () => void {
   if (!webContents || webContents.isDestroyed()) {
     return () => {}
   }

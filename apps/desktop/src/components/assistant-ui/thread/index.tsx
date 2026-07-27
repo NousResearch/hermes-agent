@@ -104,7 +104,16 @@ export const Thread: FC<{
         />
       )
     }),
-    [cwd, gateway, hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm, sessionId]
+    [
+      cwd,
+      gateway,
+      hasBranchInNewChat,
+      hasCancel,
+      hasDismissError,
+      hasRestoreToMessage,
+      requestRestoreConfirm,
+      sessionId
+    ]
   )
 
   const emptyPlaceholder = intro ? (

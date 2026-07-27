@@ -229,10 +229,13 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
-    if parts and parts[0] == "chrome-debug" and any(
-        part.casefold() in _CHROME_REGENERABLE_CACHE_DIRS for part in parts[1:]
-    ):
-        return True
+    if "chrome-debug" in parts:
+        chrome_root_index = parts.index("chrome-debug")
+        if any(
+            part.casefold() in _CHROME_REGENERABLE_CACHE_DIRS
+            for part in parts[chrome_root_index + 1 :]
+        ):
+            return True
 
     for part in parts:
         if part not in _EXCLUDED_DIRS:

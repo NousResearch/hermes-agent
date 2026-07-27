@@ -98,8 +98,14 @@ class TestShouldExclude:
         assert _should_exclude(Path("chrome-debug/Default/GPUCache/cache.db"))
         assert _should_exclude(Path("chrome-debug/Default/Code Cache/js/index"))
         assert _should_exclude(Path("chrome-debug/ShaderCache/GPUCache/data_0"))
+        assert _should_exclude(
+            Path("profiles/coder/chrome-debug/Default/GPUCache/cache.db")
+        )
         assert not _should_exclude(Path("chrome-debug/Default/Cookies"))
         assert not _should_exclude(Path("chrome-debug/Default/Login Data"))
+        assert not _should_exclude(
+            Path("profiles/coder/chrome-debug/Default/Login Data")
+        )
 
     def test_excludes_pyc_files(self):
         from hermes_cli.backup import _should_exclude
@@ -2112,7 +2118,7 @@ class TestPreUpdateBackup:
         """A live Chrome cache DB cannot stall a full pre-update backup, while
         persistent browser state outside cache directories remains restorable."""
         hermes_home = tmp_path / ".hermes"
-        profile = hermes_home / "chrome-debug" / "Default"
+        profile = hermes_home / "profiles" / "coder" / "chrome-debug" / "Default"
         gpu_cache = profile / "GPUCache"
         gpu_cache.mkdir(parents=True)
         (hermes_home / "config.yaml").write_text("model: test\n")
@@ -2138,8 +2144,8 @@ class TestPreUpdateBackup:
         assert time.monotonic() - started < 2.0
         with zipfile.ZipFile(out_zip) as zf:
             names = set(zf.namelist())
-        assert "chrome-debug/Default/Cookies" in names
-        assert "chrome-debug/Default/GPUCache/cache.db" not in names
+        assert "profiles/coder/chrome-debug/Default/Cookies" in names
+        assert "profiles/coder/chrome-debug/Default/GPUCache/cache.db" not in names
 
     def test_failed_sqlite_snapshot_removes_incomplete_archive(self, tmp_path, monkeypatch):
         """The non-interactive full-zip helper must fail the entire archive

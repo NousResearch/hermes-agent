@@ -15,6 +15,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $openArtifacts, artifactIdFromTabId } from '@/store/artifacts'
 import {
   $panesFlipped,
   $rightRailActiveTabId,
@@ -34,6 +35,7 @@ import {
 } from '@/store/preview'
 import { $dirtyPreviewUrls } from '@/store/preview-edit'
 
+import { ArtifactPane } from './artifact-pane'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
@@ -44,11 +46,9 @@ interface ChatPreviewRailProps {
   setTitlebarToolGroup?: SetTitlebarToolGroup
 }
 
-interface RailTab {
-  id: RightRailTabId
-  label: string
-  target: PreviewTarget
-}
+type RailTab =
+  | { id: RightRailTabId; kind: 'preview'; label: string; target: PreviewTarget; tooltip: string }
+  | { artifactId: string; id: RightRailTabId; kind: 'artifact'; label: string; tooltip: string }
 
 function tabLabelFor(target: PreviewTarget): string {
   const value = target.label || target.path || target.source || target.url
@@ -65,15 +65,43 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
   const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
+  const openArtifacts = useStore($openArtifacts)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
       ...(previewTarget
-        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab]
+        ? [
+            {
+              id: RIGHT_RAIL_PREVIEW_TAB_ID,
+              kind: 'preview',
+              label: t.preview.tab,
+              target: previewTarget,
+              tooltip: previewTarget.path || previewTarget.url || t.preview.tab
+            } as RailTab
+          ]
         : []),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...filePreviewTabs.map(
+        ({ id, target }) =>
+          ({
+            id,
+            kind: 'preview',
+            label: tabLabelFor(target),
+            target,
+            tooltip: target.path || target.url || tabLabelFor(target)
+          }) as RailTab
+      ),
+      ...openArtifacts.map(
+        ({ record, tabId }) =>
+          ({
+            artifactId: record.id,
+            id: tabId,
+            kind: 'artifact',
+            label: record.title || t.artifactPane.tabFallback,
+            tooltip: record.title || t.artifactPane.tabFallback
+          }) as RailTab
+      )
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [filePreviewTabs, openArtifacts, previewTarget, t.artifactPane.tabFallback, t.preview.tab]
   )
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
@@ -117,13 +145,13 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             const active = tab.id === activeTab.id
             const hasOthers = tabs.length > 1
             const hasTabsToRight = index < tabs.length - 1
-            const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
+            const dirty = tab.kind === 'preview' && Boolean(dirtyPreviewUrls[tab.target.url])
 
             return (
               <ContextMenu key={tab.id}>
                 <ContextMenuTrigger asChild>
                   <PaneTab active={active} dirty={dirty} onClose={() => closeRightRailTab(tab.id)}>
-                    <Tip label={tab.target.path || tab.target.url || tab.label}>
+                    <Tip label={tab.tooltip}>
                       <PaneTabLabel
                         aria-selected={active}
                         as="button"
@@ -132,6 +160,9 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                         role="tab"
                         type="button"
                       >
+                        {tab.kind === 'artifact' && (
+                          <Codicon className="mr-1 shrink-0 text-[0.6875rem] opacity-70" name="sparkle" />
+                        )}
                         {tab.label}
                       </PaneTabLabel>
                     </Tip>
@@ -166,13 +197,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={isPreview ? onRestartServer : undefined}
-          reloadRequest={previewReloadRequest}
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={activeTab.target}
-        />
+        {activeTab.kind === 'artifact' ? (
+          <ArtifactPane artifactId={artifactIdFromTabId(activeTab.id) ?? activeTab.artifactId} />
+        ) : (
+          <PreviewPane
+            embedded
+            onRestartServer={isPreview ? onRestartServer : undefined}
+            reloadRequest={previewReloadRequest}
+            setTitlebarToolGroup={setTitlebarToolGroup}
+            target={activeTab.target}
+          />
+        )}
       </div>
     </aside>
   )

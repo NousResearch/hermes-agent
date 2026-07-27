@@ -4230,10 +4230,20 @@ def _try_main_agent_model_fallback(
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
 
-    skip = (failed_provider or "").lower().strip()
+    # Identity + scope semantics owned by agent.backend_identity (#72468):
+    # model-scoped failures skip only the exact deployment that failed;
+    # provider-wide failures (no failed_model) skip the credential surface.
+    from agent.backend_identity import (
+        BackendIdentity,
+        FailureScope,
+        should_skip_candidate,
+    )
+
     skip_model = (failed_model or "").strip().lower() or None
-    if main_provider.lower() == skip and (
-        skip_model is None or main_model.lower() == skip_model
+    if should_skip_candidate(
+        BackendIdentity.build(provider=main_provider, model=main_model),
+        BackendIdentity.build(provider=failed_provider, model=skip_model),
+        FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL,
     ):
         # The thing that failed IS the main model (or the failure was
         # provider-wide) — nothing to fall back to.
@@ -4384,8 +4394,24 @@ def _try_configured_fallback_chain(
     if not chain or not isinstance(chain, list):
         return None, None, ""
 
-    skip = failed_provider.lower().strip()
     skip_model = (failed_model or "").strip().lower() or None
+    # Identity + scope semantics owned by agent.backend_identity (#59561,
+    # #72468): a failed_model means the failure was model-scoped (timeout /
+    # connection / rate limit) — only the exact deployment is skipped; no
+    # failed_model means provider-wide (auth/payment) — the whole credential
+    # surface is skipped.
+    from agent.backend_identity import (
+        BackendIdentity,
+        FailureScope,
+        should_skip_candidate,
+    )
+
+    failed_ident = BackendIdentity.build(
+        provider=failed_provider, model=skip_model,
+    )
+    failure_scope = (
+        FailureScope.MODEL if skip_model else FailureScope.CREDENTIAL
+    )
     tried = []
     min_ctx = _task_minimum_context_length(task)
 
@@ -4396,8 +4422,14 @@ def _try_configured_fallback_chain(
         if not fb_provider:
             continue
         fb_model_raw = str(entry.get("model", "")).strip()
-        if fb_provider.lower() == skip and (
-            skip_model is None or fb_model_raw.lower() == skip_model
+        if should_skip_candidate(
+            BackendIdentity.build(
+                provider=fb_provider,
+                model=fb_model_raw,
+                base_url=str(entry.get("base_url") or ""),
+            ),
+            failed_ident,
+            failure_scope,
         ):
             continue
         fb_model = fb_model_raw or None

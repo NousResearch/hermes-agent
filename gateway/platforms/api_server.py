@@ -3530,6 +3530,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         headers = {
             "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no", **self._session_headers(session_id, gateway_session_key)}
+        # CORS middleware can't inject headers into StreamResponse after
+        # prepare() flushes them, so resolve CORS headers up front (#72892).
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            headers.update(cors)
         response = web.StreamResponse(status=200, headers=headers)
         await response.prepare(request)
         try:

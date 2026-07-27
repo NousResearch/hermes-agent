@@ -3167,6 +3167,47 @@ class TestTryMainAgentModelFallback:
             client, model, label = _try_main_agent_model_fallback("glm", task="vision")
         assert client is None
 
+    def test_same_provider_different_model_falls_back_when_failed_model_given(self):
+        """Self-hosted shape: aux model and main model share one custom
+        provider label. A timeout on the aux model must still reach the main
+        model — same provider, DIFFERENT model (real incident: aux glm-5.2
+        timed out while main macaron-v1-venti on the same endpoint was
+        healthy; the provider-label skip discarded the working fallback)."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"), \
+             patch("agent.auxiliary_client._is_provider_unhealthy", return_value=False), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fake_client, "mindai/macaron-v1-venti")):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression", failed_model="zai-org/glm-5.2")
+        assert client is fake_client
+        assert model == "mindai/macaron-v1-venti"
+        assert label == "main-agent(custom)"
+
+    def test_same_provider_same_model_still_skips_with_failed_model(self):
+        """When the model that failed IS the main model, there is nothing to
+        fall back to — the narrowed skip must not regress into a self-retry."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression",
+                failed_model="MindAI/Macaron-V1-Venti")  # case-insensitive match
+        assert client is None and model is None and label == ""
+
+    def test_same_provider_no_failed_model_keeps_provider_wide_skip(self):
+        """Legacy / provider-wide callers (auth 401, payment 402) pass no
+        failed_model: the whole-provider skip must be preserved so broken
+        shared credentials don't trigger a doomed main-model attempt."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="mindai/macaron-v1-venti"):
+            client, model, label = _try_main_agent_model_fallback(
+                "custom", task="compression")
+        assert client is None and model is None and label == ""
+
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured

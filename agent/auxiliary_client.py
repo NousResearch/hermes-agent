@@ -4188,6 +4188,7 @@ def _try_main_agent_model_fallback(
     failed_provider: str,
     task: str = None,
     reason: str = "error",
+    failed_model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the user's main agent provider + model.
 
@@ -4196,8 +4197,23 @@ def _try_main_agent_model_fallback(
     layer: if nothing the user asked for can serve the request, try the
     main chat model before giving up.
 
-    Skips when the failed provider already IS the main provider (no point
-    retrying the same backend that just failed).
+    ``failed_model`` narrows the same-provider skip to the exact
+    (provider, model) pair that just failed, mirroring
+    :func:`_try_configured_fallback_chain`.  This matters for self-hosted /
+    custom endpoints serving several models behind one provider label: the
+    aux compression model timing out says nothing about the health of the
+    main agent model deployed on the same URL (real incident: aux
+    ``glm-5.2`` hung and timed out while main ``macaron-v1-venti`` on the
+    identical endpoint was serving 448K-token turns fine — the
+    provider-label skip discarded the one fallback that would have worked).
+
+    - Model-specific runtime failures (timeout, connection, rate limit,
+      model-incompatible, invalid response) pass ``failed_model``: skip the
+      main model only when it IS the exact model that failed.
+    - Provider-wide failures (auth 401, payment 402) and legacy callers
+      leave ``failed_model`` as None, keeping the whole-provider skip —
+      the shared credentials/account are broken, so the main model on the
+      same provider cannot help either.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -4215,8 +4231,12 @@ def _try_main_agent_model_fallback(
         return None, None, ""
 
     skip = (failed_provider or "").lower().strip()
-    if main_provider.lower() == skip:
-        # The thing that failed IS the main model — nothing to fall back to.
+    skip_model = (failed_model or "").strip().lower() or None
+    if main_provider.lower() == skip and (
+        skip_model is None or main_model.lower() == skip_model
+    ):
+        # The thing that failed IS the main model (or the failure was
+        # provider-wide) — nothing to fall back to.
         return None, None, ""
     if _is_provider_unhealthy(main_provider):
         _log_skip_unhealthy(main_provider, task)
@@ -8135,7 +8155,8 @@ def call_llm(
                     failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider, task, reason=reason,
+                        failed_model=_chain_failed_model)
 
             if fb_client is not None:
                 fb_resp = _call_fallback_candidate_sync(
@@ -8680,7 +8701,8 @@ async def async_call_llm(
                     failed_model=_chain_failed_model)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider, task, reason=reason,
+                        failed_model=_chain_failed_model)
 
             if fb_client is not None:
                 # Convert sync fallback client to async

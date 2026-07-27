@@ -63,8 +63,8 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
-  profileUsesPrimaryBackend,
   resolveAuthMode,
+  resolveProfileBackendRoute,
   resolveTestWsUrl,
   savedProfileSsh,
   tokenPreview
@@ -7742,33 +7742,28 @@ function primaryProfileKey() {
   return readActiveDesktopProfile() || 'default'
 }
 
-// Resolve a backend connection for the given profile. The primary profile uses
-// startHermes() (the window backend: boot UI, bootstrap, remote mode). Profiles
-// inheriting an app-global remote share that same connection because the remote
-// backend scopes their requests by profile. Other profiles use lazily-spawned
-// pool backends. An empty / unknown profile resolves to the primary.
-async function ensureBackend(profile) {
-  const primaryProfile = primaryProfileKey()
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfile
-
-  if (key === primaryProfile) {
-    return startHermes()
+// Options describing the current connection setup for `resolveProfileBackendRoute`.
+function profileRouteOptions(profile) {
+  return {
+    globalRemote: globalRemoteActive(),
+    primaryProfile: primaryProfileKey(),
+    profileRemoteOverride: Boolean(profileHasRemoteOverride(profile))
   }
+}
 
-  if (
-    globalRemoteActive() &&
-    profileUsesPrimaryBackend(key, {
-      primaryProfile,
-      globalRemote: true,
-      profileRemoteOverride: profileHasRemoteOverride(key)
-    })
-  ) {
+// Resolve a backend connection for the given profile, per the routing table in
+// resolveProfileBackendRoute(). An empty / unknown profile resolves to the
+// primary, so legacy callers are unchanged.
+async function ensureBackend(profile) {
+  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const route = resolveProfileBackendRoute(key, profileRouteOptions(key))
+
+  if (route.backend === 'primary') {
     const connection = await startHermes()
 
-    // Non-primary global-remote profiles still need their scope on the
-    // descriptor so renderer-side WebSocket, filesystem, and cache routing use
-    // the selected profile while sharing the one underlying backend.
-    return { ...connection, profile: key }
+    // A shared backend still owes the caller its profile scope, so renderer-side
+    // WebSocket, filesystem, and cache routing target the selected profile.
+    return route.descriptorProfile ? { ...connection, profile: route.descriptorProfile } : connection
   }
 
   const existing = backendPool.get(key)
@@ -9908,10 +9903,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
-    globalRemote: globalRemoteActive(),
-    profileRemoteOverride: profileHasRemoteOverride(profile)
-  })
+  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, profileRouteOptions(profile))
 
   const url = `${connection.baseUrl}${requestPath}`
 

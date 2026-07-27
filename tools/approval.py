@@ -228,11 +228,11 @@ def _is_cron_session() -> bool:
     """Return task-local cron state, falling back to env for legacy entrypoints."""
     try:
         from gateway.session_context import get_session_env
-
-        value = get_session_env("HERMES_CRON_SESSION", "")
-        return str(value).lower() in {"1", "true", "yes", "on"}
-    except Exception:
+    except ImportError:
         return env_var_enabled("HERMES_CRON_SESSION")
+
+    value = get_session_env("HERMES_CRON_SESSION", "")
+    return str(value).lower() in {"1", "true", "yes", "on"}
 
 
 def _is_gateway_approval_context() -> bool:

@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tools.approval import _is_cron_session, _is_gateway_approval_context
 
@@ -64,3 +66,16 @@ def test_concurrent_gateway_and_cron_contexts_do_not_bleed(monkeypatch):
     assert not gateway.is_alive()
     assert not cron.is_alive()
     assert results == {"gateway": (False, True), "cron": (True, False)}
+
+
+def test_cron_context_reader_does_not_hide_runtime_errors(monkeypatch):
+    """Unexpected context failures must not silently fall back to global state."""
+    import gateway.session_context as session_context
+
+    def fail_context_read(*_args, **_kwargs):
+        raise RuntimeError("broken context reader")
+
+    monkeypatch.setattr(session_context, "get_session_env", fail_context_read)
+
+    with pytest.raises(RuntimeError, match="broken context reader"):
+        _is_cron_session()

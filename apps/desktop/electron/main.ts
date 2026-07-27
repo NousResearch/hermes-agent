@@ -5912,6 +5912,17 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     request.on('response', res => {
       const chunks = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      // Post-response loader errors (e.g. net::ERR_CONTENT_LENGTH_MISMATCH when
+      // the body is truncated after headers) are emitted on the IncomingMessage,
+      // not on the ClientRequest. Mirror fetchJson/fetchPublicJson. (#72530)
+      res.on('error', error => {
+        if (timedOut) {
+          return
+        }
+
+        clearTimeout(timer)
+        reject(error)
+      })
       res.on('end', () => {
         if (timedOut) {
           return

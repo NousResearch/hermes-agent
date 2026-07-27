@@ -814,7 +814,25 @@ class RelayAdapter(BasePlatformAdapter):
         if md.get("thread_id") or md.get("thread_ts"):
             # A real thread was resolved by run.py — honour it.
             return reply_to
-        # Synthetic DM self-anchor: post flat at the DM root (native parity).
+        # Mode gate (native _resolve_thread_ts parity). The final-reply lane
+        # (gateway/platforms/base.py) builds metadata from source.thread_id
+        # ONLY — for a top-level DM that is None, so in thread-per-message
+        # mode the triggering-ts reply_to here is the final reply's ONLY
+        # threading signal (run.py's synthetic root feeds just the
+        # progress/status lane). Dropping it unconditionally exiled the final
+        # message to the DM root while progress stayed threaded (2026-07-27
+        # report, sibling of the QA-5 prompt bug). Native SlackAdapter only
+        # suppresses the anchor when reply_in_thread=false; mirror that.
+        try:
+            reply_in_thread = bool(
+                (self.config.extra or {}).get("reply_in_thread", True)
+            )
+        except Exception:  # noqa: BLE001 - config shape is adapter-owned
+            reply_in_thread = True
+        if reply_in_thread:
+            # Thread-per-message: the triggering ts is the thread anchor.
+            return reply_to
+        # Flat mode: synthetic DM self-anchor — post flat at the DM root.
         return None
 
     async def edit_message(

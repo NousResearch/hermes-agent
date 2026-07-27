@@ -36,7 +36,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { LayoutDashboard } from '@/lib/icons'
+import { LayoutDashboard, PanelBottom } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { $artifactTabs } from '@/store/artifacts'
@@ -56,6 +56,7 @@ import { $filePreviewTabs, $filePreviewTarget, $previewTarget, closeRightRail } 
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
+import { $statusbarVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -297,6 +298,20 @@ registry.registerMany([
       icon: LayoutDashboard,
       keywords: ['layout', 'reset', 'default', 'panes'],
       run: resetLayoutTree
+    } satisfies PaletteContribution
+  },
+  // Hiding the bar removes the surface that would otherwise offer it back, so
+  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
+  {
+    id: 'view.toggleStatusbar',
+    area: PALETTE_AREA,
+    data: {
+      id: 'view.toggleStatusbar',
+      label: 'Toggle status bar',
+      action: 'view.toggleStatusbar',
+      icon: PanelBottom,
+      keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+      run: toggleStatusbarVisible
     } satisfies PaletteContribution
   },
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
@@ -641,6 +656,7 @@ function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
 
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
+  const statusbarVisible = useStore($statusbarVisible)
 
   return (
     <SidebarProvider
@@ -707,8 +723,10 @@ export function ContribController() {
           <SessionTileCloseConfirm />
 
           {/* The REAL statusbar (model pill, command center, agents, …) with
-              statusBar.left/right contributions merged in. */}
-          <WiredPane part="statusbar" />
+              statusBar.left/right contributions merged in. Unmounted — not
+              just hidden — while toggled off, so its 15s status poll and the
+              per-turn readouts stop with it. */}
+          {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>
     </SidebarProvider>

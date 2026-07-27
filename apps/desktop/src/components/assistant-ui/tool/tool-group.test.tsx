@@ -9,11 +9,12 @@ import { $toolDisclosureStates } from '@/store/tool-view'
 
 import { Thread } from '../thread'
 
-// Regression coverage for the "approval must never be buried" bug. Tools now
-// render as a flat list (no collapsible "N steps" group), so a pending tool's
-// inline ApprovalBar is always in the visual flow — never inside a `hidden`
-// body. These assert the bar shows only when an approval is live and is never
-// trapped under a `hidden` ancestor.
+// A run of tool calls collapses to a one-line summary once it has settled, but
+// a run with anything still pending always renders its rows. That rule is what
+// keeps the "approval must never be buried" bug fixed: an inline ApprovalBar
+// only ever exists on a pending tool, and a pending tool's run is never behind
+// a chevron. These cover both halves — the collapse itself, and the approval
+// staying in the visual flow.
 
 const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
@@ -183,6 +184,42 @@ function failedOnlyMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
+// Two settled tools in a row — an edit plus a read — so the run earns a
+// summary line and collapses.
+function settledRunMessage(): ThreadMessage {
+  return {
+    id: 'assistant-settled-run',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'patch-1',
+        toolName: 'patch',
+        args: { path: '/repo/src/wiring.tsx' },
+        argsText: JSON.stringify({ path: '/repo/src/wiring.tsx' }),
+        result: { path: '/repo/src/wiring.tsx', inline_diff: '--- a\n+++ b\n+added line\n-removed line' }
+      },
+      {
+        type: 'tool-call',
+        toolCallId: 'read-2',
+        toolName: 'read_file',
+        args: { path: '/repo/src/status.tsx' },
+        argsText: JSON.stringify({ path: '/repo/src/status.tsx' }),
+        result: { content: 'export const Status = () => null' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function GroupHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -209,6 +246,55 @@ afterEach(() => {
   clearAllPrompts()
   $activeSessionId.set(null)
   clearDismissedToolRows()
+})
+
+describe('settled tool run', () => {
+  it('collapses to a summary line naming the work and its diff', async () => {
+    const { container } = render(<GroupHarness message={settledRunMessage()} />)
+
+    expect(await screen.findByText('Edited wiring.tsx, explored status.tsx')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+    expect(screen.getByText('1', { selector: '.text-\\(--ui-green\\) *' })).toBeTruthy()
+  })
+
+  it('expands to the underlying rows when the summary is clicked', async () => {
+    const { container } = render(<GroupHarness message={settledRunMessage()} />)
+
+    fireEvent.click(await screen.findByText('Edited wiring.tsx, explored status.tsx'))
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('leaves a lone tool call as its own row, with no summary above it', async () => {
+    const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-tool-row]').length).toBe(1)
+    })
+    expect(container.querySelector('[data-tool-summary]')).toBeNull()
+  })
+})
+
+describe('live tool run', () => {
+  it('keeps its rows on screen instead of hiding them behind the summary', async () => {
+    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('cannot be collapsed while a tool is still running', async () => {
+    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-tool-summary]')).not.toBeNull()
+    })
+
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).toBeNull()
+  })
 })
 
 describe('flat tool list approval surfacing', () => {

@@ -27,6 +27,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { DiffCount } from '@/components/ui/diff-count'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
@@ -63,6 +64,7 @@ import {
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
+import { isToolCallPart, type RunSummary, summarizeToolRun } from './run-summary'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -797,29 +799,89 @@ function useToolWindow(enabled: boolean) {
   return { contentRef, faded, onScroll, scrollRef }
 }
 
+// The one grey line that stands in for a run of tool calls once it has
+// settled — "Edited wiring.tsx, explored 3 files  +6 −4". While the run is
+// live the same line narrates it in the present tense and the rows stay
+// visible below, so nothing the user is waiting on hides behind a chevron.
+function ToolRunHeader({
+  live,
+  onToggle,
+  open,
+  summary
+}: {
+  live: boolean
+  onToggle?: () => void
+  open: boolean
+  summary: RunSummary
+}) {
+  return (
+    <div data-tool-summary="">
+      <DisclosureRow onToggle={onToggle} open={open}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <FadeText className={cn(TOOL_HEADER_TITLE_CLASS, 'truncate text-(--ui-text-tertiary)')}>
+            {live ? <span className="shimmer">{summary.text}</span> : summary.text}
+          </FadeText>
+          <DiffCount added={summary.added} className="text-[0.625rem]" removed={summary.removed} />
+        </span>
+      </DisclosureRow>
+    </div>
+  )
+}
+
+interface ToolRunState {
+  key: string
+  live: boolean
+  summary: RunSummary
+}
+
+// assistant-ui compares selector results with `Object.is` and calls the
+// selector on every store update, so returning a fresh object here would
+// re-render the group on every text delta in the turn. The run only changes
+// when a call arrives or one finishes; cache on exactly that.
+function useToolRun(startIndex: number, endIndex: number): ToolRunState {
+  const cache = useRef<null | { signature: string; value: ToolRunState }>(null)
+
+  return useAuiState(state => {
+    const tools = state.message.parts.slice(Math.max(0, startIndex), endIndex + 1).filter(isToolCallPart)
+    const signature = tools.map(tool => `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}`).join('|')
+
+    if (cache.current?.signature !== signature) {
+      cache.current = {
+        signature,
+        value: {
+          key: tools[0]?.toolCallId ?? '',
+          live: tools.some(tool => tool.result === undefined),
+          summary: summarizeToolRun(tools)
+        }
+      }
+    }
+
+    return cache.current.value
+  })
+}
+
 /**
- * Flat, Cursor-style tool list. assistant-ui hands us a *range* of
- * consecutive tool-call parts, but how that range is sliced is unstable: a
- * live stream interleaves narration/reasoning between calls (many tiny
- * ranges), while the settled message reconstructs every tool_call back-to-back
- * (one big range). Rendering a "Tool actions · N steps" group off that range
- * therefore reshuffled the whole turn the instant it settled.
+ * A run of consecutive tool calls, headed by the line that summarizes it.
  *
- * So we still never *label* the group: each tool is a standalone row on the
- * tight `--tool-row-gap` rhythm. Once a run reaches `TOOL_GROUP_SCROLL_THRESHOLD`
- * rows it collapses into a fixed-height, auto-scrolling window so a long run
- * doesn't shove the reply off screen; shorter runs are byte-identical to before.
- * The DOM shape is the same either way — only classes flip — so a run that
- * crosses the threshold mid-stream never remounts a row. `ToolEmbedContext` is
- * false so every row owns its own chrome (timer / preview / copy / approval).
+ * The run is identified by its FIRST tool call, never by its position: a live
+ * stream and the same turn rehydrated from history agree on which calls belong
+ * together, but not on the indices they land at, because rehydration folds a
+ * turn into one bubble that the live view spreads over several. Keying off the
+ * index is what made an earlier attempt at this reshuffle the moment a turn
+ * settled. `lib/tool-run-continuity.test.ts` locks that agreement down.
+ *
+ * A settled run collapses to its header; a live one keeps its rows on screen
+ * (and past `TOOL_GROUP_SCROLL_THRESHOLD` inside a fixed-height auto-scrolling
+ * window, so a long run can't shove the reply off screen). `ToolEmbedContext`
+ * is false so every row still owns its own chrome (timer / copy / approval).
  */
 export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
   endIndex,
   startIndex
 }) => {
-  const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
+  const { key, live, summary } = useToolRun(startIndex, endIndex)
 
   const hasUnboundable = useAuiState(s =>
     s.message.parts
@@ -827,26 +889,49 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       .some(part => part.type === 'tool-call' && isUnboundableTool(part.toolName))
   )
 
-  const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
+  const disclosureId = `tool-run:${key}`
+  const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
+  // A lone call is already its own one-line summary, so it never earns a
+  // header. Neither does a run holding an `UNBOUNDABLE_TOOLS` surface — a
+  // `clarify` asking the user a question must not end up behind a chevron.
+  const grouped = endIndex > startIndex && !hasUnboundable
+  const open = !grouped || live || (persistedOpen ?? false)
 
-  const bounded = shouldBoundToolGroup(Children.count(children), hasUnboundable)
+  const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
+
+  const bounded = open && shouldBoundToolGroup(Children.count(children), hasUnboundable)
   const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
 
   return (
     <ToolEmbedContext.Provider value={false}>
-      <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
-        <div
-          className={cn(
-            bounded && 'tool-group-scroll max-h-(--tool-group-scroll-max-h) overflow-y-auto',
-            bounded && faded && 'tool-group-scroll--faded'
-          )}
-          onScroll={bounded ? onScroll : undefined}
-          ref={scrollRef}
-        >
-          <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" ref={contentRef}>
-            {children}
+      <div
+        className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
+        data-slot="tool-block"
+        data-tool-group=""
+        ref={enterRef}
+      >
+        {grouped && (
+          <ToolRunHeader
+            live={live}
+            onToggle={live ? undefined : () => setToolDisclosureOpen(disclosureId, !open)}
+            open={open}
+            summary={summary}
+          />
+        )}
+        {open && (
+          <div
+            className={cn(
+              bounded && 'tool-group-scroll max-h-(--tool-group-scroll-max-h) overflow-y-auto',
+              bounded && faded && 'tool-group-scroll--faded'
+            )}
+            onScroll={bounded ? onScroll : undefined}
+            ref={scrollRef}
+          >
+            <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)" ref={contentRef}>
+              {children}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </ToolEmbedContext.Provider>
   )

@@ -9,6 +9,7 @@ import pytest
 
 from agent.lsp import manager
 from agent.lsp.manager import LSPService, _ClientEntry, _lifecycle_config
+from hermes_cli.config import load_config
 
 
 class _FakeClient:
@@ -186,3 +187,71 @@ def test_invalid_enabled_lifecycle_keeps_bounded_defaults() -> None:
     assert sweep == manager.DEFAULT_SWEEP_INTERVAL
     assert max_clients == 0
     assert "idle_timeout_seconds" in (error or "")
+
+
+def test_load_config_includes_opt_in_lifecycle_defaults(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    lifecycle = load_config()["lsp"]["lifecycle"]
+
+    assert lifecycle["enabled"] is False
+    assert lifecycle["idle_timeout_seconds"] == manager.DEFAULT_IDLE_TIMEOUT
+    assert lifecycle["sweep_interval_seconds"] == manager.DEFAULT_SWEEP_INTERVAL
+    assert lifecycle["max_clients_per_process"] == 0
+
+
+def test_create_from_config_keeps_process_lifetime_when_lifecycle_omitted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "lsp:\n  enabled: false\n",
+        encoding="utf-8",
+    )
+
+    service = LSPService.create_from_config()
+
+    assert service is not None
+    try:
+        lifecycle = service.get_status()["lifecycle"]
+        assert lifecycle["enabled"] is False
+        assert lifecycle["reaper_running"] is False
+    finally:
+        service.shutdown()
+
+
+def test_create_from_config_propagates_lifecycle_overrides(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "lsp:\n"
+        "  enabled: false\n"
+        "  lifecycle:\n"
+        "    enabled: true\n"
+        "    idle_timeout_seconds: 321\n"
+        "    sweep_interval_seconds: 7\n"
+        "    max_clients_per_process: 3\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_config()["lsp"]["lifecycle"]
+    assert loaded["enabled"] is True
+    assert loaded["idle_timeout_seconds"] == 321
+    assert loaded["sweep_interval_seconds"] == 7
+    assert loaded["max_clients_per_process"] == 3
+
+    service = LSPService.create_from_config()
+
+    assert service is not None
+    try:
+        lifecycle = service.get_status()["lifecycle"]
+        assert lifecycle["enabled"] is True
+        assert lifecycle["idle_timeout_seconds"] == 321
+        assert lifecycle["sweep_interval_seconds"] == 7
+        assert lifecycle["max_clients_per_process"] == 3
+        assert lifecycle["reaper_running"] is False
+    finally:
+        service.shutdown()

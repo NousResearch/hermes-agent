@@ -133,8 +133,6 @@ function RepoFlatSection({
       group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
   )
 
-  const repoCount = ordered.reduce((sum, group) => sum + group.sessions.length, 0)
-
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
   // and leave the worktree on disk. A dirty worktree escalates to a force prompt
   // instead of erroring (those changes are usually throwaway).
@@ -268,7 +266,6 @@ function RepoFlatSection({
             />
           )
         }
-        count={repoCount}
         emphasis
         icon={<Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
         label={repo.label}

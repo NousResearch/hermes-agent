@@ -5226,6 +5226,62 @@ def _run_npm_install_deterministic(
     )
 
 
+def _npm_bin_exists(bin_dir: Path, name: str) -> bool:
+    """True when an npm bin shim for *name* exists (POSIX or Windows)."""
+    return any(
+        (bin_dir / candidate).exists()
+        for candidate in (name, f"{name}.cmd", f"{name}.ps1", f"{name}.exe")
+    )
+
+
+def _web_build_toolchain_ready(*roots: Path) -> bool:
+    """True when ``tsc`` and ``vite`` shims are reachable from any of *roots*.
+
+    Callers must pass every root the build would search; checking only one
+    reports a healthy tree as broken.
+    """
+    bin_dirs = [
+        bin_dir
+        for bin_dir in (root / "node_modules" / ".bin" for root in roots)
+        if bin_dir.is_dir()
+    ]
+    return bool(bin_dirs) and all(
+        any(_npm_bin_exists(bin_dir, tool) for bin_dir in bin_dirs)
+        for tool in ("tsc", "vite")
+    )
+
+
+def _web_toolchain_roots(web_dir: Path) -> tuple[Path, ...]:
+    """Roots whose ``node_modules/.bin`` can satisfy the web build.
+
+    ``npm run build`` prepends ``node_modules/.bin`` for the package and each
+    of its ancestors, so shims hoisted to the workspace root and shims nested
+    under a package that owns its lockfile (#42973) are equally valid.
+    """
+    return (web_dir, web_dir.parent)
+
+
+def _missing_web_build_tool(output: str) -> str | None:
+    """Return the build tool a failed ``npm run build`` could not resolve.
+
+    Each shell words this differently: ``sh: 1: tsc: not found`` (dash),
+    ``vite: command not found`` (bash/zsh), and ``'tsc' is not recognized as
+    an internal or external command`` (cmd.exe).
+    """
+    lowered = output.lower()
+    for tool in ("tsc", "vite"):
+        if any(
+            phrase in lowered
+            for phrase in (
+                f"{tool}: not found",
+                f"{tool}: command not found",
+                f"'{tool}' is not recognized",
+            )
+        ):
+            return tool
+    return None
+
+
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available, serializing across processes.
 
@@ -5333,12 +5389,16 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
-    r1 = _run_npm_install_deterministic(
-        npm,
-        npm_cwd,
-        extra_args=(*npm_workspace_args, "--silent"),
-        env=build_env,
-    )
+
+    def _install_web_deps(*, silent: bool) -> "subprocess.CompletedProcess":
+        return _run_npm_install_deterministic(
+            npm,
+            npm_cwd,
+            extra_args=(*npm_workspace_args, "--silent") if silent else npm_workspace_args,
+            env=build_env,
+        )
+
+    r1 = _install_web_deps(silent=True)
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -5355,11 +5415,22 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # recoverable (the stale-dist fallback below handles the kill path).
     r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
     if r2.returncode != 0:
-        # Retry once after a short delay — covers boot-time races on Windows
-        # (antivirus scanning Node.js binaries, npm cache not ready, transient
-        # I/O when launched via Scheduled Task at logon). See issue #23817.
-        _time.sleep(3)
-        r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        # The install above can exit 0 while leaving the tree without a build
+        # toolchain — a lockfile-hash skip over a half-installed tree, or an
+        # interrupted link step. The generic retry below just reruns the same
+        # command, so `tsc: not found` survives it and the stale dist is
+        # served forever. Reinstall (non-silent, so the user sees it) first.
+        missing_tool = _missing_web_build_tool((r2.stdout or "") + (r2.stderr or ""))
+        if missing_tool:
+            _say(f"  ⚠ Build could not resolve {missing_tool} — reinstalling web dependencies...")
+            _install_web_deps(silent=False)
+            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
+        if r2.returncode != 0:
+            # Retry once after a short delay — covers boot-time races on Windows
+            # (antivirus scanning Node.js binaries, npm cache not ready, transient
+            # I/O when launched via Scheduled Task at logon). See issue #23817.
+            _time.sleep(3)
+            r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
     if r2.returncode != 0:
         # _run_with_idle_timeout merges stderr into stdout; older callers
@@ -10139,6 +10210,15 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # Also check that node_modules exists; a matching hash with missing
     # node_modules means the cache was recorded by another checkout.
     if not (PROJECT_ROOT / "node_modules").is_dir():
+        return True
+    # A matching lockfile hash over a tree whose web build toolchain never
+    # landed must NOT skip the reinstall — otherwise every later `hermes
+    # update` keeps rebuilding against a half-installed tree and serving a
+    # stale dist.
+    web_dir = PROJECT_ROOT / "web"
+    if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
+        *_web_toolchain_roots(web_dir)
+    ):
         return True
     try:
         # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.

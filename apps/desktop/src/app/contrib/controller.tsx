@@ -39,7 +39,6 @@ import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { LayoutDashboard } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { $artifactTabs } from '@/store/artifacts'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -52,7 +51,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
-import { $filePreviewTabs, $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/preview'
+import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
@@ -553,11 +552,8 @@ bindPaneCollapse(
 // Preview EXISTS only while something is previewed (old-shell semantics:
 // closing the last preview tab closes the pane; a new target opens + fronts
 // it). Same visibility binding as every other self-managed surface, driven
-// by the live targets (and open artifact tabs) instead of a toggle.
-const $previewVisible = computed(
-  [$previewTarget, $filePreviewTabs, $artifactTabs],
-  (target, fileTabs, artifactTabs) => Boolean(target) || fileTabs.length > 0 || artifactTabs.length > 0
-)
+// by the open tabs instead of a toggle.
+const $previewVisible = computed($previewTabs, tabs => tabs.length > 0)
 
 bindPaneVisibility('preview', $previewVisible, closeRightRail)
 
@@ -603,19 +599,10 @@ const revealPreview = () => {
   revealTreePane('preview')
 }
 
-$previewTarget.listen(target => target && revealPreview())
-$filePreviewTarget.listen(target => target && revealPreview())
-// Artifact reveal keys on tab OPENS (length grows), not list identity — closing
-// one of two artifact tabs must not re-front the pane.
-let lastArtifactTabCount = $artifactTabs.get().length
-$artifactTabs.listen(tabs => {
-  const grew = tabs.length > lastArtifactTabCount
-  lastArtifactTabCount = tabs.length
-
-  if (grew) {
-    revealPreview()
-  }
-})
+// Keyed on open REQUESTS, not on the tab list: re-opening a tab that already
+// exists must still un-hide and front the pane, and closing one of two tabs
+// must not.
+$previewOpenRequest.listen(() => revealPreview())
 
 // ---------------------------------------------------------------------------
 

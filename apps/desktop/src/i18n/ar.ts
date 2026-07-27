@@ -1503,10 +1503,7 @@ export const ar = defineLocale({
     open: 'فتح'
   },
 
-  artifactPane: {
-    tabFallback: 'ناتج',
-    modePreview: 'معاينة',
-    modeSource: 'المصدر',
+  artifactPreview: {
     versionOf: (current, total) => `الإصدار ${current} من ${total}`,
     olderVersion: 'إصدار أقدم',
     newerVersion: 'إصدار أحدث',

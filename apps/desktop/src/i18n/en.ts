@@ -1764,10 +1764,7 @@ export const en: Translations = {
     open: 'Open'
   },
 
-  artifactPane: {
-    tabFallback: 'Artifact',
-    modePreview: 'PREVIEW',
-    modeSource: 'SOURCE',
+  artifactPreview: {
     versionOf: (current, total) => `v${current} of ${total}`,
     olderVersion: 'Older version',
     newerVersion: 'Newer version',

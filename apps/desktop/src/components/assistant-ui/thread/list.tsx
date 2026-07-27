@@ -47,7 +47,14 @@ const RENDER_BUDGET = 300
 // the user actually sees after scroll-to-bottom), then bump to the full budget
 // in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
 // past the initial commit, so the switch feels instant.
-const FIRST_PAINT_BUDGET = 60
+//
+// 20, down from 60: the first-paint commit is synchronous and uninterruptible,
+// and at 60 parts it measured 627ms on a real session (LoAF: block=575ms, no
+// attributed script — pure commit). A viewport after scroll-to-bottom shows
+// 1-2 turns ≈ 10-20 parts; the transition backfill below fills the rest
+// interruptibly, so the only thing a smaller budget changes is how much work
+// blocks the click-to-paint path.
+const FIRST_PAINT_BUDGET = 20
 
 interface ThreadMessageListProps {
   clampToComposer: boolean
@@ -210,8 +217,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // changes stay urgent (main.tsx disables router transitions); it's exactly
   // this backfill that belongs at background priority. "Show earlier" pages
   // (budget > RENDER_BUDGET) never re-enter here.
+  //
+  // NOT while this thread is streaming: an interrupted transition RESTARTS
+  // from scratch, and stream flushes land every 33-250ms — so switching to a
+  // streaming session re-ran the whole 300-part backfill render over and
+  // over (measured: 1374ms settle, 30 commits, Primitive.div x2237 on one
+  // switch; the same switch while idle settles in ~50ms). The user lands at
+  // the live tail anyway; older turns backfill the moment the run ends, and
+  // "Show earlier" remains the manual path meanwhile.
+  const threadRunning = useAuiState(s => s.thread.isRunning)
+
   useEffect(() => {
-    if (renderBudget >= RENDER_BUDGET) {
+    if (renderBudget >= RENDER_BUDGET || threadRunning) {
       return
     }
 
@@ -223,7 +240,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [renderBudget])
+  }, [renderBudget, threadRunning])
 
   // Weights (per-message part counts) fold into the BUDGET only. Group
   // identity stays structural, so a streaming append re-runs this cheap sum —

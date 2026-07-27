@@ -622,14 +622,61 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
-    """Refuse writes to org-mirror skills (M2, contract §11.11 / design §7.1).
+def _maybe_auto_propose_org_edit(name: str, skill_path: Path) -> Optional[str]:
+    """Submit an org-skill edit upstream when `sync.org_auto_propose` is on.
 
-    The ``_org/`` mirror is materialized FROM the org HEAD and overwritten on
-    every pull — a local edit would be silently lost AND would misrepresent
-    admin-approved shared content. The change path is: fork into a personal
-    skill, edit, then ``hermes skills propose``.
+    Returns a short note for the tool result, or None when nothing happened.
+    Never raises: an offline/failed submission must not fail the edit itself —
+    the change is already saved locally and can be proposed later.
     """
+    try:
+        from agent.skill_utils import is_org_mirror_path
+        from tools import skills_sync_client as ssc
+
+        if not is_org_mirror_path(skill_path, _skills_dir()):
+            return None
+        if not ssc.sync_org_auto_propose():
+            return (
+                f"This skill is shared by your organisation. Your edit is "
+                f"saved locally and will not be overwritten by org updates. "
+                f"Run `hermes skills propose {name}` to share it back."
+            )
+        result = ssc.propose_skill(name)
+        if result.get("proposal_pending"):
+            return (
+                f"Auto-proposed to your organisation as proposal "
+                f"#{result.get('proposal_id')} (pending admin review)."
+            )
+        return "Auto-proposed to your organisation (merged into the shared set)."
+    except Exception as e:
+        logger.debug("auto-propose skipped for %s: %s", name, e)
+        return (
+            f"Edit saved locally. Could not submit it to your organisation "
+            f"right now — run `hermes skills propose {name}` to retry."
+        )
+
+
+def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
+    """Org-shared skills are EDITABLE IN PLACE — this only blocks deletion.
+
+    Earlier versions refused every write to `_org/`, which broke the learning
+    loop exactly where it matters most: the agent is told to patch a skill the
+    moment it finds a gap, and shared skills are the ones the most people use.
+    Blocking that froze org skills while personal ones kept improving, and the
+    "fork it into a personal skill" alternative is not something an agent does
+    mid-task — so improvements were simply lost.
+
+    Now an edit lands in the mirror and is protected from being overwritten by
+    the next org pull (see the baseline sidecar in skills_sync_client). It
+    reaches the organisation when the user runs `hermes skills propose`, or
+    immediately if `sync.org_auto_propose` is on.
+
+    Deletion is still refused: the mirror is a materialized view of the org
+    HEAD, so a local delete is meaningless (the next pull restores it) and
+    removing a skill for the organisation is an admin action, not a local one.
+    """
+    if action not in {"delete", "remove_file"}:
+        return None
     try:
         from agent.skill_utils import is_org_mirror_path
 
@@ -637,12 +684,12 @@ def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optiona
             return {
                 "success": False,
                 "error": (
-                    f"Refusing {action} for '{name}': it is an ORG-SHARED "
-                    "skill (read-only mirror of your org's approved set; "
-                    "local edits are overwritten on every org pull). To "
-                    "change it: copy it to a personal skill, edit that, then "
-                    "`hermes skills propose <name>` so an org admin can "
-                    "review and approve."
+                    f"Cannot {action} '{name}' locally: it is shared by your "
+                    "organisation, so a local delete would just come back on "
+                    "the next sync. Ask an org admin to remove it for "
+                    "everyone. (Editing it IS allowed — your changes are kept "
+                    "and can be proposed back with `hermes skills propose "
+                    f"{name}`.)"
                 ),
             }
     except Exception:
@@ -954,12 +1001,17 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+    org_note = _maybe_auto_propose_org_edit(name, existing["path"])
+    if org_note:
+        result["org_sharing"] = org_note
+        result["message"] = f"{result['message']} {org_note}"
+    return result
 
 
 def _patch_skill(
@@ -1075,6 +1127,10 @@ def _patch_skill(
         "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
+    org_note = _maybe_auto_propose_org_edit(name, skill_dir)
+    if org_note:
+        result["org_sharing"] = org_note
+        result["message"] = f"{result['message']} {org_note}"
     return result
 
 
@@ -1244,11 +1300,16 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+    org_note = _maybe_auto_propose_org_edit(name, existing["path"])
+    if org_note:
+        result["org_sharing"] = org_note
+        result["message"] = f"{result['message']} {org_note}"
+    return result
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:

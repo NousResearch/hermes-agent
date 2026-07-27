@@ -255,8 +255,8 @@ mcp_servers:
     connect_timeout: 45
 ```
 
-This registers tools: `mcp_qmd_search`, `mcp_qmd_vsearch`,
-`mcp_qmd_deep_search`, `mcp_qmd_get`, `mcp_qmd_status`.
+This registers tools: `mcp__qmd__search`, `mcp__qmd__vsearch`,
+`mcp__qmd__deep_search`, `mcp__qmd__get`, `mcp__qmd__status`.
 
 **Tradeoff:** Models load on first search call (~19s cold start),
 then stay warm for the session. Acceptable for occasional use.
@@ -346,15 +346,15 @@ systemctl --user status qmd-daemon
 
 ### MCP Tools Reference
 
-Once connected, these tools are available as `mcp_qmd_*`:
+Once connected, these tools are available as `mcp__qmd__*`:
 
 | MCP Tool | Maps To | Description |
 |----------|---------|-------------|
-| `mcp_qmd_search` | `qmd search` | BM25 keyword search |
-| `mcp_qmd_vsearch` | `qmd vsearch` | Semantic vector search |
-| `mcp_qmd_deep_search` | `qmd query` | Hybrid search + reranking |
-| `mcp_qmd_get` | `qmd get` | Retrieve document by ID or path |
-| `mcp_qmd_status` | `qmd status` | Index health and stats |
+| `mcp__qmd__search` | `qmd search` | BM25 keyword search |
+| `mcp__qmd__vsearch` | `qmd vsearch` | Semantic vector search |
+| `mcp__qmd__deep_search` | `qmd query` | Hybrid search + reranking |
+| `mcp__qmd__get` | `qmd get` | Retrieve document by ID or path |
+| `mcp__qmd__status` | `qmd status` | Index health and stats |
 
 The MCP tools accept structured JSON queries for multi-mode search:
 

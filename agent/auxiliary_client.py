@@ -1364,10 +1364,32 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
+    def __init__(
+        self,
+        real_client: Any,
+        model: str,
+        is_oauth: bool = False,
+        base_url: str | None = None,
+    ):
         self._client = real_client
         self._model = model
         self._is_oauth = is_oauth
+        # Prefer the caller-supplied URL (AnthropicAuxiliaryClient keeps the
+        # pre-strip Portal ``.../v1`` form). Only fall back to the SDK
+        # client's host for Nous Portal — a blanket fallback would flip
+        # MiniMax/Zhipu/etc. aux adapters from "unknown host = native
+        # Anthropic" to third-party (stripping thinking signatures).
+        self._base_url = base_url or None
+        if not self._base_url:
+            candidate = str(getattr(real_client, "base_url", "") or "") or None
+            if candidate:
+                try:
+                    from agent.anthropic_adapter import _is_nous_portal_endpoint
+
+                    if _is_nous_portal_endpoint(candidate):
+                        self._base_url = candidate
+                except Exception:
+                    pass
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
@@ -1419,6 +1441,11 @@ class _AnthropicCompletionsAdapter:
             reasoning_config=_reasoning_cfg,
             tool_choice=normalized_tool_choice,
             is_oauth=self._is_oauth,
+            # Portal routes on ``anthropic/<slug>`` catalog ids and replays
+            # signed thinking like native Anthropic; both carve-outs key off
+            # base_url. Omitting it normalizes the id to a bare Anthropic
+            # slug and the Portal Messages route cannot resolve it.
+            base_url=self._base_url,
         )
         # Opus 4.7+ rejects any non-default temperature/top_p/top_k; only set
         # temperature for models that still accept it. build_anthropic_kwargs
@@ -1512,7 +1539,9 @@ class AnthropicAuxiliaryClient:
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
+        adapter = _AnthropicCompletionsAdapter(
+            real_client, model, is_oauth=is_oauth, base_url=base_url,
+        )
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
@@ -5292,10 +5321,11 @@ def resolve_provider_client(
 
     # ── Nous Portal (OAuth) ──────────────────────────────────────────
     if provider == "nous":
-        # Detect vision tasks: either explicit model override from
-        # _PROVIDER_VISION_MODELS, or caller passed a known vision model.
+        # Detect vision tasks: caller flag (strict vision backend), explicit
+        # model override from _PROVIDER_VISION_MODELS, or a known vision id.
         _is_vision = (
-            model in _PROVIDER_VISION_MODELS.values()
+            is_vision
+            or model in _PROVIDER_VISION_MODELS.values()
             or (model or "").strip().lower() == "mimo-v2-omni"
         )
         client, default = _try_nous(vision=_is_vision)
@@ -5304,6 +5334,17 @@ def resolve_provider_client(
                            "but Nous Portal not configured (run: hermes auth)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        # Dual-wire: anthropic/* → /v1/messages, everything else stays on
+        # /chat/completions. Derive from the catalog id (not a stale
+        # api_mode=chat_completions) so aux matches the main agent.
+        from hermes_cli.providers import nous_api_mode
+
+        portal_mode = nous_api_mode(final_model)
+        api_key_str = str(getattr(client, "api_key", "") or "")
+        base_url_str = str(getattr(client, "base_url", "") or "")
+        client = _maybe_wrap_anthropic(
+            client, final_model, api_key_str, base_url_str, portal_mode,
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5960,7 +6001,10 @@ def _resolve_strict_vision_backend(
     if provider == "openrouter":
         return _try_openrouter(model=model)
     if provider == "nous":
-        return _try_nous(vision=True)
+        # Must go through resolve_provider_client so anthropic/* vision
+        # recommendations wrap onto /v1/messages — _try_nous alone returns
+        # a bare OpenAI client and the call 404s.
+        return resolve_provider_client("nous", model, is_vision=True)
     if provider == "openai-codex":
         # Route through resolve_provider_client so the caller's explicit
         # model is used.  There is no safe default Codex model (shifting
@@ -7221,8 +7265,14 @@ def _build_call_kwargs(
                 _is_gemini_native = is_native_gemini_base_url(_effective_base)
             except Exception:
                 pass
+        _nous_on_messages = False
+        if _provider_norm in {"nous", "nous-portal", "nousresearch"}:
+            from hermes_cli.providers import nous_api_mode
+
+            _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
+            or _nous_on_messages
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
@@ -7317,21 +7367,43 @@ def _build_call_kwargs(
         else:
             effort = reasoning_config.get("effort") or "medium"
             merged_extra["reasoning"] = {"enabled": True, "effort": effort}
-    if provider == "nous" and "tags" not in merged_extra:
-        merged_extra["tags"] = _nous_portal_tags()
+    # Portal product tags + sticky session_id. The provider profile usually
+    # supplies both; this fallback covers profile-load failures and alias
+    # spellings the profile lookup might miss. session_id keeps aux
+    # compression/title/vision calls on the same upstream instance as the
+    # main turn (cache warmth) — tags alone are not enough on /v1/messages.
+    _provider_for_portal = str(provider or "").strip().lower()
+    if _provider_for_portal in {"nous", "nous-portal", "nousresearch"}:
+        if "tags" not in merged_extra:
+            merged_extra["tags"] = _nous_portal_tags()
+        if "session_id" not in merged_extra:
+            try:
+                from agent.portal_tags import get_conversation_context
+
+                sticky_key = get_conversation_context()
+            except Exception:
+                sticky_key = None
+            if sticky_key:
+                merged_extra["session_id"] = sticky_key
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
-    # Native Anthropic Messages adapters do not consume ``extra_body``. Carry
-    # the normalized Hermes reasoning config through a private kwarg so the
-    # adapter can pass it into build_anthropic_kwargs(), where provider-aware
-    # thinking/output_config projection lives. Do not expose this private kwarg
-    # to ordinary OpenAI-compatible SDK clients, which would reject it.
+    # Anthropic Messages adapters translate Hermes reasoning into native
+    # ``thinking`` via a private kwarg (and strip OpenAI-shaped
+    # ``extra_body.reasoning``). Do not expose this private kwarg to ordinary
+    # OpenAI-compatible SDK clients, which would reject it. Portal Claude is
+    # dual-wire — include it when the catalog id selects /v1/messages.
     if reasoning_config and isinstance(reasoning_config, dict):
         provider_norm = str(provider or "").strip().lower()
         effective_base = base_url or ""
+        _nous_on_messages = False
+        if provider_norm in {"nous", "nous-portal", "nousresearch"}:
+            from hermes_cli.providers import nous_api_mode
+
+            _nous_on_messages = nous_api_mode(model) == "anthropic_messages"
         if (
             provider_norm == "anthropic"
+            or _nous_on_messages
             or _endpoint_speaks_anthropic_messages(effective_base)
             or _is_anthropic_compat_endpoint(provider_norm, effective_base)
         ):

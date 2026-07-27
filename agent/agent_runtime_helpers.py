@@ -1221,7 +1221,15 @@ def try_recover_primary_transport(
     if agent._is_openrouter_url():
         return False
     provider_lower = (agent.provider or "").strip().lower()
-    if provider_lower in {"nous", "nous-research"}:
+    # Portal OpenAI-wire traffic still rides aggregator retry infra, so one
+    # more rebuilt OpenAI client won't help. Portal Claude on the native
+    # Messages route holds a local Anthropic SDK client whose connection
+    # pool *does* need the rebuild every other anthropic_messages provider
+    # already gets — don't blanket-skip the dual-wire path.
+    if (
+        provider_lower in {"nous", "nous-portal", "nousresearch"}
+        and getattr(agent, "api_mode", None) != "anthropic_messages"
+    ):
         return False
 
     try:
@@ -1895,7 +1903,15 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
+    # Envelope layout is an OpenAI-wire construct. Portal Claude on the native
+    # Messages route must fall through to the third-party anthropic_messages
+    # branch below, which emits inner-block cache_control breakpoints; the
+    # envelope form would be dropped and serve 0% cache hits.
+    if (
+        (is_openrouter or is_nous_portal)
+        and (is_claude or is_kimi)
+        and not is_anthropic_wire
+    ):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -2059,8 +2075,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     from hermes_cli.providers import determine_api_mode
 
     # ── Determine api_mode if not provided ──
+    # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
+    # resolve correctly; without it determine_api_mode falls back to the
+    # openai_chat overlay default.
     if not api_mode:
-        api_mode = determine_api_mode(new_provider, base_url)
+        api_mode = determine_api_mode(new_provider, base_url, model=new_model)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to

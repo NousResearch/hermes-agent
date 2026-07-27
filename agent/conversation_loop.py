@@ -3623,7 +3623,7 @@ def run_conversation(
                         agent._buffer_vprint("🔐 Vertex AI token refreshed after 401. Retrying request...")
                         continue
                 if (
-                    agent.api_mode == "chat_completions"
+                    agent.api_mode in ("chat_completions", "anthropic_messages")
                     and agent.provider == "nous"
                     and status_code == 401
                     and not _retry.nous_auth_retry_attempted

@@ -1477,3 +1477,108 @@ class TestConnectAdapterDetachOnTimeout:
             )
 
         assert result is True
+
+
+class TestReconnectWatcherHandleTracking:
+    """Regression: the supervisor's own backoff respawn must keep
+    ``_reconnect_watcher_task`` pointed at the CURRENT live task.
+
+    Before the ``on_spawn`` fix, ``_spawn_supervised``'s internal respawn
+    created a new task without updating ``self._reconnect_watcher_task``, so
+    after the reconnect watcher crashed and self-respawned, the tracked handle
+    still pointed at the DEAD task. A later
+    ``_ensure_reconnect_watcher_running()`` then saw ``task.done()`` and
+    spawned a SECOND concurrent watcher — double reconnect attempts against
+    every failed platform. The two supervision mechanisms (auto-restart +
+    ensure-respawn) must compose, not race.
+    """
+
+    @pytest.mark.asyncio
+    async def test_startup_spawn_tracks_live_handle(self):
+        """The startup spawn passes an on_spawn callback so the handle is
+        recorded at spawn time (not left None until the lambda in prod)."""
+        runner = _make_runner()
+        runner._background_tasks = set()
+
+        async def _noop_watcher():
+            await asyncio.sleep(3600)
+
+        # Mirror the production startup call: on_spawn records the handle.
+        runner._reconnect_watcher_task = None
+        task = runner._spawn_supervised(
+            _noop_watcher,
+            "platform_reconnect_watcher",
+            on_spawn=lambda t: setattr(runner, "_reconnect_watcher_task", t),
+        )
+        # on_spawn fired synchronously at spawn time.
+        assert runner._reconnect_watcher_task is task
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_supervised_respawn_refreshes_tracked_handle(self):
+        """When the supervised watcher crashes and the supervisor respawns it,
+        _reconnect_watcher_task must advance to the NEW task, not stay pinned to
+        the dead one. This is the exact condition _ensure_reconnect_watcher_running
+        checks (task.done()) before deciding to spawn a duplicate."""
+        runner = _make_runner()
+        runner._running = True
+        runner._background_tasks = set()
+        # Fast, deterministic backoff.
+        runner._MAX_SUPERVISED_RESTARTS = 5
+        runner._SUPERVISED_HEALTHY_SECS = 300
+
+        crashed_once = {"done": False}
+
+        async def _crash_then_live():
+            if not crashed_once["done"]:
+                crashed_once["done"] = True
+                raise RuntimeError("boom in outer loop")
+            await asyncio.sleep(3600)
+
+        runner._reconnect_watcher_task = None
+        first = runner._spawn_supervised(
+            _crash_then_live,
+            "platform_reconnect_watcher",
+            on_spawn=lambda t: setattr(runner, "_reconnect_watcher_task", t),
+        )
+        assert runner._reconnect_watcher_task is first
+
+        # Let the first task crash and the supervisor's backoff (2**0 = 1s here,
+        # but _attempt=0 -> min(60, 1)=1) schedule + run the respawn.
+        with patch("asyncio.sleep", new=_instant_sleep):
+            # Give the event loop turns for the _done callback + _respawn task.
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if runner._reconnect_watcher_task is not first:
+                    break
+
+        # The handle must now point at the respawned (live) task, NOT the dead one.
+        assert runner._reconnect_watcher_task is not first
+        assert not runner._reconnect_watcher_task.done()
+
+        # And _ensure_reconnect_watcher_running must therefore be a no-op — it
+        # must NOT spawn a duplicate, because the tracked handle is alive.
+        spawned = []
+        original = runner._spawn_supervised
+        runner._spawn_supervised = lambda *a, **k: spawned.append(a) or original(*a, **k)
+        runner._ensure_reconnect_watcher_running()
+        assert spawned == [], "ensure spawned a duplicate watcher despite a live handle"
+
+        runner._reconnect_watcher_task.cancel()
+        try:
+            await runner._reconnect_watcher_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _instant_sleep(delay, *a, **k):
+    """asyncio.sleep replacement that yields to the loop but never waits."""
+    await _REAL_ASYNCIO_SLEEP(0)
+    return None
+
+
+_REAL_ASYNCIO_SLEEP = asyncio.sleep

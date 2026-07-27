@@ -8721,8 +8721,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # platform ever fails afterward, nothing ever notices the watcher is
         # dead (#71758 -- reported as 17.5h of silent downtime for a platform
         # whose transient upstream outage had long since recovered).
+        # ``on_spawn`` keeps ``_reconnect_watcher_task`` pointed at the CURRENT
+        # live task even when _spawn_supervised's own backoff respawns it — so
+        # _ensure_reconnect_watcher_running never mistakes a superseded handle
+        # for a dead watcher and spawns a duplicate.
         self._reconnect_watcher_task = self._spawn_supervised(
-            self._platform_reconnect_watcher, "platform_reconnect_watcher"
+            self._platform_reconnect_watcher,
+            "platform_reconnect_watcher",
+            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
         )
 
         # Start background handoff watcher — picks up CLI sessions marked
@@ -8781,7 +8787,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # handoff for the rest of the process life).
     _SUPERVISED_HEALTHY_SECS = 300
 
-    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0):
+    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0, on_spawn=None):
         """Launch a long-lived background task with task-level supervision.
 
         Complements upstream's per-iteration inner-loop try/except (which only
@@ -8796,6 +8802,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The counter resets after any run that stayed healthy for at least
         ``_SUPERVISED_HEALTHY_SECS`` — so a long-lived daemon that crashes
         occasionally over days is never permanently abandoned.
+
+        ``on_spawn`` (optional) is invoked with the freshly-created task on
+        every spawn, INCLUDING internal backoff respawns. Callers that also
+        track the live handle elsewhere (e.g. ``self._reconnect_watcher_task``
+        for ``_ensure_reconnect_watcher_running``) MUST pass it — otherwise the
+        supervisor's own respawn creates a new task without updating that
+        external handle, so ``_ensure_...`` later sees the stale/done handle
+        and spawns a SECOND concurrent watcher (double reconnect attempts).
         """
         if getattr(self, "_background_tasks", None) is None:
             self._background_tasks = set()
@@ -8808,6 +8822,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # create_task with a signature that rejects the name kwarg.
         task = asyncio.create_task(coro_factory())
         self._background_tasks.add(task)
+        if on_spawn is not None:
+            # Record the live handle NOW so an external tracker (e.g.
+            # _reconnect_watcher_task) always points at the current task, not a
+            # dead one left behind by a prior supervised respawn.
+            try:
+                on_spawn(task)
+            except Exception:  # pragma: no cover - defensive; a tracker must never kill the spawn
+                logger.debug("on_spawn callback for %s raised", name, exc_info=True)
 
         def _done(t):
             self._background_tasks.discard(t)
@@ -8849,6 +8871,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             name,
                             restart=restart,
                             _attempt=effective_attempt + 1,
+                            on_spawn=on_spawn,
                         )
 
                 respawn_task = asyncio.create_task(_respawn())
@@ -9307,7 +9330,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             task.done() if task is not None else "N/A",
         )
         self._reconnect_watcher_task = self._spawn_supervised(
-            self._platform_reconnect_watcher, "platform_reconnect_watcher"
+            self._platform_reconnect_watcher,
+            "platform_reconnect_watcher",
+            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
         )
 
     async def _platform_reconnect_watcher(self) -> None:

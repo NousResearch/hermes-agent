@@ -11,7 +11,7 @@ stale value and its ``echo $HERMES_SESSION_ID`` reported a FOREIGN session's id
 ``_inject_session_context_env``.
 
 The fix strips the per-session bridged vars (HERMES_SESSION_* / UI /
-CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
+CRON_SESSION / CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
 ``tools/environments/base.py``; they are re-injected fresh on every command.
 """
 
@@ -62,6 +62,7 @@ def test_export_snippet_shape():
     assert "${!HERMES_SESSION_*}" in snippet
     assert "${!HERMES_CRON_AUTO_DELIVER_*}" in snippet
     assert "HERMES_UI_SESSION_ID" in snippet
+    assert "HERMES_CRON_SESSION" in snippet
     assert "grep -vE" not in snippet
     assert "/tmp/snap.tmp.$BASHPID" in snippet
     # The redirection must be attached to a brace group wrapping the dump,

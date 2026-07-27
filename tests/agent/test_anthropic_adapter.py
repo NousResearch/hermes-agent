@@ -1781,9 +1781,11 @@ class TestBuildAnthropicKwargs:
             assert _forbids_sampling_params(m) is False, m
 
     def test_non_claude_anthropic_models_use_manual_path(self):
-        """Non-Claude Anthropic-Messages models (minimax, qwen3, glm) must not
-        be misclassified as adaptive by the default-to-modern rule. Kimi is
-        the deliberate exception — see test_kimi_family_uses_adaptive_path."""
+        """Non-Claude Anthropic-Messages models (minimax, qwen3, glm, kimi)
+        must not be misclassified as adaptive by the default-to-modern rule.
+        Kimi was previously an exception but its /coding endpoint no longer
+        accepts Anthropic thinking parameters (validates reasoning_content
+        on the message history instead — see #13848)."""
         from agent.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
@@ -1794,33 +1796,38 @@ class TestBuildAnthropicKwargs:
             assert _supports_xhigh_effort(m) is False, m
             assert _forbids_sampling_params(m) is False, m
 
-    def test_kimi_family_uses_adaptive_path(self):
-        """Kimi / Moonshot models use adaptive thinking: their
-        Anthropic-compatible endpoints accept thinking.type="adaptive" +
-        output_config.effort including xhigh. Sampling params stay untouched
-        (the 4.7+ sampling ban is a Claude-only contract)."""
+    def test_kimi_family_no_longer_uses_adaptive_thinking(self):
+        """Kimi / Moonshot /coding endpoint no longer accepts Anthropic
+        thinking parameters. Sending ``thinking.type=adaptive`` triggers HTTP
+        400 when prior assistant tool-call messages lack
+        ``reasoning_content``, which the Anthropic path never populates.
+        Kimi drives reasoning server-side on /coding, so the Anthropic
+        thinking parameter must be omitted entirely."""
         from agent.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
             _forbids_sampling_params,
         )
         for m in ("moonshotai/kimi-k2.5", "kimi-0714-preview", "k2-thinking"):
-            assert _supports_adaptive_thinking(m) is True, m
-            assert _supports_xhigh_effort(m) is True, m
+            assert _supports_adaptive_thinking(m) is False, m
+            assert _supports_xhigh_effort(m) is False, m
             assert _forbids_sampling_params(m) is False, m
 
     def test_bare_k3_coding_plan_slug_is_kimi_family(self):
         """Kimi Coding Plan serves K3 as the bare slug ``k3`` — it must be
-        classified as Kimi family (adaptive thinking) even on proxied
-        endpoints where only the model name is available. Lookalike
-        non-Kimi names must NOT match the exact-slug rule."""
+        classified as Kimi family (for endpoint routing) even on proxied
+        endpoints where only the model name is available. However, Kimi
+        /coding no longer accepts Anthropic thinking parameters, so
+        _supports_adaptive_thinking returns False for all Kimi models.
+        Lookalike non-Kimi names must NOT match the exact-slug rule."""
         from agent.anthropic_adapter import (
             _model_name_is_kimi_family,
             _supports_adaptive_thinking,
         )
         for m in ("k3", "K3", "moonshotai/k3", "k3.1-preview", "k3-turbo"):
             assert _model_name_is_kimi_family(m) is True, m
-        assert _supports_adaptive_thinking("k3") is True
+        # Kimi family detection still works, but adaptive thinking is skipped
+        assert _supports_adaptive_thinking("k3") is False
         # Prefix-lookalikes without a separator must not be swept in.
         for m in ("k30", "k3000-chat", "keras-3"):
             assert _model_name_is_kimi_family(m) is False, m

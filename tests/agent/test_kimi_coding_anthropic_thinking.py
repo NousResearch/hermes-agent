@@ -1,16 +1,17 @@
 """Kimi / Moonshot thinking behavior on the Anthropic-Messages wire.
 
-Contract (changed from the original #13848 mitigation):
+Contract (changed from the prior adaptive-thinking approach):
 
-- Kimi-family endpoints receive ``thinking`` in **adaptive** form
-  (``thinking.type="adaptive"`` + ``output_config.effort``) — never manual
-  ``budget_tokens``.  Their Anthropic-compatible endpoints
-  (``api.moonshot.cn/anthropic``, ``api.kimi.com/coding``) accept the
-  field set, and the replay-validation 400s that originally motivated
-  dropping the parameter (#13848) no longer occur.
+- Kimi's /coding endpoint no longer accepts Anthropic ``thinking`` parameters.
+  Sending ``thinking.enabled`` (or ``thinking.type="adaptive"``) triggers HTTP
+  400 when prior assistant tool-call messages lack OpenAI-style
+  ``reasoning_content`` — a field the Anthropic path never populates. Kimi
+  drives reasoning server-side on the /coding route, so the Anthropic thinking
+  parameter must be omitted entirely.
 
 - ``convert_messages_to_anthropic`` still preserves unsigned
-  reasoning_content-derived thinking blocks on replay for this family, so
+  reasoning_content-derived thinking blocks on replay for this family (now
+  unified with DeepSeek's ``_preserve_unsigned_thinking`` path), so
   multi-turn tool-call history round-trips.
 
 Kimi on the chat_completions route handles ``thinking`` via ``extra_body``
@@ -22,8 +23,8 @@ from __future__ import annotations
 import pytest
 
 
-class TestKimiCodingAnthropicThinking:
-    """Kimi-family thinking on the Anthropic wire (incl. /coding)."""
+class TestKimiCodingSkipsThinking:
+    """Kimi /coding endpoint omits Anthropic thinking parameters."""
 
     def test_kimi_coding_with_explicit_disabled_omits_thinking(self) -> None:
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -37,6 +38,27 @@ class TestKimiCodingAnthropicThinking:
             base_url="https://api.kimi.com/coding",
         )
         assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
+
+    def test_kimi_coding_with_enabled_still_omits_thinking(self) -> None:
+        """Even with reasoning_config.enabled=True, Kimi /coding must NOT
+        receive an Anthropic thinking parameter — the endpoint now rejects it
+        with HTTP 400 when the message history lacks reasoning_content."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://api.kimi.com/coding",
+        )
+        assert "thinking" not in kwargs, (
+            f"Kimi /coding must NOT receive thinking parameter, "
+            f"got {kwargs.get('thinking')!r}"
+        )
+        assert "output_config" not in kwargs
 
     def test_non_kimi_third_party_still_gets_thinking(self) -> None:
         """MiniMax and other third-party Anthropic endpoints must retain thinking."""
@@ -67,8 +89,8 @@ class TestKimiCodingAnthropicThinking:
         assert "thinking" in kwargs
 
 
-class TestKimiFamilyGetsAdaptiveThinking:
-    """Kimi-family endpoints get adaptive thinking + output_config.effort."""
+class TestKimiFamilySkipsThinking:
+    """Kimi-family endpoints must NOT receive Anthropic thinking parameters."""
 
     @pytest.mark.parametrize(
         "base_url,model",
@@ -86,7 +108,7 @@ class TestKimiFamilyGetsAdaptiveThinking:
             ("https://llm.example.com/anthropic", "moonshotai/kimi-k2.5"),
         ],
     )
-    def test_kimi_family_endpoint_gets_adaptive_thinking(
+    def test_kimi_family_endpoint_skips_thinking(
         self, base_url: str, model: str
     ) -> None:
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -99,42 +121,11 @@ class TestKimiFamilyGetsAdaptiveThinking:
             reasoning_config={"enabled": True, "effort": "high"},
             base_url=base_url,
         )
-        assert kwargs.get("thinking", {}).get("type") == "adaptive", (
-            f"Kimi-family endpoint ({base_url}, {model}) must receive "
-            f"adaptive thinking, got {kwargs.get('thinking')!r}"
+        assert "thinking" not in kwargs, (
+            f"Kimi-family endpoint ({base_url}, {model}) must NOT receive "
+            f"thinking parameter, got {kwargs.get('thinking')!r}"
         )
-        assert "budget_tokens" not in kwargs["thinking"]
-        assert kwargs["output_config"] == {"effort": "high"}
-        # Adaptive mode must not force temperature or inflate max_tokens
-        # (those are manual-budget-mode side effects).
-        assert "temperature" not in kwargs
-        assert kwargs["max_tokens"] == 4096
-
-    @pytest.mark.parametrize(
-        "hermes_effort,wire_effort",
-        [
-            ("minimal", "low"),
-            ("low", "low"),
-            ("medium", "medium"),
-            ("high", "high"),
-            ("xhigh", "xhigh"),
-            ("max", "max"),
-            ("ultra", "max"),
-        ],
-    )
-    def test_kimi_effort_mapping(self, hermes_effort: str, wire_effort: str) -> None:
-        from agent.anthropic_adapter import build_anthropic_kwargs
-
-        kwargs = build_anthropic_kwargs(
-            model="kimi-0714-preview",
-            messages=[{"role": "user", "content": "hello"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": hermes_effort},
-            base_url="https://api.moonshot.cn/anthropic/v1",
-        )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert kwargs["output_config"] == {"effort": wire_effort}
+        assert "output_config" not in kwargs
 
     def test_kimi_thinking_disabled_omits_parameter(self) -> None:
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -172,8 +163,7 @@ class TestKimiFamilyGetsAdaptiveThinking:
     def test_kimi_family_replay_preserves_unsigned_thinking(self) -> None:
         """On a custom Kimi endpoint, unsigned reasoning_content thinking
         blocks must survive the third-party signature-stripping pass so
-        the upstream's message-history validation passes.
-        """
+        the upstream's message-history validation passes."""
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [

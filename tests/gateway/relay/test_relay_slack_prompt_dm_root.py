@@ -246,3 +246,63 @@ async def test_typing_carries_live_status_phrase():
     assert "content" not in typing[-1], (
         "cleared phrase must omit content (empty string means CLEAR on Slack)"
     )
+
+
+# ---------------------------------------------------------------------------
+# QA-1 status thread anchor: typing frames synthesize the per-message thread
+# root in thread-per-message mode (the status line is thread-only on Slack).
+# ---------------------------------------------------------------------------
+def _wire_with_ts(chat_id, chat_type, message_id, **kw):
+    adapter, stub = _wire(chat_id, chat_type, **kw)
+    src = SessionSource(
+        platform=Platform.SLACK, chat_id=chat_id, chat_type=chat_type,
+        user_id="U1", scope_id=kw.get("scope_id"),
+    )
+    ev = MessageEvent(
+        text="hi", source=src, message_type=MessageType.TEXT, message_id=message_id
+    )
+    adapter._capture_scope(ev)
+    return adapter, stub
+
+
+@pytest.mark.asyncio
+async def test_typing_synthesizes_thread_anchor_in_thread_mode():
+    """Top-level DM turn, thread-per-message mode: the typing frame gains the
+    triggering ts as thread_id so the connector's setStatus targets the
+    per-message thread instead of no-oping threadless."""
+    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+    await adapter.send_typing("D1", metadata=None)
+    typing = [f for f in stub.sent if f["op"] == "typing"]
+    assert typing and typing[-1]["metadata"].get("thread_id") == "1700.0042"
+
+
+@pytest.mark.asyncio
+async def test_typing_keeps_no_anchor_in_flat_mode():
+    """Flat mode: no synthetic thread for the status either (#18859)."""
+    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+    adapter.config.extra = {"reply_in_thread": False}
+    await adapter.send_typing("D1", metadata=None)
+    typing = [f for f in stub.sent if f["op"] == "typing"]
+    assert typing and "thread_id" not in typing[-1]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_typing_honours_real_thread_anchor():
+    """Metadata that already names a thread wins over the synthetic cache."""
+    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+    await adapter.send_typing("D1", metadata={"thread_id": "1699.9000"})
+    typing = [f for f in stub.sent if f["op"] == "typing"]
+    assert typing[-1]["metadata"]["thread_id"] == "1699.9000"
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_clear_targets_same_synthesized_thread():
+    """The clear frame targets the same synthesized thread as the heartbeat
+    (else the status line sticks)."""
+    adapter, stub = _wire_with_ts("D1", "dm", "1700.0042")
+    await adapter.send_typing("D1", metadata=None)
+    await adapter.stop_typing("D1", metadata=None)
+    clears = [
+        f for f in stub.sent if f["op"] == "typing" and f.get("content") == ""
+    ]
+    assert clears and clears[-1]["metadata"].get("thread_id") == "1700.0042"

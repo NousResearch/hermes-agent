@@ -11425,6 +11425,36 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     print("    sudo systemctl restart <unit>     # system-scope")
 
 
+def _refresh_windows_gateway_launchers() -> None:
+    """Regenerate installed Windows gateway launcher scripts after update.
+
+    The Scheduled Task / Startup-folder launchers (``gateway.cmd`` +
+    ``gateway.vbs``) are persistence artifacts written once at install time —
+    ``hermes update`` never touched them, so installs created before the
+    hidden-console rework (aa2ae36c3f) kept launching the gateway through
+    ``pythonw.exe`` forever: every descendant spawn flashed a conhost
+    (#54220/#56747) and, since #70344, the console-less gateway died at
+    startup with ``RuntimeError: sys.stderr is None`` (#71671).
+
+    The task's /TR points at a stable script path, so rewriting the files in
+    place retargets the task without any schtasks call (no UAC needed).
+    ``_write_task_script`` is idempotent and renders from current code, so
+    this is a no-op for modern installs. Best-effort: a failed refresh must
+    never fail the update.
+    """
+    if not _is_windows():
+        return
+    try:
+        from hermes_cli import gateway_windows
+
+        if not gateway_windows.is_installed():
+            return
+        gateway_windows._write_task_script()
+        print("  ✓ Refreshed Windows gateway launcher scripts")
+    except Exception as exc:
+        logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)
+
+
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
     if not token or not token.get("resume_needed"):
@@ -11432,6 +11462,11 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     token["resume_needed"] = False
     if not _is_windows():
         return
+
+    # Regenerate the persisted launcher scripts before respawning anything,
+    # so a legacy pythonw-era Scheduled Task / Startup entry comes back on
+    # the current hidden-console design at the next login too.
+    _refresh_windows_gateway_launchers()
 
     profiles = token.get("profiles") or {}
     unmapped = token.get("unmapped") or []

@@ -887,13 +887,16 @@ def _redecorate_prompt_cache_for_provider(
 
     strip_anthropic_cache_control(messages)
 
-    if getattr(agent, "_use_prompt_caching", False):
+    # Direct attribute access matches the call-block decoration site — the
+    # flags are unconditionally initialized on AIAgent, and a getattr
+    # default here would mask a real init bug as silent cache-off.
+    if agent._use_prompt_caching:
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
         messages = apply_anthropic_cache_control(
             messages,
-            cache_ttl=getattr(agent, "_cache_ttl", None) or "5m",
-            native_anthropic=bool(getattr(agent, "_use_native_cache_layout", False)),
+            cache_ttl=agent._cache_ttl,
+            native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
         )
 

@@ -1377,9 +1377,20 @@ def _build_child_agent(
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
     # Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
+    #
+    # Nous Portal is dual-wire within a single provider: anthropic/* → Messages,
+    # everything else → chat_completions. Same-provider inheritance would pin a
+    # child Hermes/Qwen subagent onto the parent's Claude Messages wire (or the
+    # reverse). agent_init honors an explicit api_mode above its nous branch, so
+    # re-derive here before construction.
     _parent_provider = getattr(parent_agent, "provider", None) or ""
+    _effective_provider_norm = (effective_provider or "").strip().lower()
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
+    elif _effective_provider_norm in {"nous", "nous-portal", "nousresearch"}:
+        from hermes_cli.providers import nous_api_mode
+
+        effective_api_mode = nous_api_mode(effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:

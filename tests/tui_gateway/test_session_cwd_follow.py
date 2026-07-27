@@ -29,7 +29,7 @@ def repo_with_worktree(tmp_path):
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "t")
-    (repo / "README.md").write_text("hi\n")
+    (repo / "README.md").write_text("hi\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "init")
 
@@ -87,6 +87,32 @@ def test_browsing_outside_a_repo_is_not_a_move(session, repo_with_worktree, tmp_
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     terminal_tool.record_session_cwd(session["session_key"], str(scratch))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_non_git_workspace_is_not_hijacked_by_visiting_a_repo(
+    session, repo_with_worktree, tmp_path
+):
+    """A non-git workspace must not be re-homed when a tool call steps into a
+    git repo: browsing in to read a file or run a command is a visit, not a
+    relocation. Otherwise the first git directory the agent touches (e.g. its
+    own install checkout) hijacks a home-directory session.
+    """
+    repo, _ = repo_with_worktree
+    home = tmp_path / "home"  # a plain, non-git workspace
+    home.mkdir()
+    session["cwd"] = str(home)
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(home)
+
+
+def test_a_deleted_directory_is_not_a_move(session, repo_with_worktree, tmp_path):
+    repo, _ = repo_with_worktree
+    terminal_tool.record_session_cwd(session["session_key"], str(tmp_path / "gone"))
 
     assert server._reconcile_session_cwd_from_terminal(session) is False
     assert session["cwd"] == str(repo)

@@ -2373,7 +2373,14 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     # The worktree ROOT, not the common repo root: folding worktrees together
     # here is exactly what hides the move we're looking for.
     landed = _git_repo_root_for_cwd(resolved)
-    if not landed or landed == _git_repo_root_for_cwd(current):
+    current_root = _git_repo_root_for_cwd(current)
+    # A relocation is a move between two DIFFERENT git working trees. When the
+    # session's own workspace is not in a git repo, the agent stepping into one
+    # to read a file or run a command is a browsing visit, not a re-home:
+    # adopting it would hijack a non-git workspace onto whatever repo a tool
+    # call touched first (e.g. a home-directory session pinned to the checkout
+    # it read a file from).
+    if not landed or not current_root or landed == current_root:
         return False
 
     session["cwd"] = resolved

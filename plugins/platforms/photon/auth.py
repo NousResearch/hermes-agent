@@ -180,6 +180,45 @@ def store_photon_token(token: str) -> None:
         _save_auth(auth)
 
 
+def clear_photon_token() -> None:
+    """Remove any stored Photon dashboard token from auth.json.
+
+    Used to discard a stale/expired token before re-authentication.
+    """
+    auth = _load_auth()
+    pool = auth.get("credential_pool", {})
+    photon = pool.get("photon", [])
+    if isinstance(photon, list) and photon:
+        pool["photon"] = []
+        _save_auth(auth)
+    # Also clear the legacy shape if present.
+    providers = auth.get("providers", {})
+    if "photon" in providers:
+        providers["photon"] = {}
+        _save_auth(auth)
+
+
+def check_photon_token_valid(token: str) -> bool:
+    """Return True if the token is accepted by the dashboard API.
+
+    Makes a lightweight ``GET /api/auth/get-session`` call.  A non-401
+    response (including non-auth errors like network blips) is treated as
+    "probably valid" so transient failures don't force unnecessary re-login.
+    Only a definitive 401 / 403 is treated as stale.
+    """
+    if not token:
+        return False
+    try:
+        resp = _dashboard_get("/api/auth/get-session", token)
+        if resp.status_code in (401, 403):
+            return False
+        return True
+    except Exception:
+        # Transient error — don't force a re-auth; let the caller's
+        # management-call error propagate if the token really is bad.
+        return True
+
+
 def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
     """Return the runtime SDK creds ``(spectrum_project_id, project_secret)``.
 

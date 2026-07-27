@@ -71,6 +71,7 @@ import {
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  navigateToWorkspacePage,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -351,7 +352,7 @@ export function CommandPalette() {
     }
   }, [open, pendingPage])
 
-  const go = useCallback((path: string) => () => navigate(path), [navigate])
+  const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
   // Step up one nested page (or back to the root list), clearing the filter so
   // the parent page doesn't reopen mid-search.

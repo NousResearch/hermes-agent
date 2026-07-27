@@ -304,6 +304,7 @@ export function ChatBar({
     refreshTrigger,
     replaceTriggerWithChip,
     setTriggerActive,
+    slashFreeTextArgStage,
     trigger,
     triggerActive,
     triggerItems,
@@ -544,7 +545,9 @@ export function ChatBar({
       // options step, and an arg option commits the full `/cmd arg` chip. Space
       // is slash-only (an `@` mention takes a literal space) and gated to a
       // non-empty query so a bare `/ ` still types a space.
-      const acceptOnSpace = event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim())
+      const acceptOnSpace =
+        event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim()) && !slashFreeTextArgStage
+
       const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
 
       if (accept) {
@@ -579,11 +582,12 @@ export function ChatBar({
       slashArgStage(trigger.query) &&
       trigger.query.trim()
     ) {
-      event.preventDefault()
-      triggerKeyConsumedRef.current = true
-      commitTypedSlashDirective()
+      if (commitTypedSlashDirective()) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
 
-      return
+        return
+      }
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in

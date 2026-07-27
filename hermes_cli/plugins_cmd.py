@@ -660,6 +660,11 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
 
+    # Same stale-bytecode class as the main checkout (#6207/#60242): the
+    # pull just changed .py files under this plugin dir, so drop any
+    # __pycache__ compiled from the previous revision.
+    _clear_plugin_bytecode(target)
+
     # Copy any new .example files
     _copy_example_files(target, console)
 
@@ -1954,11 +1959,39 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     if not ok:
         return {"ok": False, "error": msg}
 
+    # Sibling of the CLI ``hermes plugins update`` path: drop bytecode
+    # compiled from the pre-pull plugin revision.
+    _clear_plugin_bytecode(target)
+
     from rich.console import Console
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
     return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+
+
+def _clear_plugin_bytecode(target: Path) -> int:
+    """Remove ``__pycache__`` dirs under a just-updated plugin checkout.
+
+    Plugin dirs live outside the main repo, so the launch-time checkout
+    fingerprint sweep in ``hermes_cli.main`` never covers them. After a
+    ``git pull`` changes a plugin's ``.py`` files, stale bytecode here can
+    produce the same ImportError class as #6207/#60242 in whichever
+    process imports the plugin next. Never raises.
+    """
+    removed = 0
+    try:
+        for cache_dir in target.rglob("__pycache__"):
+            if not cache_dir.is_dir():
+                continue
+            try:
+                shutil.rmtree(cache_dir)
+                removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
